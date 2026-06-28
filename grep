@@ -1,0 +1,46 @@
+src/engines/LaserstreamIngestion.ts:115:      "pump-fun-monitor": {
+src/engines/telemetryMapper.ts:26:  'pumpswap',
+src/engines/telemetryMapper.ts:64:   * prioritize them entirely over ungraduated pump-fun curves.
+src/engines/MultiLayerValidationEngine.ts:6:  dexId: string;               // مثال: 'raydium', 'pumpswap', 'pump-fun', 'orca', 'meteora'
+src/engines/MultiLayerValidationEngine.ts:24:  private readonly GRADUATED_SIGNATURES = new Set(['raydium', 'pumpswap', 'orca', 'meteora']);
+src/engines/MultiLayerValidationEngine.ts:81:      cleanDexId.includes('pumpswap') ||
+src/engines/MultiLayerValidationEngine.ts:88:    return 'BONDING_CURVE'; // السقوط الآمن التلقائي لبيانات pump-fun الخام
+src/engines/LaserstreamIngestion.ts:115:      "pump-fun-monitor": {
+src/engines/telemetryMapper.ts:26:  'pumpswap',
+src/engines/telemetryMapper.ts:64:   * prioritize them entirely over ungraduated pump-fun curves.
+src/engines/MultiLayerValidationEngine.ts:6:  dexId: string;               // مثال: 'raydium', 'pumpswap', 'pump-fun', 'orca', 'meteora'
+src/engines/MultiLayerValidationEngine.ts:24:  private readonly GRADUATED_SIGNATURES = new Set(['raydium', 'pumpswap', 'orca', 'meteora']);
+src/engines/MultiLayerValidationEngine.ts:81:      cleanDexId.includes('pumpswap') ||
+src/engines/MultiLayerValidationEngine.ts:88:    return 'BONDING_CURVE'; // السقوط الآمن التلقائي لبيانات pump-fun الخام
+src/components/pages/PnLPage.tsx:1370:    const isPumpSuffix = mintLower.endsWith('pump');
+src/components/pages/PnLPage.tsx:2049:        const isGraduated = !alert.address.toLowerCase().endsWith('pump');
+src/components/pages/PnLPage.tsx:2161:                  const isGraduated = !m.toLowerCase().endsWith('pump');
+src/components/pages/PnLPage.tsx:2184:                    const platform = (metric.dexId || '').toLowerCase().includes('raydium') || (metric.dexId || '').toLowerCase().includes('pumpswap') || (metric.dexId || '').toLowerCase().includes('orca') || (metric.dexId || '').toLowerCase().includes('meteora') || (metric.bondingCurveProgress || 0) >= 99.5 ? 'Raydium' : 'Pump.fun';
+src/components/pages/PnLPage.tsx:2199:            const isGraduated = !mint.toLowerCase().endsWith('pump');
+src/components/pages/PnLPage.tsx:2439:      const pumpNames = [
+src/components/pages/PnLPage.tsx:2460:      const pumpOthers = pumpNames.filter(p => p.symbol !== "FU");
+src/components/pages/PnLPage.tsx:2462:        pumpNames.find(p => p.symbol === "FU")!,
+src/components/pages/PnLPage.tsx:2463:        ...pumpOthers.sort(() => 0.5 - Math.random()).slice(0, 5)
+src/components/pages/PnLPage.tsx:2474:        const mint = `sim${Math.random().toString(36).substring(2, 10).toUpperCase()}${Date.now().toString(36).substring(2, 6).toUpperCase()}pump`;
+src/components/pages/PnLPage.tsx:2496:        const dexId = item.isRaydium ? 'raydium' : 'pump-fun';
+src/components/pages/PnLPage.tsx:2632:              return d.includes('raydium') || d.includes('pumpswap') || d.includes('orca') || d.includes('meteora');
+src/components/pages/PnLPage.tsx:2639:                return d.includes('raydium') || d.includes('pumpswap') || d.includes('orca') || d.includes('meteora');
+src/components/pages/PnLPage.tsx:2658:              const isGraduated = !tokenAddress.toLowerCase().endsWith('pump');
+src/components/pages/PnLPage.tsx:4156:                      const isGraduated = !m.toLowerCase().endsWith('pump');
+src/components/pages/PnLPage.tsx:4184:                      const isRaydium = (metric.dexId || '').toLowerCase().includes('raydium') || (metric.dexId || '').toLowerCase().includes('pumpswap') || (metric.dexId || '').toLowerCase().includes('orca') || (metric.dexId || '').toLowerCase().includes('meteora') || (metric.bondingCurveProgress || 0) >= 99.5;
+src/components/pages/PnLPage.tsx:4346:    !tokenAddress.toLowerCase().endsWith("pump")</code>
+src/App.tsx:314:  if (a.endsWith('pump')) return 'MEME';
+src/App.tsx:327:  return 'DEFI'; // Default to DEFI for non-pump tokens if no other match
+src/App.tsx:379:  const [hardenedMcapMinPump, setHardenedMcapMinPump] = useState(() => Number(localStorage.getItem('hd_mcap_min_pump')) || 40000);
+src/App.tsx:437:    const saved = localStorage.getItem('hd_trade_pump_fun');
+src/App.tsx:497:    localStorage.setItem('hd_mcap_min_pump', hardenedMcapMinPump.toString());
+src/App.tsx:518:    localStorage.setItem('hd_trade_pump_fun', tradePumpFun.toString());
+src/App.tsx:1076:            isRaydiumListed: !token.address.toLowerCase().endsWith('pump'),
+src/App.tsx:1776:    if (metric && (((metric.dexId?.includes('pump') && !metric.dexId?.toLowerCase().includes('pumpswap')) || tokenAddress.endsWith('pump')))) {
+src/App.tsx:2148:          return !p.baseToken?.address?.toLowerCase().endsWith('pump');
+src/App.tsx:2154:            return !p.baseToken?.address?.toLowerCase().endsWith('pump');
+src/App.tsx:2171:        const isGraduatedLocal = !mint.toLowerCase().endsWith('pump');
+src/App.tsx:2174:        } else if (marketCap < 100000 && dexId.toLowerCase().includes('pump') && !dexId.toLowerCase().includes('pumpswap')) {
+src/App.tsx:2378:          const isRaydiumListed = !trade.tokenAddress.toLowerCase().endsWith('pump');
+src/App.tsx:2582:                const isGraduatedLive = !trade.tokenAddress.toLowerCase().endsWith('pump');
+src/App.tsx:2847:                const isRaydiumListed = !mint.toLowerCase().endsWith('pump');

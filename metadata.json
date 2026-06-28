@@ -1,0 +1,6 @@
+{
+  "name": "Arina X-Ray Alpha",
+  "description": "High-Frequency Meme Sniper & Rug-Shield Monitor. Professional-grade automated trading tool for Solana and Base tokens using Zero-Delay Telemetry protocol.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

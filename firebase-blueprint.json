@@ -1,0 +1,204 @@
+{
+  "entities": {
+    "Wallet": {
+      "title": "Wallet",
+      "description": "A Solana wallet address to be monitored.",
+      "type": "object",
+      "properties": {
+        "address": {
+          "type": "string",
+          "description": "The public key of the Solana wallet."
+        },
+        "label": {
+          "type": "string",
+          "description": "A friendly name for the wallet."
+        },
+        "userId": {
+          "type": "string",
+          "description": "The UID of the user who added this wallet."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp of when the wallet was added."
+        }
+      },
+      "required": ["address", "userId", "createdAt"]
+    },
+    "Settings": {
+      "title": "Settings",
+      "description": "User connection, API configurations, and custom settings.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "The UID of the user who owns these settings."
+        },
+        "rpcUrl": {
+          "type": "string",
+          "description": "Primary Solana RPC URL."
+        },
+        "rpcUrl2": {
+          "type": "string",
+          "description": "Secondary Solana RPC URL."
+        },
+        "customWsUrl": {
+          "type": "string",
+          "description": "Custom WebSocket URL."
+        },
+        "apiKey": {
+          "type": "string",
+          "description": "Jupiter API URL or Key."
+        },
+        "privateKey": {
+          "type": "string",
+          "description": "Solana Base58 private key."
+        },
+        "buyAmountSol": {
+          "type": "number",
+          "description": "Configured buy amount in SOL."
+        },
+        "minTakeProfit": {
+          "type": "number",
+          "description": "Minimum Take Profit percentage."
+        },
+        "maxTakeProfit": {
+          "type": "number",
+          "description": "Maximum Take Profit percentage."
+        },
+        "moonbagStrategy": {
+          "type": "boolean",
+          "description": "Whether Moonbag Exit Strategy is enabled."
+        },
+        "stopLoss": {
+          "type": "number",
+          "description": "Stop Loss percentage."
+        },
+        "maxPositions": {
+          "type": "number",
+          "description": "Maximum active positions limit."
+        },
+        "slippage": {
+          "type": "number",
+          "description": "Slippage tolerance percentage."
+        },
+        "telegramBotToken": {
+          "type": "string",
+          "description": "Telegram bot token."
+        },
+        "telegramChatId": {
+          "type": "string",
+          "description": "Telegram chat ID."
+        },
+        "hardenedMaxRiskScore": {
+          "type": "number",
+          "description": "Hardened max risk score."
+        },
+        "hardenedLiquidityRatio": {
+          "type": "number",
+          "description": "Hardened liquidity ratio percentage."
+        },
+        "hardenedMaxDevOwnership": {
+          "type": "number",
+          "description": "Hardened max dev ownership percentage."
+        },
+        "senderEnabled": {
+          "type": "boolean",
+          "description": "Whether Helius Sender is enabled."
+        },
+        "senderApiKey": {
+          "type": "string",
+          "description": "Helius Sender API key."
+        },
+        "senderEndpoint": {
+          "type": "string",
+          "description": "Helius Sender endpoint URL."
+        },
+        "senderSwqos": {
+          "type": "boolean",
+          "description": "Whether swqos_only is enabled."
+        },
+        "laserstreamEnabled": {
+          "type": "boolean",
+          "description": "Whether Laserstream Ingestion is enabled."
+        },
+        "laserstreamApiKey": {
+          "type": "string",
+          "description": "Laserstream API key."
+        },
+        "laserstreamEndpoint": {
+          "type": "string",
+          "description": "Laserstream regional endpoint URL."
+        },
+        "dexScreenerEnabled": {
+          "type": "boolean",
+          "description": "Whether DexScreener calls are enabled."
+        },
+        "forceUsdcRouting": {
+          "type": "boolean",
+          "description": "Whether USDC routing is forced."
+        },
+        "ftpHost": {
+          "type": "string",
+          "description": "FTP backup server host."
+        },
+        "ftpUser": {
+          "type": "string",
+          "description": "FTP backup server username."
+        },
+        "ftpPass": {
+          "type": "string",
+          "description": "FTP backup server password."
+        },
+        "ftpDir": {
+          "type": "string",
+          "description": "FTP remote directory path."
+        },
+        "ftpWebUrl": {
+          "type": "string",
+          "description": "FTP Web URL."
+        },
+        "ftpSecure": {
+          "type": "boolean",
+          "description": "Whether secure FTP (FTPS) is used."
+        },
+        "simulationBalance": {
+          "type": "number",
+          "description": "Simulated SOL balance."
+        },
+        "blacklistedMints": {
+          "type": "string",
+          "description": "JSON string representing blacklisted token mints."
+        },
+        "activePositions": {
+          "type": "string",
+          "description": "JSON string representing active tracked positions."
+        },
+        "stats": {
+          "type": "string",
+          "description": "JSON string representing performance stats."
+        },
+        "tradeHistory": {
+          "type": "string",
+          "description": "JSON string representing historic completed trades."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp of the last update."
+        }
+      },
+      "required": ["userId"]
+    }
+  },
+  "firestore": {
+    "wallets/{walletId}": {
+      "schema": "Wallet",
+      "description": "Collection of monitored wallets per user."
+    },
+    "settings/{userId}": {
+      "schema": "Settings",
+      "description": "User connection settings, API keys, and configurations."
+    }
+  }
+}
