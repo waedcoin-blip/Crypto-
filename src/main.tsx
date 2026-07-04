@@ -14,7 +14,7 @@ window.addEventListener('unhandledrejection', (event) => {
   // Suppress known non-critical errors from crashing the app
   const benign = [
     'NO_ROUTES_FOUND', 'No liquidity', 'User rejected', 'WalletNotConnected',
-    'Transaction not confirmed', 'SIMULATION_ERROR', 'AbortError'
+    'Transaction not confirmed', 'SIMULATION_ERROR', 'AbortError', 'Unexpected server response', '429'
   ];
   if (benign.some(s => msg.includes(s))) {
     event.preventDefault();

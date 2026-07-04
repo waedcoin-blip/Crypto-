@@ -8,6 +8,8 @@ export interface ActivePositionData {
     symbol: string; 
     entryPrice?: number; 
     entryPriceSol?: number;
+    solSpent?: number;
+    peakPnLPct?: number;
     initialTokens?: number;
     soldPartial?: boolean;
     entryFeesSol?: number;
@@ -15,6 +17,9 @@ export interface ActivePositionData {
     hasPulledPrincipal?: boolean; 
     recoveryMode?: boolean;
     triggersDisabled?: boolean;
+    currentStage?: any;
+    initialMoonbagSizeStr?: string;
+    isManualSellTriggered?: boolean;
 }
 
 interface AppState {
@@ -24,6 +29,7 @@ interface AppState {
   buyAmountSol: number;
   minTakeProfit: number;
   maxTakeProfit: number;
+  bondingCurveTakeProfit: number;
   moonbagStrategy: boolean;
   stopLoss: number;
   maxPositions: number;
@@ -67,6 +73,7 @@ export const useAppStore = create<AppState>((set) => ({
   buyAmountSol: Number(localStorage.getItem('app_buyAmountSol')) || 0.1,
   minTakeProfit: Number(localStorage.getItem('app_minTakeProfit')) || 25,
   maxTakeProfit: Number(localStorage.getItem('app_maxTakeProfit')) || 45,
+  bondingCurveTakeProfit: Number(localStorage.getItem('app_bondingCurveTakeProfit')) || 25,
   moonbagStrategy: true,
   stopLoss: Number(localStorage.getItem('app_stopLoss')) || -30,
   maxPositions: Number(localStorage.getItem('app_maxPositions')) || 5,

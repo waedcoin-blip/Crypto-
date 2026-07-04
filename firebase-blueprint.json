@@ -74,6 +74,10 @@
           "type": "number",
           "description": "Stop Loss percentage."
         },
+        "unknownStopLoss": {
+          "type": "number",
+          "description": "Stop Loss percentage for unknown/external tokens."
+        },
         "maxPositions": {
           "type": "number",
           "description": "Maximum active positions limit."

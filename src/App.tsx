@@ -27,8 +27,8 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Connection, PublicKey } from '@solana/web3.js';
-import { cn } from './lib/utils';
-import { auth, db, signInWithGoogle } from './lib/firebase';
+import { cn, detectTokenStage } from './lib/utils';
+import { auth, db, signInWithGoogle, signInWithEmailAndPassword, createUserWithEmailAndPassword } from './lib/firebase';
 import { onAuthStateChanged, User, signOut } from 'firebase/auth';
 import { 
   collection, 
@@ -66,6 +66,7 @@ import {
   ActivePosition, 
   PositionStage 
 } from './services/jupiterService';
+import { recordCandidatePrice, checkTokenInProfitLast2Seconds } from './services/priceTracker';
 import { Keypair } from '@solana/web3.js';
 import bs58 from 'bs58';
 
@@ -371,9 +372,12 @@ export default function App() {
   const [buyAmountSol, setBuyAmountSol] = useState(() => Number(localStorage.getItem('app_buyAmountSol')) || 0.1);
   const [minTakeProfit, setMinTakeProfit] = useState(() => Number(localStorage.getItem('app_minTakeProfit')) || 15);
   const [maxTakeProfit, setMaxTakeProfit] = useState(() => Number(localStorage.getItem('app_maxTakeProfit')) || 50);
+  const [bondingCurveTakeProfit, setBondingCurveTakeProfit] = useState(() => Number(localStorage.getItem('app_bondingCurveTakeProfit')) || 25);
   const [moonbagStrategy, setMoonbagStrategy] = useState(true);
   const [stopLoss, setStopLoss] = useState(() => Number(localStorage.getItem('app_stopLoss')) || -15);
   const [bondingCurveStopLoss, setBondingCurveStopLoss] = useState(() => Number(localStorage.getItem('app_bondingCurveStopLoss')) || -15);
+  const [pumpSwapStopLoss, setPumpSwapStopLoss] = useState(() => Number(localStorage.getItem('app_pumpSwapStopLoss')) || -15);
+  const [unknownStopLoss, setUnknownStopLoss] = useState(() => Number(localStorage.getItem('app_unknownStopLoss')) || -20);
   const [maxPositions, setMaxPositions] = useState(() => Number(localStorage.getItem('app_maxPositions')) || 5);
   const [slippage, setSlippage] = useState(1.0); 
   const [telegramBotToken, setTelegramBotToken] = useState(() => localStorage.getItem('tg_bot_token') || '');
@@ -383,10 +387,13 @@ export default function App() {
     localStorage.setItem('app_buyAmountSol', buyAmountSol.toString());
     localStorage.setItem('app_minTakeProfit', minTakeProfit.toString());
     localStorage.setItem('app_maxTakeProfit', maxTakeProfit.toString());
+    localStorage.setItem('app_bondingCurveTakeProfit', bondingCurveTakeProfit.toString());
     localStorage.setItem('app_stopLoss', stopLoss.toString());
     localStorage.setItem('app_bondingCurveStopLoss', bondingCurveStopLoss.toString());
+    localStorage.setItem('app_pumpSwapStopLoss', pumpSwapStopLoss.toString());
+    localStorage.setItem('app_unknownStopLoss', unknownStopLoss.toString());
     localStorage.setItem('app_maxPositions', maxPositions.toString());
-  }, [buyAmountSol, minTakeProfit, maxTakeProfit, stopLoss, bondingCurveStopLoss, maxPositions]);
+  }, [buyAmountSol, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, unknownStopLoss, maxPositions]);
 
   useEffect(() => {
     localStorage.setItem('tg_bot_token', telegramBotToken);
@@ -397,7 +404,7 @@ export default function App() {
 
   const [sessionWallet, setSessionWallet] = useState<Keypair | null>(null);
   
-  const [isMonitoring, setIsMonitoring] = useState(false);
+  const [isMonitoring, setIsMonitoring] = useState(true);
 
   // Hardened Entry Scanner Criteria state values (customizable by user)
   const [hardenedMcapMinPump, setHardenedMcapMinPump] = useState(() => Number(localStorage.getItem('hd_mcap_min_pump')) || 40000);
@@ -465,9 +472,21 @@ export default function App() {
     const saved = localStorage.getItem('hd_trade_raydium');
     return saved !== null ? saved === 'true' : true;
   });
+  const [tradeBonding, setTradeBonding] = useState(() => {
+    const saved = localStorage.getItem('hd_trade_bonding');
+    return saved !== null ? saved === 'true' : true;
+  });
+  const [tradeUnknown, setTradeUnknown] = useState(() => {
+    const saved = localStorage.getItem('hd_trade_unknown');
+    return saved !== null ? saved === 'true' : true;
+  });
   const [hardenedMinProfit5m, setHardenedMinProfit5m] = useState(() => {
     const saved = localStorage.getItem('hd_min_profit_5m');
     return saved !== null ? Number(saved) : 1.5;
+  });
+  const [maxRebuyTimes, setMaxRebuyTimes] = useState<number>(() => {
+    const saved = localStorage.getItem('hd_max_rebuy_times');
+    return saved !== null ? Number(saved) : 2;
   });
 
   useEffect(() => {
@@ -501,7 +520,7 @@ export default function App() {
   const [rpcLatency, setRpcLatency] = useState<number | null>(null);
   const [rpcUrl, setRpcUrl] = useState(() => localStorage.getItem('juipter_auto_rpcUrl') || 'https://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c');
   const [rpcUrl2, setRpcUrl2] = useState(() => localStorage.getItem('juipter_auto_rpcUrl2') || 'https://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c');
-  const [customWsUrl, setCustomWsUrl] = useState(() => localStorage.getItem('juipter_auto_wsUrl') || 'wss://api.mainnet-beta.solana.com');
+  const [customWsUrl, setCustomWsUrl] = useState(() => localStorage.getItem('juipter_auto_wsUrl') || '');
 
   useEffect(() => {
     localStorage.setItem('juipter_auto_rpcUrl', rpcUrl);
@@ -516,6 +535,15 @@ export default function App() {
   }, [customWsUrl]);
   const [isHardenedCriteriaExpanded, setIsHardenedCriteriaExpanded] = useState(false);
   const [activePreset, setActivePreset] = useState<string>(() => localStorage.getItem('app_active_preset') || 'custom');
+
+  // Auto-refresh the application every 10 minutes
+  useEffect(() => {
+    const refreshInterval = setInterval(() => {
+      window.location.reload();
+    }, 10 * 60 * 1000);
+    return () => clearInterval(refreshInterval);
+  }, []);
+
 
   useEffect(() => {
     localStorage.setItem('app_active_preset', activePreset);
@@ -542,7 +570,10 @@ export default function App() {
     localStorage.setItem('hd_match_requirement', hardenedMatchRequirement.toString());
     localStorage.setItem('hd_trade_pump_fun', tradePumpFun.toString());
     localStorage.setItem('hd_trade_raydium', tradeRaydium.toString());
+    localStorage.setItem('hd_trade_bonding', tradeBonding.toString());
+    localStorage.setItem('hd_trade_unknown', tradeUnknown.toString());
     localStorage.setItem('hd_min_profit_5m', hardenedMinProfit5m.toString());
+    localStorage.setItem('hd_max_rebuy_times', maxRebuyTimes.toString());
     localStorage.setItem('hd_enable_latency_guard', enableLatencyGuard.toString());
     localStorage.setItem('hd_telemetry_allow_whale', telemetryAllowWhaleBuy.toString());
     localStorage.setItem('hd_telemetry_allow_high', telemetryAllowHighBuy.toString());
@@ -558,7 +589,7 @@ export default function App() {
     hardenedMinUniqueBuyers30s, hardenedMinBuyCount30s, hardenedMaxBuyCount30s,
     hardenedMinBuySellRatio, hardenedMaxBuySellRatio, hardenedMaxPriceChange1m,
     hardenedMinBondingProgress, hardenedMaxBondingProgress, hardenedMinAge, hardenedMaxAge,
-    hardenedMinLatency, hardenedMaxLatency, hardenedMatchRequirement, tradePumpFun, tradeRaydium, hardenedMinProfit5m, enableLatencyGuard,
+    hardenedMinLatency, hardenedMaxLatency, hardenedMatchRequirement, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown, hardenedMinProfit5m, maxRebuyTimes, enableLatencyGuard,
     telemetryAllowWhaleBuy, telemetryAllowHighBuy, telemetryAllowVolumeSpike, telemetryAllowMigrated, telemetryAllowGoldenCross,
     telemetryWhaleBuyMin, telemetryHighBuyMin, telemetryVolumeSpikeMin, activePreset
   ]);
@@ -780,19 +811,46 @@ export default function App() {
   }, [currentPage]);
 
   const handleManualAddGem = async () => {
-    const address = manualGemInput.trim();
-    if (!address) {
-      addNotification('Please enter a valid token address');
+    let input = manualGemInput.trim();
+    if (!input) {
+      addNotification('Please enter a valid token address or name');
       return;
     }
     
-    // Check if we already have this gem saved
+    let address = input;
     let targetSymbol = savedGems[address]?.symbol;
+    const isAddress = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(input);
+
+    setIsAddingGem(true);
+    addNotification(isAddress ? 'Scanning token security data...' : 'Searching for token...');
     
-    if (!savedGems[address]) {
-      setIsAddingGem(true);
-      addNotification('Scanning token security data...');
-      try {
+    try {
+      if (!isAddress) {
+        // Search by name/symbol
+        const res = await fetch(`/api/dex/search?q=${encodeURIComponent(input)}`);
+        if (res.ok) {
+          const data = await res.json();
+          const solPairs = data.pairs?.filter((p: any) => p.chainId === 'solana') || [];
+          if (solPairs.length > 0) {
+            // Pick the best match (highest liquidity or exact symbol match)
+            const bestPair = solPairs[0];
+            address = bestPair.baseToken?.address;
+            targetSymbol = bestPair.baseToken?.symbol;
+            input = address; // Update input to be the address for the rest of the flow
+            addNotification(`Found ${targetSymbol} (${address.slice(0,6)}...)`);
+          } else {
+            addNotification('No Solana token found for that search query');
+            setIsAddingGem(false);
+            return;
+          }
+        } else {
+          addNotification('Search API failed');
+          setIsAddingGem(false);
+          return;
+        }
+      }
+
+      if (!savedGems[address]) {
         const security = await fetchTokenSecurityData(address);
         if (security && security.symbol) {
           targetSymbol = security.symbol;
@@ -800,20 +858,23 @@ export default function App() {
           toggleSaveGem({ ...fakeMetric } as any);
           addNotification(`Added ${targetSymbol} to Matrix`);
         } else {
-          targetSymbol = 'UNKNOWN';
+          targetSymbol = targetSymbol || 'UNKNOWN';
           addNotification('Metadata unavailable. Adding by address.');
-          toggleSaveGem({ address, symbol: 'UNKNOWN', priceUsd: security?.priceUsd || 0 } as any);
+          toggleSaveGem({ address, symbol: targetSymbol, priceUsd: security?.priceUsd || 0 } as any);
         }
-      } catch (e) {
-        console.error(e);
-        addNotification('Matrix scan failed');
-      } finally {
-        setIsAddingGem(false);
+      } else {
+        targetSymbol = savedGems[address].symbol;
+        addNotification(`${targetSymbol} is already in the Matrix`);
       }
+    } catch (e) {
+      console.error(e);
+      addNotification('Matrix scan failed');
+    } finally {
+      setIsAddingGem(false);
     }
 
     // Auto Execution Logic
-    if (isAutoExecutionPending && targetSymbol) {
+    if (isAutoExecutionPending && targetSymbol && address) {
       setIsAutoExecutionPending(false);
       setManualGemInput('');
       
@@ -946,6 +1007,7 @@ export default function App() {
 
   const autoBoughtTokens = useRef<Set<string>>(new Set());
   const pendingTrades = useRef<Set<string>>(new Set());
+  const optimisticPositions = useRef<Set<string>>(new Set());
 
   const snipedPortfolio = useRef<Record<string, { boughtAt: number, amount: number }>>({});
 
@@ -987,16 +1049,16 @@ export default function App() {
   }, [tokenMetrics]);
 
   const latestState = useRef({ 
-    tokenMetrics, autoSniperEnabled, minTakeProfit, maxTakeProfit, stopLoss, bondingCurveStopLoss, activePositions, maxPositions, slippage, moonbagStrategy, telegramBotToken, telegramChatId, mySniperTrades,
+    tokenMetrics, autoSniperEnabled, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, unknownStopLoss, activePositions, maxPositions, slippage, moonbagStrategy, telegramBotToken, telegramChatId, mySniperTrades,
     hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax, hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore, hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s, hardenedMinBuyCount30s, hardenedMaxBuyCount30s, hardenedMinBuySellRatio, hardenedMaxBuySellRatio, hardenedMaxPriceChange1m,
     hardenedMinBondingProgress, hardenedMaxBondingProgress, hardenedMinAge, hardenedMaxAge,
-    hardenedMinLatency, hardenedMaxLatency, hardenedMatchRequirement, tradePumpFun, tradeRaydium, hardenedMinProfit5m, enableLatencyGuard
+    hardenedMinLatency, hardenedMaxLatency, hardenedMatchRequirement, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown, hardenedMinProfit5m, enableLatencyGuard, maxRebuyTimes
   });
   latestState.current = { 
-    tokenMetrics, autoSniperEnabled, minTakeProfit, maxTakeProfit, stopLoss, bondingCurveStopLoss, activePositions, maxPositions, slippage, moonbagStrategy, telegramBotToken, telegramChatId, mySniperTrades,
+    tokenMetrics, autoSniperEnabled, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, unknownStopLoss, activePositions, maxPositions, slippage, moonbagStrategy, telegramBotToken, telegramChatId, mySniperTrades,
     hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax, hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore, hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s, hardenedMinBuyCount30s, hardenedMaxBuyCount30s, hardenedMinBuySellRatio, hardenedMaxBuySellRatio, hardenedMaxPriceChange1m,
     hardenedMinBondingProgress, hardenedMaxBondingProgress, hardenedMinAge, hardenedMaxAge,
-    hardenedMinLatency, hardenedMaxLatency, hardenedMatchRequirement, tradePumpFun, tradeRaydium, hardenedMinProfit5m, enableLatencyGuard
+    hardenedMinLatency, hardenedMaxLatency, hardenedMatchRequirement, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown, hardenedMinProfit5m, enableLatencyGuard, maxRebuyTimes
   };
 
   const fns = useRef<any>({});
@@ -1033,7 +1095,9 @@ export default function App() {
                    token = {
                       address: tokenAddress,
                       symbol: pair.baseToken.symbol,
+                      dexId: pair.dexId,
                       priceUsd: parseFloat(pair.priceUsd),
+                      priceNative: parseFloat(pair.priceNative || '0'),
                       marketCap: pair.fdv || 0,
                       liquidity: pair.liquidity?.usd || 0,
                       lastUpdated: Date.now()
@@ -1075,18 +1139,29 @@ export default function App() {
           const actPos = {
             tokenAddress: token.address,
             currentTokenBalance: BigInt(amountLamports),
-            entryCostSol: position.entryPriceSol || 0.1,
+            entryCostSol: position.entryPriceSol || position.solSpent || 0.1,
             initialMoonbagSize: BigInt(position.initialMoonbagSizeStr || '0'),
             currentStage: position.currentStage || PositionStage.RECOVER_CAPITAL,
             symbol: token.symbol,
             isManualSellTriggered: position.isManualSellTriggered
           };
 
-          const isGraduated = !token.address.toLowerCase().endsWith('pump') || (token.bondingCurveProgress || 0) >= 99.5;
-          const isUnderBondingCurve = !isGraduated;
-          const baseSL = isUnderBondingCurve 
-            ? (state.bondingCurveStopLoss !== undefined ? state.bondingCurveStopLoss : (state.stopLoss || -30.0))
-            : (state.stopLoss || -30.0);
+          // ── TRIPLE STOP LOSS ROUTING ──────────────────────────────────────────
+          const stage = detectTokenStage({
+            address:              tokenAddress,
+            dexId:                token?.dexId,
+            bondingCurveProgress: token?.bondingCurveProgress,
+            isRaydiumListed:      token?.isRaydiumListed
+          });
+
+          let baseSL = typeof state.stopLoss === 'number' ? state.stopLoss : -30;
+          if (stage.platform === 'PUMP_FUN' || stage.isBonding) {
+            baseSL = typeof state.bondingCurveStopLoss === 'number' ? state.bondingCurveStopLoss : -15;
+          } else if (stage.platform === 'PUMPSWAP') {
+            baseSL = typeof state.pumpSwapStopLoss === 'number' ? state.pumpSwapStopLoss : -15;
+          } else if (stage.platform === 'UNKNOWN' || stage.stage === 'UNKNOWN') {
+            baseSL = typeof state.unknownStopLoss === 'number' ? state.unknownStopLoss : -20;
+          }
 
           // ── TRAILING STOP LOSS: lock in gains as price rises ────────────────
           // If price has rallied >20%, trail stop loss to protect profits
@@ -1094,7 +1169,7 @@ export default function App() {
           const currentPriceSol = (token.priceNative || 0);
           const entryPriceSol = (position.entryPriceSol || 0);
           const currentPnLPct = entryPriceSol > 0 
-            ? ((currentPriceSol - entryPriceSol) / entryPriceSol) * 100 
+            ? (((currentPriceSol * (position.amount || 0)) - entryPriceSol) / entryPriceSol) * 100 
             : 0;
 
           // Track peak PnL in position metadata
@@ -1110,13 +1185,17 @@ export default function App() {
           const trailingSL = peakPnL > 20 ? peakPnL - 15 : baseSL;
           const effectiveSL = Math.max(baseSL, trailingSL); // never looser than base SL
 
+          const activeTakeProfit = stage.isBonding 
+            ? (typeof state.bondingCurveTakeProfit === 'number' ? state.bondingCurveTakeProfit : 25) 
+            : (state.moonbagStrategy ? (position.soldPartial ? state.maxTakeProfit : state.minTakeProfit) : state.minTakeProfit);
+            
           const trackingVerdict = await processActiveTrackingFrame(
             connection,
             actPos,
             token.liquidity || 0,
             walletAddress,
             { 
-              takeProfit: state.moonbagStrategy ? (position.soldPartial ? state.maxTakeProfit : state.minTakeProfit) : state.minTakeProfit, 
+              takeProfit: activeTakeProfit, 
               stopLoss: effectiveSL
             }
           );
@@ -1129,9 +1208,17 @@ export default function App() {
         }
       }
 
+      // Record candidate prices for the last 2 seconds profit check (runs at 500ms high frequency)
+      const tokensForTracking = Object.values(state.tokenMetrics) as TokenMetric[];
+      for (const t of tokensForTracking) {
+        if (t && t.address) {
+          recordCandidatePrice(t.address, t.priceNative || t.priceUsd || 0);
+        }
+      }
+
       // MONITORING LOOP 2: ENTRIES (Hardened Scanner Engine)
       if (state.autoSniperEnabled) {
-        const tokens = Object.values(state.tokenMetrics) as TokenMetric[];
+        const tokens = tokensForTracking;
         const currentActiveCount = activePositionEntries.length;
 
         for (const token of tokens) {
@@ -1187,6 +1274,8 @@ export default function App() {
             maxAge: state.hardenedMaxAge,
             tradePumpFun: state.tradePumpFun,
             tradeRaydium: state.tradeRaydium,
+            tradeBonding: state.tradeBonding,
+            tradeUnknown: state.tradeUnknown,
             hardenedMinProfit5m: state.hardenedMinProfit5m
           };
 
@@ -1198,9 +1287,19 @@ export default function App() {
 
             // Require at least moderate momentum (volMcRatio > 1.5 OR strong buy pressure > 70%)
             if (volMcRatio < 1.5 && buyPressure < 0.70) {
-              console.log(`[HARDENED ENTRY SKIP]: ${token.symbol} low momentum (vol/liq=${volMcRatio.toFixed(2)}, bp=${(buyPressure*100).toFixed(0)}%)`);
+              // console.log(`[HARDENED ENTRY SKIP]: ${token.symbol} low momentum (vol/liq=${volMcRatio.toFixed(2)}, bp=${(buyPressure*100).toFixed(0)}%)`);
               continue;
             }
+
+            // ENFORCE 2 SECONDS PROFIT CHECK BEFORE TRADING START (DEACTIVATED)
+            /*
+            const currentPrice = token.priceNative || token.priceUsd || 0;
+            const profitCheck = checkTokenInProfitLast2Seconds(token.address, currentPrice);
+            if (!profitCheck.inProfit) {
+              console.log(`[ENTRY SKIP] ${token.symbol} failed last 2s profit check: ${profitCheck.reason}`);
+              continue;
+            }
+            */
 
             console.log(`[HARDENED ENTRY] ✅ ${token.symbol} MC=$${metrics.marketCapUsd.toFixed(0)} vol/liq=${volMcRatio.toFixed(2)} buyP=${(buyPressure*100).toFixed(0)}% momentum=${momentumScore.toFixed(3)}`);
             fns.current.executeAutoTrade(token.address, token.symbol);
@@ -1420,18 +1519,20 @@ export default function App() {
       addNotification("Cannot swap SOL for SOL");
       return;
     }
-    if (activePositions[tokenAddress]) {
+    if (activePositions[tokenAddress] || optimisticPositions.current.has(tokenAddress)) {
       addNotification(`Active position already exists for ${symbol}`);
       return;
     }
+    
+    optimisticPositions.current.add(tokenAddress);
 
-    // Trade frequency guard: Max 2 trades per token
+    // Trade frequency guard: Max trade frequency check
     const completedTradesCount = mySniperTrades.filter(t => t.address === tokenAddress && t.type === 'SELL').length;
     const activePositionsCount = activePositions[tokenAddress] ? 1 : 0;
     const totalTradedCount = completedTradesCount + activePositionsCount;
 
-    if (totalTradedCount >= 2) {
-      addNotification(`Trade Limit: Skipped buy of ${symbol} (Already traded ${totalTradedCount} times, max limit is 2).`);
+    if (totalTradedCount >= maxRebuyTimes) {
+      addNotification(`Trade Limit: Skipped buy of ${symbol} (Already traded ${totalTradedCount} times, max limit is ${maxRebuyTimes}).`);
       return;
     }
 
@@ -1568,6 +1669,7 @@ export default function App() {
     } catch (e: any) {
       setTradingStatus(null);
       addNotification(`Execution Failed: ${e.message}`);
+      optimisticPositions.current.delete(tokenAddress);
     }
   };
 
@@ -1679,6 +1781,7 @@ export default function App() {
             ...p,
             amount: p.amount * (1 - percent),
             entryPriceSol: p.entryPriceSol ? p.entryPriceSol * (1 - percent) : undefined,
+            solSpent: p.solSpent ? p.solSpent * (1 - percent) : undefined,
             entryFeesSol: p.entryFeesSol ? p.entryFeesSol * (1 - percent) : undefined,
             soldPartial: true
           }
@@ -1754,7 +1857,7 @@ export default function App() {
       const guaranteedSolOut = guaranteedMinLamports / 1_000_000_000.0;
       const networkFeesSol = 0.0035; // Simulated / average Jito fee
       const realNetReturnSol = guaranteedSolOut - networkFeesSol;
-      const currentCostBasisSol = position.entryPriceSol || 0.1;
+      const currentCostBasisSol = position.entryPriceSol || position.solSpent || 0.1;
 
       // Unify Profit Guard for both LIVE and SIM
       if (curPnLPercent >= minTakeProfit && realNetReturnSol <= currentCostBasisSol) {
@@ -1830,6 +1933,7 @@ export default function App() {
         delete next[tokenAddress];
         return next;
       });
+      optimisticPositions.current.delete(tokenAddress);
       setTradingStatus(null);
     } catch (e: any) {
       setTradingStatus(null);
@@ -1855,37 +1959,25 @@ export default function App() {
     if (pendingTrades.current.has(tokenAddress)) return;
     pendingTrades.current.add(tokenAddress);
     
-    // Trade frequency guard: Max 2 trades per token
-    const completedTradesCount = latestState.current.mySniperTrades.filter(t => t.address === tokenAddress && t.type === 'SELL').length;
+    // Trade frequency guard: Max 1 trade per token
+    const hasTradedBefore = latestState.current.mySniperTrades.some(t => t.address === tokenAddress);
     const activePositionsCount = latestState.current.activePositions[tokenAddress] ? 1 : 0;
-    const totalTradedCount = completedTradesCount + activePositionsCount;
+    const totalTradedCount = (hasTradedBefore ? 1 : 0) + activePositionsCount;
 
-    if (totalTradedCount >= 2) {
-      console.log(`[TRADE LIMIT BLOCK] Sniper buy of ${symbol} blocked. Already traded ${totalTradedCount} times.`);
-      addNotification(`Trade Limit Guard: Skipped buy of ${symbol} (Already traded ${totalTradedCount} times, max limit is 2).`);
+    if (totalTradedCount >= 1 || autoBoughtTokens.current.has(tokenAddress)) {
+      console.log(`[TRADE LIMIT BLOCK] Sniper buy of ${symbol} blocked. Already traded or attempted once.`);
+      addNotification(`Trade Limit Guard: Skipped buy of ${symbol} (Max 1 trade per token reached).`);
+      pendingTrades.current.delete(tokenAddress);
+      return;
+    }
+
+    if (latestState.current.activePositions[tokenAddress] || optimisticPositions.current.has(tokenAddress)) {
       pendingTrades.current.delete(tokenAddress);
       return;
     }
     
-    // SMART RE-ENTRY / DUPLICATE PREVENTION CHECK
-    const lastTrade = latestState.current.mySniperTrades.find(t => t.address === tokenAddress && t.type === 'SELL');
-    if (autoBoughtTokens.current.has(tokenAddress) || !!lastTrade) {
-      const wasProfitable = lastTrade && lastTrade.pnl && (lastTrade.pnl || 0) > 0;
-      // SCALPER RE-ENTRY: If it was a scalp and profitable, allow re-entry much faster (30s) if momentum persists
-      const isScalp = lastTrade && lastTrade.isScalp;
-      const cooldownMs = (isScalp && wasProfitable) ? 30000 : 300000;
-      const coolDownExpired = lastTrade && (Date.now() - lastTrade.timestamp) > cooldownMs;
-      
-      if (!coolDownExpired) {
-        pendingTrades.current.delete(tokenAddress);
-        return;
-      }
-    }
-
-    if (latestState.current.activePositions[tokenAddress]) {
-      pendingTrades.current.delete(tokenAddress);
-      return;
-    }
+    // Set optimistic position to prevent concurrent duplicate buys
+    optimisticPositions.current.add(tokenAddress);
     
     if (!isLiveTrading && simulationBalance < buyAmountSol) {
       console.log("Auto-Sniper: Insufficient simulation balance");
@@ -2061,6 +2153,7 @@ export default function App() {
       addNotification(`Auto-Trade Failed for ${symbol}: ${e.message.includes('NO_ROUTES_FOUND') ? 'No viable swap routes found.' : e.message}`);
       setTradingStatus(null);
       // Intentionally NOT deleting from autoBoughtTokens to prevent infinite retry loops on unroutable tokens
+      optimisticPositions.current.delete(tokenAddress);
     } finally {
       pendingTrades.current.delete(tokenAddress);
     }
@@ -2124,16 +2217,8 @@ export default function App() {
     throw new Error(JSON.stringify(errInfo));
   }
 
-  const handleLogin = async () => {
-    try {
-      await signInWithGoogle();
-    } catch (err: any) {
-      if (err.message === 'SIGN_IN_POPUP_BLOCKED') {
-        addNotification("⚠️ Sign-in popup was blocked. Please check your browser settings and try again.");
-      } else {
-        console.error("Login failed:", err);
-      }
-    }
+  const handleLogin = () => {
+    setShowLoginModal(true);
   };
 
   const [stats, setStats] = useState<WalletStats | null>(null);
@@ -2141,6 +2226,47 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [analysis, setAnalysis] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+
+  const [showLoginModal, setShowLoginModal] = useState(false);
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [isSignUp, setIsSignUp] = useState(false);
+  const [authError, setAuthError] = useState('');
+  const [isAuthLoading, setIsAuthLoading] = useState(false);
+
+  const handleEmailAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError('');
+    setIsAuthLoading(true);
+    try {
+      if (isSignUp) {
+        await createUserWithEmailAndPassword(auth, authEmail, authPassword);
+      } else {
+        await signInWithEmailAndPassword(auth, authEmail, authPassword);
+      }
+      setShowLoginModal(false);
+      setAuthEmail('');
+      setAuthPassword('');
+    } catch (err: any) {
+      console.error("Auth error:", err);
+      setAuthError(err.message || 'Authentication failed');
+    } finally {
+      setIsAuthLoading(false);
+    }
+  };
+
+  const handleGoogleLogin = async () => {
+    try {
+      await signInWithGoogle();
+      setShowLoginModal(false);
+    } catch (err: any) {
+      if (err.message === 'SIGN_IN_POPUP_BLOCKED') {
+        setAuthError("Sign-in popup was blocked. Please check your browser settings and try again.");
+      } else {
+        setAuthError("Google Login failed: " + err.message);
+      }
+    }
+  };
 
   useEffect(() => {
     localStorage.setItem('app_mySniperTrades', JSON.stringify(mySniperTrades.slice(0, 50)));
@@ -2297,18 +2423,6 @@ export default function App() {
         const marketCap = pair.fdv || 0;
         const priceUsd = parseFloat(pair.priceUsd || "0");
         
-        // Bonding Curve Progress Simulation (Pump.fun specific)
-        // User formula: (1,073,000,000 - Current Virtual Token Reserves) / 793100000 * 100
-        let bondingCurveProgress = undefined;
-        const isGraduatedLocal = !mint.toLowerCase().endsWith('pump');
-        if (isGraduatedLocal) {
-          bondingCurveProgress = 100.0;
-        } else if (marketCap < 100000 && dexId.toLowerCase().includes('pump') && !dexId.toLowerCase().includes('pumpswap')) {
-          // Simulate some progress based on market cap for the demo
-          // Pump.fun graduation is usually around 69k-80k MC
-          bondingCurveProgress = Math.min(99, (marketCap / 65000) * 100);
-        }
-        
         // If it's a SOL pair, priceNative is the SOL price.
         // If not (e.g. USDC pair), priceNative reflects the quote token (e.g. USDC), which causes huge UI accounting errors.
         // We MUST normalize non-SOL pair prices to SOL natively here!
@@ -2335,6 +2449,22 @@ export default function App() {
              // Fallback estimate if fetch fails (e.g., SOL = ~$150)
              priceNative = priceUsd / 150.0;
            }
+        }
+
+        // Bonding Curve Progress Simulation (Pump.fun specific)
+        // Formula: (1,073,000,000 - Current Virtual Token Reserves) / 793,100,000 * 100
+        let bondingCurveProgress = undefined;
+        const isGraduatedLocal = !mint.toLowerCase().endsWith('pump');
+        if (isGraduatedLocal) {
+          bondingCurveProgress = 100.0;
+        } else if (dexId.toLowerCase().includes('pump') && !dexId.toLowerCase().includes('pumpswap')) {
+          if (priceNative > 0) {
+            const virtualTokenReserves = Math.sqrt(32190000000 / priceNative);
+            const calculatedProgress = ((1073000000 - virtualTokenReserves) / 793100000) * 100;
+            bondingCurveProgress = Math.min(99.9, Math.max(0, calculatedProgress));
+          } else {
+            bondingCurveProgress = Math.min(99, (marketCap / 65000) * 100);
+          }
         }
 
         const priceChange = pair.priceChange?.m5 || 0;
@@ -2733,9 +2863,13 @@ export default function App() {
                 const blockVelocityRatio = buys15s / Math.max(sells15s, 1);
                 
                 // USER CRITERIA: Progress above 90%, High Buy Volume, Strict Scalper Entry
-                const isGraduatedLive = !trade.tokenAddress.toLowerCase().endsWith('pump') && 
-                                        (!(updated.dexId || '').toLowerCase().includes('pump') || (updated.dexId || '').toLowerCase().includes('pumpswap')) && 
-                                        (progress === undefined || progress >= 99.5);
+                const stage = detectTokenStage({
+                  address: trade.tokenAddress,
+                  dexId: updated.dexId,
+                  bondingCurveProgress: progress,
+                  isRaydiumListed: (updated as any).isRaydiumListed
+                });
+                const isGraduatedLive = stage.isMigrated;
                 const hasHighProgress = isGraduatedLive || (progress !== undefined && progress >= latestState.current.hardenedMinBondingProgress && progress <= latestState.current.hardenedMaxBondingProgress);
                 const isHealthyPool = liquidity >= 55000 && liquidityRatio >= 0.07;
                 const hasVelocity = buys15s >= 8 && blockVelocityRatio >= 4.0; // Hardened velocity for short-term hits
@@ -2780,6 +2914,8 @@ export default function App() {
       if (!currentUser) {
         setMonitoredWallets([]);
         setIsMonitoring(false);
+      } else {
+        setIsMonitoring(true);
       }
     });
 
@@ -2818,8 +2954,11 @@ export default function App() {
           if (data.buyAmountSol !== undefined) setBuyAmountSol(Number(data.buyAmountSol));
           if (data.minTakeProfit !== undefined) setMinTakeProfit(Number(data.minTakeProfit));
           if (data.maxTakeProfit !== undefined) setMaxTakeProfit(Number(data.maxTakeProfit));
+          if (data.bondingCurveTakeProfit !== undefined) setBondingCurveTakeProfit(Number(data.bondingCurveTakeProfit));
           if (data.stopLoss !== undefined) setStopLoss(Number(data.stopLoss));
           if (data.bondingCurveStopLoss !== undefined) setBondingCurveStopLoss(Number(data.bondingCurveStopLoss));
+          if (data.pumpSwapStopLoss !== undefined) setPumpSwapStopLoss(Number(data.pumpSwapStopLoss));
+          if (data.unknownStopLoss !== undefined) setUnknownStopLoss(Number(data.unknownStopLoss));
           if (data.maxPositions !== undefined) setMaxPositions(Number(data.maxPositions));
           if (data.telegramBotToken !== undefined) setTelegramBotToken(String(data.telegramBotToken));
           if (data.telegramChatId !== undefined) setTelegramChatId(String(data.telegramChatId));
@@ -2855,7 +2994,10 @@ export default function App() {
           if (data.telemetryAllowGoldenCross !== undefined) setTelemetryAllowGoldenCross(data.telemetryAllowGoldenCross === true);
           if (data.tradePumpFun !== undefined) setTradePumpFun(data.tradePumpFun === true);
           if (data.tradeRaydium !== undefined) setTradeRaydium(data.tradeRaydium === true);
+          if (data.tradeBonding !== undefined) setTradeBonding(data.tradeBonding === true);
+          if (data.tradeUnknown !== undefined) setTradeUnknown(data.tradeUnknown === true);
           if (data.hardenedMinProfit5m !== undefined) setHardenedMinProfit5m(Number(data.hardenedMinProfit5m));
+          if (data.maxRebuyTimes !== undefined) setMaxRebuyTimes(Number(data.maxRebuyTimes));
         }
       } catch (err) {
         console.error('Error loading settings from Firestore in App.tsx:', err);
@@ -2878,8 +3020,11 @@ export default function App() {
           buyAmountSol,
           minTakeProfit,
           maxTakeProfit,
+          bondingCurveTakeProfit,
           stopLoss,
           bondingCurveStopLoss,
+          pumpSwapStopLoss,
+          unknownStopLoss,
           maxPositions,
           telegramBotToken,
           telegramChatId,
@@ -2915,7 +3060,10 @@ export default function App() {
           telemetryAllowGoldenCross,
           tradePumpFun,
           tradeRaydium,
+          tradeBonding,
+          tradeUnknown,
           hardenedMinProfit5m,
+          maxRebuyTimes,
           updatedAt: new Date().toISOString()
         }, { merge: true });
       } catch (err: any) {
@@ -2929,7 +3077,7 @@ export default function App() {
 
     return () => clearTimeout(timer);
   }, [
-    user, buyAmountSol, minTakeProfit, maxTakeProfit, stopLoss, bondingCurveStopLoss, maxPositions,
+    user, buyAmountSol, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, unknownStopLoss, maxPositions,
     telegramBotToken, telegramChatId, hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax,
     hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore, hardenedMaxDevOwnership,
     hardenedMaxTop10, hardenedMinUniqueBuyers30s, hardenedMinBuyCount30s, hardenedMaxBuyCount30s,
@@ -2937,7 +3085,7 @@ export default function App() {
     hardenedMaxBondingProgress, hardenedMinAge, hardenedMaxAge, hardenedMinLatency, hardenedMaxLatency,
     hardenedMatchRequirement, enableLatencyGuard, telemetryWhaleBuyMin, telemetryHighBuyMin,
     telemetryVolumeSpikeMin, telemetryAllowWhaleBuy, telemetryAllowHighBuy, telemetryAllowVolumeSpike,
-    telemetryAllowMigrated, telemetryAllowGoldenCross, tradePumpFun, tradeRaydium, hardenedMinProfit5m
+    telemetryAllowMigrated, telemetryAllowGoldenCross, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown, hardenedMinProfit5m, maxRebuyTimes
   ]);
 
   const safePublicKey = (addr: string) => {
@@ -3743,7 +3891,7 @@ export default function App() {
                 <Search className="absolute left-3 lg:left-4 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#64748b]" />
                 <input 
                   type="text"
-                  placeholder="Scan Token Contract..."
+                  placeholder="Search Token (Name or Address)..."
                   value={tokenSearchValue}
                   onChange={(e) => setTokenSearchValue(e.target.value)}
                   onKeyDown={(e) => {
@@ -4290,7 +4438,7 @@ export default function App() {
                 />
                 
                 <div className="flex justify-between items-center text-[10px] font-bold mt-2 mb-1">
-                  <span className="text-slate-500 uppercase">Min Profit Floor (TP 1)</span>
+                  <span className="text-slate-500 uppercase">Min Profit Floor (Raydium)</span>
                   <span className="text-emerald-400">{minTakeProfit}%</span>
                 </div>
                 <input 
@@ -4300,6 +4448,20 @@ export default function App() {
                   step="5" 
                   value={minTakeProfit}
                   onChange={(e) => setMinTakeProfit(parseInt(e.target.value))}
+                  className="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                />
+
+                <div className="flex justify-between items-center text-[10px] font-bold mt-2 mb-1">
+                  <span className="text-slate-500 uppercase">Profit Floor (Bonding Curve)</span>
+                  <span className="text-emerald-400">{bondingCurveTakeProfit}%</span>
+                </div>
+                <input 
+                  type="range" 
+                  min="5" 
+                  max="100" 
+                  step="5" 
+                  value={bondingCurveTakeProfit}
+                  onChange={(e) => setBondingCurveTakeProfit(parseInt(e.target.value))}
                   className="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
                 />
 
@@ -4318,32 +4480,140 @@ export default function App() {
                 />
 
                 <div className="flex justify-between items-center text-[10px] font-bold mt-2 mb-1">
-                  <span className="text-slate-500 uppercase">Stop Loss</span>
+                  <span className="text-slate-500 uppercase">Stop Loss — Raydium / Migrated Tokens</span>
                   <span className="text-rose-400">{stopLoss}%</span>
                 </div>
-                <input 
-                  type="range" 
-                  min="-50" 
-                  max="-5" 
-                  step="1" 
-                  value={stopLoss}
-                  onChange={(e) => setStopLoss(parseInt(e.target.value))}
-                  className="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-rose-500 shadow-[0_0_10px_rgba(244,63,94,0.1)]"
-                />
+                <div className="flex items-center gap-2">
+                  <input 
+                    type="range" 
+                    min="-99" 
+                    max="-1" 
+                    step="1" 
+                    value={stopLoss}
+                    onChange={(e) => setStopLoss(parseInt(e.target.value))}
+                    className="flex-1 h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-rose-500 shadow-[0_0_10px_rgba(244,63,94,0.1)]"
+                  />
+                  <input
+                    type="number"
+                    min="1"
+                    max="99"
+                    step="1"
+                    value={Math.abs(stopLoss)}
+                    onChange={(e) => {
+                      const v = parseInt(e.target.value);
+                      if (!isNaN(v)) {
+                        const bounded = Math.max(1, Math.min(99, v));
+                        setStopLoss(-bounded);
+                      }
+                    }}
+                    className="w-16 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-rose-400 text-right focus:outline-none focus:border-rose-500"
+                  />
+                </div>
+                <p className="text-[9px] text-slate-600 mt-1">
+                  Applies to tokens already on Raydium/PumpSwap (fully migrated, 99.5%+ bonding or graduated).
+                </p>
 
-                <div className="flex justify-between items-center text-[10px] font-bold mt-2 mb-1">
-                  <span className="text-slate-500 uppercase">Stop Loss (1-98% Bonding)</span>
+                <div className="flex justify-between items-center text-[10px] font-bold mt-3 mb-1">
+                  <span className="text-slate-500 uppercase">Stop Loss — Pump.fun / Bonding Tokens</span>
                   <span className="text-rose-400">{bondingCurveStopLoss}%</span>
                 </div>
-                <input 
-                  type="range" 
-                  min="-50" 
-                  max="-5" 
-                  step="1" 
-                  value={bondingCurveStopLoss}
-                  onChange={(e) => setBondingCurveStopLoss(parseInt(e.target.value))}
-                  className="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-rose-500 shadow-[0_0_10px_rgba(244,63,94,0.1)]"
-                />
+                <div className="flex items-center gap-2">
+                  <input 
+                    type="range" 
+                    min="-99" 
+                    max="-1" 
+                    step="1" 
+                    value={bondingCurveStopLoss}
+                    onChange={(e) => setBondingCurveStopLoss(parseInt(e.target.value))}
+                    className="flex-1 h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-rose-500 shadow-[0_0_10px_rgba(244,63,94,0.1)]"
+                  />
+                  <input
+                    type="number"
+                    min="1"
+                    max="99"
+                    step="1"
+                    value={Math.abs(bondingCurveStopLoss)}
+                    onChange={(e) => {
+                      const v = parseInt(e.target.value);
+                      if (!isNaN(v)) {
+                        const bounded = Math.max(1, Math.min(99, v));
+                        setBondingCurveStopLoss(-bounded);
+                      }
+                    }}
+                    className="w-16 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-rose-400 text-right focus:outline-none focus:border-rose-500"
+                  />
+                </div>
+                <p className="text-[9px] text-slate-600 mt-1">
+                  Applies to tokens still bonding on Pump.fun (pre-migration).
+                </p>
+
+                <div className="flex justify-between items-center text-[10px] font-bold mt-3 mb-1">
+                  <span className="text-slate-500 uppercase">Stop Loss — PumpSwap Tokens</span>
+                  <span className="text-rose-400">{pumpSwapStopLoss}%</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input 
+                    type="range" 
+                    min="-99" 
+                    max="-1" 
+                    step="1" 
+                    value={pumpSwapStopLoss}
+                    onChange={(e) => setPumpSwapStopLoss(parseInt(e.target.value))}
+                    className="flex-1 h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-rose-500 shadow-[0_0_10px_rgba(244,63,94,0.1)]"
+                  />
+                  <input
+                    type="number"
+                    min="1"
+                    max="99"
+                    step="1"
+                    value={Math.abs(pumpSwapStopLoss)}
+                    onChange={(e) => {
+                      const v = parseInt(e.target.value);
+                      if (!isNaN(v)) {
+                        const bounded = Math.max(1, Math.min(99, v));
+                        setPumpSwapStopLoss(-bounded);
+                      }
+                    }}
+                    className="w-16 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-rose-400 text-right focus:outline-none focus:border-rose-500"
+                  />
+                </div>
+                <p className="text-[9px] text-slate-600 mt-1">
+                  Applies to tokens trading on PumpSwap.
+                </p>
+
+                <div className="flex justify-between items-center text-[10px] font-bold mt-3 mb-1">
+                  <span className="text-slate-500 uppercase">Stop Loss — Unknown / External Tokens</span>
+                  <span className="text-rose-400">{unknownStopLoss}%</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input 
+                    type="range" 
+                    min="-99" 
+                    max="-1" 
+                    step="1" 
+                    value={unknownStopLoss}
+                    onChange={(e) => setUnknownStopLoss(parseInt(e.target.value))}
+                    className="flex-1 h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-rose-500 shadow-[0_0_10px_rgba(244,63,94,0.1)]"
+                  />
+                  <input
+                    type="number"
+                    min="1"
+                    max="99"
+                    step="1"
+                    value={Math.abs(unknownStopLoss)}
+                    onChange={(e) => {
+                      const v = parseInt(e.target.value);
+                      if (!isNaN(v)) {
+                        const bounded = Math.max(1, Math.min(99, v));
+                        setUnknownStopLoss(-bounded);
+                      }
+                    }}
+                    className="w-16 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-rose-400 text-right focus:outline-none focus:border-rose-500"
+                  />
+                </div>
+                <p className="text-[9px] text-slate-600 mt-1">
+                  Applies to unknown or external tokens without clear liquidity mappings or platform identifiers.
+                </p>
 
 
                 <div className="flex justify-between items-center text-[10px] font-bold mt-4 mb-1">
@@ -5396,8 +5666,11 @@ export default function App() {
           buyAmountSol, setBuyAmountSol,
           minTakeProfit, setMinTakeProfit,
           maxTakeProfit, setMaxTakeProfit,
+          bondingCurveTakeProfit, setBondingCurveTakeProfit,
           stopLoss, setStopLoss,
           bondingCurveStopLoss, setBondingCurveStopLoss,
+          pumpSwapStopLoss, setPumpSwapStopLoss,
+          unknownStopLoss, setUnknownStopLoss,
           maxPositions, setMaxPositions,
           slippage, setSlippage,
           hardenedMinBondingProgress,
@@ -5453,6 +5726,10 @@ export default function App() {
           setTradePumpFun,
           tradeRaydium,
           setTradeRaydium,
+          tradeBonding,
+          setTradeBonding,
+          tradeUnknown,
+          setTradeUnknown,
           hardenedMinProfit5m,
           setHardenedMinProfit5m,
           enableLatencyGuard,
@@ -5472,7 +5749,9 @@ export default function App() {
           telemetryAllowMigrated,
           setTelemetryAllowMigrated,
           telemetryAllowGoldenCross,
-          setTelemetryAllowGoldenCross
+          setTelemetryAllowGoldenCross,
+          maxRebuyTimes,
+          setMaxRebuyTimes
         }}
 
       />
@@ -6195,6 +6474,107 @@ if (alphaProtocol === 'GEMS_100X') {
                 </div>
               </div>
             </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showLoginModal && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[2000] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md"
+            onClick={() => setShowLoginModal(false)}
+          >
+            <motion.div 
+              initial={{ scale: 0.9, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.9, y: 20 }}
+              className="bg-slate-900 border border-slate-700 rounded-2xl p-6 max-w-sm w-full shadow-2xl relative"
+              onClick={e => e.stopPropagation()}
+            >
+              <button 
+                onClick={() => setShowLoginModal(false)}
+                className="absolute top-4 right-4 text-slate-500 hover:text-white"
+              >
+                ✕
+              </button>
+              
+              <h2 className="text-xl font-bold text-white mb-2">
+                {isSignUp ? 'Create Account' : 'Welcome Back'}
+              </h2>
+              <p className="text-xs text-slate-400 mb-6">
+                Sign in to sync your settings and monitors.
+              </p>
+
+              {authError && (
+                <div className="mb-4 p-3 bg-rose-500/10 border border-rose-500/30 rounded-lg text-[11px] text-rose-400 font-mono">
+                  {authError}
+                </div>
+              )}
+
+              <form onSubmit={handleEmailAuth} className="space-y-4 mb-6">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Email</label>
+                  <input 
+                    type="email" 
+                    required
+                    value={authEmail}
+                    onChange={(e) => setAuthEmail(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500 transition-colors"
+                    placeholder="Enter your email"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Password</label>
+                  <input 
+                    type="password" 
+                    required
+                    value={authPassword}
+                    onChange={(e) => setAuthPassword(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500 transition-colors"
+                    placeholder="••••••••"
+                  />
+                </div>
+                
+                <button 
+                  type="submit"
+                  disabled={isAuthLoading}
+                  className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold py-2.5 rounded-lg transition-all"
+                >
+                  {isAuthLoading ? 'Processing...' : (isSignUp ? 'Sign Up' : 'Sign In')}
+                </button>
+              </form>
+
+              <div className="relative mb-6">
+                <div className="absolute inset-0 flex items-center">
+                  <div className="w-full border-t border-slate-800"></div>
+                </div>
+                <div className="relative flex justify-center text-[10px] uppercase">
+                  <span className="bg-slate-900 px-2 text-slate-500">Or continue with</span>
+                </div>
+              </div>
+
+              <button 
+                onClick={handleGoogleLogin}
+                className="w-full bg-slate-800 hover:bg-slate-700 text-white font-bold py-2.5 rounded-lg transition-all flex items-center justify-center gap-2 mb-4"
+              >
+                <Globe className="w-4 h-4" /> Google
+              </button>
+
+              <div className="text-center">
+                <button 
+                  onClick={() => {
+                    setIsSignUp(!isSignUp);
+                    setAuthError('');
+                  }}
+                  className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
+                >
+                  {isSignUp ? 'Already have an account? Sign in' : "Don't have an account? Sign up"}
+                </button>
+              </div>
+            </motion.div>
           </motion.div>
         )}
       </AnimatePresence>

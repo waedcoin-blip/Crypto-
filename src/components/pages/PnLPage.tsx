@@ -7,7 +7,9 @@ import { TokenMetric, TelemetryAlert, Trade } from '../../types';
 import { useAppStore } from '../../store/appStore';
 import { getJupiterQuote, executeTxWithRPCFallback, getTokenBalanceRaw } from '../../services/jupiterService';
 import { db } from '../../lib/firebase';
+import { detectTokenStage } from '../../lib/utils';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { checkTokenInProfitLast2Seconds } from '../../services/priceTracker';
 
 window.Buffer = window.Buffer || Buffer;
 
@@ -783,10 +785,16 @@ export const PnLPage = ({
     setMinTakeProfit: (v: number) => void;
     maxTakeProfit: number;
     setMaxTakeProfit: (v: number) => void;
+    bondingCurveTakeProfit?: number;
+    setBondingCurveTakeProfit?: (v: number) => void;
     stopLoss: number;
     setStopLoss: (v: number) => void;
     bondingCurveStopLoss?: number;
     setBondingCurveStopLoss?: (v: number) => void;
+    pumpSwapStopLoss?: number;
+    setPumpSwapStopLoss?: (v: number) => void;
+    unknownStopLoss?: number;
+    setUnknownStopLoss?: (v: number) => void;
     maxPositions: number;
     setMaxPositions: (v: number) => void;
     slippage: number;
@@ -837,6 +845,10 @@ export const PnLPage = ({
     setTradePumpFun?: (v: boolean) => void;
     tradeRaydium?: boolean;
     setTradeRaydium?: (v: boolean) => void;
+    tradeBonding?: boolean;
+    setTradeBonding?: (v: boolean) => void;
+    tradeUnknown?: boolean;
+    setTradeUnknown?: (v: boolean) => void;
     hardenedMinProfit5m?: number;
     setHardenedMinProfit5m?: (v: number) => void;
     enableLatencyGuard?: boolean;
@@ -864,14 +876,19 @@ export const PnLPage = ({
     setTelemetryAllowMigrated?: (v: boolean) => void;
     telemetryAllowGoldenCross?: boolean;
     setTelemetryAllowGoldenCross?: (v: boolean) => void;
+    maxRebuyTimes?: number;
+    setMaxRebuyTimes?: (v: number) => void;
   }
 }) => {
   const {
     buyAmountSol: tradeAmount, setBuyAmountSol: setTradeAmount,
     maxTakeProfit: takeProfitPct, setMaxTakeProfit: setTakeProfitPct,
     minTakeProfit, setMinTakeProfit,
+    bondingCurveTakeProfit = 25, setBondingCurveTakeProfit = () => {},
     stopLoss, setStopLoss,
     bondingCurveStopLoss = -15, setBondingCurveStopLoss = () => {},
+    pumpSwapStopLoss = -15, setPumpSwapStopLoss = () => {},
+    unknownStopLoss = -20, setUnknownStopLoss = () => {},
     maxPositions, setMaxPositions,
     slippage, setSlippage,
     hardenedMinBondingProgress = 0, setHardenedMinBondingProgress = () => {},
@@ -898,6 +915,8 @@ export const PnLPage = ({
     hardenedMaxPriceChange1m = 10.0, setHardenedMaxPriceChange1m = () => {},
     tradePumpFun = true, setTradePumpFun = () => {},
     tradeRaydium = true, setTradeRaydium = () => {},
+    tradeBonding = true, setTradeBonding = () => {},
+    tradeUnknown = true, setTradeUnknown = () => {},
     hardenedMinProfit5m = 1.5, setHardenedMinProfit5m = () => {},
     enableLatencyGuard = true, setEnableLatencyGuard = () => {},
     rpcUrl, setRpcUrl,
@@ -912,11 +931,15 @@ export const PnLPage = ({
     telemetryAllowMigrated = true, setTelemetryAllowMigrated = () => {},
     telemetryAllowGoldenCross = true, setTelemetryAllowGoldenCross = () => {},
     manualGemInput = '',
-    setManualGemInput = () => {}
+    setManualGemInput = () => {},
+    maxRebuyTimes = 2,
+    setMaxRebuyTimes = () => {}
   } = externalSettings;
   
   const stopLossPct = Math.abs(stopLoss);
   const bondingCurveStopLossPct = Math.abs(bondingCurveStopLoss);
+  const pumpSwapStopLossPct = Math.abs(pumpSwapStopLoss);
+  const unknownStopLossPct = Math.abs(unknownStopLoss);
 
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('juipter_auto_apiKey') || '');
   const [privateKey, setPrivateKey] = useState(() => localStorage.getItem('juipter_auto_privateKey') || '');
@@ -1136,9 +1159,9 @@ export const PnLPage = ({
   const [isBuyingDiscretionary, setIsBuyingDiscretionary] = useState(false);
 
   const handleManualScan = async (overrideAddress?: string) => {
-    const rawAddress = (overrideAddress || manualSearchInput).trim();
+    let rawAddress = (overrideAddress || manualSearchInput).trim();
     if (!rawAddress) {
-      setSearchError('Please enter a contract address');
+      setSearchError('Please enter a contract address or name');
       return;
     }
 
@@ -1146,9 +1169,25 @@ export const PnLPage = ({
     setIsSearching(true);
     setScannedResult(null);
 
-    addLog(`🔍 Initiating manual DexScreener scan for SOL contract: ${rawAddress}...`, 'info');
+    const isAddress = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(rawAddress);
+    addLog(`🔍 Initiating manual DexScreener scan for SOL ${isAddress ? 'contract' : 'token search'}: ${rawAddress}...`, 'info');
 
     try {
+      if (!isAddress) {
+        const searchRes = await fetch(`/api/dex/search?q=${encodeURIComponent(rawAddress)}`);
+        if (!searchRes.ok) throw new Error('Search proxy error');
+        const searchData = await searchRes.json();
+        const solPairs = searchData.pairs?.filter((p: any) => p.chainId === 'solana') || [];
+        if (solPairs.length === 0) {
+          addLog(`❌ Manual scan failed: No search results found for ${rawAddress}.`, 'warn');
+          setSearchError('No search results found.');
+          setIsSearching(false);
+          return;
+        }
+        rawAddress = solPairs[0].baseToken?.address;
+        addLog(`✅ Search resolved to address: ${rawAddress}`, 'success');
+      }
+
       const res = await fetch(`/api/dex/tokens/${rawAddress}`);
       if (!res.ok) {
         throw new Error(`Proxy error code: ${res.status}`);
@@ -1320,7 +1359,7 @@ export const PnLPage = ({
     });
   }, [retentionLimit]);
 
-  const [activeLogTab, setActiveLogTab] = useState<'terminal' | 'diagnostics' | 'leaderboard' | 'telemetry' | 'hosting'>('terminal');
+  const [activeLogTab, setActiveLogTab] = useState<'terminal' | 'diagnostics' | 'leaderboard' | 'telemetry' | 'hosting' | 'advisor'>('terminal');
   const [tradeHistory, setTradeHistory] = useState<{
     id: string;
     mint: string;
@@ -1368,27 +1407,27 @@ export const PnLPage = ({
   }, [blacklistedMints]);
 
   const configRef = useRef({
-    takeProfitPct, minTakeProfit, stopLossPct, bondingCurveStopLossPct, slippage, privateKey, tradeAmount, maxPositions,
+    takeProfitPct, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct, slippage, privateKey, tradeAmount, maxPositions,
     hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax,
     hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore,
     hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s,
     hardenedMinBuyCount30s, hardenedMaxBuyCount30s, hardenedMinBuySellRatio,
     hardenedMaxBuySellRatio, hardenedMaxPriceChange1m,
     hardenedMinBondingProgress, hardenedMaxBondingProgress, hardenedMinAge, hardenedMaxAge,
-    hardenedMinLatency, hardenedMaxLatency, tradePumpFun, tradeRaydium,
-    hardenedMinProfit5m, enableLatencyGuard, rpcLatency, hardenedMatchRequirement
+    hardenedMinLatency, hardenedMaxLatency, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown,
+    hardenedMinProfit5m, enableLatencyGuard, rpcLatency, hardenedMatchRequirement, maxRebuyTimes
   });
 
   configRef.current = {
-    takeProfitPct, minTakeProfit, stopLossPct, bondingCurveStopLossPct, slippage, privateKey, tradeAmount, maxPositions,
+    takeProfitPct, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct, slippage, privateKey, tradeAmount, maxPositions,
     hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax,
     hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore,
     hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s,
     hardenedMinBuyCount30s, hardenedMaxBuyCount30s, hardenedMinBuySellRatio,
     hardenedMaxBuySellRatio, hardenedMaxPriceChange1m,
     hardenedMinBondingProgress, hardenedMaxBondingProgress, hardenedMinAge, hardenedMaxAge,
-    hardenedMinLatency, hardenedMaxLatency, tradePumpFun, tradeRaydium,
-    hardenedMinProfit5m, enableLatencyGuard, rpcLatency, hardenedMatchRequirement
+    hardenedMinLatency, hardenedMaxLatency, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown,
+    hardenedMinProfit5m, enableLatencyGuard, rpcLatency, hardenedMatchRequirement, maxRebuyTimes
   };
 
   const [walletTokens, setWalletTokens] = useState<{mint: string, amount: number, symbol?: string, price?: number, pnl?: number, costBasis?: number}[]>([]);
@@ -1756,7 +1795,7 @@ export const PnLPage = ({
           setLaserstreamIsFallback(!!data.isFallback);
           setLaserstreamIsSimulated(!!data.isSimulated);
           if (data.isSimulated) {
-            addLog(`ℹ️ Sandbox Environment Restricted: Activating Helius LaserStream simulated loop.`, 'success');
+            // Silently active sandbox loop without spamming system logs
           } else if (data.isFallback) {
             addLog(`ℹ️ Helius Geyser Plan Limitation: Automatically routed feed through High-Speed WebSockets fallback.`, 'info');
           } else {
@@ -1821,7 +1860,7 @@ export const PnLPage = ({
             
             // Render on UI log to provide visual excitement and proof of functionality!
             if (isSim) {
-              addLog(`⚡ Sandbox Feed: [slot: ${slot}] sig: ${signature.substring(0, 8)}... (Sandbox Ingestion Simulation Mode)`, 'success');
+              // Silently stream sandbox events without spamming system logs
             } else if (isFallback) {
               addLog(`⚡ Live Direct Feed: [slot: ${slot}] sig: ${signature.substring(0, 8)}... (High-Speed WebSocket Logs Protocol)`, 'success');
             } else {
@@ -2148,35 +2187,59 @@ export const PnLPage = ({
     fetchWalletTokens();
 
     if (!privateKey || !rpcUrl) return;
+
+    // Standard high-reliability fallback poll interval to ensure token balances and list
+    // are kept fresh even if the socket is blocked, throttled, or entirely disconnected.
+    const pollInterval = setInterval(() => {
+      fetchWalletTokens();
+    }, 15000);
+
     try {
       const keypair = Keypair.fromSecretKey(bs58.decode(privateKey));
       const activeWsUrl = (customWsUrl && customWsUrl.trim() !== "") ? customWsUrl.trim() : rpcUrl.replace('https', 'wss').replace('http', 'ws');
       const conn = new Connection(rpcUrl, { commitment: 'confirmed', wsEndpoint: activeWsUrl });
       
-      // WSS MAIN ACCOUNT LISTENER
+      // WSS MAIN ACCOUNT LISTENER (SOL Balance changes)
+      // Highly supported, fast, and light-weight even on public/free Solana nodes.
+      // Fires on any gas expenditures (i.e. buys or sells) and triggers a balance refresh.
       const subId = conn.onAccountChange(keypair.publicKey, () => {
          fetchWalletTokens();
       }, 'confirmed');
       
-      // WSS SPL TOKEN PROGRAM LISTENER (Parallel Real-Time Updates)
-      const tokenSubId = conn.onProgramAccountChange(
-        new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'),
-        () => {
-           fetchWalletTokens();
-        },
-        'confirmed',
-        [
-          { dataSize: 165 },
-          { memcmp: { offset: 32, bytes: keypair.publicKey.toBase58() } }
-        ]
-      );
+      // We explicitly avoid onProgramAccountChange for the SPL Token Program on free/public RPCs,
+      // as they are heavily rate-limited and throw "Unexpected server response: 429" / 403 on mount.
+      let tokenSubId: number | null = null;
+      const isPublicRpc = rpcUrl.includes('api.mainnet-beta.solana.com') || rpcUrl.includes('e161791f-b336-40b9-80d6-f4c9f626833c');
+      if (!isPublicRpc) {
+        try {
+          tokenSubId = conn.onProgramAccountChange(
+            new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'),
+            () => {
+               fetchWalletTokens();
+            },
+            'confirmed',
+            [
+              { dataSize: 165 },
+              { memcmp: { offset: 32, bytes: keypair.publicKey.toBase58() } }
+            ]
+          );
+        } catch (tokenWssErr) {
+          console.warn("SPL Program WSS setup bypassed or unsupported:", tokenWssErr);
+        }
+      }
 
       return () => { 
-        conn.removeAccountChangeListener(subId); 
-        conn.removeProgramAccountChangeListener(tokenSubId);
+        clearInterval(pollInterval);
+        try { conn.removeAccountChangeListener(subId); } catch (e) {}
+        if (tokenSubId !== null) {
+          try { conn.removeProgramAccountChangeListener(tokenSubId); } catch (e) {}
+        }
       };
     } catch (e) {
       console.warn("WSS setup failed", e);
+      return () => {
+        clearInterval(pollInterval);
+      };
     }
   }, [privateKey, rpcUrl, customWsUrl, fetchWalletTokens]);
 
@@ -2283,7 +2346,7 @@ export const PnLPage = ({
   useEffect(() => {
     // Collect current values
     const currentValues = {
-      tradeAmount, minTakeProfit, takeProfitPct, stopLoss, maxPositions, slippage,
+      tradeAmount, minTakeProfit, takeProfitPct, bondingCurveTakeProfit, stopLoss, maxPositions, slippage,
       hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax,
       hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore,
       hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s,
@@ -2291,7 +2354,7 @@ export const PnLPage = ({
       hardenedMaxBuySellRatio, hardenedMaxPriceChange1m,
       hardenedMinBondingProgress, hardenedMaxBondingProgress, hardenedMinAge, hardenedMaxAge,
       hardenedMinLatency, hardenedMaxLatency,
-      tradePumpFun, tradeRaydium, hardenedMinProfit5m, enableLatencyGuard
+      tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown, hardenedMinProfit5m, enableLatencyGuard, maxRebuyTimes
     };
 
     // Skip initial mount check to avoid false updates logging
@@ -2305,7 +2368,8 @@ export const PnLPage = ({
     const changes: string[] = [];
 
     if (prev.tradeAmount !== currentValues.tradeAmount) changes.push(`Trade Amount: ${prev.tradeAmount} -> ${currentValues.tradeAmount} SOL`);
-    if (prev.minTakeProfit !== currentValues.minTakeProfit) changes.push(`Min TP: ${prev.minTakeProfit}% -> ${currentValues.minTakeProfit}%`);
+    if (prev.minTakeProfit !== currentValues.minTakeProfit) changes.push(`Min TP (Raydium): ${prev.minTakeProfit}% -> ${currentValues.minTakeProfit}%`);
+    if (prev.bondingCurveTakeProfit !== currentValues.bondingCurveTakeProfit) changes.push(`Min TP (Pump.fun): ${prev.bondingCurveTakeProfit}% -> ${currentValues.bondingCurveTakeProfit}%`);
     if (prev.takeProfitPct !== currentValues.takeProfitPct) changes.push(`Max TP: ${prev.takeProfitPct}% -> ${currentValues.takeProfitPct}%`);
     if (prev.stopLoss !== currentValues.stopLoss) changes.push(`Stop Loss: ${prev.stopLoss}% -> ${currentValues.stopLoss}%`);
     if (prev.maxPositions !== currentValues.maxPositions) changes.push(`Max Positions: ${prev.maxPositions} -> ${currentValues.maxPositions}`);
@@ -2332,7 +2396,10 @@ export const PnLPage = ({
     if (prev.hardenedMaxLatency !== currentValues.hardenedMaxLatency) changes.push(`Max Latency: ${prev.hardenedMaxLatency}ms -> ${currentValues.hardenedMaxLatency}ms`);
     if (prev.tradePumpFun !== currentValues.tradePumpFun) changes.push(`Trade Pump.fun: ${prev.tradePumpFun ? 'ENABLED' : 'DISABLED'} -> ${currentValues.tradePumpFun ? 'ENABLED' : 'DISABLED'}`);
     if (prev.tradeRaydium !== currentValues.tradeRaydium) changes.push(`Trade Raydium: ${prev.tradeRaydium ? 'ENABLED' : 'DISABLED'} -> ${currentValues.tradeRaydium ? 'ENABLED' : 'DISABLED'}`);
+    if (prev.tradeBonding !== currentValues.tradeBonding) changes.push(`Trade Bonding: ${prev.tradeBonding ? 'ENABLED' : 'DISABLED'} -> ${currentValues.tradeBonding ? 'ENABLED' : 'DISABLED'}`);
+    if (prev.tradeUnknown !== currentValues.tradeUnknown) changes.push(`Trade Unknown: ${prev.tradeUnknown ? 'ENABLED' : 'DISABLED'} -> ${currentValues.tradeUnknown ? 'ENABLED' : 'DISABLED'}`);
     if (prev.hardenedMinProfit5m !== currentValues.hardenedMinProfit5m) changes.push(`Min 5m Profit: ${prev.hardenedMinProfit5m}% -> ${currentValues.hardenedMinProfit5m}%`);
+    if (prev.maxRebuyTimes !== currentValues.maxRebuyTimes) changes.push(`Max Rebuy Times: ${prev.maxRebuyTimes} -> ${currentValues.maxRebuyTimes}`);
     if (prev.enableLatencyGuard !== currentValues.enableLatencyGuard) changes.push(`Latency Guard: ${prev.enableLatencyGuard ? 'ENABLED' : 'DISABLED'} -> ${currentValues.enableLatencyGuard ? 'ENABLED' : 'DISABLED'}`);
 
     if (changes.length > 0) {
@@ -2340,14 +2407,14 @@ export const PnLPage = ({
       lastLoggedCriteria.current = currentValues;
     }
   }, [
-    tradeAmount, minTakeProfit, takeProfitPct, stopLoss, maxPositions, slippage,
+    tradeAmount, minTakeProfit, takeProfitPct, bondingCurveTakeProfit, stopLoss, maxPositions, slippage,
     hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax,
     hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore,
     hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s,
     hardenedMinBuyCount30s, hardenedMaxBuyCount30s, hardenedMinBuySellRatio,
     hardenedMaxBuySellRatio, hardenedMaxPriceChange1m,
     hardenedMinBondingProgress, hardenedMaxBondingProgress, hardenedMinAge, hardenedMaxAge,
-    hardenedMinLatency, hardenedMaxLatency, tradePumpFun, tradeRaydium, hardenedMinProfit5m, enableLatencyGuard,
+    hardenedMinLatency, hardenedMaxLatency, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown, hardenedMinProfit5m, maxRebuyTimes, enableLatencyGuard,
     addLog
   ]);
 
@@ -2555,7 +2622,7 @@ export const PnLPage = ({
         addLog(`[USDC ROUTE] Phase 1 Success: Received ${res1.outputAmount} USDC | tx: ${res1.txid.slice(0, 10)}...`, 'info');
         
         // Short pause to allow balance indexing
-        await new Promise(resolve => setTimeout(resolve, 1500));
+        await new Promise(resolve => setTimeout(resolve, 100));
 
         let tradeUsdcAmount = Math.floor(res1.outputAmount);
         try {
@@ -2589,7 +2656,7 @@ export const PnLPage = ({
         const res1 = await singleSwapInner(inputMint, USDC_MINT, amount);
         addLog(`[USDC ROUTE] Sell Phase 1 Success: Received ${res1.outputAmount} USDC | tx: ${res1.txid.slice(0, 10)}...`, 'info');
 
-        await new Promise(resolve => setTimeout(resolve, 1500));
+        await new Promise(resolve => setTimeout(resolve, 100));
 
         let tradeUsdcAmount = Math.floor(res1.outputAmount);
         try {
@@ -2638,7 +2705,7 @@ export const PnLPage = ({
           if (isBuy) {
             addLog(`[USDC ROUTE] Phase 1: Swapping ${(amount / 1e9).toFixed(4)} SOL to USDC...`, 'info');
             const res1 = await singleSwapInner(SOL_MINT, USDC_MINT, amount);
-            await new Promise(resolve => setTimeout(resolve, 1500));
+            await new Promise(resolve => setTimeout(resolve, 100));
             
             let tradeUsdcAmount = parseInt(res1.quoteOutAmountRaw, 10);
             try {
@@ -2658,7 +2725,7 @@ export const PnLPage = ({
           } else {
             addLog(`[USDC ROUTE] Sell Phase 1: Swapping target token to USDC...`, 'info');
             const res1 = await singleSwapInner(inputMint, USDC_MINT, amount);
-            await new Promise(resolve => setTimeout(resolve, 1500));
+            await new Promise(resolve => setTimeout(resolve, 100));
 
             let tradeUsdcAmount = parseInt(res1.quoteOutAmountRaw, 10);
             try {
@@ -2686,12 +2753,16 @@ export const PnLPage = ({
   const pendingBuyMintsRef = useRef<Set<string>>(new Set());
   const pendingSellMintsRef = useRef<Set<string>>(new Set());
 
-const checkTokenCriteria = (mint: string): { pass: boolean; reason?: string } => {
+const checkTokenCriteria = (mint: string): { 
+  pass: boolean; 
+  reason?: string; 
+  breakdown?: { name: string; pass: boolean; actual: string; limit: string }[] 
+} => {
     if (mint === 'So11111111111111111111111111111111111111112' || mint.toLowerCase() === 'so11111111111111111111111111111111111111112') {
       return { pass: false, reason: "Solana native token cannot be added as an active tradeable position." };
     }
     const {
-      tradePumpFun, tradeRaydium,
+      tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown,
       hardenedMcapMinRaydium, hardenedMcapMinPump, hardenedMcapMax,
       hardenedLiquidityMin, hardenedLiquidityRatio,
       hardenedMaxTop10, hardenedMaxDevOwnership, hardenedMaxRiskScore,
@@ -2699,22 +2770,32 @@ const checkTokenCriteria = (mint: string): { pass: boolean; reason?: string } =>
       hardenedMinAge, hardenedMaxAge, hardenedMatchRequirement, hardenedMinProfit5m
     } = configRef.current;
 
-    const mintLower = mint.toLowerCase();
-    const isPumpSuffix = mintLower.endsWith('pump');
     const metric = tokenMetricsRef.current[mint];
-    const isPumpPlatform = (metric?.dexId || '').toLowerCase().includes('pump') && !(metric?.dexId || '').toLowerCase().includes('pumpswap');
-    let isPump = isPumpSuffix || isPumpPlatform;
-    let isGraduated = !isPump && (metric ? (metric.bondingCurveProgress === undefined || metric.bondingCurveProgress >= 99.5) : true);
+    const stage = detectTokenStage({
+      address: mint,
+      dexId: metric?.dexId,
+      bondingCurveProgress: metric?.bondingCurveProgress,
+      isRaydiumListed: metric?.isRaydiumListed
+    });
 
-    if (isPump && !tradePumpFun) {
+    if (stage.isBonding && !tradeBonding) {
+      return { pass: false, reason: "Bonding stage/Pre-migration trading is disabled in configuration settings." };
+    }
+    if (stage.platform === 'PUMP_FUN' && !tradePumpFun) {
       return { pass: false, reason: "Pump.fun trading is disabled in configuration settings." };
     }
-    if (isGraduated && !tradeRaydium) {
-      return { pass: false, reason: "Raydium/DeFi trading is disabled in configuration settings." };
+    if (stage.platform === 'RAYDIUM' && !tradeRaydium) {
+      return { pass: false, reason: "Raydium trading is disabled in configuration settings." };
     }
-    if (!isPump && !isGraduated && !tradeRaydium) {
-      return { pass: false, reason: "DeFi / Raydium trading is disabled in configuration settings." };
+    if (stage.platform === 'PUMPSWAP' && !tradeRaydium) {
+      return { pass: false, reason: "PumpSwap trading is disabled in configuration settings (aligned with Raydium)." };
     }
+    if (stage.platform === 'UNKNOWN' && !tradeUnknown) {
+      return { pass: false, reason: "Unknown token trading is disabled in configuration settings." };
+    }
+
+    let isPump = stage.platform === 'PUMP_FUN';
+    let isGraduated = stage.isMigrated && stage.platform !== 'UNKNOWN';
 
     // Run Full Hardened Parameter Validation if metrics exist
     if (metric) {
@@ -2725,58 +2806,111 @@ const checkTokenCriteria = (mint: string): { pass: boolean; reason?: string } =>
       const devPct = metric.devWalletPercentage || 0;
       const top10 = metric.top10Percentage || 0;
       
-      let totalChecks = 0;
-      let passedChecks = 0;
-      let failureReasons: string[] = [];
+      const breakdown: { name: string; pass: boolean; actual: string; limit: string }[] = [];
 
-      // Helper to evaluate non-critical rules
-      const evaluateCheck = (passed: boolean, reason: string) => {
-        totalChecks++;
-        if (passed) {
-          passedChecks++;
-        } else {
-          failureReasons.push(reason);
-        }
+      const addCheckResult = (name: string, pass: boolean, actual: string, limit: string) => {
+        breakdown.push({ name, pass, actual, limit });
       };
 
-      // 1. Market Cap Range (Pump.fun or Raydium specific minimums)
+      // 1. Market Cap Min
       const mcMin = isGraduated ? (hardenedMcapMinRaydium || 0) : (hardenedMcapMinPump || 0);
+      addCheckResult(
+        "Min Market Cap",
+        mc >= mcMin,
+        `$${mc.toLocaleString()}`,
+        `>= $${mcMin.toLocaleString()}`
+      );
+
+      // 2. Market Cap Max
       const mcMax = hardenedMcapMax || 2500000;
-      evaluateCheck(mc >= mcMin, `Market Cap $${mc.toLocaleString()} is below the configured platform minimum $${mcMin.toLocaleString()}`);
-      evaluateCheck(mc <= mcMax, `Market Cap $${mc.toLocaleString()} exceeds the configured maximum $${mcMax.toLocaleString()}`);
+      addCheckResult(
+        "Max Market Cap",
+        mc <= mcMax,
+        `$${mc.toLocaleString()}`,
+        `<= $${mcMax.toLocaleString()}`
+      );
 
-      // 2. Liquidity Check (Ensure actual market pool is funded relative to cap and limits)
+      // 3. Liquidity Min
       const liqMin = isGraduated ? (hardenedLiquidityMin || 0) : Math.min(1000, hardenedLiquidityMin || 5000);
-      evaluateCheck(liq >= liqMin, `Liquidity $${liq.toLocaleString()} is below the minimum required $${liqMin.toLocaleString()}`);
+      addCheckResult(
+        "Min Liquidity",
+        liq >= liqMin,
+        `$${liq.toLocaleString()}`,
+        `>= $${liqMin.toLocaleString()}`
+      );
 
+      // 4. Liquidity to Market Cap Ratio
       const mcRatio = mc > 0 ? (liq / mc) : 0;
       const liqRatioMin = isGraduated ? ((hardenedLiquidityRatio || 7) / 100) : 0.001;
-      evaluateCheck(mcRatio >= liqRatioMin, `Liquidity-to-cap ratio ${(mcRatio * 100).toFixed(2)}% is below the minimum ${(liqRatioMin * 100).toFixed(2)}% threshold`);
+      addCheckResult(
+        "Liquidity/MC Ratio",
+        mcRatio >= liqRatioMin,
+        `${(mcRatio * 100).toFixed(2)}%`,
+        `>= ${(liqRatioMin * 100).toFixed(2)}%`
+      );
 
-      // 3. Holders & Dev Concentration Checks
+      // 5. Top 10 Holders %
       const maxTop10 = isGraduated ? (hardenedMaxTop10 || 14.0) : 35.0;
-      evaluateCheck(top10 <= maxTop10, `Top 10 holders percentage ${top10.toFixed(1)}% exceeds the safety limit of ${maxTop10.toFixed(1)}%`);
+      addCheckResult(
+        "Top 10 Holders %",
+        top10 <= maxTop10,
+        `${top10.toFixed(1)}%`,
+        `<= ${maxTop10.toFixed(1)}%`
+      );
 
+      // 6. Dev Ownership %
       const maxDevPct = isGraduated ? ((hardenedMaxDevOwnership || 80) / 100) : 0.95;
-      evaluateCheck(devPct <= maxDevPct, `Developer ownership ${(devPct * 100).toFixed(1)}% exceeds the limit of ${(maxDevPct * 100).toFixed(1)}%`);
+      addCheckResult(
+        "Dev Wallet Ownership %",
+        devPct <= maxDevPct,
+        `${(devPct * 100).toFixed(1)}%`,
+        `<= ${(maxDevPct * 100).toFixed(1)}%`
+      );
 
-      // 4. Security & Risk Auditing
-      if (metric.isRugSafe === false) {
-        return { pass: false, reason: "Token failed the active core rug safety checks (MANDATORY FAILURE)" };
-      }
+      // 7. Security Rug Safety (MANDATORY Showstopper)
+      const isRugSafeVal = metric.isRugSafe !== false;
+      addCheckResult(
+        "Rug Safety Audits",
+        isRugSafeVal,
+        isRugSafeVal ? "PASS (SAFE)" : "FAIL (HIGH RISK)",
+        "Must be SAFE"
+      );
+
+      // 8. Risk Score Limit
       const maxRiskScore = isGraduated ? (hardenedMaxRiskScore || 22) : 100;
-      evaluateCheck(riskScore <= maxRiskScore, `Audited safety risk score ${riskScore} exceeds the maximum allowable score of ${maxRiskScore}`);
+      addCheckResult(
+        "Safety Risk Score",
+        riskScore <= maxRiskScore,
+        `${riskScore}`,
+        `<= ${maxRiskScore}`
+      );
 
-      // 5. Bonding Curve Limits (only applies to Pump.fun tokens) - MANDATORY FAILURE
+      // 9. Bonding Curve Limits (only applies to pre-migration tokens)
+      let isBondingProgressValid = true;
+      const minProg = hardenedMinBondingProgress !== undefined ? hardenedMinBondingProgress : 0;
+      const maxProg = hardenedMaxBondingProgress !== undefined ? hardenedMaxBondingProgress : 100;
       if (!isGraduated) {
-        const minProg = hardenedMinBondingProgress !== undefined ? hardenedMinBondingProgress : 0;
-        const maxProg = hardenedMaxBondingProgress !== undefined ? hardenedMaxBondingProgress : 100;
-        if (progress < minProg || progress > maxProg) {
-          return { pass: false, reason: `Pump.fun bonding curve progress ${progress.toFixed(1)}% is outside the strictly mandatory range of ${minProg}% - ${maxProg}% (MANDATORY LIMITS)` };
-        }
+        isBondingProgressValid = progress >= minProg && progress <= maxProg;
+        addCheckResult(
+          "Bonding Curve Progress",
+          isBondingProgressValid,
+          `${progress.toFixed(1)}%`,
+          `${minProg}% - ${maxProg}%`
+        );
+      } else {
+        addCheckResult(
+          "Bonding Curve Progress",
+          true,
+          "Graduated (100%)",
+          "N/A"
+        );
       }
 
-      // 6. Token Age limits (only applies to Pump.fun tokens) - MANDATORY FAILURE
+      // 10. Token Age limits (only applies to pre-migration tokens)
+      let isAgeValid = true;
+      let tokenAgeMin = 0;
+      const minAg = hardenedMinAge !== undefined ? hardenedMinAge : 0;
+      const maxAg = hardenedMaxAge !== undefined ? hardenedMaxAge : 120;
       if (!isGraduated) {
         const now = Date.now();
         const createdAtRaw = metric.pairCreatedAt;
@@ -2784,43 +2918,85 @@ const checkTokenCriteria = (mint: string): { pass: boolean; reason?: string } =>
         const normCreatedAt = createdAtRaw ? (createdAtRaw < 1000000000000 ? createdAtRaw * 1000 : createdAtRaw) : null;
         const normDiscoveredAt = discoveredAtRaw ? (discoveredAtRaw < 1000000000000 ? discoveredAtRaw * 1000 : discoveredAtRaw) : null;
         const tokenTime = normCreatedAt || normDiscoveredAt || now;
-        const tokenAgeMin = (now - tokenTime) / 60000;
-
-        const minAg = hardenedMinAge !== undefined ? hardenedMinAge : 0;
-        const maxAg = hardenedMaxAge !== undefined ? hardenedMaxAge : 120;
-        if (tokenAgeMin < minAg || tokenAgeMin > maxAg) {
-          return { pass: false, reason: `Token age ${tokenAgeMin.toFixed(1)} minutes is outside the strictly mandatory range of ${minAg} - ${maxAg} minutes (MANDATORY LIMITS)` };
-        }
+        tokenAgeMin = (now - tokenTime) / 60000;
+        isAgeValid = tokenAgeMin >= minAg && tokenAgeMin <= maxAg;
+        addCheckResult(
+          "Token Age (Minutes)",
+          isAgeValid,
+          `${tokenAgeMin.toFixed(1)}m`,
+          `${minAg}m - ${maxAg}m`
+        );
+      } else {
+        addCheckResult(
+          "Token Age (Minutes)",
+          true,
+          "Graduated",
+          "N/A"
+        );
       }
 
-      // 7. 5M Profit momentum check
+      // 11. 5M Profit momentum check
       const minProfitRequired = hardenedMinProfit5m !== undefined ? hardenedMinProfit5m : 1.5;
       const profitVal = metric.percentageIncrease !== undefined ? metric.percentageIncrease : (metric.priceChange1m || 0);
-      evaluateCheck(profitVal >= minProfitRequired, `Last 5-minute profit of ${profitVal.toFixed(2)}% is below the required ${minProfitRequired.toFixed(2)}% threshold`);
-      
-      // 8. Volume MUST be greater than Market Cap
+      addCheckResult(
+        "5M Profit Momentum",
+        profitVal >= minProfitRequired,
+        `${profitVal.toFixed(2)}%`,
+        `>= ${minProfitRequired.toFixed(2)}%`
+      );
+
+      // 12. Volume Check (Loosened for Pump.fun tokens to match real-world trading, 15% threshold instead of 100%)
       const vol = metric.volume24h || 0;
-      if (vol <= mc) {
-        return { pass: false, reason: `Volume ($${vol.toLocaleString()}) must be greater than Market Cap ($${mc.toLocaleString()}) to accept trading.` };
+      const requiredVol = isGraduated ? mc : (mc * 0.15);
+      const isVolumeValid = vol >= requiredVol;
+      addCheckResult(
+        "24H Transaction Volume",
+        isVolumeValid,
+        `$${vol.toLocaleString(undefined, { maximumFractionDigits: 0 })}`,
+        `>= $${requiredVol.toLocaleString(undefined, { maximumFractionDigits: 0 })} (${isGraduated ? '100%' : '15%'} MC)`
+      );
+
+      // Check absolute mandatory showstoppers first
+      if (!isRugSafeVal) {
+        return { pass: false, reason: "MANDATORY FAILURE: Token failed active rug safety audit.", breakdown };
+      }
+      if (!isGraduated && !isBondingProgressValid) {
+        return { pass: false, reason: `MANDATORY FAILURE: Pump.fun bonding progress ${progress.toFixed(1)}% is outside required limits (${minProg}%-${maxProg}%).`, breakdown };
+      }
+      if (!isGraduated && !isAgeValid) {
+        return { pass: false, reason: `MANDATORY FAILURE: Token age ${tokenAgeMin.toFixed(1)}m is outside required limits (${minAg}m-${maxAg}m).`, breakdown };
       }
 
-      const passPercentage = totalChecks > 0 ? (passedChecks / totalChecks) * 100 : 100;
-      if (passPercentage < (hardenedMatchRequirement || 100)) {
-        return { pass: false, reason: `Failed parameter threshold. Passed ${passedChecks}/${totalChecks} (${passPercentage.toFixed(0)}%), required ${hardenedMatchRequirement}%. Reasons: ${failureReasons.join(" | ")}` };
+      // Now compute the matching percentage for standard parameters
+      const evaluatedChecks = breakdown.filter(c => c.name !== "Rug Safety Audits" && c.name !== "Bonding Curve Progress" && c.name !== "Token Age (Minutes)");
+      const totalChecksCount = evaluatedChecks.length;
+      const passedChecksCount = evaluatedChecks.filter(c => c.pass).length;
+      const matchPercentage = totalChecksCount > 0 ? (passedChecksCount / totalChecksCount) * 100 : 100;
+
+      const matchReq = hardenedMatchRequirement !== undefined ? hardenedMatchRequirement : 100;
+      if (matchPercentage < matchReq) {
+        const failingChecks = evaluatedChecks.filter(c => !c.pass).map(c => `${c.name} (${c.actual} vs Limit ${c.limit})`);
+        return { 
+          pass: false, 
+          reason: `Failed parameter threshold. Passed ${passedChecksCount}/${totalChecksCount} (${matchPercentage.toFixed(0)}%), required ${matchReq}%. Failed checks: [ ${failingChecks.join(" | ")} ]`,
+          breakdown 
+        };
       }
+
+      return { pass: true, breakdown };
     }
 
     return { pass: true };
   };
   
   const executeBuy = async (mint: string, symbol: string, price: any, solAmount: number, isManualDirectBuy = false) => {
-    // Trade frequency guard: Max 2 trades per token
+    // Trade frequency guard: Max trades per token check
     const completedTradesCount = tradeHistoryRef.current.filter(t => t.mint === mint).length;
     const isTokenActiveCount = positionsRef.current[mint] ? 1 : 0;
     const totalTradedCount = completedTradesCount + isTokenActiveCount;
 
-    if (totalTradedCount >= 2) {
-      addLog(`❌ [TRADE LIMIT BLOCK] Skipped buy of ${symbol} (${mint.slice(0, 8)}...): Token has already been traded ${totalTradedCount} times (Limit: max 2 trades per token).`, 'warn');
+    if (totalTradedCount >= maxRebuyTimes) {
+      addLog(`❌ [TRADE LIMIT BLOCK] Skipped buy of ${symbol} (${mint.slice(0, 8)}...): Token has already been traded ${totalTradedCount} times (Limit: max ${maxRebuyTimes} trades per token).`, 'warn');
       return;
     }
 
@@ -2841,12 +3017,13 @@ const checkTokenCriteria = (mint: string): { pass: boolean; reason?: string } =>
       const metricForProfitCheck = tokenMetricsRef.current[mint];
       const profit5m = metricForProfitCheck ? (metricForProfitCheck.percentageIncrease !== undefined ? metricForProfitCheck.percentageIncrease : (metricForProfitCheck.priceChange1m || 0)) : 0;
       const requiredMinProfit = hardenedMinProfit5m !== undefined ? hardenedMinProfit5m : 1.5;
+      const { hardenedMatchRequirement } = configRef.current;
 
-      if (profit5m < requiredMinProfit) {
+      if (profit5m < requiredMinProfit && (hardenedMatchRequirement || 100) === 100) {
         addLog(`❌ [5M PROFIT BLOCK] Skipped buy of ${symbol} (${mint.slice(0, 8)}...): Last 5-minute profit of ${profit5m.toFixed(2)}% is below the required ${requiredMinProfit.toFixed(2)}% threshold for active positions.`, 'warn');
         return;
       } else {
-        addLog(`🔍 [5M PROFIT CHECK] Passed! ${symbol} has a 5-minute profit/growth of ${profit5m.toFixed(2)}% (Required minimum: ${requiredMinProfit.toFixed(2)}%)`, 'info');
+        addLog(`🔍 [5M PROFIT CHECK] ${symbol} has a 5-minute profit/growth of ${profit5m.toFixed(2)}% (Target required minimum: ${requiredMinProfit.toFixed(2)}%)`, 'info');
       }
 
       if (enableLatencyGuard && rpcLatency !== null && rpcLatency !== undefined && (rpcLatency < (hardenedMinLatency || 0) || rpcLatency > (hardenedMaxLatency || 250))) {
@@ -3038,7 +3215,7 @@ const checkTokenCriteria = (mint: string): { pass: boolean; reason?: string } =>
            }
         }
 
-        await new Promise(resolve => setTimeout(resolve, 800)); // Simulate tx time
+        await new Promise(resolve => setTimeout(resolve, 50)); // Simulate tx time
         
         setPositions((prev) => {
           const existing = prev[mint];
@@ -3130,8 +3307,14 @@ const checkTokenCriteria = (mint: string): { pass: boolean; reason?: string } =>
       const pos = positionsRef.current[mint];
       if (!pos) return;
 
-      const isStopLoss = reason.toLowerCase().includes('stop loss');
-      addLog(`[SIM] Selling ${pos.symbol} quoting real return...`, 'info');
+      const isStopLoss = reason.toLowerCase().includes('stop loss') || reason.toLowerCase().includes('recovery failed');
+      const isEmergency = reason.toLowerCase().includes('force') || reason.toLowerCase().includes('emergency') || reason.toLowerCase().includes('manual');
+      
+      if (isEmergency) {
+        addLog(`🚨 [EMERGENCY FORCE EXIT] Initiating manual emergency exit for ${pos.symbol}...`, 'warn');
+      } else {
+        addLog(`[SIM] Selling ${pos.symbol} quoting real return...`, 'info');
+      }
       
       let netReceivedSOL = 0;
       try {
@@ -3165,7 +3348,7 @@ const checkTokenCriteria = (mint: string): { pass: boolean; reason?: string } =>
 
            // PROFIT GUARD: If it's not a stop loss, don't sell for a net loss
            const slippageTol = 0.005; // 0.5% buffer for last-second price changes
-           if (!isStopLoss && netReturnSell < (pos.solSpent * (1.0 - slippageTol))) {
+           if (!isStopLoss && !isEmergency && netReturnSell < (pos.solSpent * (1.0 - slippageTol))) {
              addLog(`[SIM ABORT] ${pos.symbol} profit margin too thin or dropping (${(netReturnSell - pos.solSpent) > 0 ? '+' : ''}${((netReturnSell - pos.solSpent) / pos.solSpent * 100).toFixed(1)}%). Aborting sell to prevent loss.`, 'warn');
              pendingSellMintsRef.current.delete(mint);
              return;
@@ -3195,7 +3378,7 @@ const checkTokenCriteria = (mint: string): { pass: boolean; reason?: string } =>
         const operationalFeesSol = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent);
         const netReturnSell = fallbackNet - operationalFeesSol;
         const slippageTol = 0.005;
-        if (!isStopLoss && netReturnSell < (pos.solSpent * (1.0 - slippageTol))) {
+        if (!isStopLoss && !isEmergency && netReturnSell < (pos.solSpent * (1.0 - slippageTol))) {
           addLog(`[SIM ABORT fallback] ${pos.symbol} fallback profit margin too thin (${((netReturnSell - pos.solSpent) / pos.solSpent * 100).toFixed(1)}%). Aborting sell to prevent loss.`, 'warn');
           pendingSellMintsRef.current.delete(mint);
           return;
@@ -3204,7 +3387,7 @@ const checkTokenCriteria = (mint: string): { pass: boolean; reason?: string } =>
         netReceivedSOL = Math.max(0, fallbackNet);
       }
       
-      await new Promise(resolve => setTimeout(resolve, 800)); // Simulate tx time
+      await new Promise(resolve => setTimeout(resolve, 50)); // Simulate tx time
 
       // FIX 1: actualPnl is based on token return (gross/netReceivedSOL) vs spent (entry) excluding fixed Jito tip
       const actualPnlAmount = netReceivedSOL - pos.solSpent;
@@ -3408,9 +3591,13 @@ const checkTokenCriteria = (mint: string): { pass: boolean; reason?: string } =>
         const uniqueBuyers30s = new Set(recentBuys.map((t: any) => t.w).filter(Boolean)).size;
 
         // SMART SELECTION LOGIC (VFM - TARGETING HIGH PROFIT MOMENTUM)
-        const isGraduated = !alert.address.toLowerCase().endsWith('pump') && 
-                            (!(metric.dexId || '').toLowerCase().includes('pump') || (metric.dexId || '').toLowerCase().includes('pumpswap')) && 
-                            (metric.bondingCurveProgress === undefined || metric.bondingCurveProgress >= 99.5);
+        const stage = detectTokenStage({
+          address: alert.address,
+          dexId: metric.dexId,
+          bondingCurveProgress: metric.bondingCurveProgress,
+          isRaydiumListed: metric.isRaydiumListed
+        });
+        const isGraduated = stage.isMigrated;
         
         const mcMin = isGraduated ? hardenedMcapMinRaydium : hardenedMcapMinPump;
         const mcMax = hardenedMcapMax;
@@ -3484,7 +3671,7 @@ const checkTokenCriteria = (mint: string): { pass: boolean; reason?: string } =>
     
     try {
       const {
-        maxPositions, tradeAmount, minTakeProfit, stopLossPct, bondingCurveStopLossPct,
+        maxPositions, tradeAmount, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct,
         hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax,
         hardenedLiquidityMin, hardenedMaxRiskScore, hardenedMinProfit5m
       } = configRef.current;
@@ -3500,7 +3687,8 @@ const checkTokenCriteria = (mint: string): { pass: boolean; reason?: string } =>
       const nowMs = Date.now();
       if (nowMs - lastHeartbeatRef.current > 15000) {
          lastHeartbeatRef.current = nowMs;
-         addLog(`[SCAN] Heartbeat: Checking ${Object.keys(tokenMetricsRef.current).length} tokens...`, 'info');
+         const matchRate = configRef.current.hardenedMatchRequirement !== undefined ? configRef.current.hardenedMatchRequirement : 100;
+         addLog(`📡 [SCANNER HEARTBEAT] Monitoring ${Object.keys(tokenMetricsRef.current).length} active tokens | Positions: ${activeMints.length}/${maxPositions} | Required Match: ${matchRate}%`, 'info');
       }
 
       // 1. Try to open new positions
@@ -3543,16 +3731,26 @@ const checkTokenCriteria = (mint: string): { pass: boolean; reason?: string } =>
             if (candidates.length > 0) {
                // Periodic scannable logging check
                const now = Date.now();
-               const shouldLog = (now - lastDiagnosticsRef.current > 45000);
+               const shouldLog = (now - lastDiagnosticsRef.current > 12000);
                if (shouldLog) {
                   lastDiagnosticsRef.current = now;
-                  addLog(`⚙️ [SCAN DIAGNOSTICS] Evaluated ${candidates.length} unique candidates. 0 fully qualified. Top prospects:`, 'info');
+                  addLog(`⚙️ [SCAN DIAGNOSTICS] Scanning ${candidates.length} candidate tokens... (0 qualified with current parameters)`, 'info');
                   candidates.slice(0, 3).forEach(([mint, metric]: [string, any]) => {
                     const symbol = metric.symbol || mint.slice(0, 6);
-                    const platform = (metric.dexId || '').toLowerCase().includes('raydium') || (metric.dexId || '').toLowerCase().includes('pumpswap') || (metric.dexId || '').toLowerCase().includes('orca') || (metric.dexId || '').toLowerCase().includes('meteora') || (metric.bondingCurveProgress || 0) >= 99.5 ? 'Raydium' : 'Pump.fun';
+                    const isGraduated = !mint.toLowerCase().endsWith('pump');
+                    const platform = isGraduated ? 'Raydium' : 'Pump.fun';
                     const check = checkTokenCriteria(mint);
-                    if (!check.pass && check.reason) {
-                      addLog(`  ↳ Spotting ${symbol} (${platform}): Skipped check ↳ [ ${check.reason} ]`, 'info');
+                    if (!check.pass) {
+                      addLog(`🔍 Candidate: ${symbol} (${platform}) — SKIPPED`, 'info');
+                      if (check.reason) {
+                        addLog(`  ↳ Reason: ${check.reason}`, 'info');
+                      }
+                      if (check.breakdown) {
+                        const failing = check.breakdown.filter(c => !c.pass);
+                        if (failing.length > 0) {
+                          addLog(`  ↳ Failing Criteria: ${failing.map(c => `${c.name}: ${c.actual} vs Req: ${c.limit}`).join(' | ')}`, 'info');
+                        }
+                      }
                     }
                   });
                }
@@ -3566,7 +3764,16 @@ const checkTokenCriteria = (mint: string): { pass: boolean; reason?: string } =>
             const progress = metric.bondingCurveProgress || 0;
             const isGraduated = !mint.toLowerCase().endsWith('pump');
             addLog(`🟢 [BUY TRIGGER] Matches all configured constraints for ${metric.symbol || 'Unknown'} (${isGraduated ? 'Raydium' : 'Pump.fun'}) with curve progress at ${progress.toFixed(1)}%. Placing swift-swap entry...`, 'buy');
-            await executeBuy(mint, metric.symbol || 'Unknown', metric.priceNative || metric.priceUsd, tradeAmount);
+            // ENFORCE 2 SECONDS PROFIT CHECK BEFORE TRADING START (DEACTIVATED)
+            /*
+             const currentPrice = metric.priceNative || metric.priceUsd || 0;
+             const profitCheck = checkTokenInProfitLast2Seconds(mint, currentPrice);
+             if (!profitCheck.inProfit) {
+               addLog(`⚠️ [BUY SKIPPED] ${metric.symbol || 'Unknown'} failed last 2s profit check: ${profitCheck.reason}`, 'info');
+               continue;
+             }
+            */
+             await executeBuy(mint, metric.symbol || 'Unknown', metric.priceNative || metric.priceUsd, tradeAmount);
          }
       }
 
@@ -3609,9 +3816,23 @@ const checkTokenCriteria = (mint: string): { pass: boolean; reason?: string } =>
           // Minimum Hold Time Buffer: Prevent panic-selling in the first 25 seconds
           // BYPASS: If the crash is extreme (>1.5x stop loss), exit immediately regardless of time
           const holdTimeMs = Date.now() - (pos.entryTime || Date.now());
-          const isGraduated = !mint.toLowerCase().endsWith('pump') || (metric?.bondingCurveProgress || 0) >= 99.5;
-          const isUnderBonding = !isGraduated;
-          const currentSLPct = isUnderBonding ? bondingCurveStopLossPct : stopLossPct;
+          const stage = detectTokenStage({
+            address: mint,
+            dexId: metric?.dexId,
+            bondingCurveProgress: metric?.bondingCurveProgress,
+            isRaydiumListed: metric?.isRaydiumListed
+          });
+          let currentSLPct = stopLossPct;
+          if (stage.platform === 'PUMP_FUN' || stage.isBonding) {
+            currentSLPct = bondingCurveStopLossPct;
+          } else if (stage.platform === 'PUMPSWAP') {
+            currentSLPct = pumpSwapStopLossPct;
+          } else if (stage.platform === 'UNKNOWN' || stage.stage === 'UNKNOWN') {
+            currentSLPct = unknownStopLossPct;
+          } else {
+            currentSLPct = stopLossPct;
+          }
+          const currentTakeProfit = stage.isBonding ? bondingCurveTakeProfit : minTakeProfit;
 
           const isFlashCrash = (roughNetPnL <= -(currentSLPct * 1.5) / 100);
           let isHoldProtected = holdTimeMs < 25000 && !isFlashCrash;
@@ -3661,7 +3882,7 @@ const checkTokenCriteria = (mint: string): { pass: boolean; reason?: string } =>
             }
 
           // General Position Strategy
-          if (netPnlPct >= minTakeProfit / 100) {
+          if (netPnlPct >= currentTakeProfit / 100) {
             executeReason = `TAKE PROFIT: ${pos.symbol} +${(netPnlPct * 100).toFixed(1)}% (NET)`;
             safeToExecute = true;
           } else if (inRecoveryMode && netPnlPct >= 0) {
@@ -3708,7 +3929,7 @@ const checkTokenCriteria = (mint: string): { pass: boolean; reason?: string } =>
              } else if (inRecoveryMode && pnlPct <= -0.85) {
                executeReason = `RECOVERY FAILED: ${pos.symbol} hard stop at -85%`;
                safeToExecute = true;
-             } else if (pnlPct >= minTakeProfit / 100) {
+             } else if (pnlPct >= currentTakeProfit / 100) {
                executeReason = `TAKE PROFIT: ${pos.symbol} +${(pnlPct * 100).toFixed(1)}%`;
                safeToExecute = true;
              } else if (pnlPct <= -currentSLPct / 100) {
@@ -3746,7 +3967,7 @@ const checkTokenCriteria = (mint: string): { pass: boolean; reason?: string } =>
     if (isRunning) {
       botIntervalRef.current = window.setInterval(() => {
         checkAndTrade();
-      }, 5000);
+      }, 1000);
       uptimeIntervalRef.current = window.setInterval(updateUptime, 1000);
     } else {
       if (botIntervalRef.current) clearInterval(botIntervalRef.current);
@@ -4109,7 +4330,14 @@ const checkTokenCriteria = (mint: string): { pass: boolean; reason?: string } =>
               // Resolve dexId and Pump.fun/Raydium specific metrics
               const dexId = pair.dexId || 'unknown';
               const isGraduated = !tokenAddress.toLowerCase().endsWith('pump');
-              const bondingCurveProgress = isGraduated ? 100 : Math.min(99, (marketCap / 65000) * 100);
+              const isSol = pair.quoteToken?.address === 'So11111111111111111111111111111111111111112' || pair.quoteToken?.symbol === 'SOL' || pair.quoteToken?.symbol === 'WSOL';
+              const priceNative = (isSol && pair.priceNative) ? parseFloat(pair.priceNative) : (priceUsd / 150);
+              let bondingCurveProgress = isGraduated ? 100 : Math.min(99, (marketCap / 65000) * 100);
+              if (!isGraduated && priceNative > 0) {
+                const virtualTokenReserves = Math.sqrt(32190000000 / priceNative);
+                const calculatedProgress = ((1073000000 - virtualTokenReserves) / 793100000) * 100;
+                bondingCurveProgress = Math.min(99.9, Math.max(0, calculatedProgress));
+              }
 
               // Calculate dynamic category based on symbol and graduation status
               const getCategory = () => {
@@ -4322,7 +4550,7 @@ const checkTokenCriteria = (mint: string): { pass: boolean; reason?: string } =>
                     type="text"
                     value={manualSearchInput}
                     onChange={(e) => setManualSearchInput(e.target.value)}
-                    placeholder="Enter SOL address (e.g. CgRz...)"
+                    placeholder="Enter SOL address or Token Name (e.g. CgRz... or BONK)"
                     className="flex-1 bg-[#050509] border border-[#2d2e3d] rounded-lg px-2.5 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors"
                   />
                   <button
@@ -4572,7 +4800,7 @@ const checkTokenCriteria = (mint: string): { pass: boolean; reason?: string } =>
                             laserstreamIsFallback ? 'bg-sky-400/15 text-sky-400 border border-sky-400/30' : 
                             'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
                           }`}>
-                            {laserstreamIsSimulated ? 'Sandbox Sim' : laserstreamIsFallback ? 'WS Fallback' : 'gRPC Geyser'}
+                            {laserstreamIsSimulated ? 'Local Stream' : laserstreamIsFallback ? 'WS Fallback' : 'gRPC Geyser'}
                           </span>
                         )}
                       </div>
@@ -4687,7 +4915,7 @@ const checkTokenCriteria = (mint: string): { pass: boolean; reason?: string } =>
                 )}
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3">
                 <div>
                   <div className="flex justify-between text-[11px] text-[#64748b] mb-1.5 uppercase font-medium"><span>Trade Size</span><span>SOL</span></div>
                   <input type="number" min="0.05" step="0.01" value={tradeAmount} onChange={(e) => setTradeAmount(Number(e.target.value))} className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-2 text-[13px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors" />
@@ -4696,10 +4924,14 @@ const checkTokenCriteria = (mint: string): { pass: boolean; reason?: string } =>
                   <div className="flex justify-between text-[11px] text-[#64748b] mb-1.5 uppercase font-medium"><span>Max Pos (0 = ♾️)</span></div>
                   <input type="number" value={maxPositions} onChange={(e) => setMaxPositions(Number(e.target.value))} className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-2 text-[13px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors" />
                 </div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <div className="flex justify-between text-[11px] text-[#64748b] mb-1.5 uppercase font-medium"><span>Take Profit</span><span>%</span></div>
+                  <div className="flex justify-between text-[11px] text-[#64748b] mb-1.5 uppercase font-medium"><span>Max Rebuy Times</span></div>
+                  <input id="input-max-rebuy-times" type="number" min="1" step="1" value={maxRebuyTimes} onChange={(e) => setMaxRebuyTimes(Number(e.target.value))} className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-2 text-[13px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3 mb-3">
+                <div>
+                  <div className="flex justify-between text-[11px] text-[#64748b] mb-1.5 uppercase font-medium"><span>Take Profit (Raydium)</span><span>%</span></div>
                   <input type="number" value={minTakeProfit} onChange={(e) => {
                     const val = Number(e.target.value);
                     setMinTakeProfit(val);
@@ -4707,13 +4939,30 @@ const checkTokenCriteria = (mint: string): { pass: boolean; reason?: string } =>
                   }} className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-2 text-[13px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors" />
                 </div>
                 <div>
-                  <div className="flex justify-between text-[11px] text-[#64748b] mb-1.5 uppercase font-medium"><span>Stop Loss</span><span>%</span></div>
-                  <input type="number" value={stopLossPct} onChange={(e) => setStopLoss(-Math.abs(Number(e.target.value)))} className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-2 text-[13px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors" />
+                  <div className="flex justify-between text-[11px] text-[#64748b] mb-1.5 uppercase font-medium"><span>Take Profit (Bonding)</span><span>%</span></div>
+                  <input type="number" value={bondingCurveTakeProfit} onChange={(e) => {
+                    const val = Number(e.target.value);
+                    setBondingCurveTakeProfit(val);
+                  }} className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-2 text-[13px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors" />
                 </div>
               </div>
-              <div>
-                <div className="flex justify-between text-[11px] text-[#64748b] mb-1.5 uppercase font-medium"><span>Stop Loss (1-98% Bonding)</span><span>%</span></div>
-                <input type="number" value={bondingCurveStopLossPct} onChange={(e) => setBondingCurveStopLoss(-Math.abs(Number(e.target.value)))} className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-2 text-[13px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors" />
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                <div>
+                  <div className="flex justify-between text-[11px] text-[#64748b] mb-1.5 uppercase font-medium"><span>Stop Loss (Raydium)</span><span>%</span></div>
+                  <input type="number" value={stopLossPct} onChange={(e) => setStopLoss(-Math.abs(Number(e.target.value)))} className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-2 text-[13px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors" id="input-sl-raydium" />
+                </div>
+                <div>
+                  <div className="flex justify-between text-[11px] text-[#64748b] mb-1.5 uppercase font-medium"><span>Stop Loss (Bonding)</span><span>%</span></div>
+                  <input type="number" value={bondingCurveStopLossPct} onChange={(e) => setBondingCurveStopLoss(-Math.abs(Number(e.target.value)))} className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-2 text-[13px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors" id="input-sl-bonding" />
+                </div>
+                <div>
+                  <div className="flex justify-between text-[11px] text-[#64748b] mb-1.5 uppercase font-medium"><span>Stop Loss (PumpSwap)</span><span>%</span></div>
+                  <input type="number" value={pumpSwapStopLossPct} onChange={(e) => setPumpSwapStopLoss(-Math.abs(Number(e.target.value)))} className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-2 text-[13px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors" id="input-sl-pumpswap" />
+                </div>
+                <div>
+                  <div className="flex justify-between text-[11px] text-[#64748b] mb-1.5 uppercase font-medium"><span>Stop Loss (Unknown)</span><span>%</span></div>
+                  <input type="number" value={unknownStopLossPct} onChange={(e) => setUnknownStopLoss(-Math.abs(Number(e.target.value)))} className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-2 text-[13px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors" id="input-sl-unknown" />
+                </div>
               </div>
               <div>
                 <div className="flex justify-between text-[11px] text-[#64748b] mb-1.5 uppercase font-medium"><span>Risk Level</span></div>
@@ -4791,7 +5040,7 @@ const checkTokenCriteria = (mint: string): { pass: boolean; reason?: string } =>
                 {/* Section: Platform Filters */}
                 <div className="space-y-2">
                   <div className="text-[10px] font-bold uppercase text-[#64748b]">DEX Platform Sources</div>
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                     <label className="flex items-center gap-2 cursor-pointer bg-[#050509] border border-[#2d2e3d] rounded-lg px-2.5 py-1.5 focus-within:border-[#c7f284] select-none h-[32px]">
                       <input 
                         type="checkbox" 
@@ -4809,6 +5058,24 @@ const checkTokenCriteria = (mint: string): { pass: boolean; reason?: string } =>
                         className="rounded border-[#2d2e3d] bg-[#050509] text-[#c7f284] focus:ring-0 focus:ring-offset-0 h-3.5 w-3.5"
                       />
                       <span className="text-[10px] text-white font-mono uppercase">Raydium</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer bg-[#050509] border border-[#2d2e3d] rounded-lg px-2.5 py-1.5 focus-within:border-[#c7f284] select-none h-[32px]">
+                      <input 
+                        type="checkbox" 
+                        checked={tradeUnknown} 
+                        onChange={(e) => setTradeUnknown && setTradeUnknown(e.target.checked)} 
+                        className="rounded border-[#2d2e3d] bg-[#050509] text-[#c7f284] focus:ring-0 focus:ring-offset-0 h-3.5 w-3.5"
+                      />
+                      <span className="text-[10px] text-white font-mono uppercase">Unknown Token</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer bg-[#050509] border border-[#2d2e3d] rounded-lg px-2.5 py-1.5 focus-within:border-[#c7f284] select-none h-[32px]">
+                      <input 
+                        type="checkbox" 
+                        checked={tradeBonding} 
+                        onChange={(e) => setTradeBonding && setTradeBonding(e.target.checked)} 
+                        className="rounded border-[#2d2e3d] bg-[#050509] text-[#c7f284] focus:ring-0 focus:ring-offset-0 h-3.5 w-3.5"
+                      />
+                      <span className="text-[10px] text-white font-mono uppercase">Bonding</span>
                     </label>
                   </div>
                 </div>
@@ -5184,7 +5451,7 @@ const checkTokenCriteria = (mint: string): { pass: boolean; reason?: string } =>
                     type="text"
                     value={manualSearchInput}
                     onChange={(e) => setManualSearchInput(e.target.value)}
-                    placeholder="Enter Mint Address (e.g. CgRzuG3tvGqd9Pu6v4r6tNRJxS5ciefrHvRehsAU6dU7)"
+                    placeholder="Enter Token Name or Mint Address (e.g. BONK or CgRz...)"
                     className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-2 text-xs text-white styles-reset font-mono focus:outline-none focus:border-[#c7f284] transition-colors"
                   />
                 </div>
@@ -5384,12 +5651,54 @@ const checkTokenCriteria = (mint: string): { pass: boolean; reason?: string } =>
                     }
                     
                     const isPos = pnlPct >= 0;
+
+                    const token = tokenMetrics[mint];
+                    const stage = detectTokenStage({
+                      address: mint,
+                      dexId: token?.dexId,
+                      bondingCurveProgress: token?.bondingCurveProgress,
+                      isRaydiumListed: token?.isRaydiumListed
+                    });
+                    let activeSL = stopLoss;
+                    if (stage.platform === 'PUMP_FUN' || stage.isBonding) {
+                      activeSL = bondingCurveStopLoss;
+                    } else if (stage.platform === 'PUMPSWAP') {
+                      activeSL = pumpSwapStopLoss;
+                    } else if (stage.platform === 'UNKNOWN' || stage.stage === 'UNKNOWN') {
+                      activeSL = unknownStopLoss;
+                    } else {
+                      activeSL = stopLoss;
+                    }
+
                     return (
                       <div key={mint} className="bg-[#0a0b14] border border-[#1f212e] rounded-xl p-4 grid grid-cols-2 gap-x-2 gap-y-3">
-                        <div className="col-span-2 flex items-center gap-2 mb-1">
-                          <div className="w-6 h-6 rounded-full bg-indigo-500"></div>
-                          <div className="font-bold text-[14px] text-white">
-                            {pos.symbol} <span className="text-[#64748b] text-[12px] font-normal">/ SOL</span>
+                        <div className="col-span-2 flex items-center gap-2 mb-1 flex-wrap">
+                          <div className="w-6 h-6 rounded-full bg-indigo-500 shrink-0"></div>
+                          <div className="font-bold text-[14px] text-white flex items-center gap-1.5 flex-wrap">
+                            {pos.symbol} <span className="text-[#64748b] text-[12px] font-normal hidden sm:inline">/ SOL</span>
+                            
+                            {/* Stage badge */}
+                            {stage.isBonding ? (
+                              <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-orange-500/20 text-orange-400 border border-orange-500/30 whitespace-nowrap">
+                                BONDING {stage.bondingProgress.toFixed(0)}%
+                              </span>
+                            ) : (
+                              <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-blue-500/20 text-blue-400 border border-blue-500/30 whitespace-nowrap">
+                                {stage.platform}
+                              </span>
+                            )}
+
+                            {/* Which stop loss is active */}
+                            <span className="text-rose-400 text-[9px] whitespace-nowrap bg-rose-500/10 px-1.5 py-0.5 rounded border border-rose-500/20">
+                              SL: {activeSL}%
+                            </span>
+
+                            {/* Near migration warning */}
+                            {stage.isNearMigration && (
+                              <span className="text-yellow-400 text-[9px] animate-pulse whitespace-nowrap border border-yellow-400/30 bg-yellow-400/10 px-1.5 py-0.5 rounded">
+                                ⚡ MIGRATING SOON
+                              </span>
+                            )}
                           </div>
                           <div className="ml-auto text-right font-mono">
                             {pos.isStale ? (
@@ -5432,7 +5741,7 @@ const checkTokenCriteria = (mint: string): { pass: boolean; reason?: string } =>
                           </div>
                           <div className="flex gap-2 w-full">
                              <button 
-                               onClick={() => executeSell(mint, pos.currentPrice || pos.buyPrice, pnlPct)}
+                               onClick={() => executeSell(mint, pos.currentPrice || pos.buyPrice, pnlPct, 'EMERGENCY FORCE EXIT')}
                                className="flex-1 bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 transition-colors px-3 py-2 rounded-lg text-xs font-black uppercase tracking-widest border border-rose-500/20 group"
                              >
                                <span className="flex items-center justify-center gap-2">
@@ -5573,41 +5882,48 @@ const checkTokenCriteria = (mint: string): { pass: boolean; reason?: string } =>
           
           <div className="bg-[#10111a]/60 border border-[#1f212e] rounded-1.5xl flex flex-col flex-1 min-h-[420px]">
             {/* Tab Controls */}
-            <div className="flex border-b border-[#1f212e] bg-[#0c0d15]/80 shrink-0">
+            <div className="flex border-b border-[#1f212e] bg-[#0c0d15]/80 shrink-0 flex-wrap">
               <button 
                 onClick={() => setActiveLogTab('terminal')} 
-                className={`flex-1 py-2 text-[10px] font-bold uppercase tracking-wider text-center border-r border-[#1f212e] transition-all ${activeLogTab === 'terminal' ? 'text-[#c7f284] border-b border-b-[#c7f284]/80 bg-[#10111a]' : 'text-[#64748b] hover:text-[#94a3b8] bg-transparent'}`}
+                className={`flex-1 min-w-[60px] py-2 text-[10px] font-bold uppercase tracking-wider text-center border-r border-[#1f212e] transition-all ${activeLogTab === 'terminal' ? 'text-[#c7f284] border-b border-b-[#c7f284]/80 bg-[#10111a]' : 'text-[#64748b] hover:text-[#94a3b8] bg-transparent'}`}
                 id="log-tab-console"
               >
-                📟 Console Logs
+                📟 Console
               </button>
               <button 
                 onClick={() => setActiveLogTab('diagnostics')} 
-                className={`flex-1 py-2 text-[10px] font-bold uppercase tracking-wider text-center border-r border-[#1f212e] transition-all ${activeLogTab === 'diagnostics' ? 'text-[#c7f284] border-b border-b-[#c7f284]/80 bg-[#10111a]' : 'text-[#64748b] hover:text-[#94a3b8] bg-transparent'}`}
+                className={`flex-1 min-w-[60px] py-2 text-[10px] font-bold uppercase tracking-wider text-center border-r border-[#1f212e] transition-all ${activeLogTab === 'diagnostics' ? 'text-[#c7f284] border-b border-b-[#c7f284]/80 bg-[#10111a]' : 'text-[#64748b] hover:text-[#94a3b8] bg-transparent'}`}
                 id="log-tab-diagnostics"
               >
-                📊 Diagnostics
+                📊 Diags
               </button>
               <button 
                 onClick={() => setActiveLogTab('telemetry')} 
-                className={`flex-1 py-2 text-[10px] font-bold uppercase tracking-wider text-center border-r border-[#1f212e] transition-all ${activeLogTab === 'telemetry' ? 'text-[#c7f284] border-b border-b-[#c7f284]/80 bg-[#10111a]' : 'text-[#64748b] hover:text-[#94a3b8] bg-transparent'}`}
+                className={`flex-1 min-w-[65px] py-2 text-[10px] font-bold uppercase tracking-wider text-center border-r border-[#1f212e] transition-all ${activeLogTab === 'telemetry' ? 'text-[#c7f284] border-b border-b-[#c7f284]/80 bg-[#10111a]' : 'text-[#64748b] hover:text-[#94a3b8] bg-transparent'}`}
                 id="log-tab-telemetry"
               >
                 📡 Telemetry
               </button>
               <button 
                 onClick={() => setActiveLogTab('leaderboard')} 
-                className={`flex-1 py-2 text-[10px] font-bold uppercase tracking-wider text-center border-r border-[#1f212e] transition-all ${activeLogTab === 'leaderboard' ? 'text-[#c7f284] border-b border-b-[#c7f284]/80 bg-[#10111a]' : 'text-[#64748b] hover:text-[#94a3b8] bg-transparent'}`}
+                className={`flex-1 min-w-[65px] py-2 text-[10px] font-bold uppercase tracking-wider text-center border-r border-[#1f212e] transition-all ${activeLogTab === 'leaderboard' ? 'text-[#c7f284] border-b border-b-[#c7f284]/80 bg-[#10111a]' : 'text-[#64748b] hover:text-[#94a3b8] bg-transparent'}`}
                 id="log-tab-prospects"
               >
-                🎯 Prospect Matrix
+                🎯 Prospects
+              </button>
+              <button 
+                onClick={() => setActiveLogTab('advisor')} 
+                className={`flex-1 min-w-[70px] py-2 text-[10px] font-bold uppercase tracking-wider text-center border-r border-[#1f212e] transition-all ${activeLogTab === 'advisor' ? 'text-[#c7f284] border-b border-b-[#c7f284]/80 bg-[#10111a]' : 'text-[#64748b] hover:text-[#94a3b8] bg-transparent'}`}
+                id="log-tab-advisor"
+              >
+                🧠 A.I. Advisor
               </button>
               <button 
                 onClick={() => setActiveLogTab('hosting')} 
-                className={`flex-1 py-2 text-[10px] font-bold uppercase tracking-wider text-center transition-all ${activeLogTab === 'hosting' ? 'text-[#c7f284] border-b border-b-[#c7f284]/80 bg-[#10111a]' : 'text-[#64748b] hover:text-[#94a3b8] bg-transparent'}`}
+                className={`flex-1 min-w-[60px] py-2 text-[10px] font-bold uppercase tracking-wider text-center transition-all ${activeLogTab === 'hosting' ? 'text-[#c7f284] border-b border-b-[#c7f284]/80 bg-[#10111a]' : 'text-[#64748b] hover:text-[#94a3b8] bg-transparent'}`}
                 id="log-tab-hosting"
               >
-                🌐 Cloud Hosting
+                🌐 Hosting
               </button>
             </div>
 
@@ -6055,6 +6371,221 @@ const checkTokenCriteria = (mint: string): { pass: boolean; reason?: string } =>
                     </div>
                   </div>
                 )}
+
+                {activeLogTab === 'advisor' && (() => {
+                  const losingTrades = tradeHistory.filter(t => (t.sellAmountSol - t.buyAmountSol) < 0);
+                  const winningTrades = tradeHistory.filter(t => (t.sellAmountSol - t.buyAmountSol) >= 0);
+                  const winRate = tradeHistory.length > 0 ? (winningTrades.length / tradeHistory.length) * 100 : 100;
+                  const totalSolLost = losingTrades.reduce((acc, t) => acc + ((t.buyAmountSol || 0) - (t.sellAmountSol || 0)), 0);
+                  
+                  // Recommendations check
+                  const isLiquiditySafe = (hardenedLiquidityMin || 0) >= 40000;
+                  const isDevOwnershipSafe = (hardenedMaxDevOwnership || 0) <= 5;
+                  const isRiskScoreSafe = (hardenedMaxRiskScore || 0) <= 15;
+                  const isTop10Safe = (hardenedMaxTop10 || 0) <= 18;
+                  const isSlippageSafe = (slippage || 0) <= 1.5;
+                  
+                  const applySafePreset = () => {
+                    if (setHardenedLiquidityMin) setHardenedLiquidityMin(45000);
+                    if (setHardenedMaxDevOwnership) setHardenedMaxDevOwnership(5);
+                    if (setHardenedMaxRiskScore) setHardenedMaxRiskScore(14);
+                    if (setHardenedMaxTop10) setHardenedMaxTop10(15);
+                    if (setSlippage) setSlippage(1.0);
+                    if (setBondingCurveStopLoss) setBondingCurveStopLoss(-15);
+                    if (setUnknownStopLoss) setUnknownStopLoss(-20);
+                    if (setHardenedMinUniqueBuyers30s) setHardenedMinUniqueBuyers30s(6);
+                    if (setHardenedMinBuyCount30s) setHardenedMinBuyCount30s(6);
+                    if (setHardenedMinBuySellRatio) setHardenedMinBuySellRatio(2.2);
+                    if (setHardenedMaxPriceChange1m) setHardenedMaxPriceChange1m(10.0);
+                    addLog("🛡️ [A.I. ADVISOR]: Instantly applied 100% Secure Loss Prevention Preset! Saved settings to local storage & Cloud sync initiated.", "success");
+                  };
+                  
+                  return (
+                    <div className="space-y-4 font-sans text-xs pt-1">
+                      {/* Premium Header Banner */}
+                      <div className="p-3 bg-indigo-500/5 border border-indigo-500/20 rounded-xl relative overflow-hidden">
+                        <div className="absolute right-2 top-2 text-[#c7f284] opacity-25">
+                          <Shield className="w-12 h-12" />
+                        </div>
+                        <div className="flex items-center gap-1.5 text-white font-bold text-[12px] uppercase tracking-wider mb-1">
+                          <span>🧠</span> A.I. Risk & Loss Advisor
+                        </div>
+                        <p className="text-[10px] text-[#64748b] leading-relaxed">
+                          Automated trade diagnostics scanning active configs, slippage vectors, and historical trades to block high-risk entries and optimize exit yields.
+                        </p>
+                      </div>
+
+                      {/* Trade History Diagnostics Cards */}
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="p-3 bg-rose-500/5 border border-rose-500/10 rounded-xl">
+                          <div className="text-[9px] text-[#64748b] uppercase font-bold tracking-wider mb-1">Loss Rate Analysis</div>
+                          <div className="text-sm font-mono font-black text-rose-400">
+                            {losingTrades.length} / {tradeHistory.length} <span className="text-[9px] text-slate-500 font-sans font-medium">({(100 - winRate).toFixed(0)}%)</span>
+                          </div>
+                          <div className="text-[9px] text-[#64748b] font-bold mt-1">Total Lost: <span className="text-rose-400 font-mono">-{totalSolLost.toFixed(4)} SOL</span></div>
+                        </div>
+                        <div className="p-3 bg-[#c7f284]/5 border border-[#c7f284]/10 rounded-xl">
+                          <div className="text-[9px] text-[#64748b] uppercase font-bold tracking-wider mb-1">Current Win Rate</div>
+                          <div className="text-sm font-mono font-black text-[#c7f284]">
+                            {winRate.toFixed(0)}%
+                          </div>
+                          <div className="text-[9px] text-[#64748b] font-bold mt-1">
+                            {winningTrades.length} won {winningTrades.length === 1 ? 'trade' : 'trades'}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Underperforming & Loss Tokens Scan list */}
+                      <div className="space-y-2">
+                        <div className="text-[10px] font-bold text-[#94a3b8] uppercase tracking-wider">Historical Loss Incidents</div>
+                        {losingTrades.length === 0 ? (
+                          <div className="p-3 text-center border border-dashed border-[#1f212e]/60 rounded-xl text-[10px] text-[#64748b]">
+                            ✓ No loss incidents recorded. Your parameters are maintaining safety!
+                          </div>
+                        ) : (
+                          <div className="space-y-1.5 max-h-[120px] overflow-y-auto custom-scrollbar">
+                            {losingTrades.slice(0, 5).map(t => {
+                              const loss = (t.buyAmountSol || 0) - (t.sellAmountSol || 0);
+                              return (
+                                <div key={t.id} className="p-2 border border-[#1f212e]/40 bg-[#050509]/40 rounded-lg flex justify-between items-center text-[10px] font-mono">
+                                  <div className="truncate pr-2">
+                                    <span className="text-white font-bold">{t.mint.slice(0, 6)}...{t.mint.slice(-6)}</span>
+                                    <div className="text-[8px] text-[#64748b]">Hold: {Math.floor((t.sellTime - t.buyTime) / 1000)}s</div>
+                                  </div>
+                                  <div className="text-right shrink-0">
+                                    <span className="text-rose-400 font-bold">-{loss.toFixed(4)} SOL</span>
+                                    <div className="text-[8px] text-rose-500">{(t.pnlPct || 0).toFixed(1)}%</div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* A.I. Wisdom Checklist (Configuration Audit) */}
+                      <div className="space-y-2">
+                        <div className="text-[10px] font-bold text-[#94a3b8] uppercase tracking-wider flex justify-between items-center">
+                          <span>Configuration Audit</span>
+                          <span className="text-[9px] font-bold text-indigo-400 capitalize">Audit Status</span>
+                        </div>
+                        
+                        <div className="space-y-2">
+                          {/* Liquidity floor rule */}
+                          <div className="p-2.5 border border-[#1f212e]/40 bg-[#0d0e16]/30 rounded-xl flex items-start gap-2.5">
+                            <div className="mt-0.5 shrink-0">
+                              {isLiquiditySafe ? (
+                                <span className="text-emerald-400 text-xs font-black">✓</span>
+                              ) : (
+                                <span className="text-rose-400 text-xs font-black">⚠</span>
+                              )}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="text-[11px] font-bold text-slate-200 flex justify-between items-center">
+                                <span>Liquidity Floor Depth</span>
+                                <span className={`text-[9px] font-bold ${isLiquiditySafe ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                  ${(hardenedLiquidityMin || 0).toLocaleString()}
+                                </span>
+                              </div>
+                              <p className="text-[9.5px] text-[#64748b] leading-snug mt-0.5 font-sans">
+                                Recommended: $40,000+. Thin liquidity pools trigger high slippage losses during market exit.
+                              </p>
+                            </div>
+                          </div>
+
+                          {/* Dev Concentration rule */}
+                          <div className="p-2.5 border border-[#1f212e]/40 bg-[#0d0e16]/30 rounded-xl flex items-start gap-2.5">
+                            <div className="mt-0.5 shrink-0">
+                              {isDevOwnershipSafe ? (
+                                <span className="text-emerald-400 text-xs font-black">✓</span>
+                              ) : (
+                                <span className="text-rose-400 text-xs font-black">⚠</span>
+                              )}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="text-[11px] font-bold text-slate-200 flex justify-between items-center">
+                                <span>Developer Concentration</span>
+                                <span className={`text-[9px] font-bold ${isDevOwnershipSafe ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                  {hardenedMaxDevOwnership}% Max
+                                </span>
+                              </div>
+                              <p className="text-[9.5px] text-[#64748b] leading-snug mt-0.5 font-sans">
+                                Recommended: &lt;= 5%. High developer ownership is a major vector for rug pulls and coordinated developer dumping.
+                              </p>
+                            </div>
+                          </div>
+
+                          {/* Top 10 Concentration rule */}
+                          <div className="p-2.5 border border-[#1f212e]/40 bg-[#0d0e16]/30 rounded-xl flex items-start gap-2.5">
+                            <div className="mt-0.5 shrink-0">
+                              {isTop10Safe ? (
+                                <span className="text-emerald-400 text-xs font-black">✓</span>
+                              ) : (
+                                <span className="text-rose-400 text-xs font-black">⚠</span>
+                              )}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="text-[11px] font-bold text-slate-200 flex justify-between items-center">
+                                <span>Top 10 Holder Cabals</span>
+                                <span className={`text-[9px] font-bold ${isTop10Safe ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                  {hardenedMaxTop10}% Max
+                                </span>
+                              </div>
+                              <p className="text-[9.5px] text-[#64748b] leading-snug mt-0.5 font-sans">
+                                Recommended: &lt;= 18%. High concentration among top holders indicates cabal ownership, leading to immediate dumps.
+                              </p>
+                            </div>
+                          </div>
+
+                          {/* Slippage impact rule */}
+                          <div className="p-2.5 border border-[#1f212e]/40 bg-[#0d0e16]/30 rounded-xl flex items-start gap-2.5">
+                            <div className="mt-0.5 shrink-0">
+                              {isSlippageSafe ? (
+                                <span className="text-emerald-400 text-xs font-black">✓</span>
+                              ) : (
+                                <span className="text-rose-400 text-xs font-black">⚠</span>
+                              )}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="text-[11px] font-bold text-slate-200 flex justify-between items-center">
+                                <span>Slippage Safeguard</span>
+                                <span className={`text-[9px] font-bold ${isSlippageSafe ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                  {slippage}% Max
+                                </span>
+                              </div>
+                              <p className="text-[9.5px] text-[#64748b] leading-snug mt-0.5 font-sans">
+                                Recommended: &lt;= 1.5%. Loose slippage tolerates high transaction frontrunning (sandwich attacks) and negative execution price impact.
+                              </p>
+                            </div>
+                          </div>
+
+                          {/* Recovery mode caution advice */}
+                          <div className="p-2.5 border border-[#1f212e]/40 bg-amber-500/5 rounded-xl flex items-start gap-2.5">
+                            <div className="mt-0.5 shrink-0">
+                              <span className="text-amber-400 text-xs font-black">⚠</span>
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="text-[11px] font-bold text-amber-400">
+                                Recovery Mode Trap
+                              </div>
+                              <p className="text-[9.5px] text-slate-400 leading-snug mt-0.5 font-sans">
+                                Once triggered (-50% drop), Recovery Mode disables standard Stop Loss, holding till breakeven or hard stop (-85%). Meme coins rarely bounce back to breakeven, resulting in -85% absolute losses. Consider disabling or cutting losses early.
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Direct Apply Mitigation Action Button */}
+                      <button 
+                        onClick={applySafePreset}
+                        className="w-full py-2.5 bg-[#c7f284] hover:bg-[#b0dc68] text-[#050509] rounded-xl font-bold uppercase tracking-wider text-[10px] transition-all cursor-pointer shadow-lg shadow-[#c7f284]/10 active:scale-[0.98] mt-2"
+                      >
+                        🛡️ Apply Safe Loss-Prevention Preset
+                      </button>
+                    </div>
+                  );
+                })()}
               </div>
             )}
           </div>

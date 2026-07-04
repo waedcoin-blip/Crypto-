@@ -1,6 +1,7 @@
 import { Connection, PublicKey, Transaction, VersionedTransaction, TransactionMessage, SystemProgram } from '@solana/web3.js';
 import { createJupiterApiClient, QuoteResponse } from '@jup-ag/api';
 import { useAppStore } from '../store/appStore';
+import { detectTokenStage } from '../lib/utils';
 
 // ─── RPC POOL: Smart multi-endpoint with health tracking ───────────────────
 export interface RpcEndpoint {
@@ -39,7 +40,7 @@ class RpcPool {
 
   getBestEndpoint(): string {
     const healthy = [...this.endpoints.values()].filter(e => e.healthy);
-    if (!healthy.length) return [...this.endpoints.values()][0]?.url || 'https://api.mainnet-beta.solana.com';
+    if (!healthy.length) return [...this.endpoints.values()][0]?.url || 'https://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c';
     return healthy.sort((a, b) => a.latencyMs - b.latencyMs)[0].url;
   }
 
@@ -67,7 +68,7 @@ const getJupiterApiClient = () => {
 
 export const FALLBACK_RPCS = [
   'https://winter-methodical-river.solana-mainnet.quiknode.pro/4b240281eaf3b0b4e4c527bc69c2f9e1a6e7b439/',
-  'https://api.mainnet-beta.solana.com'
+  'https://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c'
 ];
 
 FALLBACK_RPCS.forEach(url => rpcPool.addEndpoint(url));
@@ -168,6 +169,23 @@ export const executeTxWithRPCFallback = async (
       const json = await response.json();
       if (json.error) throw new Error(`Helius Sender Error: ${json.error.message}`);
       const signatureResult = json.result;
+
+      // Fast Signature Status Polling Loop
+      const deadline = Date.now() + 25000;
+      while (Date.now() < deadline) {
+        const statusRes = await connection.getSignatureStatus(signatureResult, { searchTransactionHistory: false });
+        const value = statusRes?.value;
+        if (value) {
+          if (value.err) {
+            throw new Error(`Sender transaction failed: ${JSON.stringify(value.err)}`);
+          }
+          if (value.confirmationStatus === 'confirmed' || value.confirmationStatus === 'finalized') {
+            return signatureResult;
+          }
+        }
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+
       const latestBlockhash = await connection.getLatestBlockhash('confirmed');
       const confirmation = await connection.confirmTransaction({
         signature: signatureResult,
@@ -206,28 +224,46 @@ export const executeTxWithRPCFallback = async (
     sentViaJito = true;
   } catch (e) {}
 
-  const rpcsToTry = sentViaJito
-    ? [connection.rpcEndpoint]
-    : [connection.rpcEndpoint, ...FALLBACK_RPCS.filter(r => r !== connection.rpcEndpoint)];
+  const rpcsToTry = [connection.rpcEndpoint, ...FALLBACK_RPCS.filter(r => r !== connection.rpcEndpoint)];
+
+  // Broadcast to all RPCs immediately in parallel to maximize transaction propagation speed!
+  try {
+    await Promise.allSettled(rpcsToTry.map(async rpc => {
+      try {
+        const conn = new Connection(rpc, 'confirmed');
+        await conn.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+      } catch (err) {}
+    }));
+  } catch (err) {}
 
   try {
     return await Promise.any(rpcsToTry.map(async rpc => {
       const conn = new Connection(rpc, 'confirmed');
-      if (!sentViaJito) {
-        await conn.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
-      }
-      const deadline = Date.now() + 30000;
-      const latestBlockhash = await conn.getLatestBlockhash('confirmed');
+      
+      // Fast Signature Status Polling Loop
+      const deadline = Date.now() + 25000;
       while (Date.now() < deadline) {
-        const confirmation = await conn.confirmTransaction({
-          signature,
-          blockhash: latestBlockhash.blockhash,
-          lastValidBlockHeight: latestBlockhash.lastValidBlockHeight
-        }, 'confirmed');
-        if (!confirmation.value.err) return signature;
-        throw new Error(`Transaction failed: ${JSON.stringify(confirmation.value.err)}`);
+        const statusRes = await conn.getSignatureStatus(signature, { searchTransactionHistory: false });
+        const value = statusRes?.value;
+        if (value) {
+          if (value.err) {
+            throw new Error(`Transaction failed: ${JSON.stringify(value.err)}`);
+          }
+          if (value.confirmationStatus === 'confirmed' || value.confirmationStatus === 'finalized') {
+            return signature;
+          }
+        }
+        await new Promise(resolve => setTimeout(resolve, 300));
       }
-      throw new Error('Confirmation timeout');
+
+      const latestBlockhash = await conn.getLatestBlockhash('confirmed');
+      const confirmation = await conn.confirmTransaction({
+        signature,
+        blockhash: latestBlockhash.blockhash,
+        lastValidBlockHeight: latestBlockhash.lastValidBlockHeight
+      }, 'confirmed');
+      if (!confirmation.value.err) return signature;
+      throw new Error(`Transaction failed: ${JSON.stringify(confirmation.value.err)}`);
     }));
   } catch (err: any) {
     throw new Error(`Failed to confirm transaction: ${err?.message || ''}`);
@@ -485,7 +521,7 @@ export const createJupiterSwapTransaction = async (
     const isSenderEnabled = localStorage.getItem('hd_sender_enabled') === 'true';
     if (isSenderEnabled) {
       const activeConnection = connection || new Connection(
-        localStorage.getItem('juipter_auto_rpcUrl') || 'https://api.mainnet-beta.solana.com',
+        localStorage.getItem('juipter_auto_rpcUrl') || 'https://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c',
         'confirmed'
       );
       const isSwqos = localStorage.getItem('hd_sender_swqos') === 'true';
@@ -534,6 +570,7 @@ export interface AdvancedTokenMetrics {
   priceChange1m: number;
   ageMinutes?: number;
   volume24h?: number;
+  dexId?: string;
 }
 
 export const verifyHardenedScannerCriteria = (
@@ -548,7 +585,7 @@ export const verifyHardenedScannerCriteria = (
     minBuySellRatio?: number; maxBuySellRatio?: number;
     maxPriceChange1m?: number; minBondingProgress?: number; maxBondingProgress?: number;
     minAge?: number; maxAge?: number;
-    tradePumpFun?: boolean; tradeRaydium?: boolean; hardenedMinProfit5m?: number;
+    tradePumpFun?: boolean; tradeRaydium?: boolean; tradeBonding?: boolean; tradeUnknown?: boolean; hardenedMinProfit5m?: number;
   }
 ): boolean => {
   if (metrics.mintAddress === 'So11111111111111111111111111111111111111112') return false;
@@ -556,6 +593,8 @@ export const verifyHardenedScannerCriteria = (
 
   const tradePumpFun = customConfig?.tradePumpFun ?? true;
   const tradeRaydium = customConfig?.tradeRaydium ?? true;
+  const tradeBonding = customConfig?.tradeBonding ?? true;
+  const tradeUnknown = customConfig?.tradeUnknown ?? true;
   const hardenedMinProfit5m = customConfig?.hardenedMinProfit5m ?? 0.0;
   const minMcapPump = customConfig?.minMcapPump ?? 65000;
   const minMcapRaydium = customConfig?.minMcapRaydium ?? 110000;
@@ -576,15 +615,25 @@ export const verifyHardenedScannerCriteria = (
   const minAge = customConfig?.minAge ?? 0;
   const maxAge = customConfig?.maxAge ?? 120;
 
-  const isFreshGraduation = metrics.bondingCurveProgress >= 99.5 || metrics.isRaydiumListed;
-  if (!tradePumpFun && !isFreshGraduation) return false;
-  if (!tradeRaydium && isFreshGraduation) return false;
+  const stage = detectTokenStage({
+    address: metrics.mintAddress,
+    dexId: metrics.dexId,
+    bondingCurveProgress: metrics.bondingCurveProgress,
+    isRaydiumListed: metrics.isRaydiumListed
+  });
 
-  const calibratedMinMcap = isFreshGraduation ? minMcapRaydium : minMcapPump;
+  // Skip if stage doesn't match what the user enabled
+  if (stage.isBonding && !tradeBonding) return false;
+  if (stage.platform === 'PUMP_FUN' && !tradePumpFun) return false;
+  if (stage.platform === 'RAYDIUM' && !tradeRaydium) return false;
+  if (stage.platform === 'PUMPSWAP' && !tradeRaydium) return false;
+  if (stage.platform === 'UNKNOWN' && !tradeUnknown) return false;
+
+  const calibratedMinMcap = stage.isMigrated ? minMcapRaydium : minMcapPump;
   if (metrics.marketCapUsd < calibratedMinMcap || metrics.marketCapUsd > maxMcap) return false;
 
-  if (!isFreshGraduation) {
-    if (metrics.bondingCurveProgress < minBondingProgress || metrics.bondingCurveProgress > maxBondingProgress) return false;
+  if (!stage.isMigrated) {
+    if (stage.bondingProgress < minBondingProgress || stage.bondingProgress > maxBondingProgress) return false;
     const ageMinutes = metrics.ageMinutes ?? 0;
     if (ageMinutes < minAge || ageMinutes > maxAge) return false;
   }
@@ -655,7 +704,7 @@ export const processActiveTrackingFrame = async (
       }
     }
 
-    if (!quote || Date.now() - startTime > 1500) return { shouldExit: false };
+    if (!quote) return { shouldExit: false };
 
     const guaranteedSolOut = Number(BigInt(quote.otherAmountThreshold)) / 1_000_000_000;
     const dynamicFeesSol = Number(position.currentTokenBalance) < 50000000000 ? 0.00155 : 0.0035;

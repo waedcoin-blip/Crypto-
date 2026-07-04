@@ -61,6 +61,7 @@ export interface TokenMetric {
   holderGrowthHr?: number;
   bondingCurveProgress?: number;
   dexId?: string;
+  isRaydiumListed?: boolean;
 }
 
 export interface TelemetryAlert {

@@ -3,6 +3,7 @@ import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
 import compression from "compression";
+import fs from "fs";
 import { startLaserStream, stopLaserStream, isLaserStreamUsingFallback, isLaserStreamSimulated } from "./src/engines/LaserstreamIngestion";
 import { testFtpConnection, backupFtpData, deployFtpDist } from "./src/services/ftpService";
 
@@ -126,7 +127,7 @@ class SwrCache<T> {
 process.on('uncaughtException', (err) => {
   const msg = err?.message || String(err);
   // Suppress common non-fatal Solana/gRPC noise
-  const benign = ['ECONNRESET', 'ENOTFOUND', 'socket hang up', 'read ECONNRESET', 'write ECONNRESET', 'Ping timeout'];
+  const benign = ['ECONNRESET', 'ENOTFOUND', 'socket hang up', 'read ECONNRESET', 'write ECONNRESET', 'Ping timeout', 'Unexpected server response', '429'];
   if (benign.some(s => msg.includes(s))) {
     console.warn('[SUPPRESSED EXCEPTION]:', msg);
     return;
@@ -137,7 +138,7 @@ process.on('uncaughtException', (err) => {
 
 process.on('unhandledRejection', (reason: any) => {
   const msg = reason?.message || String(reason) || '';
-  const benign = ['NO_ROUTES_FOUND', 'No liquidity', 'ECONNRESET', 'socket hang up', 'AbortError', 'fetch failed'];
+  const benign = ['NO_ROUTES_FOUND', 'No liquidity', 'ECONNRESET', 'socket hang up', 'AbortError', 'fetch failed', 'Unexpected server response', '429'];
   if (benign.some(s => msg.includes(s))) return;
   console.error('[UNHANDLED REJECTION]', reason);
 });
@@ -162,7 +163,6 @@ async function startServer() {
   // Security headers
   app.use((req: any, res: any, next: any) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('X-XSS-Protection', '1; mode=block');
     next();
   });
@@ -789,6 +789,30 @@ async function startServer() {
     };
   }
 
+  app.get("/api/dex/search", async (req, res) => {
+    const { q } = req.query;
+    if (!q || typeof q !== 'string') {
+      return res.status(400).json({ error: "Missing query parameter 'q'" });
+    }
+    
+    try {
+      // Use short cache for search
+      const data = await dexTokenCache.fetch(`search_${q}`, async () => {
+        const { response, text } = await fetchWithRetry(`https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(q)}`, {
+          headers: { 'User-Agent': 'Mozilla/5.0' }
+        }, 2);
+        if (!response.ok) {
+          throw new Error(`DexScreener API status: ${response.status}`);
+        }
+        return JSON.parse(text);
+      });
+      res.json(data);
+    } catch (error: any) {
+      console.warn(`[DEXSCREENER PROXY WARNING]: search failed for ${q} (${error.message}).`);
+      res.status(500).json({ error: error.message, pairs: [] });
+    }
+  });
+
   app.get("/api/dex/tokens/:mint", async (req, res) => {
     const { mint } = req.params;
     try {
@@ -1124,7 +1148,7 @@ async function startServer() {
   // ===================================================
 
   // Vite middleware for development
-  if (process.env.NODE_ENV !== "production") {
+  if (process.env.NODE_ENV !== "production" || process.env.VITE_DEV_SERVER === "true" || !fs.existsSync(path.join(process.cwd(), "dist/index.html"))) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",

@@ -107,10 +107,18 @@ export function createTokenTelemetry(
   } else if (graduated) {
     bondingProgress = 100.0;
   } else {
-    bondingProgress = Math.min(
-      99.5,
-      (marketCapUSD / 65000) * 100
-    );
+    const isSol = bestPair.quoteToken?.address === 'So11111111111111111111111111111111111111112' || bestPair.quoteToken?.symbol === 'SOL' || bestPair.quoteToken?.symbol === 'WSOL';
+    const priceNative = (isSol && bestPair.priceNative) ? parseFloat(bestPair.priceNative) : (bestPair.priceUsd ? parseFloat(bestPair.priceUsd) / 150 : 0);
+    if (priceNative > 0) {
+      const virtualTokenReserves = Math.sqrt(32190000000 / priceNative);
+      const calculatedProgress = ((1073000000 - virtualTokenReserves) / 793100000) * 100;
+      bondingProgress = Math.min(99.9, Math.max(0, calculatedProgress));
+    } else {
+      bondingProgress = Math.min(
+        99.5,
+        (marketCapUSD / 65000) * 100
+      );
+    }
   }
 
   /**
