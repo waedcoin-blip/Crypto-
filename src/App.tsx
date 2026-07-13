@@ -48,6 +48,7 @@ import { SafetyPage } from './components/pages/SafetyPage';
 import { PredictionPage } from './components/pages/PredictionPage';
 import { PnLPage } from './components/pages/PnLPage';
 import { SystemCheckPage } from './components/pages/SystemCheckPage';
+import { SimRealPage } from './components/pages/SimRealPage';
 
 
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
@@ -349,9 +350,53 @@ const categorizeToken = (symbol: string | undefined, address: string | undefined
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
-  const [currentPage, setCurrentPage] = useState<'dashboard' | 'alerts' | 'high-buy' | 'discovery' | 'gems-100x' | 'portfolio' | 'system-check'>('dashboard');
+  const [currentPage, setCurrentPage] = useState<'dashboard' | 'alerts' | 'high-buy' | 'discovery' | 'gems-100x' | 'portfolio' | 'system-check' | 'simreal'>('dashboard');
+  const [alphaSubTab, setAlphaSubTab] = useState<'high-buy' | 'safety' | 'prediction' | 'intel'>('high-buy');
   const [viewMode, setViewMode] = useState<'responsive' | 'mobile' | 'laptop'>('responsive');
   const [alphaProtocol, setAlphaProtocol] = useState<'ALL' | 'HIGH_PROFIT' | 'WHALE_BUY' | 'NEW_DISCOVERY' | 'SNIPER' | 'GEMS_100X' | 'JUPITER_AUTO' | 'MIGRATED'>('JUPITER_AUTO');
+
+  const renderAlphaHeader = () => {
+    return (
+      <div className="flex flex-col md:flex-row items-center justify-between gap-4 bg-slate-900/40 border border-slate-800 p-4 rounded-3xl backdrop-blur-xl mb-4 w-full">
+        <div className="flex items-center gap-4">
+          <div className="w-10 h-10 rounded-2xl bg-indigo-500/10 flex items-center justify-center border border-indigo-500/20">
+            <Zap className="w-6 h-6 text-indigo-400" />
+          </div>
+          <div>
+            <h2 className="text-sm font-black text-white uppercase tracking-tighter leading-none mb-1">Arina X-Ray Alpha Hub</h2>
+            <p className="text-[9px] text-slate-500 uppercase tracking-widest font-bold">Select mode for real-time intelligence & strategies</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 p-1 bg-slate-950/80 rounded-2xl border border-slate-800 overflow-x-auto scrollbar-none">
+          {[
+            { id: 'high-buy', label: 'Whale Scraper', icon: ArrowUpRight, desc: 'Large buys' },
+            { id: 'safety', label: 'Safety Vision', icon: ShieldAlert, desc: 'Rug security' },
+            { id: 'prediction', label: '100x Prediction', icon: BrainCircuit, desc: 'AI sentiment' },
+            { id: 'intel', label: 'WSS Intel', icon: Activity, desc: 'Live signals' }
+          ].map((tab) => {
+            const Icon = tab.icon;
+            const active = alphaSubTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setAlphaSubTab(tab.id as any)}
+                className={cn(
+                  "flex items-center gap-2 px-4 py-2 rounded-xl transition-all whitespace-nowrap relative cursor-pointer",
+                  active ? "bg-indigo-600 text-white shadow-lg" : "text-slate-500 hover:text-slate-300"
+                )}
+              >
+                <Icon className="w-3.5 h-3.5" />
+                <div className="flex flex-col items-start">
+                  <span className="text-[9px] font-black uppercase tracking-tight leading-none mb-0.5">{tab.label}</span>
+                  <span className="text-[6px] uppercase font-bold tracking-widest opacity-60">{tab.desc}</span>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
 
   const [manualGemInput, setManualGemInput] = useState('');
   const [tokenSearchValue, setTokenSearchValue] = useState('');
@@ -367,6 +412,9 @@ export default function App() {
   const { publicKey, sendTransaction, wallet } = useWallet();
   const { connection } = useConnection();
   
+  const [simrealPositions, setSimrealPositions] = useState<Record<string, any>>({});
+  const simrealControlRef = useRef<any>(null);
+  
   const [autoSniperEnabled, setAutoSniperEnabled] = useState(false);
   const [isLiveTrading, setIsLiveTrading] = useState(false); // Live via Jupiter V6
   const [buyAmountSol, setBuyAmountSol] = useState(() => Number(localStorage.getItem('app_buyAmountSol')) || 0.1);
@@ -380,6 +428,8 @@ export default function App() {
   const [unknownStopLoss, setUnknownStopLoss] = useState(() => Number(localStorage.getItem('app_unknownStopLoss')) || -20);
   const [maxPositions, setMaxPositions] = useState(() => Number(localStorage.getItem('app_maxPositions')) || 5);
   const [slippage, setSlippage] = useState(1.0); 
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem('juipter_auto_apiKey') || '');
+  const [privateKey, setPrivateKey] = useState(() => localStorage.getItem('juipter_auto_privateKey') || '');
   const [telegramBotToken, setTelegramBotToken] = useState(() => localStorage.getItem('tg_bot_token') || '');
   const [telegramChatId, setTelegramChatId] = useState(() => localStorage.getItem('tg_chat_id') || '');
 
@@ -486,7 +536,8 @@ export default function App() {
   });
   const [maxRebuyTimes, setMaxRebuyTimes] = useState<number>(() => {
     const saved = localStorage.getItem('hd_max_rebuy_times');
-    return saved !== null ? Number(saved) : 2;
+    const parsed = saved !== null ? Number(saved) : 3;
+    return parsed === 2 ? 3 : parsed;
   });
 
   useEffect(() => {
@@ -521,6 +572,7 @@ export default function App() {
   const [rpcUrl, setRpcUrl] = useState(() => localStorage.getItem('juipter_auto_rpcUrl') || 'https://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c');
   const [rpcUrl2, setRpcUrl2] = useState(() => localStorage.getItem('juipter_auto_rpcUrl2') || 'https://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c');
   const [customWsUrl, setCustomWsUrl] = useState(() => localStorage.getItem('juipter_auto_wsUrl') || '');
+  const [isSecondaryActive, setIsSecondaryActive] = useState(() => localStorage.getItem('juipter_rpc_secondary_active') === 'true');
 
   useEffect(() => {
     localStorage.setItem('juipter_auto_rpcUrl', rpcUrl);
@@ -535,15 +587,6 @@ export default function App() {
   }, [customWsUrl]);
   const [isHardenedCriteriaExpanded, setIsHardenedCriteriaExpanded] = useState(false);
   const [activePreset, setActivePreset] = useState<string>(() => localStorage.getItem('app_active_preset') || 'custom');
-
-  // Auto-refresh the application every 10 minutes
-  useEffect(() => {
-    const refreshInterval = setInterval(() => {
-      window.location.reload();
-    }, 10 * 60 * 1000);
-    return () => clearInterval(refreshInterval);
-  }, []);
-
 
   useEffect(() => {
     localStorage.setItem('app_active_preset', activePreset);
@@ -657,7 +700,7 @@ export default function App() {
   ]);
 
   const [isXRayEnabled, setIsXRayEnabled] = useState(true);
-  const { trades, setTrades, mySniperTrades, setMySniperTrades, simulationBalance, setSimulationBalance } = useAppStore();
+  const { trades, setTrades, mySniperTrades, setMySniperTrades, simulationBalance, setSimulationBalance, simRealBalance, setSimRealBalance, simRealTrades, setSimRealTrades, jupiterLogs } = useAppStore();
   
   // ... (find the return block and look for currentPage rendering) ...
   const [isExportingKey, setIsExportingKey] = useState(false);
@@ -746,7 +789,9 @@ export default function App() {
 
   // New Effect to trigger the search when manualGemInput is set via deep link
   useEffect(() => {
-    if (manualGemInput && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(manualGemInput) && currentPage === 'portfolio') {
+    const urlAddressMatch = manualGemInput ? manualGemInput.match(/\/([1-9A-HJ-NP-Za-km-z]{32,44})/) : null;
+    const resolvedInput = urlAddressMatch ? urlAddressMatch[1] : manualGemInput;
+    if (resolvedInput && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(resolvedInput) && currentPage === 'portfolio') {
       handleManualAddGem();
     }
   }, [manualGemInput, currentPage]);
@@ -817,9 +862,13 @@ export default function App() {
       return;
     }
     
-    let address = input;
+    // Extract Solana address if they pasted a URL
+    const urlAddressMatch = input.match(/\/([1-9A-HJ-NP-Za-km-z]{32,44})/);
+    const resolvedInput = urlAddressMatch ? urlAddressMatch[1] : input;
+    
+    let address = resolvedInput;
     let targetSymbol = savedGems[address]?.symbol;
-    const isAddress = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(input);
+    const isAddress = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(resolvedInput);
 
     setIsAddingGem(true);
     addNotification(isAddress ? 'Scanning token security data...' : 'Searching for token...');
@@ -958,19 +1007,52 @@ export default function App() {
     if (rpcUrl2 && rpcUrl2 !== rpcUrl) rpcPool.addEndpoint(rpcUrl2);
     rpcPool.startHealthChecks(15000);
 
-    const pingRpc = async () => {
-      if (!connectionRef.current) return;
+    const pingUrl = async (url: string): Promise<number> => {
       try {
+        const conn = new Connection(url, 'confirmed');
         const start = performance.now();
-        await connectionRef.current.getSlot("confirmed");
-        const duration = performance.now() - start;
-        if (active) setRpcLatency(duration);
+        await conn.getSlot("confirmed");
+        return performance.now() - start;
       } catch (err) {
-        console.warn('RPC Latency test failed:', err);
-        // Auto-switch to fastest healthy endpoint if primary fails
-        const bestUrl = rpcPool.getBestEndpoint();
-        if (active && bestUrl !== rpcUrl) {
-          console.log(`[RPC FAILOVER]: Switching to ${bestUrl}`);
+        return 9999;
+      }
+    };
+
+    const pingRpc = async () => {
+      if (!rpcUrl) return;
+      
+      const currentLatency = await pingUrl(rpcUrl);
+      if (!active) return;
+      
+      setRpcLatency(currentLatency < 9999 ? currentLatency : null);
+
+      // Latency is high if it is above hardenedMaxLatency (or default 400ms if not configured)
+      const threshold = Math.max(hardenedMaxLatency || 400, 300);
+      
+      if (currentLatency > threshold) {
+        console.warn(`[RPC LATENCY HIGH] Current active RPC (${isSecondaryActive ? 'Secondary' : 'Primary'}) latency is ${currentLatency.toFixed(0)}ms (Threshold: ${threshold}ms)`);
+        
+        if (rpcUrl2 && rpcUrl2 !== rpcUrl) {
+          const fallbackLatency = await pingUrl(rpcUrl2);
+          if (!active) return;
+          
+          if (fallbackLatency < currentLatency) {
+            // Switch! Swap rpcUrl and rpcUrl2 in state
+            const temp = rpcUrl;
+            setRpcUrl(rpcUrl2);
+            setRpcUrl2(temp);
+            
+            const newSecondaryActive = !isSecondaryActive;
+            setIsSecondaryActive(newSecondaryActive);
+            localStorage.setItem('juipter_rpc_secondary_active', String(newSecondaryActive));
+            
+            const msg = newSecondaryActive 
+              ? `⚠️ [RPC FAILOVER]: Primary RPC latency is high (${currentLatency === 9999 ? 'Offline' : currentLatency.toFixed(0) + 'ms'} > ${threshold}ms). Switched to Secondary RPC Node!`
+              : `🔄 [RPC RECOVERY]: Secondary RPC latency is high (${currentLatency === 9999 ? 'Offline' : currentLatency.toFixed(0) + 'ms'} > ${threshold}ms). Switched back to Primary RPC Node!`;
+            
+            console.log(msg);
+            addNotification(msg);
+          }
         }
       }
     };
@@ -982,7 +1064,7 @@ export default function App() {
       clearInterval(interval);
       rpcPool.stopHealthChecks();
     };
-  }, [rpcUrl]);
+  }, [rpcUrl, rpcUrl2, isSecondaryActive, hardenedMaxLatency]);
 
   // Load or generate session wallet
   useEffect(() => {
@@ -1008,6 +1090,7 @@ export default function App() {
   const autoBoughtTokens = useRef<Set<string>>(new Set());
   const pendingTrades = useRef<Set<string>>(new Set());
   const optimisticPositions = useRef<Set<string>>(new Set());
+  const simRealBoughtPending = useRef<Set<string>>(new Set());
 
   const snipedPortfolio = useRef<Record<string, { boughtAt: number, amount: number }>>({});
 
@@ -1052,13 +1135,15 @@ export default function App() {
     tokenMetrics, autoSniperEnabled, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, unknownStopLoss, activePositions, maxPositions, slippage, moonbagStrategy, telegramBotToken, telegramChatId, mySniperTrades,
     hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax, hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore, hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s, hardenedMinBuyCount30s, hardenedMaxBuyCount30s, hardenedMinBuySellRatio, hardenedMaxBuySellRatio, hardenedMaxPriceChange1m,
     hardenedMinBondingProgress, hardenedMaxBondingProgress, hardenedMinAge, hardenedMaxAge,
-    hardenedMinLatency, hardenedMaxLatency, hardenedMatchRequirement, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown, hardenedMinProfit5m, enableLatencyGuard, maxRebuyTimes
+    hardenedMinLatency, hardenedMaxLatency, hardenedMatchRequirement, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown, hardenedMinProfit5m, enableLatencyGuard, maxRebuyTimes,
+    simRealBalance, simRealTrades, buyAmountSol
   });
   latestState.current = { 
     tokenMetrics, autoSniperEnabled, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, unknownStopLoss, activePositions, maxPositions, slippage, moonbagStrategy, telegramBotToken, telegramChatId, mySniperTrades,
     hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax, hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore, hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s, hardenedMinBuyCount30s, hardenedMaxBuyCount30s, hardenedMinBuySellRatio, hardenedMaxBuySellRatio, hardenedMaxPriceChange1m,
     hardenedMinBondingProgress, hardenedMaxBondingProgress, hardenedMinAge, hardenedMaxAge,
-    hardenedMinLatency, hardenedMaxLatency, hardenedMatchRequirement, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown, hardenedMinProfit5m, enableLatencyGuard, maxRebuyTimes
+    hardenedMinLatency, hardenedMaxLatency, hardenedMatchRequirement, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown, hardenedMinProfit5m, enableLatencyGuard, maxRebuyTimes,
+    simRealBalance, simRealTrades, buyAmountSol
   };
 
   const fns = useRef<any>({});
@@ -1178,6 +1263,51 @@ export default function App() {
               ...prev,
               [token.address]: { ...prev[token.address], peakPnLPct: currentPnLPct }
             }));
+          }
+
+          // ── SIMREAL WALLET DYNAMIC BUY ON 1% PROFIT ────────────────────────
+          if (currentPnLPct >= 1.0 && !position.simRealBought && !simRealBoughtPending.current.has(tokenAddress)) {
+            simRealBoughtPending.current.add(tokenAddress);
+            const buyAmt = state.buyAmountSol || 0.1;
+            if (state.simRealBalance >= buyAmt) {
+              const quoteRequestTime = Date.now();
+              const boughtPriceSol = currentPriceSol || 0.000001;
+              const tokensQty = buyAmt / boughtPriceSol;
+              
+              setSimRealBalance(prev => prev - buyAmt);
+              
+              const newSimTrade: SniperTrade = {
+                id: `simreal-buy-${Date.now()}`,
+                type: 'BUY',
+                token: symbol,
+                address: tokenAddress,
+                amount: buyAmt,
+                timestamp: quoteRequestTime,
+                signature: 'SIMREAL_BN_' + Math.random().toString(36).substring(7),
+                tokenAmount: tokensQty
+              };
+              setSimRealTrades(prev => [newSimTrade, ...prev]);
+              
+              setActivePositions(prev => {
+                if (!prev[tokenAddress]) return prev;
+                return {
+                  ...prev,
+                  [tokenAddress]: {
+                    ...prev[tokenAddress],
+                    simRealBought: true,
+                    simRealBoughtPriceSol: boughtPriceSol,
+                    simRealAmountTokens: tokensQty,
+                    simRealSolSpent: buyAmt,
+                    simRealBoughtTime: quoteRequestTime
+                  }
+                };
+              });
+
+              addNotification(`SIMREAL BOUGHT: ${symbol} for ${buyAmt.toFixed(4)} SOL (Active position in profit >= 1%)`, symbol, tokenAddress);
+              console.log(`[SIMREAL BUY] Bought ${symbol} at ${boughtPriceSol} SOL. Amount: ${buyAmt} SOL.`);
+            } else {
+              console.log(`[SIMREAL BUY SKIP] Insufficient simreal wallet balance: ${state.simRealBalance.toFixed(4)} SOL`);
+            }
           }
           const peakPnL = position.peakPnLPct || 0;
           
@@ -1544,77 +1674,61 @@ export default function App() {
     setTradingStatus(`Executing Matrix Buy: ${symbol}...`);
     try {
       let signature = 'SIM_MANUAL_BUY_' + Math.random().toString(36).substring(7);
-
       let isSimulated = !isLiveTrading;
+      const lamports = Math.floor(buyAmountSol * 1_000_000_000);
+      const liquidityUsd = tokenMetrics[tokenAddress]?.liquidity || 0;
+      
+      const quote = await getJupiterQuote(
+        'So11111111111111111111111111111111111111112', // SOL
+        tokenAddress,
+        lamports,
+        liquidityUsd
+      );
+      if (!quote) throw new Error("Jupiter returned no quote (MARKET_NOT_FOUND).");
+
+      let outTokensRaw = quote.outAmount;
 
       if (isLiveTrading) {
         if (!sessionWallet && !publicKey) {
           throw new Error("No wallet connected for Live Trading");
         }
-        
-        const lamports = Math.floor(buyAmountSol * 1_000_000_000);
         const walletAddress = sessionWallet ? sessionWallet.publicKey.toBase58() : publicKey!.toBase58();
         const solBalance = await connection.getBalance(new PublicKey(walletAddress));
         
         if (solBalance < lamports) {
           addNotification("Insufficient real SOL balance. Falling back to Simulation Trade.");
           isSimulated = true;
-          await new Promise(resolve => setTimeout(resolve, 500 + Math.random() * 1000));
         } else {
-          const cachedPrice = tokenMetrics[tokenAddress]?.priceUsd || 0;
-          const maxLimitSol = cachedPrice > 0 ? (cachedPrice * 5) / 140 : undefined;
-          
-          const quote = await getJupiterQuote(
-            'So11111111111111111111111111111111111111112', // SOL
-            tokenAddress,
-            lamports,
-            tokenMetrics[tokenAddress]?.liquidity || 0
-          );
-
-          if (!quote) throw new Error("Jupiter returned no quote.");
-
+          const priorityTipLamports = 2000000;
           if (sessionWallet) {
-            const tx = await createJupiterSwapTransaction(
-              sessionWallet.publicKey.toBase58(),
-              quote,
-              100000,
-              connection
-            );
+            const tx = await createJupiterSwapTransaction(sessionWallet.publicKey.toBase58(), quote, priorityTipLamports, connection);
             if (tx) {
               tx.sign([sessionWallet]);
               signature = await executeTxWithRPCFallback(tx, connection);
-            } else {
-              throw new Error("Failed to create swap transaction");
-            }
+            } else throw new Error("Failed to create swap transaction");
           } else if (publicKey && sendTransaction) {
-            // Use connected wallet
-            const tx = await createJupiterSwapTransaction(
-              publicKey.toBase58(),
-              quote,
-              50000,
-              connection
-            );
+            const tx = await createJupiterSwapTransaction(publicKey.toBase58(), quote, priorityTipLamports, connection);
             if (tx) {
               signature = await sendTransaction(tx as any, connection);
               const latestBlockhash = await connection.getLatestBlockhash('confirmed');
-              const confirmation = await connection.confirmTransaction({
-                signature,
-                blockhash: latestBlockhash.blockhash,
-                lastValidBlockHeight: latestBlockhash.lastValidBlockHeight
-              }, 'confirmed');
-              if (confirmation.value.err) {
-                 throw new Error(`Transaction failed to confirm: ${JSON.stringify(confirmation.value.err)}`);
-              }
-            } else {
-              throw new Error("Failed to create swap transaction for connected wallet");
-            }
+              const confirmation = await connection.confirmTransaction({ signature, blockhash: latestBlockhash.blockhash, lastValidBlockHeight: latestBlockhash.lastValidBlockHeight }, 'confirmed');
+              if (confirmation.value.err) throw new Error(`Transaction failed: ${JSON.stringify(confirmation.value.err)}`);
+            } else throw new Error("Failed to create swap transaction");
           }
         }
-      } else {
-        await new Promise(resolve => setTimeout(resolve, 500 + Math.random() * 1000));
       }
 
-      // Force a fresh price fetch right before entry to ensure accuracy
+      if (isSimulated) {
+        const simLatency = 150 + Math.random() * 1200;
+        await new Promise(resolve => setTimeout(resolve, simLatency));
+        if (Math.random() < 0.002) {
+          throw new Error("SIM: Transaction not included — try increasing Jito tip");
+        }
+        if (simulationBalance < buyAmountSol) {
+          throw new Error("SIM: Insufficient simulation balance");
+        }
+        setSimulationBalance(prev => prev - buyAmountSol);
+      }
       const security = await fetchTokenSecurityData(tokenAddress);
       
       const entryCost = buyAmountSol;
@@ -1653,7 +1767,8 @@ export default function App() {
           [tokenAddress]: { 
             boughtAt: existing ? existing.boughtAt : Date.now(), 
             amount: newAmount, 
-            symbol: symbol, 
+            symbol: symbol,
+            tokenQuantityRaw: existing && existing.tokenQuantityRaw ? (BigInt(existing.tokenQuantityRaw) + BigInt(outTokensRaw)).toString() : outTokensRaw, 
             entryPrice: newEntryPriceUsd,
             entryPriceSol: newEntryPriceSol
           }
@@ -1818,41 +1933,31 @@ export default function App() {
     try {
       let signature = 'SIM_SELL_' + Math.random().toString(36).substring(7);
       let isSimulated = !isLiveTrading;
-
       const walletAddress = (isLiveTrading && (sessionWallet || publicKey)) 
          ? (sessionWallet ? sessionWallet.publicKey.toBase58() : publicKey!.toBase58())
          : '11111111111111111111111111111111';
-
-      if (isLiveTrading && !sessionWallet && !publicKey) {
-         throw new Error("No wallet connected for Live Trading");
-      }
-
       let balanceRaw: string | number = 0;
       if (isLiveTrading) {
           balanceRaw = await getTokenBalanceRaw(connection, walletAddress, tokenAddress);
           if (balanceRaw === '0') isSimulated = true;
       } else {
-          balanceRaw = Math.floor(position.amount * 1_000_000);
+          balanceRaw = position.tokenQuantityRaw || Math.floor(position.amount * 1_000_000);
       }
-
-      if (balanceRaw === '0' || balanceRaw === 0) {
+      const sellRawAmount = Math.floor(Number(balanceRaw));
+      if (sellRawAmount <= 0) {
           pendingTrades.current.delete(tokenAddress);
           return;
       }
-
-      // Identical Execution Path for True Slippage simulation mapping
-      const quote = cachedQuote || await getJupiterQuote(
+      const quote = await getJupiterQuote(
         tokenAddress, 
         'So11111111111111111111111111111111111111112', 
-        Number(balanceRaw), 
+        sellRawAmount, 
         metric?.liquidity || 0,
         curPnLPercent > minTakeProfit ? (position.entryPriceSol || 0.1) : undefined,
         curPnLPercent > minTakeProfit ? minTakeProfit : undefined,
         curPnLPercent
       );
-      
-      if (!quote) throw new Error("No route for sell execution");
-
+      if (!quote) throw new Error("No route for partial sell execution");
       const guaranteedMinLamports = Number(quote.otherAmountThreshold);
       const guaranteedSolOut = guaranteedMinLamports / 1_000_000_000.0;
       const networkFeesSol = 0.0035; // Simulated / average Jito fee
@@ -1928,6 +2033,37 @@ export default function App() {
       if (isSimulated) {
         setSimulationBalance(prev => prev + totalReturned);
       }
+
+      if (position.simRealBought) {
+        const exitPriceSol = metric?.priceNative || 0;
+        const boughtPriceSol = position.simRealBoughtPriceSol || 0;
+        let simRealPnL = 0;
+        if (exitPriceSol > 0 && boughtPriceSol > 0) {
+          simRealPnL = ((exitPriceSol - boughtPriceSol) / boughtPriceSol) * 100;
+        } else {
+          simRealPnL = realizedPnL - 1.0;
+        }
+        const solSpent = position.simRealSolSpent || 0.1;
+        const simRealReturnSol = solSpent * (1 + (simRealPnL / 100));
+        
+        setSimRealBalance(prev => prev + simRealReturnSol);
+        
+        const newSimRealTrade: SniperTrade = {
+          id: `simreal-sell-${Date.now()}`,
+          type: 'SELL',
+          token: symbol,
+          address: tokenAddress,
+          amount: solSpent,
+          timestamp: Date.now(),
+          pnl: simRealPnL,
+          signature: 'SIMREAL_SELL_' + Math.random().toString(36).substring(7),
+          tokenAmount: position.simRealAmountTokens
+        };
+        setSimRealTrades(prev => [newSimRealTrade, ...prev]);
+        console.log(`[SIMREAL SELL] Sold ${symbol}. Return: ${simRealReturnSol.toFixed(4)} SOL, PnL: ${simRealPnL.toFixed(2)}%`);
+        addNotification(`SIMREAL SOLD: ${symbol} for ${simRealReturnSol.toFixed(4)} SOL (PnL: ${simRealPnL.toFixed(2)}%)`, symbol, tokenAddress);
+      }
+
       setActivePositions(prev => {
         const next = { ...prev };
         delete next[tokenAddress];
@@ -2004,89 +2140,58 @@ export default function App() {
       let signature = 'SIM_BN_' + Math.random().toString(36).substring(7);
 
       let isSimulated = !isLiveTrading;
+      const lamports = Math.floor(actualBuyAmountSol * 1_000_000_000);
+      const liquidityUsd = tokenMetrics[tokenAddress]?.liquidity || 0;
+      
+      const quote = await getJupiterQuote(
+        'So11111111111111111111111111111111111111112', // SOL
+        tokenAddress,
+        lamports,
+        liquidityUsd
+      );
+      if (!quote) throw new Error("Token not yet listed, indexed, or no routes available on Jupiter (MARKET_NOT_FOUND / NO_ROUTES_FOUND).");
+      let outTokensRaw = quote.outAmount;
 
       if (isLiveTrading) {
         if (!sessionWallet && !publicKey) {
           throw new Error("No wallet connected for Live Trading");
         }
-
-        const lamports = Math.floor(actualBuyAmountSol * 1_000_000_000);
         const walletAddress = sessionWallet ? sessionWallet.publicKey.toBase58() : publicKey!.toBase58();
         const solBalance = await connection.getBalance(new PublicKey(walletAddress));
-        
+                
         if (solBalance < lamports) {
           addNotification("⚠️ Insufficient real SOL balance. Falling back to Simulation mode.");
           isSimulated = true;
-          const simLatency = 200 + Math.random() * 900;
-          await new Promise(resolve => setTimeout(resolve, simLatency));
-          if (simulationBalance < actualBuyAmountSol) {
-            throw new Error("SIM: Insufficient simulation balance — top up via Settings.");
-          }
-          setSimulationBalance(prev => prev - actualBuyAmountSol);
         } else {
-          const liquidityUsd = tokenMetrics[tokenAddress]?.liquidity || 0;
-          // Dynamic slippage: tighter on high-liquidity pools, looser on low-liquidity
-          // getJupiterQuote now computes slippage internally via calculateDynamicSlippageBps
-             
-          const quote = await getJupiterQuote(
-            'So11111111111111111111111111111111111111112', // SOL
-            tokenAddress,
-            lamports,
-            liquidityUsd
-          );
-          
-          if (quote) {
-            // Jito-Bundle Simulation / MEV Protection: Optimized priority tip 0.001 - 0.003
-            const priorityTipLamports = 2000000; // 0.002 SOL Tip
-
+            const priorityTipLamports = 2000000;
             if (sessionWallet) {
-              const tx = await createJupiterSwapTransaction(
-                sessionWallet.publicKey.toBase58(),
-                quote,
-                priorityTipLamports,
-                connection
-              );
+              const tx = await createJupiterSwapTransaction(sessionWallet.publicKey.toBase58(), quote, priorityTipLamports, connection);
               if (tx) {
                 tx.sign([sessionWallet]);
                 signature = await executeTxWithRPCFallback(tx, connection);
                 console.log("🚀 Swap Executed! Transaction Signature:", signature);
-              } else {
-                throw new Error("Failed to create swap transaction from quote.");
-              }
+              } else throw new Error("Failed to create swap transaction");
             } else if (publicKey && sendTransaction) {
-              const tx = await createJupiterSwapTransaction(
-                publicKey.toBase58(),
-                quote,
-                priorityTipLamports,
-                connection
-              );
+              const tx = await createJupiterSwapTransaction(publicKey.toBase58(), quote, priorityTipLamports, connection);
               if (tx) {
                 signature = await sendTransaction(tx as any, connection);
                 const latestBlockhash = await connection.getLatestBlockhash('confirmed');
-                const confirmation = await connection.confirmTransaction({
-                  signature,
-                  blockhash: latestBlockhash.blockhash,
-                  lastValidBlockHeight: latestBlockhash.lastValidBlockHeight
-                }, 'confirmed');
-                if (confirmation.value.err) {
-                   throw new Error(`Transaction failed to confirm: ${JSON.stringify(confirmation.value.err)}`);
-                }
+                const confirmation = await connection.confirmTransaction({ signature, blockhash: latestBlockhash.blockhash, lastValidBlockHeight: latestBlockhash.lastValidBlockHeight }, 'confirmed');
+                if (confirmation.value.err) throw new Error(`Transaction failed to confirm: ${JSON.stringify(confirmation.value.err)}`);
                 console.log("🚀 Swap Executed! Transaction Signature:", signature);
-              } else {
-                throw new Error("Failed to create swap transaction from quote.");
-              }
+              } else throw new Error("Failed to create swap transaction");
             }
-          } else {
-             throw new Error("Token not yet listed, indexed, or no routes available on Jupiter (MARKET_NOT_FOUND / NO_ROUTES_FOUND).");
-          }
         }
-      } else {
-        // Simulation mode — realistic latency + fee simulation
+      }
+
+      if (isSimulated) {
         const simLatency = 150 + Math.random() * 1200;
         await new Promise(resolve => setTimeout(resolve, simLatency));
-        // Simulate 0.2% chance of failed mempool inclusion (realistic)
         if (Math.random() < 0.002) {
           throw new Error("SIM: Transaction not included — try increasing Jito tip");
+        }
+        if (simulationBalance < actualBuyAmountSol) {
+          throw new Error("SIM: Insufficient simulation balance — top up via Settings.");
         }
         setSimulationBalance(prev => prev - actualBuyAmountSol);
       }
@@ -2114,6 +2219,7 @@ export default function App() {
             boughtAt: existing ? existing.boughtAt : Date.now(), 
             amount: newAmount, 
             symbol: symbol,
+            tokenQuantityRaw: existing && existing.tokenQuantityRaw ? (BigInt(existing.tokenQuantityRaw) + BigInt(outTokensRaw)).toString() : outTokensRaw,
             entryPrice: newEntryPriceUsd,
             entryPriceSol: newEntryPriceSol,
             entryFeesSol: isLiveTrading ? (existing ? (existing.entryFeesSol || 0) + 0.003 : 0.003) : 0, // Tip + Tx
@@ -2260,8 +2366,12 @@ export default function App() {
       await signInWithGoogle();
       setShowLoginModal(false);
     } catch (err: any) {
+      const errMsg = err?.message || '';
+      const errCode = err?.code || '';
       if (err.message === 'SIGN_IN_POPUP_BLOCKED') {
         setAuthError("Sign-in popup was blocked. Please check your browser settings and try again.");
+      } else if (errCode === 'auth/popup-closed-by-user' || errMsg.includes('popup-closed-by-user')) {
+        setAuthError("Google Login was closed or blocked. Because this preview is running inside an iframe, standard popup communication can be restricted by your browser's third-party cookie/privacy settings. Please use the Email & Password form below to sign up or sign in directly (fully supported)!");
       } else {
         setAuthError("Google Login failed: " + err.message);
       }
@@ -2305,8 +2415,45 @@ export default function App() {
         }
         return changed ? next : prev;
       });
-    }, 10000); 
-    return () => clearInterval(interval);
+    }, 10000);
+    // Advanced Price Synchronization for Active Positions
+    const positionSyncInterval = setInterval(async () => {
+      const state = useAppStore.getState();
+      const positions = state.activePositions;
+      if (Object.keys(positions).length === 0) return;
+      
+      const mints = Object.keys(positions).join(',');
+      try {
+         const res = await fetch(`/api/dex/tokens/${mints}`);
+         if (!res.ok) return;
+         const data = await res.json();
+         if (data && data.pairs) {
+            state.setTokenMetrics(prev => {
+               const next = { ...prev };
+               data.pairs.forEach((p: any) => {
+                  const addr = p.baseToken?.address;
+                  if (addr && positions[addr]) {
+                     next[addr] = {
+                        ...next[addr],
+                        address: addr,
+                        priceUsd: Number(p.priceUsd || 0),
+                        priceNative: Number(p.priceNative || 0),
+                        lastUpdated: Date.now()
+                     };
+                  }
+               });
+               return next;
+            });
+         }
+      } catch (e) {
+         console.warn("[SYNC ERROR] Failed to sync active positions", e);
+      }
+    }, 3000);
+     
+    return () => {
+      clearInterval(interval);
+      clearInterval(positionSyncInterval);
+    };
   }, []);
 
   const priceFetchLocks = useRef<Set<string>>(new Set());
@@ -2997,7 +3144,10 @@ export default function App() {
           if (data.tradeBonding !== undefined) setTradeBonding(data.tradeBonding === true);
           if (data.tradeUnknown !== undefined) setTradeUnknown(data.tradeUnknown === true);
           if (data.hardenedMinProfit5m !== undefined) setHardenedMinProfit5m(Number(data.hardenedMinProfit5m));
-          if (data.maxRebuyTimes !== undefined) setMaxRebuyTimes(Number(data.maxRebuyTimes));
+          if (data.maxRebuyTimes !== undefined) {
+            const val = Number(data.maxRebuyTimes);
+            setMaxRebuyTimes(val === 2 ? 3 : val);
+          }
         }
       } catch (err) {
         console.error('Error loading settings from Firestore in App.tsx:', err);
@@ -3775,36 +3925,6 @@ export default function App() {
           <span className="text-[10px] font-bold uppercase tracking-tighter">Alpha</span>
         </button>
         <button 
-          onClick={() => setCurrentPage('discovery')}
-          className={cn(
-            "flex shrink-0 flex-col items-center gap-1 transition-all px-3 py-2 rounded-xl",
-            currentPage === 'discovery' ? "text-indigo-400" : "text-slate-500"
-          )}
-        >
-          <Scan className={cn("w-5 h-5", currentPage === 'discovery' && "animate-pulse")} />
-          <span className="text-[10px] font-bold uppercase tracking-tighter">Safety</span>
-        </button>
-        <button 
-          onClick={() => setCurrentPage('gems-100x')}
-          className={cn(
-            "flex shrink-0 flex-col items-center gap-1 transition-all px-3 py-2 rounded-xl",
-            currentPage === 'gems-100x' ? "text-emerald-400" : "text-slate-500"
-          )}
-        >
-          <BrainCircuit className={cn("w-5 h-5", currentPage === 'gems-100x' && "animate-pulse")} />
-          <span className="text-[10px] font-bold uppercase tracking-tighter">100x</span>
-        </button>
-        <button 
-          onClick={() => setCurrentPage('alerts')}
-          className={cn(
-            "flex shrink-0 flex-col items-center gap-1 transition-all px-3 py-2 rounded-xl",
-            currentPage === 'alerts' ? "text-emerald-400" : "text-slate-500"
-          )}
-        >
-          <Zap className={cn("w-5 h-5", currentPage === 'alerts' && "animate-pulse")} />
-          <span className="text-[10px] font-bold uppercase tracking-tighter">Intel</span>
-        </button>
-        <button 
           onClick={() => setCurrentPage('portfolio')}
           className={cn(
             "flex shrink-0 flex-col items-center gap-1 transition-all px-3 py-2 rounded-xl",
@@ -3813,6 +3933,16 @@ export default function App() {
         >
           <Wallet className={cn("w-5 h-5", currentPage === 'portfolio' && "animate-pulse")} />
           <span className="text-[10px] font-bold uppercase tracking-tighter">PnL</span>
+        </button>
+        <button 
+          onClick={() => setCurrentPage('simreal')}
+          className={cn(
+            "flex shrink-0 flex-col items-center gap-1 transition-all px-3 py-2 rounded-xl",
+            currentPage === 'simreal' ? "text-emerald-400" : "text-slate-500"
+          )}
+        >
+          <Wallet className={cn("w-5 h-5", currentPage === 'simreal' && "animate-pulse")} />
+          <span className="text-[10px] font-bold uppercase tracking-tighter">Simreal</span>
         </button>
         <button 
           onClick={() => setCurrentPage('system-check')}
@@ -3932,40 +4062,15 @@ export default function App() {
                 DASHBOARD
               </button>
               <button 
-                onClick={() => setCurrentPage('high-buy')}
+                onClick={() => {
+                  setCurrentPage('high-buy');
+                }}
                 className={cn(
-                  "px-4 py-2 rounded-full transition-all text-[10px] font-black",
+                  "px-5 py-2 rounded-full transition-all text-[10px] font-black",
                   currentPage === 'high-buy' ? "bg-indigo-600 text-white shadow-lg" : "text-slate-500 hover:text-slate-300"
                 )}
               >
-                HIGH BUY
-              </button>
-              <button 
-                onClick={() => setCurrentPage('discovery')}
-                className={cn(
-                  "px-4 py-2 rounded-full transition-all text-[10px] font-black",
-                  currentPage === 'discovery' ? "bg-indigo-600 text-white shadow-lg" : "text-slate-500 hover:text-slate-300"
-                )}
-              >
-                SAFETY
-              </button>
-              <button 
-                onClick={() => setCurrentPage('gems-100x')}
-                className={cn(
-                  "px-4 py-2 rounded-full transition-all text-[10px] font-black",
-                  currentPage === 'gems-100x' ? "bg-emerald-600 text-white shadow-lg" : "text-slate-500 hover:text-slate-300"
-                )}
-              >
-                PREDICTION
-              </button>
-              <button 
-                onClick={() => setCurrentPage('alerts')}
-                className={cn(
-                  "px-5 py-2 rounded-full transition-all text-[10px] font-black",
-                  currentPage === 'alerts' ? "bg-emerald-600 text-white shadow-lg" : "text-slate-500 hover:text-slate-300"
-                )}
-              >
-                TELEMETRY
+                ALPHA
               </button>
               <button 
                 onClick={() => setCurrentPage('portfolio')}
@@ -3975,6 +4080,15 @@ export default function App() {
                 )}
               >
                 PORTFOLIO / PNL
+              </button>
+              <button 
+                onClick={() => setCurrentPage('simreal')}
+                className={cn(
+                  "px-5 py-2 rounded-full transition-all text-[10px] font-black",
+                  currentPage === 'simreal' ? "bg-emerald-600 text-white shadow-lg" : "text-slate-500 hover:text-slate-300"
+                )}
+              >
+                SIMREAL
               </button>
               <button 
                 onClick={() => setCurrentPage('system-check')}
@@ -4027,7 +4141,7 @@ export default function App() {
       <main className="relative z-10 max-w-[1440px] mx-auto px-4 lg:px-8 py-4 lg:py-6 flex flex-col flex-1 lg:h-[calc(100vh-104px)] lg:overflow-hidden pb-24 lg:pb-0">
         
         {/* Alpha Protocol Selector - Central focus for user selection */}
-        {currentPage !== 'dashboard' && currentPage !== 'high-buy' && currentPage !== 'discovery' && currentPage !== 'gems-100x' && (
+        {currentPage !== 'dashboard' && currentPage !== 'high-buy' && (
           <div className="flex flex-col lg:flex-row items-center justify-between gap-4 mb-6 bg-slate-900/60 border border-slate-800 p-4 rounded-3xl backdrop-blur-xl">
             <div className="flex items-center gap-4">
               <div className="w-10 h-10 rounded-2xl bg-indigo-500/10 flex items-center justify-center border border-indigo-500/20">
@@ -4390,8 +4504,8 @@ export default function App() {
               </div>
             </div>
             
-            <div className="p-4 bg-slate-900/50 rounded-xl border border-slate-800/50">
-              <div className="flex items-center justify-between mb-4 pb-4 border-b border-slate-800/50">
+            <div className="p-4 bg-slate-900/50 rounded-xl border border-slate-800/50 space-y-4">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-800/50">
                 <div className="flex flex-col">
                   <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest leading-tight">SIM Wallet Balance</span>
                   <span className="text-[8px] text-amber-500/80 font-bold uppercase mt-0.5 tracking-tighter">Immediate Feedback Active</span>
@@ -4399,6 +4513,17 @@ export default function App() {
                 <div className="text-right">
                    <div className="text-xl font-black text-amber-400 font-mono tracking-tighter">{simulationBalance.toFixed(4)} SOL</div>
                    <div className="text-[9px] text-slate-500 font-bold uppercase tracking-widest">Simulation Assets</div>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between pb-3 border-b border-slate-800/50">
+                <div className="flex flex-col">
+                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest leading-tight">SIMREAL Wallet Balance</span>
+                  <span className="text-[8px] text-emerald-400/80 font-bold uppercase mt-0.5 tracking-tighter">Copy Trading Active</span>
+                </div>
+                <div className="text-right">
+                   <div className="text-xl font-black text-emerald-400 font-mono tracking-tighter">{simRealBalance.toFixed(4)} SOL</div>
+                   <div className="text-[9px] text-slate-500 font-bold uppercase tracking-widest">simreal wallet</div>
                 </div>
               </div>
               
@@ -5130,15 +5255,9 @@ export default function App() {
               {autoSniperEnabled ? <Activity className="w-4 h-4" /> : <Zap className="w-4 h-4" />}
               {autoSniperEnabled ? 'Deactivate Sniper' : 'Activate Sniper'}
             </button>
-            <button 
-              onClick={() => setIsLiveTrading(!isLiveTrading)}
-              className={cn(
-                "w-full py-2 rounded-xl text-[10px] font-black uppercase tracking-[0.1em] transition-all flex items-center justify-center gap-2 border",
-                isLiveTrading ? "bg-indigo-600 border-indigo-500 text-white shadow-[0_0_15px_rgba(79,70,229,0.4)]" : "bg-transparent border-slate-700 text-slate-500 hover:text-slate-300 hover:border-slate-500"
-              )}
-            >
-              Jupiter V6 Live Trading: {isLiveTrading ? 'ON' : 'OFF (SIMULATED)'}
-            </button>
+            <div className="w-full py-2 rounded-xl text-[10px] font-black uppercase tracking-[0.1em] transition-all flex items-center justify-center gap-2 border border-slate-800 text-slate-500 bg-slate-900/40">
+              Trading Mode: Simulated
+            </div>
             <div className="flex items-center justify-center gap-2 mt-2">
               <div className={cn(
                 "w-2 h-2 rounded-full",
@@ -5194,16 +5313,19 @@ export default function App() {
           </div>
         </section>
       </>
-    ) : currentPage === 'discovery' ? (
+    ) : currentPage === 'high-buy' && alphaSubTab === 'safety' ? (
       <section className="col-span-12 flex flex-col gap-6 h-full overflow-y-auto">
+        {renderAlphaHeader()}
         <SafetyPage tokenMetrics={tokenMetrics} />
       </section>
-    ) : currentPage === 'gems-100x' ? (
+    ) : currentPage === 'high-buy' && alphaSubTab === 'prediction' ? (
       <section className="col-span-12 flex flex-col gap-6 h-full overflow-y-auto">
+        {renderAlphaHeader()}
         <PredictionPage tokenMetrics={tokenMetrics} />
       </section>
-    ) : currentPage === 'high-buy' ? (
+    ) : currentPage === 'high-buy' && alphaSubTab === 'high-buy' ? (
       <section className="col-span-12 flex flex-col gap-6 h-full overflow-hidden">
+        {renderAlphaHeader()}
         <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between px-2 gap-4">
           <div>
             <h2 className="text-xl lg:text-3xl font-black text-white uppercase tracking-tighter flex items-center gap-3">
@@ -5692,6 +5814,8 @@ export default function App() {
           setRpcUrl,
           rpcUrl2,
           setRpcUrl2,
+          isSecondaryActive,
+          setIsSecondaryActive,
           customWsUrl,
           setCustomWsUrl,
           hardenedMcapMinPump,
@@ -5751,16 +5875,56 @@ export default function App() {
           telemetryAllowGoldenCross,
           setTelemetryAllowGoldenCross,
           maxRebuyTimes,
-          setMaxRebuyTimes
+          setMaxRebuyTimes,
+          apiKey,
+          setApiKey,
+          privateKey,
+          setPrivateKey,
+          onPositionsChange: setSimrealPositions,
+          simrealControlRef: simrealControlRef
         }}
 
+      />
+    </section>
+    <section className={cn("col-span-12 flex-col h-full overflow-hidden", currentPage === 'simreal' ? "flex" : "hidden")}>
+      <SimRealPage 
+        tokenMetrics={tokenMetrics}
+        positions={simrealPositions}
+        simRealBalance={simRealBalance}
+        simRealTrades={simRealTrades}
+        maxPositions={maxPositions}
+        slippage={slippage}
+        privateKey={privateKey}
+        setPrivateKey={setPrivateKey}
+        apiKey={apiKey}
+        setApiKey={setApiKey}
+        rpcUrl={rpcUrl}
+        customWsUrl={customWsUrl}
+        stopLoss={stopLoss}
+        bondingCurveStopLoss={bondingCurveStopLoss}
+        pumpSwapStopLoss={pumpSwapStopLoss}
+        unknownStopLoss={unknownStopLoss}
+        executeSimRealSell={async (mint) => {
+          if (simrealControlRef.current?.executeSimRealSell) {
+            await simrealControlRef.current.executeSimRealSell(mint);
+          }
+        }}
+        resetSimRealWallet={() => {
+          if (simrealControlRef.current?.resetSimRealWallet) {
+            simrealControlRef.current.resetSimRealWallet();
+          }
+        }}
+        maxRebuyTimes={maxRebuyTimes}
+        setMaxRebuyTimes={setMaxRebuyTimes}
+        jupiterLogs={jupiterLogs}
       />
     </section>
     <section className={cn("col-span-12 flex-col h-full overflow-auto", currentPage === 'system-check' ? "flex" : "hidden")}>
       <SystemCheckPage rpcUrl={rpcUrl} />
     </section>
-    {['alerts'].includes(currentPage) ? (
+    {currentPage === 'high-buy' && alphaSubTab === 'intel' ? (
       <section className="col-span-12 flex flex-col gap-6 lg:overflow-hidden">
+        {renderAlphaHeader()}
         <div className="flex flex-col gap-6 flex-1 lg:overflow-hidden">
           {/* Market Signal Summary Bar (Optional ticker style) */}
           {telemetryAlerts.length > 0 && (
@@ -6562,6 +6726,11 @@ if (alphaProtocol === 'GEMS_100X') {
               >
                 <Globe className="w-4 h-4" /> Google
               </button>
+
+              <div className="mb-4 p-3 bg-indigo-500/10 border border-indigo-500/20 rounded-xl text-[11px] text-indigo-300 leading-relaxed text-left">
+                <span className="font-semibold block text-indigo-200 mb-0.5">💡 Preview Environment Tip:</span>
+                If Google login fails or is blocked due to iframe/third-party cookie restrictions, please sign up or sign in using the Email & Password option above. It runs fully in-frame and works perfectly!
+              </div>
 
               <div className="text-center">
                 <button 

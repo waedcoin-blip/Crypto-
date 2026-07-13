@@ -97,4 +97,5 @@ export interface SniperTrade {
   isScalp?: boolean;
   pnl?: number; // percentage
   signature: string;
+  tokenAmount?: number;
 }

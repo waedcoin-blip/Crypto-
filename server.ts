@@ -4,7 +4,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import compression from "compression";
 import fs from "fs";
-import { startLaserStream, stopLaserStream, isLaserStreamUsingFallback, isLaserStreamSimulated } from "./src/engines/LaserstreamIngestion";
+import { startLaserStream, stopLaserStream, isLaserStreamUsingFallback, isLaserStreamSimulated, getActiveLaserStreamEndpoint } from "./src/engines/LaserstreamIngestion";
 import { testFtpConnection, backupFtpData, deployFtpDist } from "./src/services/ftpService";
 
 // ─── PER-IP RATE LIMITER (no external dependencies) ──────────────────────
@@ -153,6 +153,17 @@ setInterval(() => {
 }, 1800000);
 
 async function startServer() {
+  if (process.env.IS_LASERSTREAM_WORKER === 'true') {
+    try {
+      const { runLaserstreamWorker } = await import("./src/engines/LaserstreamIngestion");
+      await runLaserstreamWorker();
+    } catch (e) {
+      console.error("Worker start failed:", e);
+      process.exit(1);
+    }
+    return;
+  }
+
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
 
@@ -806,7 +817,35 @@ async function startServer() {
         }
         return JSON.parse(text);
       });
+      
+      if (data && data.pairs) {
+        // Advanced filtering and sorting for Solana tokens
+        let solPairs = data.pairs.filter((p: any) => p.chainId === 'solana');
+        
+        // Remove known scam patterns and dead pools
+        const isExactAddressQuery = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(q);
+        solPairs = solPairs.filter((p: any) => {
+           if (isExactAddressQuery) return true;
+           if ((p.liquidity?.usd || 0) < 1000 && (p.volume?.h24 || 0) < 500) return false;
+           return true;
+        });
+
+        // Smart sorting: prioritizing high liquidity, volume, and exact symbol match
+        const exactQuery = q.toLowerCase();
+        solPairs.sort((a: any, b: any) => {
+           const aExactMatch = (a.baseToken?.symbol?.toLowerCase() === exactQuery || a.baseToken?.address?.toLowerCase() === exactQuery) ? 1 : 0;
+           const bExactMatch = (b.baseToken?.symbol?.toLowerCase() === exactQuery || b.baseToken?.address?.toLowerCase() === exactQuery) ? 1 : 0;
+           if (aExactMatch !== bExactMatch) return bExactMatch - aExactMatch;
+           
+           const aScore = (a.liquidity?.usd || 0) * 0.5 + (a.volume?.h24 || 0) * 0.5;
+           const bScore = (b.liquidity?.usd || 0) * 0.5 + (b.volume?.h24 || 0) * 0.5;
+           return bScore - aScore;
+        });
+        
+        data.pairs = solPairs;
+      }
       res.json(data);
+
     } catch (error: any) {
       console.warn(`[DEXSCREENER PROXY WARNING]: search failed for ${q} (${error.message}).`);
       res.status(500).json({ error: error.message, pairs: [] });
@@ -853,7 +892,7 @@ async function startServer() {
     }
   });
 
-  app.get("/api/dex/token-profiles", async (req, res) => {
+  app.get(["/api/dex/token-profiles", "/api/dex/token-profiles/"], async (req, res) => {
     try {
       const deduplicatedProfiles = await dexProfilesCache.fetch("global-token-profiles", async () => {
         console.log("[DEXSCREENER INGESTION] Aggregating multi-source token feeds...");
@@ -871,7 +910,10 @@ async function startServer() {
           try {
             const controller = new AbortController();
             const timeout = setTimeout(() => controller.abort(), 6000);
-            const response = await fetch(url, { signal: controller.signal });
+            const response = await fetch(url, { 
+              headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
+              signal: controller.signal 
+            });
             clearTimeout(timeout);
             if (!response.ok) {
               console.warn(`[DEXSCREENER INGESTION] Endpoints ${url} returned code ${response.status}`);
@@ -1070,7 +1112,8 @@ async function startServer() {
       options: currentStreamOptions,
       clientsCount: sseClients.length,
       isFallback: isLaserStreamUsingFallback(),
-      isSimulated: isLaserStreamSimulated()
+      isSimulated: isLaserStreamSimulated(),
+      activeEndpoint: getActiveLaserStreamEndpoint()
     });
   });
 
@@ -1115,7 +1158,8 @@ async function startServer() {
         options: currentStreamOptions,
         clientsCount: sseClients.length,
         isFallback: isLaserStreamUsingFallback(),
-        isSimulated: isLaserStreamSimulated()
+        isSimulated: isLaserStreamSimulated(),
+        activeEndpoint: getActiveLaserStreamEndpoint()
       });
     } catch (error: any) {
       console.error("[LASERSTREAM CONFIG ERROR]:", error);
@@ -1138,7 +1182,8 @@ async function startServer() {
       status: 'connected', 
       laserstreamActive: isLaserStreamActive,
       isFallback: isLaserStreamUsingFallback(),
-      isSimulated: isLaserStreamSimulated()
+      isSimulated: isLaserStreamSimulated(),
+      activeEndpoint: getActiveLaserStreamEndpoint()
     })}\n\n`);
 
     req.on('close', () => {
@@ -1146,6 +1191,11 @@ async function startServer() {
     });
   });
   // ===================================================
+
+  // API catch-all 404 handler to prevent API requests from falling through to HTML index.html
+  app.all("/api/*", (req, res) => {
+    res.status(404).json({ error: "API route not found" });
+  });
 
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production" || process.env.VITE_DEV_SERVER === "true" || !fs.existsSync(path.join(process.cwd(), "dist/index.html"))) {

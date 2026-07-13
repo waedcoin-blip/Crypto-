@@ -138,11 +138,47 @@ export const addTipInstructionToVersionedTx = async (
   return new VersionedTransaction(newCompiledMessage);
 };
 
+export const getSignatureStatusRobust = async (
+  connection: Connection,
+  signature: string
+): Promise<any> => {
+  if (!signature || typeof signature !== 'string') {
+    return null;
+  }
+  // Try standard plural method first as it is most supported on modern nodes
+  try {
+    const res = await connection.getSignatureStatuses([signature]);
+    if (res && res.value && res.value[0]) {
+      return res.value[0];
+    }
+  } catch (errPlural: any) {
+    console.warn("getSignatureStatuses plural failed, trying singular:", errPlural.message || errPlural);
+  }
+
+  // Try singular method as a fallback
+  try {
+    const res = await connection.getSignatureStatus(signature, { searchTransactionHistory: true });
+    if (res && res.value) {
+      return res.value;
+    }
+  } catch (errSingular: any) {
+    console.warn("getSignatureStatus singular failed:", errSingular.message || errSingular);
+  }
+
+  return null;
+};
+
 export const executeTxWithRPCFallback = async (
   tx: VersionedTransaction,
   connection: Connection
 ): Promise<string> => {
   const isSenderEnabled = localStorage.getItem('hd_sender_enabled') === 'true';
+
+  useAppStore.getState().addJupiterLog({
+    type: 'INFO',
+    message: `Executing Swap Transaction...`,
+    details: { isSenderEnabled }
+  });
 
   if (isSenderEnabled) {
     const senderEndpoint = localStorage.getItem('hd_sender_endpoint') || 'https://sender.helius-rpc.com/fast';
@@ -170,18 +206,33 @@ export const executeTxWithRPCFallback = async (
       if (json.error) throw new Error(`Helius Sender Error: ${json.error.message}`);
       const signatureResult = json.result;
 
+      if (!signatureResult || typeof signatureResult !== 'string') {
+        throw new Error(`Invalid signature returned from Helius Sender: ${JSON.stringify(json)}`);
+      }
+
       // Fast Signature Status Polling Loop
       const deadline = Date.now() + 25000;
       while (Date.now() < deadline) {
-        const statusRes = await connection.getSignatureStatus(signatureResult, { searchTransactionHistory: false });
-        const value = statusRes?.value;
-        if (value) {
-          if (value.err) {
-            throw new Error(`Sender transaction failed: ${JSON.stringify(value.err)}`);
+        try {
+          const value = await getSignatureStatusRobust(connection, signatureResult);
+          if (value) {
+            if (value.err) {
+              throw new Error(`Sender transaction failed: ${JSON.stringify(value.err)}`);
+            }
+            if (value.confirmationStatus === 'confirmed' || value.confirmationStatus === 'finalized') {
+              useAppStore.getState().addJupiterLog({
+                type: 'SWAP',
+                message: `Swap Confirmed via Sender: ${signatureResult.slice(0,8)}...`,
+                details: { signature: signatureResult, sender: 'Helius Sender' }
+              });
+              return signatureResult;
+            }
           }
-          if (value.confirmationStatus === 'confirmed' || value.confirmationStatus === 'finalized') {
-            return signatureResult;
+        } catch (pollingErr: any) {
+          if (pollingErr.message?.includes('Sender transaction failed')) {
+            throw pollingErr;
           }
+          console.warn(`Helius Sender connection status check glitch:`, pollingErr.message || pollingErr);
         }
         await new Promise(resolve => setTimeout(resolve, 300));
       }
@@ -193,9 +244,19 @@ export const executeTxWithRPCFallback = async (
         lastValidBlockHeight: latestBlockhash.lastValidBlockHeight
       }, 'confirmed');
       if (confirmation.value.err) throw new Error(`Sender tx failed: ${JSON.stringify(confirmation.value.err)}`);
+      
+      useAppStore.getState().addJupiterLog({
+        type: 'SWAP',
+        message: `Swap Confirmed via Sender: ${signatureResult.slice(0,8)}...`,
+        details: { signature: signatureResult, sender: 'Helius Sender' }
+      });
       return signatureResult;
     } catch (e: any) {
       console.error('Helius Sender failed, falling back:', e.message);
+      useAppStore.getState().addJupiterLog({
+        type: 'INFO',
+        message: `Sender failed, falling back to RPCs: ${e.message}`
+      });
     }
   }
 
@@ -237,36 +298,68 @@ export const executeTxWithRPCFallback = async (
   } catch (err) {}
 
   try {
-    return await Promise.any(rpcsToTry.map(async rpc => {
+    const finalSignature = await Promise.any(rpcsToTry.map(async rpc => {
       const conn = new Connection(rpc, 'confirmed');
       
       // Fast Signature Status Polling Loop
       const deadline = Date.now() + 25000;
       while (Date.now() < deadline) {
-        const statusRes = await conn.getSignatureStatus(signature, { searchTransactionHistory: false });
-        const value = statusRes?.value;
-        if (value) {
-          if (value.err) {
-            throw new Error(`Transaction failed: ${JSON.stringify(value.err)}`);
+        try {
+          const value = await getSignatureStatusRobust(conn, signature);
+          if (value) {
+            if (value.err) {
+              throw new Error(`Transaction failed: ${JSON.stringify(value.err)}`);
+            }
+            if (value.confirmationStatus === 'confirmed' || value.confirmationStatus === 'finalized') {
+              return signature;
+            }
           }
-          if (value.confirmationStatus === 'confirmed' || value.confirmationStatus === 'finalized') {
-            return signature;
+        } catch (pollingErr: any) {
+          if (pollingErr.message?.includes('Transaction failed')) {
+            throw pollingErr;
           }
+          console.warn(`RPC ${rpc} status check glitch:`, pollingErr.message || pollingErr);
         }
         await new Promise(resolve => setTimeout(resolve, 300));
       }
 
-      const latestBlockhash = await conn.getLatestBlockhash('confirmed');
-      const confirmation = await conn.confirmTransaction({
-        signature,
-        blockhash: latestBlockhash.blockhash,
-        lastValidBlockHeight: latestBlockhash.lastValidBlockHeight
-      }, 'confirmed');
-      if (!confirmation.value.err) return signature;
-      throw new Error(`Transaction failed: ${JSON.stringify(confirmation.value.err)}`);
+      try {
+        const latestBlockhash = await conn.getLatestBlockhash('confirmed');
+        const confirmation = await conn.confirmTransaction({
+          signature,
+          blockhash: latestBlockhash.blockhash,
+          lastValidBlockHeight: latestBlockhash.lastValidBlockHeight
+        }, 'confirmed');
+        if (!confirmation.value.err) return signature;
+        throw new Error(`Transaction failed: ${JSON.stringify(confirmation.value.err)}`);
+      } catch (confirmErr: any) {
+        try {
+          const finalStatus = await getSignatureStatusRobust(conn, signature);
+          if (finalStatus?.confirmationStatus === 'confirmed' || finalStatus?.confirmationStatus === 'finalized') {
+            if (!finalStatus.err) return signature;
+          }
+        } catch (_) {}
+        throw confirmErr;
+      }
     }));
+
+    useAppStore.getState().addJupiterLog({
+      type: 'SWAP',
+      message: `Swap Confirmed: ${finalSignature.slice(0,8)}...`,
+      details: { signature: finalSignature }
+    });
+
+    return finalSignature;
   } catch (err: any) {
-    throw new Error(`Failed to confirm transaction: ${err?.message || ''}`);
+    let errorMsg = err?.message || '';
+    if (err instanceof AggregateError) {
+      errorMsg = err.errors.map(e => e.message || String(e)).join(' | ');
+    }
+    useAppStore.getState().addJupiterLog({
+      type: 'ERROR',
+      message: `Swap Failed: ${errorMsg || 'All RPC endpoints failed to confirm'}`,
+    });
+    throw new Error(`Failed to confirm transaction: ${errorMsg || 'All RPC endpoints failed to confirm'}`);
   }
 };
 
@@ -386,6 +479,12 @@ export const getJupiterQuote = async (
     const isBuy = outputMint.startsWith('sim');
     const simMint = isBuy ? outputMint : inputMint;
 
+    useAppStore.getState().addJupiterLog({
+      type: 'QUOTE',
+      message: `Simulated Quote: ${isBuy ? 'BUY' : 'SELL'} ${simMint.slice(0,6)}...`,
+      details: { amount, isBuy }
+    });
+
     let priceNative = 0.0001;
     try {
       const state = useAppStore.getState();
@@ -439,6 +538,12 @@ export const getJupiterQuote = async (
   }
 
   // ── LIVE PATH ─────────────────────────────────────────────────────────────
+  useAppStore.getState().addJupiterLog({
+    type: 'QUOTE',
+    message: `Requesting quote ${inputMint.slice(0,6)} -> ${outputMint.slice(0,6)}`,
+    details: { amount, slippageBps: determinedSlippage }
+  });
+
   try {
     const startTime = Date.now();
 
@@ -463,6 +568,20 @@ export const getJupiterQuote = async (
 
     const quote = await quoteRes.json() as QuoteResponse;
     if (!quote || (quote as any).error || (quote as any).errorCode) return null;
+    
+    // Validate quote routes
+    if (!quote.routePlan || quote.routePlan.length === 0) {
+      console.warn(`[QUOTE REJECTED]: No valid route plan found`);
+      return null;
+    }
+    
+    // Expiration checks
+    const quoteTime = (quote as any).contextSlot ? ((quote as any).contextSlot * 400) : Date.now();
+    if (Date.now() - quoteTime > 15000) {
+       console.warn(`[QUOTE REJECTED]: Quote is too stale based on context slot`);
+       return null;
+    }
+
 
     const quoteAgeMs = Date.now() - startTime;
     if (quoteAgeMs > 2000) {
@@ -489,10 +608,27 @@ export const getJupiterQuote = async (
       }
     }
 
+    useAppStore.getState().addJupiterLog({
+      type: 'INFO',
+      message: `Quote Success: ${quote.outAmount} (${quote.priceImpactPct}% impact)`,
+      details: { routePlan: quote.routePlan?.length, outAmount: quote.outAmount }
+    });
+
     return quote;
   } catch (error: any) {
     const errStr = error?.toString() || '';
-    if (!errStr.includes('NO_ROUTES_FOUND')) console.error("Jupiter quote failed:", error);
+    if (!errStr.includes('NO_ROUTES_FOUND') && !errStr.includes('Proxy error 429')) {
+      console.error("Jupiter quote failed:", error);
+      useAppStore.getState().addJupiterLog({
+        type: 'ERROR',
+        message: `Quote Error: ${errStr}`,
+      });
+    } else if (errStr.includes('Proxy error 429')) {
+      useAppStore.getState().addJupiterLog({
+        type: 'WARN',
+        message: `Quote Rate Limited (429). Retrying next cycle...`,
+      });
+    }
     return null;
   }
 };
@@ -503,6 +639,11 @@ export const createJupiterSwapTransaction = async (
   prioritizationFeeLamports: number = 100000,
   connection?: Connection
 ): Promise<VersionedTransaction | null> => {
+  useAppStore.getState().addJupiterLog({
+    type: 'INFO',
+    message: `Building swap tx for ${userPublicKey.slice(0,6)}...`,
+    details: { prioritiyFee: prioritizationFeeLamports }
+  });
   try {
     const { swapTransaction } = await getJupiterApiClient().swapPost({
       swapRequest: {
@@ -529,9 +670,17 @@ export const createJupiterSwapTransaction = async (
       tx = await addTipInstructionToVersionedTx(activeConnection, tx, new PublicKey(userPublicKey), tipAmountSol);
     }
 
+    useAppStore.getState().addJupiterLog({
+      type: 'INFO',
+      message: `Swap transaction built successfully.`,
+    });
     return tx;
-  } catch (error) {
+  } catch (error: any) {
     console.error('Jupiter Swap Transaction Error:', error);
+    useAppStore.getState().addJupiterLog({
+      type: 'ERROR',
+      message: `Swap Tx Build Error: ${error.message || String(error)}`,
+    });
     return null;
   }
 };

@@ -4,7 +4,8 @@ import { Keypair } from '@solana/web3.js';
 
 export interface ActivePositionData {
     boughtAt: number; 
-    amount: number; 
+    amount: number;
+    tokenQuantityRaw?: string; 
     symbol: string; 
     entryPrice?: number; 
     entryPriceSol?: number;
@@ -20,6 +21,11 @@ export interface ActivePositionData {
     currentStage?: any;
     initialMoonbagSizeStr?: string;
     isManualSellTriggered?: boolean;
+    simRealBought?: boolean;
+    simRealBoughtPriceSol?: number;
+    simRealAmountTokens?: number;
+    simRealSolSpent?: number;
+    simRealBoughtTime?: number;
 }
 
 interface AppState {
@@ -50,7 +56,10 @@ interface AppState {
   activePositions: Record<string, ActivePositionData>;
   monitoredWallets: {id: string, address: string, label: string}[];
   simulationBalance: number;
+  simRealBalance: number;
+  simRealTrades: SniperTrade[];
   sessionWallet: Keypair | null;
+  jupiterLogs: { id: string; timestamp: number; type: 'QUOTE' | 'SWAP' | 'ERROR' | 'INFO'; message: string; details?: any }[];
 
   // Actions
   setAutoSniperEnabled: (val: boolean) => void;
@@ -62,9 +71,12 @@ interface AppState {
   setTelemetryBits: (bits: boolean[]) => void;
   updateActivePositions: (fn: (prev: Record<string, ActivePositionData>) => Record<string, ActivePositionData>) => void;
   setSimulationBalance: (fn: (prev: number) => number) => void;
+  setSimRealBalance: (fn: (prev: number) => number) => void;
   setMySniperTrades: (fn: (prev: SniperTrade[]) => SniperTrade[]) => void;
+  setSimRealTrades: (fn: (prev: SniperTrade[]) => SniperTrade[]) => void;
   setSessionWallet: (wallet: Keypair | null) => void;
   setIsMonitoring: (val: boolean) => void;
+  addJupiterLog: (log: Omit<{ id: string; timestamp: number; type: 'QUOTE' | 'SWAP' | 'ERROR' | 'INFO'; message: string; details?: any }, 'id' | 'timestamp'>) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -109,6 +121,17 @@ export const useAppStore = create<AppState>((set) => ({
     if (old === '10' || !old || Number(old) === 0.12) return 10.0;
     return Number(old);
   })(),
+  simRealBalance: (() => {
+    const saved = localStorage.getItem('app_simRealBalance');
+    return saved ? Number(saved) : 10.0;
+  })(),
+  simRealTrades: (() => {
+    try {
+      const saved = localStorage.getItem('app_simRealTrades');
+      return saved ? JSON.parse(saved) : [];
+    } catch { return []; }
+  })(),
+  jupiterLogs: [],
   sessionWallet: null,
 
   setAutoSniperEnabled: (val) => set({ autoSniperEnabled: val }),
@@ -128,11 +151,25 @@ export const useAppStore = create<AppState>((set) => ({
     localStorage.setItem('app_simulationBalance_v4', String(val));
     return { simulationBalance: val };
   }),
+  setSimRealBalance: (fn) => set((state) => {
+    const val = fn(state.simRealBalance);
+    localStorage.setItem('app_simRealBalance', String(val));
+    localStorage.setItem('app_simRealBalance_fallback', String(val));
+    return { simRealBalance: val };
+  }),
   setMySniperTrades: (fn) => set((state) => {
     const next = fn(state.mySniperTrades);
     localStorage.setItem('app_mySniperTrades', JSON.stringify(next));
     return { mySniperTrades: next };
   }),
+  setSimRealTrades: (fn) => set((state) => {
+    const next = fn(state.simRealTrades);
+    localStorage.setItem('app_simRealTrades', JSON.stringify(next));
+    return { simRealTrades: next };
+  }),
   setSessionWallet: (wallet) => set({ sessionWallet: wallet }),
   setIsMonitoring: (val) => set({ isMonitoring: val }),
+  addJupiterLog: (log) => set((state) => ({
+    jupiterLogs: [{ id: Math.random().toString(36).substr(2, 9), timestamp: Date.now(), ...log }, ...state.jupiterLogs].slice(0, 100)
+  })),
 }));

@@ -33,6 +33,10 @@ export function recordCandidatePrice(tokenAddress: string, price: number) {
   while (history.length > 0 && history[0].timestamp < cutoff) {
     history.shift();
   }
+  
+  if (history.length === 0) {
+    delete candidatePriceHistories[tokenAddress];
+  }
 }
 
 /**

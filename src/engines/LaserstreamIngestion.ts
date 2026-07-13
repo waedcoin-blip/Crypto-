@@ -1,12 +1,15 @@
 import { subscribe, LaserstreamConfig, SubscribeRequest, shutdownAllStreams } from 'helius-laserstream';
 import { Connection, PublicKey } from '@solana/web3.js';
+import { fork } from 'child_process';
 
 // ─── STATE ────────────────────────────────────────────────────────────────
 let activeSubscription: any = null;
+let childProcess: any = null;
 let fallbackSubIds: number[] = [];
 let fallbackConnection: Connection | null = null;
 let isUsingFallback = false;
 let isSimulated = false;
+let activeEndpoint: string | null = null;
 let fallbackReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let healthCheckTimer: ReturnType<typeof setInterval> | null = null;
 let simulationTimer: ReturnType<typeof setInterval> | null = null;
@@ -15,6 +18,7 @@ let consecutiveSilentPeriods = 0;
 
 export function isLaserStreamUsingFallback(): boolean { return isUsingFallback; }
 export function isLaserStreamSimulated(): boolean { return isSimulated; }
+export function getActiveLaserStreamEndpoint(): string | null { return activeEndpoint; }
 
 export interface LaserStreamOptions {
   apiKey?: string;
@@ -28,6 +32,7 @@ export function startSimulationStream(eventBusCallback: (event: any) => void) {
   if (simulationTimer) clearInterval(simulationTimer);
   isSimulated = true;
   isUsingFallback = false;
+  activeEndpoint = 'local';
   console.log("🎮 [LASERSTREAM]: Initializing Fast Local Stream synchronization...");
 
   let currentSlot = 274152000 + Math.floor(Math.random() * 10000);
@@ -50,7 +55,8 @@ export function startSimulationStream(eventBusCallback: (event: any) => void) {
         transaction: { transaction: { signatures: [signature] } }
       },
       isFallback: false,
-      isSimulated: true
+      isSimulated: true,
+      endpoint: activeEndpoint
     };
 
     lastEventTime = Date.now();
@@ -92,10 +98,13 @@ const REGIONAL_HUBS = [
   'https://laserstream-mainnet-fra.helius-rpc.com'  // Europe FRA
 ];
 
-async function getFastestRegionalHub(apiKey: string): Promise<string> {
+async function getFastestRegionalHub(apiKey: string, excludeHubs: Set<string> = new Set()): Promise<string | null> {
   console.log("🌍 [LASERSTREAM]: Auto-detecting fastest regional hub...");
+  const availableHubs = REGIONAL_HUBS.filter(h => !excludeHubs.has(h));
+  if (availableHubs.length === 0) return null;
+
   const results = await Promise.all(
-    REGIONAL_HUBS.map(async url => {
+    availableHubs.map(async url => {
       const start = Date.now();
       try {
         await fetch(url, { method: 'OPTIONS', signal: AbortSignal.timeout(2000) }).catch(() => null);
@@ -110,7 +119,7 @@ async function getFastestRegionalHub(apiKey: string): Promise<string> {
     console.log(`⚡ [LASERSTREAM]: Selected ${fastest.url} (${fastest.latency}ms)`);
     return fastest.url;
   }
-  return REGIONAL_HUBS[0];
+  return availableHubs[0];
 }
 
 // ─── HEALTH WATCHDOG: Restarts stream if dead for >90s (24h stability) ───
@@ -143,45 +152,25 @@ function startHealthWatchdog(
 }
 
 // ─── START LASERSTREAM ────────────────────────────────────────────────────
-export async function startLaserStream(
-  options: LaserStreamOptions,
-  eventBusCallback: (event: any) => void
-) {
-  installSilentLogInterceptor();
-
-  const apiKey = options.apiKey || process.env.HELIUS_API_KEY || 'e161791f-b336-40b9-80d6-f4c9f626833c';
-
-  let endpoint = options.endpoint || 'auto';
-  if (endpoint === 'auto' || !endpoint.includes('http')) {
-    endpoint = await getFastestRegionalHub(apiKey);
+export function stopWorkerProcess() {
+  if (childProcess) {
+    console.log("🛑 [LASERSTREAM PARENT]: Terminating worker process...");
+    try {
+      childProcess.disconnect();
+    } catch (e) {}
+    try {
+      childProcess.kill('SIGTERM');
+    } catch (e) {}
+    childProcess = null;
   }
+}
 
-  const programs = options.programAddresses || [
-    '6EF87t756LkSg6GptZTEAtgX9v7R24C4FtsZbXm9o6RA', // Pump.fun
-    '675k1q2AYp74sk2Wym6L6nd56N7Y5D7T6jhpxS22bbe'   // Raydium AMM
-  ];
-
-  isUsingFallback = false;
-  isSimulated = false;
-  lastEventTime = Date.now();
-
-  console.log(`🚀 [LASERSTREAM]: Initializing on ${endpoint}`);
-  console.log(`🚀 [LASERSTREAM]: Monitoring programs: ${programs.join(', ')}`);
-
-  await stopLaserStream();
-
-  const handleFallback = () => {
-    if (isUsingFallback) return;
-    isUsingFallback = true;
-    console.log("ℹ️ [LASERSTREAM]: Falling back to WebSocket stream.");
-    startFallbackWebSocket(programs, eventBusCallback, apiKey, options.customWsUrl);
-  };
-
-  if (isFreeOrDefaultKey(apiKey)) {
-    console.log("ℹ️ [LASERSTREAM]: Free/default API key. Activating Fast Local Stream to prevent 429 rate limit spam.");
-    startSimulationStream(eventBusCallback);
-    return null;
-  }
+export async function runLaserstreamWorker() {
+  console.log("👷 [LASERSTREAM WORKER]: Worker process started.");
+  const options = JSON.parse(process.env.LASERSTREAM_OPTIONS || '{}');
+  const apiKey = options.apiKey;
+  const endpoint = options.endpoint;
+  const programs = options.programAddresses || [];
 
   const config: LaserstreamConfig = {
     apiKey,
@@ -205,15 +194,8 @@ export async function startLaserStream(
     }
   };
 
-  // Wrap event callback to update the health watchdog timestamp
-  const wrappedCallback = (event: any) => {
-    lastEventTime = Date.now();
-    consecutiveSilentPeriods = 0;
-    eventBusCallback(event);
-  };
-
   try {
-    activeSubscription = await subscribe(
+    const sub = await subscribe(
       config,
       subscriptionRequest,
       (updatePayload) => {
@@ -232,34 +214,207 @@ export async function startLaserStream(
             isFallback: false
           };
 
-          wrappedCallback(standardEvent);
+          if (process.send) {
+            process.send({ type: 'EVENT', event: standardEvent });
+          }
         }
       },
       (error: any) => {
         const errorMsg = error?.message || String(error);
-        if (
-          errorMsg.includes('permission') ||
-          errorMsg.includes('Unsupported plan type') ||
-          errorMsg.includes('unauthorized') ||
-          errorMsg.includes('Connection failed')
-        ) {
-          handleFallback();
-        } else {
-          console.log(`[LASERSTREAM INFO]: ${errorMsg}`);
+        if (process.send) {
+          process.send({ type: 'ERROR', error: errorMsg });
         }
       }
     );
 
-    console.log("✅ [LASERSTREAM]: gRPC pipeline established successfully.");
-    lastEventTime = Date.now();
+    if (process.send) {
+      process.send({ type: 'READY' });
+    }
 
-    // Start health watchdog regardless of which path we took
+    process.on('disconnect', () => {
+      console.log("👷 [LASERSTREAM WORKER]: Parent disconnected. Exiting worker...");
+      try {
+        const s = sub as any;
+        if (s && typeof s.cancel === 'function') {
+          s.cancel();
+        } else if (s && typeof s.unsubscribe === 'function') {
+          s.unsubscribe();
+        }
+      } catch (e) {}
+      process.exit(0);
+    });
+
+  } catch (error: any) {
+    const errorMsg = error?.message || String(error);
+    if (process.send) {
+      process.send({ type: 'ERROR', error: errorMsg });
+    }
+    process.exit(1);
+  }
+}
+
+export async function startLaserStream(
+  options: LaserStreamOptions,
+  eventBusCallback: (event: any) => void,
+  failedHubs: Set<string> = new Set()
+) {
+  installSilentLogInterceptor();
+
+  const apiKey = options.apiKey || process.env.HELIUS_API_KEY || 'e161791f-b336-40b9-80d6-f4c9f626833c';
+
+  let endpoint = options.endpoint || 'auto';
+  if (endpoint === 'auto' || !endpoint.includes('http')) {
+    const fastestHub = await getFastestRegionalHub(apiKey, failedHubs);
+    if (fastestHub) {
+      endpoint = fastestHub;
+    } else {
+      console.log("ℹ️ [LASERSTREAM]: All gRPC hubs failed. Falling back to WebSocket stream.");
+      isUsingFallback = true;
+      const programs = options.programAddresses || [
+        '6EF87t756LkSg6GptZTEAtgX9v7R24C4FtsZbXm9o6RA', // Pump.fun
+        '675k1q2AYp74sk2Wym6L6nd56N7Y5D7T6jhpxS22bbe'   // Raydium AMM
+      ];
+      startFallbackWebSocket(programs, eventBusCallback, apiKey, options.customWsUrl);
+      return null;
+    }
+  }
+
+  const programs = options.programAddresses || [
+    '6EF87t756LkSg6GptZTEAtgX9v7R24C4FtsZbXm9o6RA', // Pump.fun
+    '675k1q2AYp74sk2Wym6L6nd56N7Y5D7T6jhpxS22bbe'   // Raydium AMM
+  ];
+
+  isUsingFallback = false;
+  isSimulated = false;
+  activeEndpoint = endpoint;
+  lastEventTime = Date.now();
+
+  console.log(`🚀 [LASERSTREAM]: Initializing on ${endpoint}`);
+  console.log(`🚀 [LASERSTREAM]: Monitoring programs: ${programs.join(', ')}`);
+
+  await stopLaserStream();
+
+  const handleFallback = (errorMsg?: string) => {
+    if (isUsingFallback) return;
+    
+    stopWorkerProcess();
+
+    const isPlanError = errorMsg && (
+      errorMsg.includes('Unsupported plan type') || 
+      errorMsg.includes('unauthorized') ||
+      errorMsg.includes('permission') ||
+      errorMsg.includes('payment')
+    );
+
+    if (!isPlanError && endpoint && (!options.endpoint || options.endpoint === 'auto')) {
+      failedHubs.add(endpoint);
+      if (failedHubs.size < REGIONAL_HUBS.length) {
+        console.log(`ℹ️ [LASERSTREAM]: gRPC hub ${endpoint} is unreachable. Attempting to select another hub...`);
+        startLaserStream(options, eventBusCallback, failedHubs);
+        return;
+      }
+    }
+
+    isUsingFallback = true;
+    console.log("ℹ️ [LASERSTREAM]: Falling back to WebSocket stream.");
+    startFallbackWebSocket(programs, eventBusCallback, apiKey, options.customWsUrl);
+  };
+
+  if (isFreeOrDefaultKey(apiKey)) {
+    console.log("ℹ️ [LASERSTREAM]: Free/default API key. Activating Fast Local Stream to prevent 429 rate limit spam.");
+    startSimulationStream(eventBusCallback);
+    return null;
+  }
+
+  try {
+    console.log("🚀 [LASERSTREAM]: Spawning isolated worker process for gRPC...");
+    
+    const workerOptions = {
+      apiKey,
+      endpoint,
+      programAddresses: programs,
+    };
+
+    childProcess = fork(process.argv[1], [], {
+      env: {
+        ...process.env,
+        IS_LASERSTREAM_WORKER: 'true',
+        LASERSTREAM_OPTIONS: JSON.stringify(workerOptions)
+      },
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc']
+    });
+
+    // Capture and filter stderr to fully suppress "RECONNECT" and "transport error" from being printed to main stderr
+    childProcess.stderr?.on('data', (data: any) => {
+      const str = data.toString();
+      if (
+        str.includes("RECONNECT") || 
+        str.includes("transport error") || 
+        str.includes("Unsupported plan type") ||
+        str.includes("permission") ||
+        str.includes("unauthorized") ||
+        str.includes("Connection failed")
+      ) {
+        return;
+      }
+      process.stderr.write(data);
+    });
+
+    childProcess.stdout?.on('data', (data: any) => {
+      const str = data.toString();
+      if (
+        str.includes("RECONNECT") || 
+        str.includes("transport error") || 
+        str.includes("Unsupported plan type") ||
+        str.includes("permission") ||
+        str.includes("unauthorized") ||
+        str.includes("Connection failed")
+      ) {
+        return;
+      }
+      process.stdout.write(data);
+    });
+
+    childProcess.on('message', (msg: any) => {
+      if (msg.type === 'EVENT') {
+        lastEventTime = Date.now();
+        consecutiveSilentPeriods = 0;
+        msg.event.endpoint = activeEndpoint;
+        eventBusCallback(msg.event);
+      } else if (msg.type === 'ERROR') {
+        const errorMsg = msg.error;
+        if (
+          errorMsg.includes('permission') ||
+          errorMsg.includes('Unsupported plan type') ||
+          errorMsg.includes('unauthorized') ||
+          errorMsg.includes('Connection failed') ||
+          errorMsg.includes('transport error')
+        ) {
+          handleFallback(errorMsg);
+        }
+      } else if (msg.type === 'READY') {
+        console.log("✅ [LASERSTREAM]: Worker process reported successful gRPC stream creation.");
+      }
+    });
+
+    childProcess.on('exit', (code: number, signal: string) => {
+      console.log(`ℹ️ [LASERSTREAM PARENT]: Worker process exited with code ${code}, signal ${signal}`);
+      if (!isUsingFallback && !isSimulated) {
+        handleFallback();
+      }
+    });
+
     startHealthWatchdog(programs, eventBusCallback, apiKey, options.customWsUrl);
 
+    activeSubscription = {
+      cancel: () => stopWorkerProcess(),
+      unsubscribe: () => stopWorkerProcess()
+    };
+
     return activeSubscription;
+
   } catch (error: any) {
-    const catchMsg = error?.message || String(error);
-    console.log(`ℹ️ [LASERSTREAM]: gRPC setup failed (${catchMsg}). Switching to WebSocket.`);
+    console.log(`ℹ️ [LASERSTREAM]: gRPC spawning unsuccessful (${error.message}). Switching to WebSocket.`);
     handleFallback();
     startHealthWatchdog(programs, eventBusCallback, apiKey, options.customWsUrl);
   }
@@ -273,6 +428,7 @@ export async function startFallbackWebSocket(
   customWsUrl?: string
 ) {
   stopFallbackWebSocket();
+  isSimulated = false;
   console.log("🔌 [LASERSTREAM FALLBACK]: Connecting WebSocket log stream...");
 
   try {
@@ -286,6 +442,7 @@ export async function startFallbackWebSocket(
 
     const rpcUrl = wsUrl.replace('wss://', 'https://').replace('ws://', 'http://');
     console.log(`🔌 [LASERSTREAM FALLBACK]: WSS: ${wsUrl.replace(/api-key=[^&]*/, 'api-key=***')}`);
+    activeEndpoint = wsUrl;
 
     fallbackConnection = new Connection(rpcUrl, {
       commitment: 'confirmed',
@@ -316,7 +473,8 @@ export async function startFallbackWebSocket(
                 transaction: { transaction: { signatures: [logs.signature] } }
               },
               isFallback: true,
-              isSimulated: false
+              isSimulated: false,
+              endpoint: activeEndpoint
             };
             wrappedCallback(standardEvent);
           },
@@ -324,13 +482,13 @@ export async function startFallbackWebSocket(
         );
         fallbackSubIds.push(subId);
       } catch (addrErr) {
-        console.error(`Invalid program pubkey: ${prog}`, addrErr);
+        console.log(`Invalid program pubkey: ${prog}`);
       }
     }
     console.log(`✅ [LASERSTREAM FALLBACK]: Subscribed to ${fallbackSubIds.length}/${programs.length} program feeds.`);
     lastEventTime = Date.now();
   } catch (err) {
-    console.error("❌ [LASERSTREAM FALLBACK]: Failed to connect WebSocket:", err);
+    console.log("❌ [LASERSTREAM FALLBACK]: Failed to connect WebSocket. Retrying...");
 
     // Schedule automatic retry after 15 seconds
     if (fallbackReconnectTimer) clearTimeout(fallbackReconnectTimer);
@@ -357,22 +515,14 @@ export function stopFallbackWebSocket() {
 
 export async function stopLaserStream() {
   stopFallbackWebSocket();
+  stopWorkerProcess();
   if (healthCheckTimer) { clearInterval(healthCheckTimer); healthCheckTimer = null; }
   if (simulationTimer) { clearInterval(simulationTimer); simulationTimer = null; }
   isUsingFallback = false;
   isSimulated = false;
+  activeEndpoint = null;
 
-  if (activeSubscription) {
-    console.log("🛑 [LASERSTREAM]: Shutting down gRPC tunnel.");
-    try {
-      if (typeof activeSubscription.unsubscribe === 'function') {
-        await activeSubscription.unsubscribe();
-      }
-    } catch (e) {
-      console.error("[LASERSTREAM]: Error on unsubscribe:", e);
-    }
-    activeSubscription = null;
-  }
+  activeSubscription = null;
 
   try {
     shutdownAllStreams();
