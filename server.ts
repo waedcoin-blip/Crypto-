@@ -1220,13 +1220,13 @@ async function startServer() {
   });
 
   // Vite middleware for development
-  if (process.env.NODE_ENV !== "production" || process.env.VITE_DEV_SERVER === "true" || !fs.existsSync(path.join(process.cwd(), "dist/index.html"))) {
+  if (!process.env.VERCEL && (process.env.NODE_ENV !== "production" || process.env.VITE_DEV_SERVER === "true" || !fs.existsSync(path.join(process.cwd(), "dist/index.html")))) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
-  } else {
+  } else if (!process.env.VERCEL) {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
@@ -1241,7 +1241,7 @@ const appPromise = startServer();
 
 if (!process.env.VERCEL && process.env.NODE_ENV !== "test") {
   appPromise.then(app => {
-    const PORT = process.env.PORT || 3000;
+    const PORT = Number(process.env.PORT) || 3000;
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`Server running on http://localhost:${PORT}`);
     });
