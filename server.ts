@@ -1,7 +1,7 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
-import { fileURLToPath } from "url";
+// import { fileURLToPath } from "url";
 import compression from "compression";
 import fs from "fs";
 import { startLaserStream, stopLaserStream, isLaserStreamUsingFallback, isLaserStreamSimulated, getActiveLaserStreamEndpoint } from "./src/engines/LaserstreamIngestion";
@@ -45,8 +45,8 @@ const swapRateLimiter = new RateLimiter(20, 60000);   // 20 swaps/min per IP (an
 setInterval(() => apiRateLimiter.cleanup(), 300000);
 
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const _filename = typeof __filename !== 'undefined' ? __filename : '';
+const _dirname = typeof __dirname !== 'undefined' ? __dirname : process.cwd();
 
 // Performance SWR cache with request coalescing, built-in size bounding & pruning
 class SwrCache<T> {
@@ -1136,7 +1136,7 @@ async function startServer() {
         customWsUrl: customWsUrl || currentStreamOptions.customWsUrl
       };
 
-      if (process.env.VERCEL) {
+      if (process.env.VERCEL || process.env.VERCEL_REGION) {
         // Vercel serverless functions do not support long-lived child processes or websockets.
         // Force the client to use the WebSocket fallback.
         return res.json({ 
@@ -1146,7 +1146,7 @@ async function startServer() {
           clientsCount: 0,
           isFallback: true,
           isSimulated: false,
-          activeEndpoint: 'WebSocket (Vercel)'
+          activeEndpoint: 'WebSocket (Vercel Fallback)'
         });
       }
 

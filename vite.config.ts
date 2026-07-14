@@ -19,10 +19,13 @@ export default defineConfig(({mode}) => {
         'cross-fetch': 'cross-fetch/dist/browser-ponyfill.js'
       },
     },
-    server: {
+        server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
-      // Do not modifyâfile watching is disabled to prevent flickering during agent edits.
+      // Do not modifyâ€”file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
     },
+    build: {
+      chunkSizeWarningLimit: 2500,
+    }
   };
 });

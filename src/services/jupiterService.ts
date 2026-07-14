@@ -625,7 +625,7 @@ export const getJupiterQuote = async (
       });
     } else if (errStr.includes('Proxy error 429')) {
       useAppStore.getState().addJupiterLog({
-        type: 'WARN',
+        type: 'INFO',
         message: `Quote Rate Limited (429). Retrying next cycle...`,
       });
     }
