@@ -7,6 +7,14 @@ import fs from "fs";
 import { startLaserStream, stopLaserStream, isLaserStreamUsingFallback, isLaserStreamSimulated, getActiveLaserStreamEndpoint } from "./src/engines/LaserstreamIngestion";
 import { testFtpConnection, backupFtpData, deployFtpDist } from "./src/services/ftpService";
 
+process.on('uncaughtException', (err) => {
+  if (err.message && err.message.includes('Unexpected server response: 429')) {
+    console.warn("Caught WebSocket 429 Rate Limit Error. Preventing crash.");
+  } else {
+    console.error("Uncaught Exception:", err);
+  }
+});
+
 // ─── PER-IP RATE LIMITER (no external dependencies) ──────────────────────
 class RateLimiter {
   private counters = new Map<string, { count: number; resetAt: number }>();
@@ -1128,6 +1136,20 @@ async function startServer() {
         customWsUrl: customWsUrl || currentStreamOptions.customWsUrl
       };
 
+      if (process.env.VERCEL) {
+        // Vercel serverless functions do not support long-lived child processes or websockets.
+        // Force the client to use the WebSocket fallback.
+        return res.json({ 
+          success: true, 
+          active: enabled, 
+          options: currentStreamOptions,
+          clientsCount: 0,
+          isFallback: true,
+          isSimulated: false,
+          activeEndpoint: 'WebSocket (Vercel)'
+        });
+      }
+
       if (enabled) {
         // Stop first to avoid duplicates
         await stopLaserStream();
@@ -1212,9 +1234,21 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
+  return app;
 }
 
-startServer().catch(console.error);
+const appPromise = startServer();
+
+if (!process.env.VERCEL && process.env.NODE_ENV !== "test") {
+  appPromise.then(app => {
+    const PORT = process.env.PORT || 3000;
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server running on http://localhost:${PORT}`);
+    });
+  }).catch(console.error);
+}
+
+export default async function handler(req: any, res: any) {
+  const app = await appPromise;
+  app(req, res);
+}
