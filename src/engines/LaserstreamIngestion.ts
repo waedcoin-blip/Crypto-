@@ -353,7 +353,13 @@ export async function startLaserStream(
         str.includes("Unsupported plan type") ||
         str.includes("permission") ||
         str.includes("unauthorized") ||
-        str.includes("Connection failed")
+        str.includes("Connection failed") ||
+        str.includes("Unexpected server response") ||
+        str.includes("429") ||
+        str.includes("ws error") ||
+        str.includes("WebSocket") ||
+        str.includes("websocket") ||
+        str.includes("SUPPRESSED EXCEPTION")
       ) {
         return;
       }
@@ -368,7 +374,13 @@ export async function startLaserStream(
         str.includes("Unsupported plan type") ||
         str.includes("permission") ||
         str.includes("unauthorized") ||
-        str.includes("Connection failed")
+        str.includes("Connection failed") ||
+        str.includes("Unexpected server response") ||
+        str.includes("429") ||
+        str.includes("ws error") ||
+        str.includes("WebSocket") ||
+        str.includes("websocket") ||
+        str.includes("SUPPRESSED EXCEPTION")
       ) {
         return;
       }

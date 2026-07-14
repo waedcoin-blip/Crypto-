@@ -27,6 +27,17 @@ window.addEventListener('unhandledrejection', (event) => {
 });
 
 window.addEventListener('error', (event) => {
+  const msg = event.message || event.error?.message || String(event.error) || '';
+  
+  const benign = [
+    'NO_ROUTES_FOUND', 'No liquidity', 'User rejected', 'WalletNotConnected',
+    'Transaction not confirmed', 'SIMULATION_ERROR', 'AbortError', 'Unexpected server response', '429', 'ws error', 'WebSocket'
+  ];
+  if (benign.some(s => msg.includes(s))) {
+    event.preventDefault();
+    return;
+  }
+
   console.error('[GLOBAL ERROR]:', event.error);
   // Prevent white screen of death on runtime errors
 });

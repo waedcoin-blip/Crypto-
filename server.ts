@@ -8,7 +8,7 @@ import { testFtpConnection, backupFtpData, deployFtpDist } from "./src/services/
 
 process.on('uncaughtException', (err) => {
   if (err.message && err.message.includes('Unexpected server response: 429')) {
-    console.warn("Caught WebSocket 429 Rate Limit Error. Preventing crash.");
+    console.log("Caught WebSocket 429 Rate Limit Error. Preventing crash.");
   } else {
     console.error("Uncaught Exception:", err);
   }
@@ -134,9 +134,9 @@ class SwrCache<T> {
 process.on('uncaughtException', (err) => {
   const msg = err?.message || String(err);
   // Suppress common non-fatal Solana/gRPC noise
-  const benign = ['ECONNRESET', 'ENOTFOUND', 'socket hang up', 'read ECONNRESET', 'write ECONNRESET', 'Ping timeout', 'Unexpected server response', '429'];
+  const benign = ['ECONNRESET', 'ENOTFOUND', 'socket hang up', 'read ECONNRESET', 'write ECONNRESET', 'Ping timeout', 'Unexpected server response', '429', 'ws error', 'WebSocket', 'websocket'];
   if (benign.some(s => msg.includes(s))) {
-    console.warn('[SUPPRESSED EXCEPTION]:', msg);
+    console.log('[SUPPRESSED EXCEPTION]:', msg);
     return;
   }
   console.error('[UNCAUGHT EXCEPTION]', err);
@@ -145,7 +145,7 @@ process.on('uncaughtException', (err) => {
 
 process.on('unhandledRejection', (reason: any) => {
   const msg = reason?.message || String(reason) || '';
-  const benign = ['NO_ROUTES_FOUND', 'No liquidity', 'ECONNRESET', 'socket hang up', 'AbortError', 'fetch failed', 'Unexpected server response', '429'];
+  const benign = ['NO_ROUTES_FOUND', 'No liquidity', 'ECONNRESET', 'socket hang up', 'AbortError', 'fetch failed', 'Unexpected server response', '429', 'ws error', 'WebSocket', 'websocket'];
   if (benign.some(s => msg.includes(s))) return;
   console.error('[UNHANDLED REJECTION]', reason);
 });
