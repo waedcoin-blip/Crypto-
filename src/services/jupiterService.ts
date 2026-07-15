@@ -168,6 +168,39 @@ export const getSignatureStatusRobust = async (
   return null;
 };
 
+export const getLatestBlockhashWithFallback = async (
+  connection: Connection,
+  retries = 3
+): Promise<{ blockhash: string; lastValidBlockHeight: number }> => {
+  const rpcList = [
+    connection.rpcEndpoint,
+    localStorage.getItem('juipter_auto_rpcUrl') || '',
+    localStorage.getItem('juipter_auto_rpcUrl2') || '',
+    ...FALLBACK_RPCS
+  ].filter(url => url && url.trim() !== "");
+
+  const uniqueRpcs = Array.from(new Set(rpcList));
+
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await Promise.any(
+        uniqueRpcs.map(async (rpc) => {
+          const conn = new Connection(rpc, 'confirmed');
+          const res = await conn.getLatestBlockhash('confirmed');
+          if (res && res.blockhash) return res;
+          throw new Error("Invalid blockhash");
+        })
+      );
+    } catch (err) {
+      if (i === retries - 1) break;
+      await new Promise(r => setTimeout(r, 500)); // wait before retry
+    }
+  }
+
+  // Ultimate fallback using original connection
+  return await connection.getLatestBlockhash('confirmed');
+};
+
 export const executeTxWithRPCFallback = async (
   tx: VersionedTransaction,
   connection: Connection
@@ -211,7 +244,7 @@ export const executeTxWithRPCFallback = async (
       }
 
       // Fast Signature Status Polling Loop
-      const deadline = Date.now() + 25000;
+      const deadline = Date.now() + 45000; // 45 seconds polling
       while (Date.now() < deadline) {
         try {
           const value = await getSignatureStatusRobust(connection, signatureResult);
@@ -234,23 +267,10 @@ export const executeTxWithRPCFallback = async (
           }
           console.warn(`Helius Sender connection status check glitch:`, pollingErr.message || pollingErr);
         }
-        await new Promise(resolve => setTimeout(resolve, 300));
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
 
-      const latestBlockhash = await connection.getLatestBlockhash('confirmed');
-      const confirmation = await connection.confirmTransaction({
-        signature: signatureResult,
-        blockhash: latestBlockhash.blockhash,
-        lastValidBlockHeight: latestBlockhash.lastValidBlockHeight
-      }, 'confirmed');
-      if (confirmation.value.err) throw new Error(`Sender tx failed: ${JSON.stringify(confirmation.value.err)}`);
-      
-      useAppStore.getState().addJupiterLog({
-        type: 'SWAP',
-        message: `Swap Confirmed via Sender: ${signatureResult.slice(0,8)}...`,
-        details: { signature: signatureResult, sender: 'Helius Sender' }
-      });
-      return signatureResult;
+      throw new Error("Sender transaction confirmation timeout (45s).");
     } catch (e: any) {
       console.error('Helius Sender failed, falling back:', e.message);
       useAppStore.getState().addJupiterLog({
@@ -302,7 +322,7 @@ export const executeTxWithRPCFallback = async (
       const conn = new Connection(rpc, 'confirmed');
       
       // Fast Signature Status Polling Loop
-      const deadline = Date.now() + 25000;
+      const deadline = Date.now() + 60000; // 60s max wait for final confirmation
       while (Date.now() < deadline) {
         try {
           const value = await getSignatureStatusRobust(conn, signature);
@@ -320,27 +340,10 @@ export const executeTxWithRPCFallback = async (
           }
           console.warn(`RPC ${rpc} status check glitch:`, pollingErr.message || pollingErr);
         }
-        await new Promise(resolve => setTimeout(resolve, 300));
+        await new Promise(resolve => setTimeout(resolve, 1000));
       }
 
-      try {
-        const latestBlockhash = await conn.getLatestBlockhash('confirmed');
-        const confirmation = await conn.confirmTransaction({
-          signature,
-          blockhash: latestBlockhash.blockhash,
-          lastValidBlockHeight: latestBlockhash.lastValidBlockHeight
-        }, 'confirmed');
-        if (!confirmation.value.err) return signature;
-        throw new Error(`Transaction failed: ${JSON.stringify(confirmation.value.err)}`);
-      } catch (confirmErr: any) {
-        try {
-          const finalStatus = await getSignatureStatusRobust(conn, signature);
-          if (finalStatus?.confirmationStatus === 'confirmed' || finalStatus?.confirmationStatus === 'finalized') {
-            if (!finalStatus.err) return signature;
-          }
-        } catch (_) {}
-        throw confirmErr;
-      }
+      throw new Error(`RPC ${rpc} timed out waiting for confirmation`);
     }));
 
     useAppStore.getState().addJupiterLog({
@@ -659,15 +662,24 @@ export const createJupiterSwapTransaction = async (
     const swapTransactionBuf = Buffer.from(swapTransaction, 'base64');
     let tx = VersionedTransaction.deserialize(swapTransactionBuf);
 
+    const activeConnection = connection || new Connection(
+      localStorage.getItem('juipter_auto_rpcUrl') || 'https://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c',
+      'confirmed'
+    );
+
     const isSenderEnabled = localStorage.getItem('hd_sender_enabled') === 'true';
     if (isSenderEnabled) {
-      const activeConnection = connection || new Connection(
-        localStorage.getItem('juipter_auto_rpcUrl') || 'https://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c',
-        'confirmed'
-      );
       const isSwqos = localStorage.getItem('hd_sender_swqos') === 'true';
       const tipAmountSol = isSwqos ? 0.000005 : 0.0002;
       tx = await addTipInstructionToVersionedTx(activeConnection, tx, new PublicKey(userPublicKey), tipAmountSol);
+    }
+
+    // ─── OPTIMIZATION: Inject super fresh blockhash to prevent expiration ───
+    try {
+      const latestBlockhash = await getLatestBlockhashWithFallback(activeConnection);
+      tx.message.recentBlockhash = latestBlockhash.blockhash;
+    } catch (bhErr: any) {
+      console.warn("Failed to inject fresh blockhash into createJupiterSwapTransaction:", bhErr.message || bhErr);
     }
 
     useAppStore.getState().addJupiterLog({

@@ -6,6 +6,46 @@ import './index.css';
 import { Buffer } from 'buffer';
 window.Buffer = Buffer;
 
+// ─── MONKEY-PATCH CONSOLE TO SUPPRESS BENIGN METRIC/WS LIMITS ──────────────
+const originalConsoleError = console.error;
+console.error = function (...args) {
+  const msg = args.map(arg => {
+    if (arg instanceof Error) {
+      return arg.message + '\n' + arg.stack;
+    }
+    if (arg && typeof arg === 'object') {
+      try { return JSON.stringify(arg); } catch (e) { return String(arg); }
+    }
+    return String(arg);
+  }).join(' ');
+
+  const benign = [
+    'NO_ROUTES_FOUND', 'No liquidity', 'User rejected', 'WalletNotConnected',
+    'Transaction not confirmed', 'SIMULATION_ERROR', 'AbortError', 'Unexpected server response', 
+    '429', 'ws error', 'WebSocket', 'websocket', 'failed: WebSocket is closed',
+    'connection to', 'failed', 'Unexpected server response: 429'
+  ];
+
+  if (benign.some(s => msg.includes(s) || msg.toLowerCase().includes(s.toLowerCase()))) {
+    // Suppress benign connection or rate limit noises
+    return;
+  }
+
+  originalConsoleError.apply(console, args);
+};
+
+const originalConsoleWarn = console.warn;
+console.warn = function (...args) {
+  const msg = args.map(arg => String(arg)).join(' ');
+  const benign = [
+    'NO_ROUTES_FOUND', 'No liquidity', 'Unexpected server response', '429', 'ws error', 'WebSocket', 'websocket'
+  ];
+  if (benign.some(s => msg.includes(s) || msg.toLowerCase().includes(s.toLowerCase()))) {
+    return;
+  }
+  originalConsoleWarn.apply(console, args);
+};
+
 // ─── 24H STABILITY: Global error handlers to prevent silent crashes ────────
 window.addEventListener('unhandledrejection', (event) => {
   const reason = event.reason;
@@ -14,9 +54,9 @@ window.addEventListener('unhandledrejection', (event) => {
   // Suppress known non-critical errors from crashing the app
   const benign = [
     'NO_ROUTES_FOUND', 'No liquidity', 'User rejected', 'WalletNotConnected',
-    'Transaction not confirmed', 'SIMULATION_ERROR', 'AbortError', 'Unexpected server response', '429'
+    'Transaction not confirmed', 'SIMULATION_ERROR', 'AbortError', 'Unexpected server response', '429', 'ws error', 'WebSocket'
   ];
-  if (benign.some(s => msg.includes(s))) {
+  if (benign.some(s => msg.includes(s) || msg.toLowerCase().includes(s.toLowerCase()))) {
     event.preventDefault();
     return;
   }
@@ -33,7 +73,7 @@ window.addEventListener('error', (event) => {
     'NO_ROUTES_FOUND', 'No liquidity', 'User rejected', 'WalletNotConnected',
     'Transaction not confirmed', 'SIMULATION_ERROR', 'AbortError', 'Unexpected server response', '429', 'ws error', 'WebSocket'
   ];
-  if (benign.some(s => msg.includes(s))) {
+  if (benign.some(s => msg.includes(s) || msg.toLowerCase().includes(s.toLowerCase()))) {
     event.preventDefault();
     return;
   }

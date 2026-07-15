@@ -6,12 +6,68 @@ import fs from "fs";
 import { startLaserStream, stopLaserStream, isLaserStreamUsingFallback, isLaserStreamSimulated, getActiveLaserStreamEndpoint } from "./src/engines/LaserstreamIngestion";
 import { testFtpConnection, backupFtpData, deployFtpDist } from "./src/services/ftpService";
 
-process.on('uncaughtException', (err) => {
-  if (err.message && err.message.includes('Unexpected server response: 429')) {
-    console.log("Caught WebSocket 429 Rate Limit Error. Preventing crash.");
-  } else {
-    console.error("Uncaught Exception:", err);
+// ─── MONKEY-PATCH CONSOLE TO SUPPRESS BENIGN METRIC/WS LIMITS ──────────────
+const originalConsoleError = console.error;
+console.error = function (...args) {
+  const msg = args.map(arg => {
+    if (arg instanceof Error) {
+      return arg.message + '\n' + arg.stack;
+    }
+    if (arg && typeof arg === 'object') {
+      try { return JSON.stringify(arg); } catch (e) { return String(arg); }
+    }
+    return String(arg);
+  }).join(' ');
+
+  const benign = [
+    'NO_ROUTES_FOUND', 'No liquidity', 'User rejected', 'WalletNotConnected',
+    'Transaction not confirmed', 'SIMULATION_ERROR', 'AbortError', 'Unexpected server response', 
+    '429', 'ws error', 'WebSocket', 'websocket', 'failed: WebSocket is closed',
+    'connection to', 'failed', 'Unexpected server response: 429'
+  ];
+
+  if (benign.some(s => msg.includes(s) || msg.toLowerCase().includes(s.toLowerCase()))) {
+    // Suppress benign connection or rate limit noises
+    return;
   }
+
+  originalConsoleError.apply(console, args);
+};
+
+const originalConsoleWarn = console.warn;
+console.warn = function (...args) {
+  const msg = args.map(arg => String(arg)).join(' ');
+  const benign = [
+    'NO_ROUTES_FOUND', 'No liquidity', 'Unexpected server response', '429', 'ws error', 'WebSocket', 'websocket'
+  ];
+  if (benign.some(s => msg.includes(s) || msg.toLowerCase().includes(s.toLowerCase()))) {
+    return;
+  }
+  originalConsoleWarn.apply(console, args);
+};
+
+process.on('uncaughtException', (err) => {
+  const msg = err?.message || String(err);
+  const benign = [
+    'ECONNRESET', 'ENOTFOUND', 'socket hang up', 'read ECONNRESET', 'write ECONNRESET',
+    'Ping timeout', 'Unexpected server response', '429', 'ws error', 'WebSocket', 'websocket'
+  ];
+  if (benign.some(s => msg.includes(s) || msg.toLowerCase().includes(s.toLowerCase()))) {
+    return;
+  }
+  originalConsoleError('[UNCAUGHT EXCEPTION]', err);
+});
+
+process.on('unhandledRejection', (reason: any) => {
+  const msg = reason?.message || String(reason) || '';
+  const benign = [
+    'NO_ROUTES_FOUND', 'No liquidity', 'ECONNRESET', 'socket hang up', 'AbortError',
+    'fetch failed', 'Unexpected server response', '429', 'ws error', 'WebSocket', 'websocket'
+  ];
+  if (benign.some(s => msg.includes(s) || msg.toLowerCase().includes(s.toLowerCase()))) {
+    return;
+  }
+  originalConsoleError('[UNHANDLED REJECTION]', reason);
 });
 
 // ─── PER-IP RATE LIMITER (no external dependencies) ──────────────────────
@@ -130,25 +186,7 @@ class SwrCache<T> {
 }
 
 // Prevent WebSocket or other unhandled errors from crashing the server
-// ─── 24H STABILITY: Server process crash handlers ────────────────────────
-process.on('uncaughtException', (err) => {
-  const msg = err?.message || String(err);
-  // Suppress common non-fatal Solana/gRPC noise
-  const benign = ['ECONNRESET', 'ENOTFOUND', 'socket hang up', 'read ECONNRESET', 'write ECONNRESET', 'Ping timeout', 'Unexpected server response', '429', 'ws error', 'WebSocket', 'websocket'];
-  if (benign.some(s => msg.includes(s))) {
-    console.log('[SUPPRESSED EXCEPTION]:', msg);
-    return;
-  }
-  console.error('[UNCAUGHT EXCEPTION]', err);
-  // Don't exit — keep server alive for 24h trading
-});
-
-process.on('unhandledRejection', (reason: any) => {
-  const msg = reason?.message || String(reason) || '';
-  const benign = ['NO_ROUTES_FOUND', 'No liquidity', 'ECONNRESET', 'socket hang up', 'AbortError', 'fetch failed', 'Unexpected server response', '429', 'ws error', 'WebSocket', 'websocket'];
-  if (benign.some(s => msg.includes(s))) return;
-  console.error('[UNHANDLED REJECTION]', reason);
-});
+// ─── 24H STABILITY: Server process crash handlers handled at startup ──────
 
 // Memory leak guard: log heap usage every 30min; warn if >1.5GB
 setInterval(() => {

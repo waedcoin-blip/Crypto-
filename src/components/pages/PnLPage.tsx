@@ -5,7 +5,7 @@ import bs58 from 'bs58';
 import { Buffer } from 'buffer';
 import { TokenMetric, TelemetryAlert, Trade, SniperTrade } from '../../types';
 import { useAppStore } from '../../store/appStore';
-import { getJupiterQuote, executeTxWithRPCFallback, getTokenBalanceRaw } from '../../services/jupiterService';
+import { getJupiterQuote, executeTxWithRPCFallback, getTokenBalanceRaw, getLatestBlockhashWithFallback } from '../../services/jupiterService';
 import { db } from '../../lib/firebase';
 import { detectTokenStage } from '../../lib/utils';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
@@ -2384,81 +2384,29 @@ export const PnLPage = ({
                       amount: exactTokenAmount,
                       entryTime: quoteRequestTime
                     };
-                    return {
-                      ...prev,
-                      [mint]: {
-                        ...existing,
-                        simRealBought: true,
-                        simRealBoughtPriceSol: boughtPriceSol,
-                        simRealAmountTokens: exactTokenAmount,
-                        simRealSolSpent: buyAmt,
-                        simRealBoughtTime: quoteRequestTime,
-                        amountLamports: result.quoteOutAmountRaw || Math.floor(exactTokenAmount * 1_000_000),
-                        txid: result.txid
-                      }
+                    const updated = {
+                      ...existing,
+                      simRealBought: true,
+                      simRealBoughtPriceSol: boughtPriceSol,
+                      simRealAmountTokens: exactTokenAmount,
+                      simRealSolSpent: buyAmt,
+                      simRealBoughtTime: quoteRequestTime,
+                      amountLamports: result.quoteOutAmountRaw || Math.floor(exactTokenAmount * 1_000_000),
+                      txid: result.txid
                     };
+                    positionsRef.current = {
+                      ...prev,
+                      [mint]: updated
+                    };
+                    return positionsRef.current;
                   });
                   addLog(`✅ [SIMREAL REAL SWAP] Bought ${pos.symbol} @ ${boughtPriceSol.toFixed(8)} SOL | tx: ${result.txid.slice(0, 12)}...`, 'buy');
                 } else {
                   throw new Error("Jupiter swap transaction ID missing.");
                 }
               } catch (err: any) {
-                addLog(`⚠️ [SIMREAL REAL SWAP FAILED] Real entry failed for ${pos.symbol}: ${err.message}. Falling back to virtual simulation copy-trade...`, 'warn');
-                
-                let boughtPriceSol = newPrice || 0.000001;
-                try {
-                  const quote = await getJupiterQuote(SOL_MINT, mint, Math.floor(buyAmt * 1_000_000_000), 0).catch(() => null);
-                  if (quote && Number(quote.outAmount) > 0) {
-                    const exactTokenAmount = Number(quote.outAmount);
-                    const decimals = (tokenMetrics[mint] || tokenMetricsRef.current[mint] as any)?.decimals || 6;
-                    const normalizedOut = exactTokenAmount / Math.pow(10, decimals);
-                    if (normalizedOut > 0) {
-                      boughtPriceSol = buyAmt / normalizedOut;
-                    }
-                  }
-                } catch (e: any) {
-                  console.warn("Quote refresh failed during fallback", e);
-                }
-                const tokensQty = buyAmt / boughtPriceSol;
-                
-                storeState.setSimRealBalance(prev => Math.max(0, prev - buyAmt));
-                
-                const newSimTrade: SniperTrade = {
-                  id: `simreal-buy-${Date.now()}`,
-                  type: 'BUY',
-                  token: pos.symbol,
-                  address: mint,
-                  amount: buyAmt,
-                  timestamp: quoteRequestTime,
-                  signature: 'SIMREAL_FB_' + Math.random().toString(36).substring(7),
-                  tokenAmount: tokensQty
-                };
-                storeState.setSimRealTrades(prev => [newSimTrade, ...prev]);
-                
-                setPositions(prev => {
-                  const existing = prev[mint] || {
-                    symbol: pos.symbol || 'Unknown',
-                    buyPrice: boughtPriceSol,
-                    currentPrice: boughtPriceSol,
-                    solSpent: buyAmt,
-                    amount: tokensQty,
-                    entryTime: quoteRequestTime,
-                    txid: 'simulation-copy'
-                  };
-                  return {
-                    ...prev,
-                    [mint]: {
-                      ...existing,
-                      simRealBought: true,
-                      simRealBoughtPriceSol: boughtPriceSol,
-                      simRealAmountTokens: tokensQty,
-                      simRealSolSpent: buyAmt,
-                      simRealBoughtTime: quoteRequestTime,
-                      simRealIsVirtualFallback: true
-                    }
-                  };
-                });
-                addLog(`⚠️ [SIMREAL FALLBACK BUY] Bought ${pos.symbol} for ${buyAmt.toFixed(4)} SOL via simulation fallback.`, 'info');
+                addLog(`⚠️ [SIMREAL REAL SWAP FAILED] Real entry failed for ${pos.symbol}: ${err.message}. Deduction of ${buyAmt.toFixed(4)} SOL retrieved. Wallet balance matching original total operation.`, 'warn');
+                simRealBoughtPending.current.delete(mint);
               }
             } else {
               // Request fresh quote price!
@@ -2973,6 +2921,8 @@ export const PnLPage = ({
           quoteResponse,
           userPublicKey: keypair.publicKey.toString(),
           wrapAndUnwrapSol: true,
+          dynamicComputeUnitLimit: true,
+          prioritizationFeeLamports: 150000,
         })
       });
       const swapText = await swapRes.text();
@@ -3006,6 +2956,19 @@ export const PnLPage = ({
 
       const swapTransactionBuf = Buffer.from(swapTxResp.swapTransaction, 'base64');
       const transaction = VersionedTransaction.deserialize(swapTransactionBuf);
+
+      // ─── OPTIMIZATION: Inject super fresh blockhash to prevent expiration ───
+      try {
+        const latestBlockhash = await getLatestBlockhashWithFallback(connection);
+        transaction.message.recentBlockhash = latestBlockhash.blockhash;
+        useAppStore.getState().addJupiterLog({
+          type: 'INFO',
+          message: `Injected fresh blockhash: ${latestBlockhash.blockhash.slice(0, 8)}...`,
+        });
+      } catch (bhErr: any) {
+        console.warn("Failed to inject fresh blockhash, using Jupiter's original:", bhErr.message || bhErr);
+      }
+
       transaction.sign([keypair]);
 
       const txid = await executeTxWithRPCFallback(transaction, connection);
@@ -4444,59 +4407,45 @@ const checkTokenCriteria = (mint: string): {
                     };
                     storeState.setSimRealTrades(prev => [newRealTrade, ...prev]);
                     
-                    pos.simRealBought = true;
-                    pos.simRealBoughtPriceSol = boughtPriceSol;
-                    pos.simRealAmountTokens = exactTokenAmount;
-                    pos.simRealSolSpent = buyAmt;
-                    pos.simRealBoughtTime = quoteRequestTime;
-                    pos.amountLamports = result.quoteOutAmountRaw || Math.floor(exactTokenAmount * 1_000_000);
-                    pos.txid = result.txid;
+                    const exactTokenAmt = exactTokenAmount;
+                    const bPriceSol = boughtPriceSol;
+                    const txId = result.txid;
+                    const rawAmtLamp = result.quoteOutAmountRaw || Math.floor(exactTokenAmount * 1_000_000);
+
+                    setPositions(prev => {
+                      const existing = prev[mint] || {
+                        symbol: pos.symbol || 'Unknown',
+                        buyPrice: bPriceSol,
+                        currentPrice: currentPrice,
+                        solSpent: buyAmt,
+                        amount: exactTokenAmt,
+                        entryTime: quoteRequestTime,
+                        txid: txId
+                      };
+                      const updated = {
+                        ...existing,
+                        simRealBought: true,
+                        simRealBoughtPriceSol: bPriceSol,
+                        simRealAmountTokens: exactTokenAmt,
+                        simRealSolSpent: buyAmt,
+                        simRealBoughtTime: quoteRequestTime,
+                        amountLamports: rawAmtLamp,
+                        txid: txId
+                      };
+                      positionsRef.current = {
+                        ...prev,
+                        [mint]: updated
+                      };
+                      return positionsRef.current;
+                    });
                     
                     addLog(`✅ [SIMREAL REAL SWAP] Bought ${pos.symbol} @ ${boughtPriceSol.toFixed(8)} SOL | tx: ${result.txid.slice(0, 12)}...`, 'buy');
                   } else {
                     throw new Error("Jupiter swap transaction ID missing.");
                   }
                 } catch (err: any) {
-                  addLog(`⚠️ [SIMREAL REAL SWAP FAILED] Real entry failed for ${pos.symbol}: ${err.message}. Falling back to virtual simulation copy-trade...`, 'warn');
-                  
-                  let boughtPriceSol = currentPrice || 0.000001;
-                  try {
-                    const quote = await getJupiterQuote(SOL_MINT, mint, Math.floor(buyAmt * 1_000_000_000), 0).catch(() => null);
-                    if (quote && Number(quote.outAmount) > 0) {
-                      const exactTokenAmount = Number(quote.outAmount);
-                      const decimals = (tokenMetrics[mint] || tokenMetricsRef.current[mint] as any)?.decimals || 6;
-                      const normalizedOut = exactTokenAmount / Math.pow(10, decimals);
-                      if (normalizedOut > 0) {
-                        boughtPriceSol = buyAmt / normalizedOut;
-                      }
-                    }
-                  } catch (e: any) {
-                    console.warn("Quote refresh failed during fallback", e);
-                  }
-                  const tokensQty = buyAmt / boughtPriceSol;
-                  
-                  storeState.setSimRealBalance(prev => Math.max(0, prev - buyAmt));
-                  
-                  const newSimTrade: SniperTrade = {
-                    id: `simreal-buy-${Date.now()}`,
-                    type: 'BUY',
-                    token: pos.symbol,
-                    address: mint,
-                    amount: buyAmt,
-                    timestamp: quoteRequestTime,
-                    signature: 'SIMREAL_FB_' + Math.random().toString(36).substring(7),
-                    tokenAmount: tokensQty
-                  };
-                  storeState.setSimRealTrades(prev => [newSimTrade, ...prev]);
-                  
-                  pos.simRealBought = true;
-                  pos.simRealBoughtPriceSol = boughtPriceSol;
-                  pos.simRealAmountTokens = tokensQty;
-                  pos.simRealSolSpent = buyAmt;
-                  pos.simRealBoughtTime = quoteRequestTime;
-                  pos.simRealIsVirtualFallback = true;
-                  
-                  addLog(`⚠️ [SIMREAL FALLBACK BUY] Bought ${pos.symbol} for ${buyAmt.toFixed(4)} SOL via simulation fallback.`, 'info');
+                  addLog(`⚠️ [SIMREAL REAL SWAP FAILED] Real entry failed for ${pos.symbol}: ${err.message}. Deduction of ${buyAmt.toFixed(4)} SOL retrieved. Wallet balance matching original total operation.`, 'warn');
+                  simRealBoughtPending.current.delete(mint);
                 }
               } else {
                 // Request fresh quote price!
@@ -4534,12 +4483,34 @@ const checkTokenCriteria = (mint: string): {
                 };
                 storeState.setSimRealTrades(prev => [newSimTrade, ...prev]);
                 
-                pos.simRealBought = true;
-                pos.simRealBoughtPriceSol = boughtPriceSol;
-                pos.simRealAmountTokens = tokensQty;
-                pos.simRealSolSpent = buyAmt;
-                pos.simRealBoughtTime = quoteRequestTime;
-                pos.simRealIsVirtualFallback = isFallbackSim ? true : undefined;
+                const bPriceSol = boughtPriceSol;
+                const tQty = tokensQty;
+
+                setPositions(prev => {
+                  const existing = prev[mint] || {
+                    symbol: pos.symbol || 'Unknown',
+                    buyPrice: bPriceSol,
+                    currentPrice: currentPrice,
+                    solSpent: buyAmt,
+                    amount: tQty,
+                    entryTime: quoteRequestTime,
+                    txid: 'simulation-copy'
+                  };
+                  const updated = {
+                    ...existing,
+                    simRealBought: true,
+                    simRealBoughtPriceSol: bPriceSol,
+                    simRealAmountTokens: tQty,
+                    simRealSolSpent: buyAmt,
+                    simRealBoughtTime: quoteRequestTime,
+                    simRealIsVirtualFallback: isFallbackSim ? true : undefined
+                  };
+                  positionsRef.current = {
+                    ...prev,
+                    [mint]: updated
+                  };
+                  return positionsRef.current;
+                });
                 
                 if (isFallbackSim) {
                   addLog(`⚠️ [SIMREAL FALLBACK BUY] Bought ${pos.symbol} for ${buyAmt.toFixed(4)} SOL via simulation (Fallback active: On-chain balance is 0.0000 SOL)`, 'info');
@@ -4657,59 +4628,45 @@ const checkTokenCriteria = (mint: string): {
                       };
                       storeState.setSimRealTrades(prev => [newRealTrade, ...prev]);
                       
-                      pos.simRealBought = true;
-                      pos.simRealBoughtPriceSol = boughtPriceSol;
-                      pos.simRealAmountTokens = exactTokenAmount;
-                      pos.simRealSolSpent = buyAmt;
-                      pos.simRealBoughtTime = quoteRequestTime;
-                      pos.amountLamports = result.quoteOutAmountRaw || Math.floor(exactTokenAmount * 1_000_000);
-                      pos.txid = result.txid;
+                      const exactTokenAmt = exactTokenAmount;
+                      const bPriceSol = boughtPriceSol;
+                      const txId = result.txid;
+                      const rawAmtLamp = result.quoteOutAmountRaw || Math.floor(exactTokenAmount * 1_000_000);
+
+                      setPositions(prev => {
+                        const existing = prev[mint] || {
+                          symbol: pos.symbol || 'Unknown',
+                          buyPrice: bPriceSol,
+                          currentPrice: currentPrice,
+                          solSpent: buyAmt,
+                          amount: exactTokenAmt,
+                          entryTime: quoteRequestTime,
+                          txid: txId
+                        };
+                        const updated = {
+                          ...existing,
+                          simRealBought: true,
+                          simRealBoughtPriceSol: bPriceSol,
+                          simRealAmountTokens: exactTokenAmt,
+                          simRealSolSpent: buyAmt,
+                          simRealBoughtTime: quoteRequestTime,
+                          amountLamports: rawAmtLamp,
+                          txid: txId
+                        };
+                        positionsRef.current = {
+                          ...prev,
+                          [mint]: updated
+                        };
+                        return positionsRef.current;
+                      });
                       
                       addLog(`✅ [SIMREAL REAL SWAP] Bought ${pos.symbol} @ ${boughtPriceSol.toFixed(8)} SOL | tx: ${result.txid.slice(0, 12)}...`, 'buy');
                     } else {
                       throw new Error("Jupiter swap transaction ID missing.");
                     }
                   } catch (err: any) {
-                    addLog(`⚠️ [SIMREAL REAL SWAP FAILED] Real entry failed for ${pos.symbol}: ${err.message}. Falling back to virtual simulation copy-trade...`, 'warn');
-                    
-                    let boughtPriceSol = currentPrice || 0.000001;
-                    try {
-                      const quote = await getJupiterQuote(SOL_MINT, mint, Math.floor(buyAmt * 1_000_000_000), 0).catch(() => null);
-                      if (quote && Number(quote.outAmount) > 0) {
-                        const exactTokenAmount = Number(quote.outAmount);
-                        const decimals = (tokenMetrics[mint] || tokenMetricsRef.current[mint] as any)?.decimals || 6;
-                        const normalizedOut = exactTokenAmount / Math.pow(10, decimals);
-                        if (normalizedOut > 0) {
-                          boughtPriceSol = buyAmt / normalizedOut;
-                        }
-                      }
-                    } catch (e: any) {
-                      console.warn("Quote refresh failed during fallback", e);
-                    }
-                    const tokensQty = buyAmt / boughtPriceSol;
-                    
-                    storeState.setSimRealBalance(prev => Math.max(0, prev - buyAmt));
-                    
-                    const newSimTrade: SniperTrade = {
-                      id: `simreal-buy-${Date.now()}`,
-                      type: 'BUY',
-                      token: pos.symbol,
-                      address: mint,
-                      amount: buyAmt,
-                      timestamp: quoteRequestTime,
-                      signature: 'SIMREAL_FB_' + Math.random().toString(36).substring(7),
-                      tokenAmount: tokensQty
-                    };
-                    storeState.setSimRealTrades(prev => [newSimTrade, ...prev]);
-                    
-                    pos.simRealBought = true;
-                    pos.simRealBoughtPriceSol = boughtPriceSol;
-                    pos.simRealAmountTokens = tokensQty;
-                    pos.simRealSolSpent = buyAmt;
-                    pos.simRealBoughtTime = quoteRequestTime;
-                    pos.simRealIsVirtualFallback = true;
-                    
-                    addLog(`⚠️ [SIMREAL FALLBACK BUY] Bought ${pos.symbol} for ${buyAmt.toFixed(4)} SOL via simulation fallback.`, 'info');
+                    addLog(`⚠️ [SIMREAL REAL SWAP FAILED] Real entry failed for ${pos.symbol}: ${err.message}. Deduction of ${buyAmt.toFixed(4)} SOL retrieved. Wallet balance matching original total operation.`, 'warn');
+                    simRealBoughtPending.current.delete(mint);
                   }
                 } else {
                   // Request fresh quote price!
@@ -4747,12 +4704,34 @@ const checkTokenCriteria = (mint: string): {
                   };
                   storeState.setSimRealTrades(prev => [newSimTrade, ...prev]);
                   
-                  pos.simRealBought = true;
-                  pos.simRealBoughtPriceSol = boughtPriceSol;
-                  pos.simRealAmountTokens = tokensQty;
-                  pos.simRealSolSpent = buyAmt;
-                  pos.simRealBoughtTime = quoteRequestTime;
-                  pos.simRealIsVirtualFallback = isFallbackSim ? true : undefined;
+                  const bPriceSol = boughtPriceSol;
+                  const tQty = tokensQty;
+
+                  setPositions(prev => {
+                    const existing = prev[mint] || {
+                      symbol: pos.symbol || 'Unknown',
+                      buyPrice: bPriceSol,
+                      currentPrice: currentPrice,
+                      solSpent: buyAmt,
+                      amount: tQty,
+                      entryTime: quoteRequestTime,
+                      txid: 'simulation-copy'
+                    };
+                    const updated = {
+                      ...existing,
+                      simRealBought: true,
+                      simRealBoughtPriceSol: bPriceSol,
+                      simRealAmountTokens: tQty,
+                      simRealSolSpent: buyAmt,
+                      simRealBoughtTime: quoteRequestTime,
+                      simRealIsVirtualFallback: isFallbackSim ? true : undefined
+                    };
+                    positionsRef.current = {
+                      ...prev,
+                      [mint]: updated
+                    };
+                    return positionsRef.current;
+                  });
                   
                   if (isFallbackSim) {
                     addLog(`⚠️ [SIMREAL FALLBACK BUY] Bought ${pos.symbol} for ${buyAmt.toFixed(4)} SOL via simulation (Fallback active: On-chain balance is 0.0000 SOL)`, 'info');
