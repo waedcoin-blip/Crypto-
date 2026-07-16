@@ -359,7 +359,7 @@ async function startServer() {
 
 
   // Utility for retrying fetch on transient errors (now optionally reads body to handle truncated streams)
-  async function fetchWithRetry(url: string, opts: any, retries = 5): Promise<{ response: Response, text: string }> {
+  async function fetchWithRetry(url: string, opts: any, retries = 5, baseBackoffMs = 3000): Promise<{ response: Response, text: string }> {
     for (let i = 0; i < retries; i++) {
         try {
             const controller = new AbortController();
@@ -368,7 +368,7 @@ async function startServer() {
             
             if (response.status === 429) {
                 clearTimeout(timeout);
-                const backoff = 3000 * (i + 1);
+                const backoff = baseBackoffMs * (i + 1);
                 console.warn(`Rate limit [429] for ${url}. Backing off ${backoff}ms...`);
                 if (i < retries - 1) {
                     await new Promise(resolve => setTimeout(resolve, backoff));
@@ -383,7 +383,7 @@ async function startServer() {
         } catch (e: any) {
             console.error(`Fetch attempt ${i + 1} failed for ${url}:`, e);
             if (i === retries - 1) throw e;
-            await new Promise(resolve => setTimeout(resolve, 2000 * (i + 1))); 
+            await new Promise(resolve => setTimeout(resolve, Math.max(500, baseBackoffMs * (i + 1)))); 
         }
     }
     throw new Error('Retries exhausted');
@@ -566,9 +566,39 @@ async function startServer() {
         const fetchOpts: any = { method: "GET", headers: { 'User-Agent': 'Mozilla/5.0' } };
         if (apiKey) fetchOpts.headers['x-api-key'] = apiKey;
         
-        const { response, text } = await fetchWithRetry(jupUrl, fetchOpts);
+        let response: Response;
+        let text: string;
+        let currentUrl = jupUrl;
         
-        if (!response.ok) {
+        const fallbacks = [
+          currentUrl,
+          currentUrl.replace('api.jup.ag/swap/v1', 'quote-api.jup.ag/v6'),
+          currentUrl.replace('api.jup.ag/swap/v1', 'api.jup.ag/v6'),
+        ];
+        
+        // Try each fallback once if we get 429
+        let success = false;
+        let finalStatus = 500;
+        let finalText = "";
+        
+        for (const urlToTry of fallbacks) {
+           const res = await fetchWithRetry(urlToTry, fetchOpts, 2, 50); // only 2 retries per domain, 50ms backoff
+           response = res.response;
+           text = res.text;
+           finalStatus = response.status;
+           finalText = text;
+           if (response.ok || response.status !== 429) {
+               success = true;
+               break;
+           }
+        }
+        
+        if (!success) {
+           // still rate limited
+           return { status: finalStatus, text: finalText, bypassCache: true };
+        }
+        
+        if (!response!.ok) {
           let shouldHide = response.status === 429;
           let isTemporaryNoRoute = false;
           try {
@@ -1280,7 +1310,7 @@ const appPromise = startServer();
 if (!process.env.VERCEL && process.env.NODE_ENV !== "test") {
   appPromise.then(app => {
     if (app && typeof app.listen === 'function') {
-      const PORT = Number(process.env.PORT) || 3000;
+      const PORT = 3000;
       app.listen(PORT, "0.0.0.0", () => {
         console.log(`Server running on http://localhost:${PORT}`);
       });

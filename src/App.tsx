@@ -56,7 +56,7 @@ import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
 import { 
   getJupiterQuote, 
   createJupiterSwapTransaction, 
-  executeTxWithRPCFallback, getLatestBlockhashWithFallback, 
+  executeTxWithRPCFallback, getLatestBlockhashWithFallback, pollSignatureStatus,
   getTokenBalanceRaw, 
   processActiveTrackingFrame, 
   verifyHardenedScannerCriteria,
@@ -1710,9 +1710,7 @@ export default function App() {
             const tx = await createJupiterSwapTransaction(publicKey.toBase58(), quote, priorityTipLamports, connection);
             if (tx) {
               signature = await sendTransaction(tx as any, connection);
-              const latestBlockhash = await getLatestBlockhashWithFallback(connection);
-              const confirmation = await connection.confirmTransaction({ signature, blockhash: latestBlockhash.blockhash, lastValidBlockHeight: latestBlockhash.lastValidBlockHeight }, 'confirmed');
-              if (confirmation.value.err) throw new Error(`Transaction failed: ${JSON.stringify(confirmation.value.err)}`);
+              await pollSignatureStatus(connection, signature);
             } else throw new Error("Failed to create swap transaction");
           }
         }
@@ -2175,9 +2173,7 @@ export default function App() {
               const tx = await createJupiterSwapTransaction(publicKey.toBase58(), quote, priorityTipLamports, connection);
               if (tx) {
                 signature = await sendTransaction(tx as any, connection);
-                const latestBlockhash = await getLatestBlockhashWithFallback(connection);
-                const confirmation = await connection.confirmTransaction({ signature, blockhash: latestBlockhash.blockhash, lastValidBlockHeight: latestBlockhash.lastValidBlockHeight }, 'confirmed');
-                if (confirmation.value.err) throw new Error(`Transaction failed to confirm: ${JSON.stringify(confirmation.value.err)}`);
+                await pollSignatureStatus(connection, signature);
                 console.log("🚀 Swap Executed! Transaction Signature:", signature);
               } else throw new Error("Failed to create swap transaction");
             }

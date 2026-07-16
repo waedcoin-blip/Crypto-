@@ -12,6 +12,12 @@ interface PriceTick {
 // A global sliding window of price ticks per token mint
 const candidatePriceHistories: Record<string, PriceTick[]> = {};
 
+export function clearPriceHistories() {
+  for (const key of Object.keys(candidatePriceHistories)) {
+    delete candidatePriceHistories[key];
+  }
+}
+
 /**
  * Registers a new price tick for a token candidate
  * @param tokenAddress The mint address of the token

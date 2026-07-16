@@ -138,6 +138,32 @@ export const addTipInstructionToVersionedTx = async (
   return new VersionedTransaction(newCompiledMessage);
 };
 
+export const pollSignatureStatus = async (
+  connection: Connection,
+  signature: string,
+  timeoutMs: number = 60000
+): Promise<string> => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const value = await getSignatureStatusRobust(connection, signature);
+      if (value) {
+        if (value.err) {
+          throw new Error(`Transaction failed: ${JSON.stringify(value.err)}`);
+        }
+        if (value.confirmationStatus === 'confirmed' || value.confirmationStatus === 'finalized') {
+          return signature;
+        }
+      }
+    } catch (pollingErr: any) {
+      if (pollingErr.message?.includes('Transaction failed')) {
+        throw pollingErr;
+      }
+    }
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+  throw new Error(`Timed out waiting for confirmation`);
+};
 export const getSignatureStatusRobust = async (
   connection: Connection,
   signature: string
@@ -406,6 +432,10 @@ interface SimPriceState {
 
 const simPriceCache = new Map<string, SimPriceState>();
 
+export function clearSimPriceCache() {
+  simPriceCache.clear();
+}
+
 export function getSimulatedPrice(simMint: string, externalPriceNative?: number): number {
   const now = Date.now();
   let state = simPriceCache.get(simMint);
@@ -587,7 +617,7 @@ export const getJupiterQuote = async (
 
 
     const quoteAgeMs = Date.now() - startTime;
-    if (quoteAgeMs > 2000) {
+    if (quoteAgeMs > 4000) {
       console.warn(`[QUOTE REJECTED]: Latency ${quoteAgeMs}ms`);
       return null;
     }
@@ -629,7 +659,7 @@ export const getJupiterQuote = async (
     } else if (errStr.includes('Proxy error 429')) {
       useAppStore.getState().addJupiterLog({
         type: 'INFO',
-        message: `Quote Rate Limited (429). Retrying next cycle...`,
+        message: `Quote Rate Limited (429). Consider adding a custom Jupiter API key in Settings. Retrying...`,
       });
     }
     return null;

@@ -5,11 +5,11 @@ import bs58 from 'bs58';
 import { Buffer } from 'buffer';
 import { TokenMetric, TelemetryAlert, Trade, SniperTrade } from '../../types';
 import { useAppStore } from '../../store/appStore';
-import { getJupiterQuote, executeTxWithRPCFallback, getTokenBalanceRaw, getLatestBlockhashWithFallback } from '../../services/jupiterService';
+import { getJupiterQuote, executeTxWithRPCFallback, getTokenBalanceRaw, getLatestBlockhashWithFallback, clearSimPriceCache } from '../../services/jupiterService';
 import { db } from '../../lib/firebase';
 import { detectTokenStage } from '../../lib/utils';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
-import { checkTokenInProfitLast2Seconds } from '../../services/priceTracker';
+import { checkTokenInProfitLast2Seconds, clearPriceHistories } from '../../services/priceTracker';
 
 window.Buffer = window.Buffer || Buffer;
 
@@ -5311,21 +5311,33 @@ const checkTokenCriteria = (mint: string): {
     setLogs([]);
     setTradeHistory([]);
     setStats({ trades: 0, wins: 0, losses: 0, pnl: 0, bestTrade: null });
-    setPositions((prev) => {
-      const next: Record<string, Position> = {};
-      for (const [mint, pos] of Object.entries(prev)) {
-        if (pos && pos.simRealBought) {
-          next[mint] = pos;
-        }
-      }
-      return next;
-    });
+    setPositions({});
     setBlacklistedMints([]);
     setSimWalletBalance(10.0);
     setUptime(0);
     startTimeRef.current = null;
+    
+    // Completely clear all cache
     localStorage.removeItem('juipter_auto_startTime');
     localStorage.removeItem('juipter_auto_uptime');
+    localStorage.removeItem('juipter_auto_positions');
+    localStorage.removeItem('juipter_auto_tradeHistory');
+    localStorage.removeItem('juipter_auto_stats');
+    localStorage.removeItem('juipter_auto_logs');
+    localStorage.removeItem('app_mySniperTrades');
+    
+    // Clear any token activity stored in localStorage
+    Object.keys(localStorage).forEach(key => {
+      if (key.startsWith('app_token_activity_') || key.includes('token_cache')) {
+        localStorage.removeItem(key);
+      }
+    });
+
+    clearSimPriceCache();
+    clearPriceHistories();
+    
+    // Force a full application reload to guarantee all caches and parent states (like App.tsx) are cleared
+    window.location.reload();
   };
 
   const executeSimRealSell = async (mint: string) => {
