@@ -66,8 +66,31 @@ const getJupiterApiClient = () => {
   return createJupiterApiClient();
 };
 
+export const pingJupiterApi = async (): Promise<{ healthy: boolean; pingMs: number; error?: string; isCustom: boolean }> => {
+  const customApiKey = localStorage.getItem('juipter_auto_apiKey') || '';
+  const isCustom = !!customApiKey;
+  const start = performance.now();
+  try {
+    const res = await getJupiterApiClient().quoteGet({
+      inputMint: 'So11111111111111111111111111111111111111112',
+      outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+      amount: 1000000,
+      slippageBps: 50
+    });
+    if (res && res.outAmount) {
+      return { healthy: true, pingMs: Math.round(performance.now() - start), isCustom };
+    }
+    return { healthy: false, pingMs: 0, isCustom, error: "Empty response" };
+  } catch (e: any) {
+    let errorMsg = e.message || "API Error";
+    if (e.status === 429) errorMsg = "Rate Limited (429)";
+    else if (e.status === 401) errorMsg = "Unauthorized API Key";
+    return { healthy: false, pingMs: 0, isCustom, error: errorMsg };
+  }
+};
+
+
 export const FALLBACK_RPCS = [
-  'https://winter-methodical-river.solana-mainnet.quiknode.pro/4b240281eaf3b0b4e4c527bc69c2f9e1a6e7b439/',
   'https://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c'
 ];
 
@@ -331,7 +354,7 @@ export const executeTxWithRPCFallback = async (
     sentViaJito = true;
   } catch (e) {}
 
-  const rpcsToTry = [connection.rpcEndpoint, ...FALLBACK_RPCS.filter(r => r !== connection.rpcEndpoint)];
+  const rpcsToTry = [connection.rpcEndpoint];
 
   // Broadcast to all RPCs immediately in parallel to maximize transaction propagation speed!
   try {

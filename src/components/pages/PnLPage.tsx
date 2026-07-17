@@ -5,7 +5,7 @@ import bs58 from 'bs58';
 import { Buffer } from 'buffer';
 import { TokenMetric, TelemetryAlert, Trade, SniperTrade } from '../../types';
 import { useAppStore } from '../../store/appStore';
-import { getJupiterQuote, executeTxWithRPCFallback, getTokenBalanceRaw, getLatestBlockhashWithFallback, clearSimPriceCache } from '../../services/jupiterService';
+import { getJupiterQuote, executeTxWithRPCFallback, getTokenBalanceRaw, getLatestBlockhashWithFallback, clearSimPriceCache, pingJupiterApi } from '../../services/jupiterService';
 import { db } from '../../lib/firebase';
 import { detectTokenStage } from '../../lib/utils';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
@@ -18,6 +18,50 @@ const JUPITER_PRICE = 'https://api.jup.ag/price/v2';
 const DEXSCREENER = 'https://api.dexscreener.com/latest/dex';
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
+
+const decimalsCache: Record<string, number> = {};
+
+const fetchMintDecimals = async (mint: string, rpcUrl?: string): Promise<number> => {
+  const normalized = mint.trim();
+  if (normalized.toLowerCase().startsWith('sim')) return 6;
+  if (decimalsCache[normalized] !== undefined) return decimalsCache[normalized];
+
+  // 1. Try public Jupiter Token API (very fast, cached)
+  try {
+    const res = await fetch(`https://tokens.jup.ag/token/${normalized}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data && typeof data.decimals === 'number') {
+        decimalsCache[normalized] = data.decimals;
+        return data.decimals;
+      }
+    }
+  } catch (e) {
+    console.warn("Jupiter token decimals fetch failed:", e);
+  }
+
+  // 2. Try Solana RPC
+  if (rpcUrl) {
+    try {
+      const conn = new Connection(rpcUrl, 'confirmed');
+      const info = await conn.getParsedAccountInfo(new PublicKey(normalized));
+      if (info?.value?.data && 'parsed' in info.value.data) {
+        const decimals = info.value.data.parsed?.info?.decimals;
+        if (typeof decimals === 'number') {
+          decimalsCache[normalized] = decimals;
+          return decimals;
+        }
+      }
+    } catch (e) {
+      console.warn("Solana RPC decimals fetch failed:", e);
+    }
+  }
+
+  // 3. Fallback heuristic
+  const fallback = normalized.toLowerCase().endsWith('pump') ? 6 : 9;
+  decimalsCache[normalized] = fallback;
+  return fallback;
+};
 
 const getDynamicOperationalFeeSol = (isRecovery: boolean = false, tradeAmountSol: number = 0.05): number => {
   const baseGasAndComputeSol = 0.00005;
@@ -1188,7 +1232,30 @@ export const PnLPage = ({
   const [jupiterStatus, setJupiterStatus] = useState<'DISCONNECTED' | 'CONNECTING' | 'CONNECTED' | 'ERROR'>('DISCONNECTED');
   const [jupiterAddress, setJupiterAddress] = useState<string>('');
   const [jupiterBalance, setJupiterBalance] = useState<number | null>(null);
+  const [jupApiStatus, setJupApiStatus] = useState<'IDLE'|'HEALTHY'|'DEGRADED'|'ERROR'>('IDLE');
+  const [jupApiPing, setJupApiPing] = useState<number>(0);
   const lastLoggedKeyRef = useRef<string>('');
+
+  useEffect(() => {
+    let isMounted = true;
+    const checkJupApi = async () => {
+      const res = await pingJupiterApi();
+      if (!isMounted) return;
+      setJupApiPing(res.pingMs);
+      if (res.healthy) {
+        if (res.pingMs > 1000) setJupApiStatus('DEGRADED');
+        else setJupApiStatus('HEALTHY');
+      } else {
+        setJupApiStatus('ERROR');
+      }
+    };
+    checkJupApi();
+    const interval = setInterval(checkJupApi, 30000); // Check every 30 seconds
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [apiKey]);
 
   const handleManualScan = async (overrideAddress?: string) => {
     let rawInput = (overrideAddress || manualSearchInput).trim();
@@ -1536,8 +1603,14 @@ export const PnLPage = ({
         const docSnap = await getDoc(docRef);
         if (docSnap.exists()) {
           const data = docSnap.data();
-          if (data.rpcUrl) setRpcUrl(data.rpcUrl);
-          if (data.rpcUrl2) setRpcUrl2(data.rpcUrl2);
+          if (data.rpcUrl) {
+            const sanitized = data.rpcUrl.includes('winter-methodical-river') ? 'https://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c' : data.rpcUrl;
+            setRpcUrl(sanitized);
+          }
+          if (data.rpcUrl2) {
+            const sanitized = data.rpcUrl2.includes('winter-methodical-river') ? 'https://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c' : data.rpcUrl2;
+            setRpcUrl2(sanitized);
+          }
           if (data.customWsUrl) setCustomWsUrl(data.customWsUrl);
           if (data.apiKey) setApiKey(data.apiKey);
           if (data.privateKey) setPrivateKey(data.privateKey);
@@ -1587,9 +1660,16 @@ export const PnLPage = ({
             }
           }
           
+          const sanitizedRpcUrl = data.rpcUrl && data.rpcUrl.includes('winter-methodical-river') 
+            ? 'https://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c' 
+            : (data.rpcUrl || rpcUrl);
+          const sanitizedRpcUrl2 = data.rpcUrl2 && data.rpcUrl2.includes('winter-methodical-river') 
+            ? 'https://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c' 
+            : (data.rpcUrl2 || rpcUrl2);
+
           lastLoadedSettingsRef.current = {
-            rpcUrl: data.rpcUrl || rpcUrl,
-            rpcUrl2: data.rpcUrl2 || rpcUrl2,
+            rpcUrl: sanitizedRpcUrl,
+            rpcUrl2: sanitizedRpcUrl2,
             customWsUrl: data.customWsUrl || customWsUrl,
             apiKey: data.apiKey || apiKey,
             privateKey: data.privateKey || privateKey,
@@ -2356,7 +2436,7 @@ export const PnLPage = ({
                   let exactTokenAmount = passedOutputAmount;
                   let boughtPriceSol = buyAmt / (exactTokenAmount || 0.000001);
                   if (result.quoteOutAmountRaw && passedOutputAmount > 0) {
-                    const decimals = (tokenMetrics[mint] || tokenMetricsRef.current[mint] as any)?.decimals || 6;
+                    const decimals = await fetchMintDecimals(mint, rpcUrl);
                     exactTokenAmount = result.quoteOutAmountRaw / Math.pow(10, decimals);
                     boughtPriceSol = buyAmt / exactTokenAmount;
                   }
@@ -2416,7 +2496,7 @@ export const PnLPage = ({
                 const quote = await getJupiterQuote(SOL_MINT, mint, lamportsForQuote, 0).catch(() => null);
                 if (quote && Number(quote.outAmount) > 0) {
                   const exactTokenAmount = Number(quote.outAmount);
-                  const decimals = (tokenMetrics[mint] || tokenMetricsRef.current[mint] as any)?.decimals || 6;
+                  const decimals = await fetchMintDecimals(mint, rpcUrl);
                   const normalizedOut = exactTokenAmount / Math.pow(10, decimals);
                   if (normalizedOut > 0) {
                     boughtPriceSol = buyAmt / normalizedOut;
@@ -3439,7 +3519,7 @@ const checkTokenCriteria = (mint: string): {
           const quote = await getJupiterQuote(SOL_MINT, mint, lamportsForQuote, 0).catch(() => null);
           if (quote && Number(quote.outAmount) > 0) {
             const exactTokenAmount = Number(quote.outAmount);
-            const decimals = (tokenMetricsRef.current[mint] as any)?.decimals || 6;
+            const decimals = await fetchMintDecimals(mint, rpcUrl);
             const normalizedOut = exactTokenAmount / Math.pow(10, decimals);
             if (normalizedOut > 0) {
               const freshPriceFromQuote = solAmount / normalizedOut;
@@ -3492,7 +3572,7 @@ const checkTokenCriteria = (mint: string): {
       } else {
         const metric = tokenMetricsRef.current[mint];
         if (metric) {
-          const freshMetricPrice = typeof metric.priceNative === 'number' ? metric.priceNative : parseFloat(String(metric.priceNative || metric.priceUsd || '0'));
+          const freshMetricPrice = metric.priceNative ? (typeof metric.priceNative === 'number' ? metric.priceNative : parseFloat(String(metric.priceNative))) : (metric.priceUsd ? parseFloat(String(metric.priceUsd)) / 150 : 0);
           if (freshMetricPrice > 0) {
             parsedPrice = freshMetricPrice;
             addLog(`[BUY] Using latest background metric price for ${symbol}: ${parsedPrice.toFixed(8)} SOL`, 'info');
@@ -3502,7 +3582,7 @@ const checkTokenCriteria = (mint: string): {
     } catch(e) {
       const metric = tokenMetricsRef.current[mint];
       if (metric) {
-        const freshMetricPrice = typeof metric.priceNative === 'number' ? metric.priceNative : parseFloat(String(metric.priceNative || metric.priceUsd || '0'));
+        const freshMetricPrice = metric.priceNative ? (typeof metric.priceNative === 'number' ? metric.priceNative : parseFloat(String(metric.priceNative))) : (metric.priceUsd ? parseFloat(String(metric.priceUsd)) / 150 : 0);
         if (freshMetricPrice > 0) parsedPrice = freshMetricPrice;
       }
     }
@@ -3583,7 +3663,8 @@ const checkTokenCriteria = (mint: string): {
            
            const exactMathFallback = solAmount / parsedPrice;
            if (outAmountRaw > 0) {
-             const estimatedDecimals = Math.max(0, Math.round(Math.log10(outAmountRaw / exactMathFallback)));
+             const metricDecimals = await fetchMintDecimals(mint, rpcUrl);
+             const estimatedDecimals = (metricDecimals >= 0 && metricDecimals <= 18) ? metricDecimals : Math.max(0, Math.round(Math.log10(outAmountRaw / exactMathFallback)));
              tokenAmount = outAmountRaw / Math.pow(10, estimatedDecimals);
              parsedPrice = solAmount / tokenAmount;
            } else {
@@ -3634,8 +3715,8 @@ const checkTokenCriteria = (mint: string): {
         
         let exactTokenAmount = solAmount / parsedPrice;
         if (result.quoteOutAmountRaw && passedOutputAmount > 0) {
-          const estimatedDecimals = Math.max(0, Math.round(Math.log10(passedOutputAmount / exactTokenAmount)));
-          exactTokenAmount = passedOutputAmount / Math.pow(10, estimatedDecimals);
+          const decimals = await fetchMintDecimals(mint, rpcUrl);
+          exactTokenAmount = passedOutputAmount / Math.pow(10, decimals);
           parsedPrice = solAmount / exactTokenAmount; // Update to actual execution price
         }
         
@@ -3881,19 +3962,18 @@ const checkTokenCriteria = (mint: string): {
     const lamportsToSell = lamportsToSellRaw;
     
     try {
-      setPositions((prev) => {
-        pos = prev[mint];
-        if (!pos) return prev;
-        
-        if (!lamportsToSell || lamportsToSell <= 0) {
-          addLog(`No original token lamports for ${pos.symbol}, using fallback or removing position`, 'warn');
+      if (!pos || !lamportsToSell || lamportsToSell <= 0) {
+        addLog(`No original token lamports for ${pos?.symbol || mint}, using fallback or removing position`, 'warn');
+        setPositions((prev) => {
           const newPos = { ...prev };
           delete newPos[mint];
           return newPos;
-        }
+        });
+        return;
+      }
 
-        addLog(`Ordering ${pos.symbol} → SOL...`, 'sell');
-        executeJupiterSwap(mint, SOL_MINT, lamportsToSell).then((result) => {
+      addLog(`Ordering ${pos.symbol} → SOL...`, 'sell');
+      executeJupiterSwap(mint, SOL_MINT, lamportsToSell).then((result) => {
           const actualPnlPct = pnlPct; // already decimal from latest logic
           const pnlSOL = pos.solSpent * actualPnlPct;
           setStats((s) => ({
@@ -3956,8 +4036,6 @@ const checkTokenCriteria = (mint: string): {
         }).finally(() => {
           pendingSellMintsRef.current.delete(mint);
         });
-        return prev;
-      });
     } catch (e: any) {
       addLog(`Sell error: ${e.message}`, 'err');
     }
@@ -4248,8 +4326,8 @@ const checkTokenCriteria = (mint: string): {
           const metric = tokenMetricsRef.current[mint];
           if (batchedPrices[mint]?.price) {
             currentPrice = parseFloat(batchedPrices[mint].price);
-          } else if (metric?.priceNative || metric?.priceUsd) {
-            currentPrice = metric.priceNative || metric.priceUsd;
+          } else if (metric) {
+            currentPrice = metric.priceNative ? parseFloat(String(metric.priceNative)) : (metric.priceUsd ? parseFloat(String(metric.priceUsd)) / 150 : 0);
           }
           
           if (!currentPrice || currentPrice === 0) continue;
@@ -4388,7 +4466,7 @@ const checkTokenCriteria = (mint: string): {
                     let exactTokenAmount = passedOutputAmount;
                     let boughtPriceSol = buyAmt / (exactTokenAmount || 0.000001);
                     if (result.quoteOutAmountRaw && passedOutputAmount > 0) {
-                      const decimals = (tokenMetrics[mint] || tokenMetricsRef.current[mint] as any)?.decimals || 6;
+                      const decimals = await fetchMintDecimals(mint, rpcUrl);
                       exactTokenAmount = result.quoteOutAmountRaw / Math.pow(10, decimals);
                       boughtPriceSol = buyAmt / exactTokenAmount;
                     }
@@ -4455,7 +4533,7 @@ const checkTokenCriteria = (mint: string): {
                   const quote = await getJupiterQuote(SOL_MINT, mint, lamportsForQuote, 0).catch(() => null);
                   if (quote && Number(quote.outAmount) > 0) {
                     const exactTokenAmount = Number(quote.outAmount);
-                    const decimals = (tokenMetrics[mint] || tokenMetricsRef.current[mint] as any)?.decimals || 6;
+                    const decimals = await fetchMintDecimals(mint, rpcUrl);
                     const normalizedOut = exactTokenAmount / Math.pow(10, decimals);
                     if (normalizedOut > 0) {
                       boughtPriceSol = buyAmt / normalizedOut;
@@ -4609,7 +4687,7 @@ const checkTokenCriteria = (mint: string): {
                       let exactTokenAmount = passedOutputAmount;
                       let boughtPriceSol = buyAmt / (exactTokenAmount || 0.000001);
                       if (result.quoteOutAmountRaw && passedOutputAmount > 0) {
-                        const decimals = (tokenMetrics[mint] || tokenMetricsRef.current[mint] as any)?.decimals || 6;
+                        const decimals = await fetchMintDecimals(mint, rpcUrl);
                         exactTokenAmount = result.quoteOutAmountRaw / Math.pow(10, decimals);
                         boughtPriceSol = buyAmt / exactTokenAmount;
                       }
@@ -4676,7 +4754,7 @@ const checkTokenCriteria = (mint: string): {
                     const quote = await getJupiterQuote(SOL_MINT, mint, lamportsForQuote, 0).catch(() => null);
                     if (quote && Number(quote.outAmount) > 0) {
                       const exactTokenAmount = Number(quote.outAmount);
-                      const decimals = (tokenMetrics[mint] || tokenMetricsRef.current[mint] as any)?.decimals || 6;
+                      const decimals = await fetchMintDecimals(mint, rpcUrl);
                       const normalizedOut = exactTokenAmount / Math.pow(10, decimals);
                       if (normalizedOut > 0) {
                         boughtPriceSol = buyAmt / normalizedOut;
@@ -5307,7 +5385,7 @@ const checkTokenCriteria = (mint: string): {
     addLog('🛑 Bot stopped', 'warn');
   };
 
-  const resetSession = () => {
+  const resetSession = async () => {
     setLogs([]);
     setTradeHistory([]);
     setStats({ trades: 0, wins: 0, losses: 0, pnl: 0, bestTrade: null });
@@ -5317,7 +5395,14 @@ const checkTokenCriteria = (mint: string): {
     setUptime(0);
     startTimeRef.current = null;
     
-    // Completely clear all cache
+    // Completely clear all cache and reset balances to exactly 10.0 SOL
+    localStorage.setItem('app_simulationBalance_v4', '10.0');
+    localStorage.setItem('juipter_auto_simWalletBalance', '10.0');
+    localStorage.setItem('app_simRealBalance', '10.0');
+    localStorage.setItem('app_simRealBalance_fallback', '10.0');
+    localStorage.setItem('app_simRealTrades', JSON.stringify([]));
+    localStorage.setItem('juipter_auto_isRunning', 'true'); // Auto-start trading on reset
+    
     localStorage.removeItem('juipter_auto_startTime');
     localStorage.removeItem('juipter_auto_uptime');
     localStorage.removeItem('juipter_auto_positions');
@@ -5335,6 +5420,22 @@ const checkTokenCriteria = (mint: string): {
 
     clearSimPriceCache();
     clearPriceHistories();
+
+    if (user) {
+      try {
+        const docRef = doc(db, 'settings', user.uid);
+        await setDoc(docRef, {
+          simWalletBalance: 10.0,
+          blacklistedMints: JSON.stringify([]),
+          positions: JSON.stringify({}),
+          stats: JSON.stringify({ trades: 0, wins: 0, losses: 0, pnl: 0, bestTrade: null }),
+          tradeHistory: JSON.stringify([]),
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+      } catch (err) {
+        console.error('Error resetting settings in Firestore:', err);
+      }
+    }
     
     // Force a full application reload to guarantee all caches and parent states (like App.tsx) are cleared
     window.location.reload();
@@ -5538,11 +5639,19 @@ const checkTokenCriteria = (mint: string): {
         <h1 className="flex items-center gap-1.5 lg:gap-2 font-bold text-[16px] lg:text-[20px] tracking-[-0.5px] text-[#c7f284]">
           <span>⚡</span> JUPITER.AUTO
         </h1>
-        <div className="bg-[#1a1b26] border border-[#2d2e3d] px-2.5 py-1 lg:px-3.5 lg:py-1.5 rounded-full flex items-center gap-1.5 lg:gap-2 text-[11px] lg:text-[13px]">
-          <div className={`w-1.5 h-1.5 lg:w-2 lg:h-2 rounded-full ${isRunning ? (isPausedState ? 'bg-amber-500 animate-pulse' : 'bg-[#c7f284]') : 'bg-[#ff4d4d]'}`}></div>
-          <span className={`font-medium ${isRunning ? (isPausedState ? 'text-amber-500' : 'text-[#c7f284]') : 'text-[#ff4d4d]'}`}>
-            {isRunning ? (isPausedState ? 'PAUSED' : 'LIVE') : 'STOPPED'}
-          </span>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5 border border-[#2d2e3d] bg-[#1a1b26] px-2 py-1 rounded-full text-[10px] lg:text-[11px]">
+            <div className={`w-1.5 h-1.5 rounded-full ${jupApiStatus === 'HEALTHY' ? 'bg-[#c7f284]' : jupApiStatus === 'DEGRADED' ? 'bg-amber-400 animate-pulse' : jupApiStatus === 'ERROR' ? 'bg-rose-500' : 'bg-slate-500'}`} />
+            <span className={`font-bold uppercase tracking-widest ${jupApiStatus === 'HEALTHY' ? 'text-[#c7f284]' : jupApiStatus === 'DEGRADED' ? 'text-amber-400' : jupApiStatus === 'ERROR' ? 'text-rose-500' : 'text-slate-500'}`}>
+              API: {jupApiStatus} {jupApiPing > 0 ? `(${jupApiPing}ms)` : ''}
+            </span>
+          </div>
+          <div className="bg-[#1a1b26] border border-[#2d2e3d] px-2.5 py-1 lg:px-3.5 lg:py-1.5 rounded-full flex items-center gap-1.5 lg:gap-2 text-[11px] lg:text-[13px]">
+            <div className={`w-1.5 h-1.5 lg:w-2 lg:h-2 rounded-full ${isRunning ? (isPausedState ? 'bg-amber-500 animate-pulse' : 'bg-[#c7f284]') : 'bg-[#ff4d4d]'}`}></div>
+            <span className={`font-medium ${isRunning ? (isPausedState ? 'text-amber-500' : 'text-[#c7f284]') : 'text-[#ff4d4d]'}`}>
+              {isRunning ? (isPausedState ? 'PAUSED' : 'LIVE') : 'STOPPED'}
+            </span>
+          </div>
         </div>
       </header>
       

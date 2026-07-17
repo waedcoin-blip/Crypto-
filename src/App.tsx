@@ -569,8 +569,14 @@ export default function App() {
   }, []);
 
   const [rpcLatency, setRpcLatency] = useState<number | null>(null);
-  const [rpcUrl, setRpcUrl] = useState(() => localStorage.getItem('juipter_auto_rpcUrl') || 'https://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c');
-  const [rpcUrl2, setRpcUrl2] = useState(() => localStorage.getItem('juipter_auto_rpcUrl2') || 'https://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c');
+  const [rpcUrl, setRpcUrl] = useState(() => {
+    const raw = localStorage.getItem('juipter_auto_rpcUrl') || 'https://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c';
+    return raw.includes('winter-methodical-river') ? 'https://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c' : raw;
+  });
+  const [rpcUrl2, setRpcUrl2] = useState(() => {
+    const raw = localStorage.getItem('juipter_auto_rpcUrl2') || 'https://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c';
+    return raw.includes('winter-methodical-river') ? 'https://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c' : raw;
+  });
   const [customWsUrl, setCustomWsUrl] = useState(() => localStorage.getItem('juipter_auto_wsUrl') || '');
   const [isSecondaryActive, setIsSecondaryActive] = useState(() => localStorage.getItem('juipter_rpc_secondary_active') === 'true');
 
@@ -1852,7 +1858,10 @@ export default function App() {
              }
            } else if (publicKey && sendTransaction) {
              const tx = await createJupiterSwapTransaction(publicKey.toBase58(), quote, priorityTip);
-             if (tx) signature = await sendTransaction(tx as any, connection);
+             if (tx) {
+               signature = await sendTransaction(tx as any, connection);
+               await pollSignatureStatus(connection, signature);
+             }
            }
         }
       } else {
@@ -1986,6 +1995,7 @@ export default function App() {
              const tx = await createJupiterSwapTransaction(publicKey.toBase58(), quote, priorityTip);
              if (tx) {
                 signature = await sendTransaction(tx as any, connection);
+                await pollSignatureStatus(connection, signature);
              }
           }
       } else {
