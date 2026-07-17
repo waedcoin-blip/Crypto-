@@ -60,8 +60,12 @@ export const rpcPool = new RpcPool();
 
 const getJupiterApiClient = () => {
   const customApiKey = localStorage.getItem('juipter_auto_apiKey') || '';
-  if (customApiKey && customApiKey.startsWith('http')) {
-    return createJupiterApiClient({ basePath: customApiKey });
+  if (customApiKey) {
+    if (customApiKey.startsWith('http')) {
+      return createJupiterApiClient({ basePath: customApiKey });
+    } else {
+      return createJupiterApiClient({ apiKey: customApiKey });
+    }
   }
   return createJupiterApiClient();
 };

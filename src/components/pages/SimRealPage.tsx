@@ -278,10 +278,10 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
              
              <div className="space-y-3">
                 <div className="flex flex-col gap-1">
-                   <label className="text-[10px] text-slate-400 font-mono uppercase tracking-wider">Jupiter API Key (Custom Proxy URL)</label>
+                   <label className="text-[10px] text-slate-400 font-mono uppercase tracking-wider">Jupiter API Key</label>
                    <input
                       type="text"
-                      placeholder="Optional. Direct custom Jupiter API endpoint URL"
+                      placeholder="Optional. Jupiter premium API key"
                       value={apiKey}
                       onChange={(e) => setApiKey(e.target.value)}
                       className="bg-[#07080e] border border-[#1f212e] rounded-lg px-3 py-1.5 text-xs text-[#e2e8f0] focus:outline-none focus:border-emerald-500/50 font-mono w-full"
