@@ -4289,7 +4289,7 @@ const checkTokenCriteria = (mint: string): {
          }
 
          for (const [mint, metric] of scannerTokens.slice(0, 3) as [string, any][]) {
-            if (maxPositions > 0 && activeMints.length >= maxPositions) break;
+            if (maxPositions > 0 && currentActiveCountLoop >= maxPositions) break;
             const progress = metric.bondingCurveProgress || 0;
             const isGraduated = !mint.toLowerCase().endsWith('pump');
             addLog(`🟢 [BUY TRIGGER] Matches all configured constraints for ${metric.symbol || 'Unknown'} (${isGraduated ? 'Raydium' : 'Pump.fun'}) with curve progress at ${progress.toFixed(1)}%. Placing swift-swap entry...`, 'buy');
@@ -4303,6 +4303,7 @@ const checkTokenCriteria = (mint: string): {
              }
             */
              await executeBuy(mint, metric.symbol || 'Unknown', metric.priceNative || metric.priceUsd, tradeAmount);
+             currentActiveCountLoop++;
          }
       }
 

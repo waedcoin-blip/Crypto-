@@ -434,6 +434,12 @@ export default function App() {
   const [telegramChatId, setTelegramChatId] = useState(() => localStorage.getItem('tg_chat_id') || '');
 
   useEffect(() => {
+    localStorage.setItem('juipter_auto_apiKey', apiKey);
+  }, [apiKey]);
+  useEffect(() => {
+    localStorage.setItem('juipter_auto_privateKey', privateKey);
+  }, [privateKey]);
+  useEffect(() => {
     localStorage.setItem('app_buyAmountSol', buyAmountSol.toString());
     localStorage.setItem('app_minTakeProfit', minTakeProfit.toString());
     localStorage.setItem('app_maxTakeProfit', maxTakeProfit.toString());
@@ -1355,7 +1361,7 @@ export default function App() {
       // MONITORING LOOP 2: ENTRIES (Hardened Scanner Engine)
       if (state.autoSniperEnabled) {
         const tokens = tokensForTracking;
-        const currentActiveCount = activePositionEntries.length;
+        let currentActiveCount = activePositionEntries.length;
 
         for (const token of tokens) {
           if (state.activePositions[token.address] || pendingTrades.current.has(token.address)) continue;
@@ -1437,8 +1443,9 @@ export default function App() {
             }
             */
 
-            console.log(`[HARDENED ENTRY] ✅ ${token.symbol} MC=$${metrics.marketCapUsd.toFixed(0)} vol/liq=${volMcRatio.toFixed(2)} buyP=${(buyPressure*100).toFixed(0)}% momentum=${momentumScore.toFixed(3)}`);
+            console.log(`[HARDENED ENTRY] ✅ ${token.symbol} MC=${metrics.marketCapUsd.toFixed(0)} vol/liq=${volMcRatio.toFixed(2)} buyP=${(buyPressure*100).toFixed(0)}% momentum=${momentumScore.toFixed(3)}`);
             fns.current.executeAutoTrade(token.address, token.symbol);
+            currentActiveCount++;
           }
         }
       }
