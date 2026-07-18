@@ -63,6 +63,8 @@ interface SimRealPageProps {
   setPrivateKey: (v: string) => void;
   apiKey: string;
   setApiKey: (v: string) => void;
+  jupiterRpcUrl?: string;
+  setJupiterRpcUrl?: (v: string) => void;
   rpcUrl?: string;
   customWsUrl?: string;
   stopLoss: number;
@@ -87,6 +89,8 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
   setPrivateKey,
   apiKey,
   setApiKey,
+  jupiterRpcUrl = '',
+  setJupiterRpcUrl = () => {},
   rpcUrl,
   customWsUrl,
   stopLoss,
@@ -138,13 +142,14 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
         const pubKeyStr = keypair.publicKey.toBase58();
         setJupiterAddress(pubKeyStr);
 
-        if (!rpcUrl) {
+        const activeRpcUrl = jupiterRpcUrl && jupiterRpcUrl.trim() !== "" ? jupiterRpcUrl.trim() : rpcUrl;
+        if (!activeRpcUrl) {
           setJupiterStatus('ERROR');
           return;
         }
 
-        const activeWsUrl = (customWsUrl && customWsUrl.trim() !== "") ? customWsUrl.trim() : rpcUrl.replace('https', 'wss').replace('http', 'ws');
-        const conn = new Connection(rpcUrl, { commitment: 'confirmed', wsEndpoint: activeWsUrl });
+        const activeWsUrl = (customWsUrl && customWsUrl.trim() !== "") ? customWsUrl.trim() : activeRpcUrl.replace('https', 'wss').replace('http', 'ws');
+        const conn = new Connection(activeRpcUrl, { commitment: 'confirmed', wsEndpoint: activeWsUrl });
 
         const lamports = await conn.getBalance(keypair.publicKey, 'confirmed');
         const solBal = lamports / 1_000_000_000;
@@ -167,7 +172,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
       isMounted = false;
       clearInterval(interval);
     };
-  }, [privateKey, rpcUrl, customWsUrl]);
+  }, [privateKey, rpcUrl, jupiterRpcUrl, customWsUrl]);
   
   const activeSimrealPositions = Object.values(positions).filter(pos => pos && pos.simRealBought);
 
@@ -284,6 +289,20 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                       placeholder="Optional. Jupiter premium API key"
                       value={apiKey}
                       onChange={(e) => setApiKey(e.target.value)}
+                      className="bg-[#07080e] border border-[#1f212e] rounded-lg px-3 py-1.5 text-xs text-[#e2e8f0] focus:outline-none focus:border-emerald-500/50 font-mono w-full"
+                   />
+                </div>
+
+                <div className="flex flex-col gap-1">
+                   <label className="text-[10px] text-slate-400 font-mono uppercase tracking-wider flex items-center gap-1.5">
+                      <span>Jupiter Custom RPC URL</span>
+                      <span className="text-[8px] text-emerald-400 font-normal normal-case">(Fixes Swap Failures)</span>
+                   </label>
+                   <input
+                      type="text"
+                      placeholder="Optional. Dedicated RPC for Jupiter swap transactions"
+                      value={jupiterRpcUrl}
+                      onChange={(e) => setJupiterRpcUrl(e.target.value)}
                       className="bg-[#07080e] border border-[#1f212e] rounded-lg px-3 py-1.5 text-xs text-[#e2e8f0] focus:outline-none focus:border-emerald-500/50 font-mono w-full"
                    />
                 </div>

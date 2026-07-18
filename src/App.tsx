@@ -429,6 +429,7 @@ export default function App() {
   const [maxPositions, setMaxPositions] = useState(() => Number(localStorage.getItem('app_maxPositions')) || 5);
   const [slippage, setSlippage] = useState(1.0); 
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('juipter_auto_apiKey') || '');
+  const [jupiterRpcUrl, setJupiterRpcUrl] = useState(() => localStorage.getItem('juipter_auto_jupiterRpcUrl') || '');
   const [privateKey, setPrivateKey] = useState(() => localStorage.getItem('juipter_auto_privateKey') || '');
   const [telegramBotToken, setTelegramBotToken] = useState(() => localStorage.getItem('tg_bot_token') || '');
   const [telegramChatId, setTelegramChatId] = useState(() => localStorage.getItem('tg_chat_id') || '');
@@ -436,6 +437,9 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('juipter_auto_apiKey', apiKey);
   }, [apiKey]);
+  useEffect(() => {
+    localStorage.setItem('juipter_auto_jupiterRpcUrl', jupiterRpcUrl);
+  }, [jupiterRpcUrl]);
   useEffect(() => {
     localStorage.setItem('juipter_auto_privateKey', privateKey);
   }, [privateKey]);
@@ -5892,6 +5896,8 @@ export default function App() {
           setMaxRebuyTimes,
           apiKey,
           setApiKey,
+          jupiterRpcUrl,
+          setJupiterRpcUrl,
           privateKey,
           setPrivateKey,
           onPositionsChange: setSimrealPositions,
@@ -5912,6 +5918,8 @@ export default function App() {
         setPrivateKey={setPrivateKey}
         apiKey={apiKey}
         setApiKey={setApiKey}
+        jupiterRpcUrl={jupiterRpcUrl}
+        setJupiterRpcUrl={setJupiterRpcUrl}
         rpcUrl={rpcUrl}
         customWsUrl={customWsUrl}
         stopLoss={stopLoss}

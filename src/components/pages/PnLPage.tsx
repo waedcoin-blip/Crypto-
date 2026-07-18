@@ -950,6 +950,8 @@ export const PnLPage = ({
     setMaxRebuyTimes?: (v: number) => void;
     apiKey?: string;
     setApiKey?: (v: string) => void;
+    jupiterRpcUrl?: string;
+    setJupiterRpcUrl?: (v: string) => void;
     privateKey?: string;
     setPrivateKey?: (v: string) => void;
     onPositionsChange?: (v: Record<string, any>) => void;
@@ -1013,11 +1015,15 @@ export const PnLPage = ({
     setMaxRebuyTimes = () => {},
     apiKey = '',
     setApiKey = () => {},
+    jupiterRpcUrl = '',
+    setJupiterRpcUrl = () => {},
     privateKey = '',
     setPrivateKey = () => {},
     onPositionsChange,
     simrealControlRef
   } = externalSettings;
+  
+  const jupRpcUrlToUse = jupiterRpcUrl && jupiterRpcUrl.trim() !== "" ? jupiterRpcUrl.trim() : rpcUrl;
   
   const { simRealTrades, simRealBalance } = useAppStore();
   
@@ -2454,7 +2460,7 @@ export const PnLPage = ({
                   let exactTokenAmount = passedOutputAmount;
                   let boughtPriceSol = buyAmt / (exactTokenAmount || 0.000001);
                   if (result.quoteOutAmountRaw && passedOutputAmount > 0) {
-                    const decimals = await resolveDecimals(mint, rpcUrl, result.quoteOutAmountRaw, exactTokenAmount);
+                    const decimals = await resolveDecimals(mint, jupRpcUrlToUse, result.quoteOutAmountRaw, exactTokenAmount);
                     exactTokenAmount = result.quoteOutAmountRaw / Math.pow(10, decimals);
                     boughtPriceSol = buyAmt / exactTokenAmount;
                   }
@@ -2514,8 +2520,8 @@ export const PnLPage = ({
                 const quote = await getJupiterQuote(SOL_MINT, mint, lamportsForQuote, 0).catch(() => null);
                 if (quote && Number(quote.outAmount) > 0) {
                   const exactTokenAmount = Number(quote.outAmount);
-                  const exactMathFallback = buyAmt / (currentPrice || 0.000001);
-                  const decimals = await resolveDecimals(mint, rpcUrl, exactTokenAmount, exactMathFallback);
+                  const exactMathFallback = buyAmt / (newPrice || 0.000001);
+                  const decimals = await resolveDecimals(mint, jupRpcUrlToUse, exactTokenAmount, exactMathFallback);
                   const normalizedOut = exactTokenAmount / Math.pow(10, decimals);
                   if (normalizedOut > 0) {
                     boughtPriceSol = buyAmt / normalizedOut;
@@ -2938,7 +2944,7 @@ export const PnLPage = ({
 
     if (!privateKey) throw new Error("Private Key missing");
     const keypair = Keypair.fromSecretKey(bs58.decode(privateKey));
-    const connection = new Connection(rpcUrl);
+    const connection = new Connection(jupRpcUrlToUse);
 
     let baseUrl = 'https://api.jup.ag';
     let apiHeaders: Record<string, string> = {};
@@ -3558,7 +3564,7 @@ const checkTokenCriteria = (mint: string): {
           if (quote && Number(quote.outAmount) > 0) {
             const exactTokenAmount = Number(quote.outAmount);
             const exactMathFallback = solAmount / parsedPrice;
-            const decimals = await resolveDecimals(mint, rpcUrl, exactTokenAmount, exactMathFallback);
+            const decimals = await resolveDecimals(mint, jupRpcUrlToUse, exactTokenAmount, exactMathFallback);
             const normalizedOut = exactTokenAmount / Math.pow(10, decimals);
             if (normalizedOut > 0) {
               const freshPriceFromQuote = solAmount / normalizedOut;
@@ -3753,7 +3759,7 @@ const checkTokenCriteria = (mint: string): {
         
         let exactTokenAmount = solAmount / parsedPrice;
         if (result.quoteOutAmountRaw && passedOutputAmount > 0) {
-          const decimals = await resolveDecimals(mint, rpcUrl, result.quoteOutAmountRaw, exactTokenAmount);
+          const decimals = await resolveDecimals(mint, jupRpcUrlToUse, result.quoteOutAmountRaw, exactTokenAmount);
           exactTokenAmount = passedOutputAmount / Math.pow(10, decimals);
           parsedPrice = solAmount / exactTokenAmount; // Update to actual execution price
         }
@@ -4597,7 +4603,7 @@ const checkTokenCriteria = (mint: string): {
                     let exactTokenAmount = passedOutputAmount;
                     let boughtPriceSol = buyAmt / (exactTokenAmount || 0.000001);
                     if (result.quoteOutAmountRaw && passedOutputAmount > 0) {
-                      const decimals = await resolveDecimals(mint, rpcUrl, result.quoteOutAmountRaw, exactTokenAmount);
+                      const decimals = await resolveDecimals(mint, jupRpcUrlToUse, result.quoteOutAmountRaw, exactTokenAmount);
                       exactTokenAmount = result.quoteOutAmountRaw / Math.pow(10, decimals);
                       boughtPriceSol = buyAmt / exactTokenAmount;
                     }
@@ -4665,7 +4671,7 @@ const checkTokenCriteria = (mint: string): {
                   if (quote && Number(quote.outAmount) > 0) {
                     const exactTokenAmount = Number(quote.outAmount);
                     const exactMathFallback = buyAmt / (currentPrice || 0.000001);
-                    const decimals = await resolveDecimals(mint, rpcUrl, exactTokenAmount, exactMathFallback);
+                    const decimals = await resolveDecimals(mint, jupRpcUrlToUse, exactTokenAmount, exactMathFallback);
                     const normalizedOut = exactTokenAmount / Math.pow(10, decimals);
                     if (normalizedOut > 0) {
                       boughtPriceSol = buyAmt / normalizedOut;
@@ -4852,7 +4858,7 @@ const checkTokenCriteria = (mint: string): {
                       let exactTokenAmount = passedOutputAmount;
                       let boughtPriceSol = buyAmt / (exactTokenAmount || 0.000001);
                       if (result.quoteOutAmountRaw && passedOutputAmount > 0) {
-                        const decimals = await resolveDecimals(mint, rpcUrl, result.quoteOutAmountRaw, exactTokenAmount);
+                        const decimals = await resolveDecimals(mint, jupRpcUrlToUse, result.quoteOutAmountRaw, exactTokenAmount);
                         exactTokenAmount = result.quoteOutAmountRaw / Math.pow(10, decimals);
                         boughtPriceSol = buyAmt / exactTokenAmount;
                       }
@@ -4920,7 +4926,7 @@ const checkTokenCriteria = (mint: string): {
                     if (quote && Number(quote.outAmount) > 0) {
                       const exactTokenAmount = Number(quote.outAmount);
                       const exactMathFallback = buyAmt / (currentPrice || 0.000001);
-                      const decimals = await resolveDecimals(mint, rpcUrl, exactTokenAmount, exactMathFallback);
+                      const decimals = await resolveDecimals(mint, jupRpcUrlToUse, exactTokenAmount, exactMathFallback);
                       const normalizedOut = exactTokenAmount / Math.pow(10, decimals);
                       if (normalizedOut > 0) {
                         boughtPriceSol = buyAmt / normalizedOut;
