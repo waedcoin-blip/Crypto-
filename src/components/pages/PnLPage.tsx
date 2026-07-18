@@ -5399,6 +5399,18 @@ const checkTokenCriteria = (mint: string): {
     setUptime(0);
     startTimeRef.current = null;
     
+    // Clear global store state without reloading
+    const store = useAppStore.getState();
+    store.setTokenMetrics(() => ({}));
+    store.setTrades(() => []);
+    store.setTelemetryAlerts(() => []);
+    store.updateActivePositions(() => ({}));
+    store.setSimulationBalance(() => 10.0);
+    store.setSimRealBalance(() => 10.0);
+    store.setMySniperTrades(() => []);
+    store.setSimRealTrades(() => []);
+    store.setTelemetryBits([false, false, false, false, false, false]);
+    
     // Completely clear all cache and reset balances to exactly 10.0 SOL
     localStorage.setItem('app_simulationBalance_v4', '10.0');
     localStorage.setItem('juipter_auto_simWalletBalance', '10.0');
@@ -5406,6 +5418,7 @@ const checkTokenCriteria = (mint: string): {
     localStorage.setItem('app_simRealBalance_fallback', '10.0');
     localStorage.setItem('app_simRealTrades', JSON.stringify([]));
     localStorage.setItem('juipter_auto_isRunning', 'true'); // Auto-start trading on reset
+    localStorage.setItem('app_activePositions', JSON.stringify({}));
     
     localStorage.removeItem('juipter_auto_startTime');
     localStorage.removeItem('juipter_auto_uptime');
@@ -5440,9 +5453,6 @@ const checkTokenCriteria = (mint: string): {
         console.error('Error resetting settings in Firestore:', err);
       }
     }
-    
-    // Force a full application reload to guarantee all caches and parent states (like App.tsx) are cleared
-    window.location.reload();
   };
 
   const executeSimRealSell = async (mint: string) => {
