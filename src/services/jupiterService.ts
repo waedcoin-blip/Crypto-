@@ -635,9 +635,19 @@ export const getJupiterQuote = async (
       return null;
     }
     
-    // Expiration checks
-    const quoteTime = (quote as any).contextSlot ? ((quote as any).contextSlot * 400) : Date.now();
-    if (Date.now() - quoteTime > 15000) {
+    // Expiration checks (Bypass real Solana slot numbers and protect with real-time latency guards instead)
+    let isStale = false;
+    if ((quote as any).contextSlot) {
+      const slotVal = Number((quote as any).contextSlot);
+      // Real Solana mainnet slot is below 1B, while simulated slot (Date.now()/400) is > 4B
+      if (slotVal > 1000000000) {
+        const quoteTime = slotVal * 400;
+        if (Date.now() - quoteTime > 15000) {
+          isStale = true;
+        }
+      }
+    }
+    if (isStale) {
        console.warn(`[QUOTE REJECTED]: Quote is too stale based on context slot`);
        return null;
     }
@@ -891,35 +901,15 @@ export const processActiveTrackingFrame = async (
     const startTime = Date.now();
     let quote = null;
 
-    if (tokenAddress.startsWith('sim')) {
+    try {
       quote = await getJupiterQuote(
         tokenAddress,
         "So11111111111111111111111111111111111111112",
         Number(position.currentTokenBalance),
         livePoolLiquidityUsd
       );
-    } else {
-      const quoteParams = {
-        inputMint: tokenAddress,
-        outputMint: "So11111111111111111111111111111111111111112",
-        amount: position.currentTokenBalance.toString() as any,
-        slippageBps: 2000,
-        maxAccounts: 20
-      };
-
-      try {
-        quote = await getJupiterApiClient().quoteGet({ ...quoteParams, onlyDirectRoutes: true });
-      } catch (e: any) {
-        console.warn(`[EVAL]: Direct route check failed: ${e.message}`);
-      }
-
-      if (!quote) {
-        try {
-          quote = await getJupiterApiClient().quoteGet({ ...quoteParams, onlyDirectRoutes: false });
-        } catch (e: any) {
-          console.warn(`[EVAL]: Multi-hop fallback failed: ${e.message}`);
-        }
-      }
+    } catch (e: any) {
+      console.warn(`[EVAL]: getJupiterQuote failed: ${e.message}`);
     }
 
     if (!quote) return { shouldExit: false };

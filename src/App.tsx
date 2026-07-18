@@ -1208,7 +1208,8 @@ export default function App() {
         if (token) {
           const symbol = token.symbol;
           const holdTimeMs = Date.now() - (position.boughtAt || Date.now());
-          const isHoldProtected = holdTimeMs < 25000 && !position.recoveryMode;
+          // Set to false to disable minimum hold time delay so stop loss/take profit execute instantly
+          const isHoldProtected = false;
           
           const walletAddress = (isLiveTrading && (sessionWallet || publicKey)) 
             ? (sessionWallet ? sessionWallet.publicKey.toBase58() : publicKey!.toBase58())

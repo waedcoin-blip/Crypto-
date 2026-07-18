@@ -3790,6 +3790,7 @@ const checkTokenCriteria = (mint: string): {
     if (true) {
       const isStopLoss = reason.toLowerCase().includes('stop loss') || reason.toLowerCase().includes('recovery failed');
       const isEmergency = reason.toLowerCase().includes('force') || reason.toLowerCase().includes('emergency') || reason.toLowerCase().includes('manual');
+      const isExitSignal = isStopLoss || isEmergency || reason.toLowerCase().includes('take profit') || reason.toLowerCase().includes('recovery');
       
       if (isEmergency) {
         addLog(`🚨 [EMERGENCY FORCE EXIT] Initiating manual emergency exit for ${pos.symbol}...`, 'warn');
@@ -3827,9 +3828,9 @@ const checkTokenCriteria = (mint: string): {
            const operationalFeesSol = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent);
            const netReturnSell = guaranteedSolOutSell - operationalFeesSol;
 
-           // PROFIT GUARD: If it's not a stop loss, don't sell for a net loss
+           // PROFIT GUARD: If it's not an exit signal, don't sell for a net loss
            const slippageTol = 0.005; // 0.5% buffer for last-second price changes
-           if (!isStopLoss && !isEmergency && netReturnSell < (pos.solSpent * (1.0 - slippageTol))) {
+           if (!isExitSignal && netReturnSell < (pos.solSpent * (1.0 - slippageTol))) {
              addLog(`[SIM ABORT] ${pos.symbol} profit margin too thin or dropping (${(netReturnSell - pos.solSpent) > 0 ? '+' : ''}${((netReturnSell - pos.solSpent) / pos.solSpent * 100).toFixed(1)}%). Aborting sell to prevent loss.`, 'warn');
              pendingSellMintsRef.current.delete(mint);
              return;
@@ -3859,7 +3860,7 @@ const checkTokenCriteria = (mint: string): {
         const operationalFeesSol = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent);
         const netReturnSell = fallbackNet - operationalFeesSol;
         const slippageTol = 0.005;
-        if (!isStopLoss && !isEmergency && netReturnSell < (pos.solSpent * (1.0 - slippageTol))) {
+        if (!isExitSignal && netReturnSell < (pos.solSpent * (1.0 - slippageTol))) {
           addLog(`[SIM ABORT fallback] ${pos.symbol} fallback profit margin too thin (${((netReturnSell - pos.solSpent) / pos.solSpent * 100).toFixed(1)}%). Aborting sell to prevent loss.`, 'warn');
           pendingSellMintsRef.current.delete(mint);
           return;
@@ -4288,6 +4289,7 @@ const checkTokenCriteria = (mint: string): {
             addLog(`🎯 [TRADABLE FOUND] Spotted ${scannerTokens.length} tokens matching 100% of parameters!`, 'success');
          }
 
+         let currentActiveCountLoop = activeMints.length;
          for (const [mint, metric] of scannerTokens.slice(0, 3) as [string, any][]) {
             if (maxPositions > 0 && currentActiveCountLoop >= maxPositions) break;
             const progress = metric.bondingCurveProgress || 0;
@@ -4365,7 +4367,8 @@ const checkTokenCriteria = (mint: string): {
           const currentTakeProfit = stage.isBonding ? bondingCurveTakeProfit : minTakeProfit;
 
           const isFlashCrash = (roughNetPnL <= -(currentSLPct * 1.5) / 100);
-          let isHoldProtected = holdTimeMs < 25000 && !isFlashCrash;
+          // Set to false to disable minimum hold time delay so stop loss/take profit execute instantly
+          let isHoldProtected = false;
 
           // Wait... check if simulated:
           if (!privateKey && pos.amountLamports) {
