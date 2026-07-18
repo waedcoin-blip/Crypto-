@@ -24,7 +24,7 @@ const decimalsCache: Record<string, number> = {};
 const fetchMintDecimals = async (mint: string, rpcUrl?: string): Promise<number> => {
   const normalized = mint.trim();
   if (normalized.toLowerCase().startsWith('sim')) return 6;
-  if (decimalsCache[normalized] !== undefined) return decimalsCache[normalized];
+  if (decimalsCache[normalized] !== undefined && decimalsCache[normalized] >= 0) return decimalsCache[normalized];
 
   // 1. Try public Jupiter Token API (very fast, cached)
   try {
@@ -57,10 +57,28 @@ const fetchMintDecimals = async (mint: string, rpcUrl?: string): Promise<number>
     }
   }
 
-  // 3. Fallback heuristic
-  const fallback = normalized.toLowerCase().endsWith('pump') ? 6 : 9;
-  decimalsCache[normalized] = fallback;
-  return fallback;
+  // Return -1 to force heuristic calculation at the call site
+  return -1;
+};
+
+const resolveDecimals = async (mint: string, rpcUrl: string | undefined, outAmountRaw: number, exactMathFallback: number): Promise<number> => {
+  const metricDecimals = await fetchMintDecimals(mint, rpcUrl);
+  if (metricDecimals >= 0 && metricDecimals <= 18) {
+    return metricDecimals;
+  }
+  
+  if (!outAmountRaw || !exactMathFallback || exactMathFallback <= 0) {
+    return mint.toLowerCase().endsWith('pump') ? 6 : 9;
+  }
+
+  const estimated = Math.max(0, Math.round(Math.log10(outAmountRaw / exactMathFallback)));
+  if (!isFinite(estimated) || isNaN(estimated) || estimated > 18) {
+    return mint.toLowerCase().endsWith('pump') ? 6 : 9;
+  }
+  
+  // Cache the heuristically determined decimals to avoid recalculating
+  decimalsCache[mint.trim()] = estimated;
+  return estimated;
 };
 
 const getDynamicOperationalFeeSol = (isRecovery: boolean = false, tradeAmountSol: number = 0.05): number => {
@@ -2436,7 +2454,7 @@ export const PnLPage = ({
                   let exactTokenAmount = passedOutputAmount;
                   let boughtPriceSol = buyAmt / (exactTokenAmount || 0.000001);
                   if (result.quoteOutAmountRaw && passedOutputAmount > 0) {
-                    const decimals = await fetchMintDecimals(mint, rpcUrl);
+                    const decimals = await resolveDecimals(mint, rpcUrl, result.quoteOutAmountRaw, exactTokenAmount);
                     exactTokenAmount = result.quoteOutAmountRaw / Math.pow(10, decimals);
                     boughtPriceSol = buyAmt / exactTokenAmount;
                   }
@@ -2496,7 +2514,8 @@ export const PnLPage = ({
                 const quote = await getJupiterQuote(SOL_MINT, mint, lamportsForQuote, 0).catch(() => null);
                 if (quote && Number(quote.outAmount) > 0) {
                   const exactTokenAmount = Number(quote.outAmount);
-                  const decimals = await fetchMintDecimals(mint, rpcUrl);
+                  const exactMathFallback = buyAmt / (currentPrice || 0.000001);
+                  const decimals = await resolveDecimals(mint, rpcUrl, exactTokenAmount, exactMathFallback);
                   const normalizedOut = exactTokenAmount / Math.pow(10, decimals);
                   if (normalizedOut > 0) {
                     boughtPriceSol = buyAmt / normalizedOut;
@@ -2912,7 +2931,7 @@ export const PnLPage = ({
   ]);
 
   
-  const executeJupiterSwap = async (inputMint: string, outputMint: string, amount: number) => {
+  const executeJupiterSwap = async (inputMint: string, outputMint: string, amount: number, customSlippageBps?: number, minExpectedOutSol?: number) => {
     if (inputMint.toLowerCase().startsWith('sim') || outputMint.toLowerCase().startsWith('sim')) {
       throw new Error("Trading of tokens starting with 'sim' is strictly blocked.");
     }
@@ -2936,13 +2955,14 @@ export const PnLPage = ({
     }
     const normalizedBaseUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
 
-    const singleSwapInner = async (inMint: string, outMint: string, swapAmt: number) => {
+    const singleSwapInner = async (inMint: string, outMint: string, swapAmt: number, attempt = 1): Promise<any> => {
       useAppStore.getState().addJupiterLog({
         type: 'QUOTE',
         message: `Requesting direct quote ${inMint.slice(0,6)} -> ${outMint.slice(0,6)}`,
         details: { amount: swapAmt }
       });
-      const quoteUrl = `/api/jup/quote?baseUrl=${encodeURIComponent(normalizedBaseUrl)}&inputMint=${inMint}&outputMint=${outMint}&amount=${Math.floor(swapAmt)}&slippageBps=${Math.floor(slippage * 100)}&t=${Date.now()}`;
+      const slippageToUse = customSlippageBps !== undefined ? customSlippageBps : Math.floor(slippage * 100);
+      const quoteUrl = `/api/jup/quote?baseUrl=${encodeURIComponent(normalizedBaseUrl)}&inputMint=${inMint}&outputMint=${outMint}&amount=${Math.floor(swapAmt)}&slippageBps=${slippageToUse}&t=${Date.now()}`;
       
       let quoteResponse;
       const quoteRes = await fetch(quoteUrl, { headers: apiHeaders });
@@ -2981,6 +3001,13 @@ export const PnLPage = ({
           message: `Direct Quote Success: ${quoteResponse.outAmount}`,
           details: { outAmount: quoteResponse.outAmount }
         });
+        
+        if (minExpectedOutSol !== undefined && outMint === SOL_MINT) {
+           const guaranteedSol = Number(quoteResponse.otherAmountThreshold) / 1_000_000_000;
+           if (guaranteedSol < minExpectedOutSol) {
+             throw new Error(`PROFIT GUARD: Jupiter guaranteed out (${guaranteedSol.toFixed(4)} SOL) is lower than the required minimum (${minExpectedOutSol.toFixed(4)} SOL). Swap aborted.`);
+           }
+        }
       } catch (e: any) {
         useAppStore.getState().addJupiterLog({
           type: 'ERROR',
@@ -3051,13 +3078,24 @@ export const PnLPage = ({
 
       transaction.sign([keypair]);
 
-      const txid = await executeTxWithRPCFallback(transaction, connection);
-      return { 
-        txid, 
-        outputAmount: parseFloat(quoteResponse.outAmount), 
-        quoteOutAmountRaw: quoteResponse.outAmount, 
-        estimatedPriceSol: parseFloat(quoteResponse.inAmount) / parseFloat(quoteResponse.outAmount) 
-      };
+      try {
+        const txid = await executeTxWithRPCFallback(transaction, connection);
+        return { 
+          txid, 
+          outputAmount: parseFloat(quoteResponse.outAmount), 
+          quoteOutAmountRaw: quoteResponse.outAmount, 
+          estimatedPriceSol: parseFloat(quoteResponse.inAmount) / parseFloat(quoteResponse.outAmount) 
+        };
+      } catch (execErr: any) {
+        if (execErr.message?.includes('timed out waiting for confirmation') && attempt < 3) {
+          useAppStore.getState().addJupiterLog({
+            type: 'ERROR',
+            message: `Swap timeout detected. Retrying immediately (Attempt ${attempt + 1}/3)...`,
+          });
+          return singleSwapInner(inMint, outMint, swapAmt, attempt + 1);
+        }
+        throw execErr;
+      }
     };
 
     const isBuy = (inputMint === SOL_MINT && outputMint !== USDC_MINT && outputMint !== SOL_MINT);
@@ -3519,7 +3557,8 @@ const checkTokenCriteria = (mint: string): {
           const quote = await getJupiterQuote(SOL_MINT, mint, lamportsForQuote, 0).catch(() => null);
           if (quote && Number(quote.outAmount) > 0) {
             const exactTokenAmount = Number(quote.outAmount);
-            const decimals = await fetchMintDecimals(mint, rpcUrl);
+            const exactMathFallback = solAmount / parsedPrice;
+            const decimals = await resolveDecimals(mint, rpcUrl, exactTokenAmount, exactMathFallback);
             const normalizedOut = exactTokenAmount / Math.pow(10, decimals);
             if (normalizedOut > 0) {
               const freshPriceFromQuote = solAmount / normalizedOut;
@@ -3663,8 +3702,7 @@ const checkTokenCriteria = (mint: string): {
            
            const exactMathFallback = solAmount / parsedPrice;
            if (outAmountRaw > 0) {
-             const metricDecimals = await fetchMintDecimals(mint, rpcUrl);
-             const estimatedDecimals = (metricDecimals >= 0 && metricDecimals <= 18) ? metricDecimals : Math.max(0, Math.round(Math.log10(outAmountRaw / exactMathFallback)));
+             const estimatedDecimals = await resolveDecimals(mint, rpcUrl, outAmountRaw, exactMathFallback);
              tokenAmount = outAmountRaw / Math.pow(10, estimatedDecimals);
              parsedPrice = solAmount / tokenAmount;
            } else {
@@ -3715,7 +3753,7 @@ const checkTokenCriteria = (mint: string): {
         
         let exactTokenAmount = solAmount / parsedPrice;
         if (result.quoteOutAmountRaw && passedOutputAmount > 0) {
-          const decimals = await fetchMintDecimals(mint, rpcUrl);
+          const decimals = await resolveDecimals(mint, rpcUrl, result.quoteOutAmountRaw, exactTokenAmount);
           exactTokenAmount = passedOutputAmount / Math.pow(10, decimals);
           parsedPrice = solAmount / exactTokenAmount; // Update to actual execution price
         }
@@ -3777,7 +3815,19 @@ const checkTokenCriteria = (mint: string): {
       try {
         const lamportsToSell = pos.amountLamports || Math.floor((pos.simRealAmountTokens || 0) * 1_000_000);
         if (lamportsToSell > 0) {
-          const result = await executeJupiterSwap(mint, SOL_MINT, lamportsToSell);
+          const simRealGross = currentPrice * (pos.simRealAmountTokens || 0);
+          const simRealGrossPnLPercent = ((simRealGross - (pos.simRealSolSpent || 0.1)) / (pos.simRealSolSpent || 0.1)) * 100;
+          let dynamicSlippage = slippage;
+          if (simRealGrossPnLPercent > 0) dynamicSlippage = Math.max(0.3, Math.min(slippage, simRealGrossPnLPercent * 0.3));
+          else dynamicSlippage = Math.min(slippage, 1.0);
+          const slippageBps = Math.floor(dynamicSlippage * 100);
+          
+          const opFeesSol = getDynamicOperationalFeeSol(pos.recoveryMode, pos.simRealSolSpent || 0.1);
+          // If it's a stop loss or emergency, we don't enforce profit guard! We only enforce if we expect it to be a +pnl sell.
+          const isStopLossSignal = typeof reason !== 'undefined' ? (reason?.toLowerCase().includes('stop loss') || reason?.toLowerCase().includes('emergency') || reason?.toLowerCase().includes('force')) : false;
+          const minExpectedOut = isStopLossSignal ? undefined : ((pos.simRealSolSpent || 0) + opFeesSol);
+          
+          const result = await executeJupiterSwap(mint, SOL_MINT, lamportsToSell, slippageBps, minExpectedOut);
           if (result.txid) {
              addLog(`✅ [SIMREAL REAL SWAP SUCCESS] Sold ${pos.symbol} on-chain | tx: ${result.txid.slice(0, 12)}...`, 'sell');
              const passedOutAmount = typeof result.outputAmount === 'number' && !isNaN(result.outputAmount) ? result.outputAmount : 0;
@@ -3789,6 +3839,10 @@ const checkTokenCriteria = (mint: string): {
           addLog(`⚠️ [SIMREAL REAL SWAP] No tokens/lamports found to sell on-chain for ${pos.symbol}`, 'warn');
         }
       } catch (err: any) {
+        if (err.message.includes('PROFIT GUARD')) {
+           addLog(`❌ [SIMREAL REAL SWAP ABORTED] ${err.message} Keeping position open.`, 'warn');
+           return; // Abort the simulated sell too
+        }
         addLog(`❌ [SIMREAL REAL SWAP FAILED] Real sell swap failed: ${err.message}. Performing simulated emergency exit fallback.`, 'err');
       }
     }
@@ -4482,7 +4536,7 @@ const checkTokenCriteria = (mint: string): {
             let simRealNetSolReturn = simRealGross;
             let simRealNetPnlPct = 0;
             
-            if (quote && pos.amountLamports && pos.amount) {
+            if (typeof quote !== 'undefined' && quote && pos.amountLamports && pos.amount) {
                const guaranteedMinLamports = BigInt(quote.otherAmountThreshold);
                const guaranteedSolOut = Number(guaranteedMinLamports) / 1_000_000_000.0;
                const ratio = (pos.simRealAmountTokens || 0) / pos.amount;
@@ -4543,7 +4597,7 @@ const checkTokenCriteria = (mint: string): {
                     let exactTokenAmount = passedOutputAmount;
                     let boughtPriceSol = buyAmt / (exactTokenAmount || 0.000001);
                     if (result.quoteOutAmountRaw && passedOutputAmount > 0) {
-                      const decimals = await fetchMintDecimals(mint, rpcUrl);
+                      const decimals = await resolveDecimals(mint, rpcUrl, result.quoteOutAmountRaw, exactTokenAmount);
                       exactTokenAmount = result.quoteOutAmountRaw / Math.pow(10, decimals);
                       boughtPriceSol = buyAmt / exactTokenAmount;
                     }
@@ -4610,7 +4664,8 @@ const checkTokenCriteria = (mint: string): {
                   const quote = await getJupiterQuote(SOL_MINT, mint, lamportsForQuote, 0).catch(() => null);
                   if (quote && Number(quote.outAmount) > 0) {
                     const exactTokenAmount = Number(quote.outAmount);
-                    const decimals = await fetchMintDecimals(mint, rpcUrl);
+                    const exactMathFallback = buyAmt / (currentPrice || 0.000001);
+                    const decimals = await resolveDecimals(mint, rpcUrl, exactTokenAmount, exactMathFallback);
                     const normalizedOut = exactTokenAmount / Math.pow(10, decimals);
                     if (normalizedOut > 0) {
                       boughtPriceSol = buyAmt / normalizedOut;
@@ -4699,6 +4754,7 @@ const checkTokenCriteria = (mint: string): {
             }
           } else {
             // Live/Fallback Logic
+          const quote: any = undefined;
             const currentGrossSol = currentPrice * (pos.amount || 0);
             let netSolIfSold = currentGrossSol;
             pnlPct = (netSolIfSold - (pos.solSpent || 0)) / (pos.solSpent || 1);
@@ -4735,7 +4791,7 @@ const checkTokenCriteria = (mint: string): {
             let simRealNetSolReturn = simRealGross;
             let simRealNetPnlPct = 0;
             
-            if (quote && pos.amountLamports && pos.amount) {
+            if (typeof quote !== 'undefined' && quote && pos.amountLamports && pos.amount) {
                const guaranteedMinLamports = BigInt(quote.otherAmountThreshold);
                const guaranteedSolOut = Number(guaranteedMinLamports) / 1_000_000_000.0;
                const ratio = (pos.simRealAmountTokens || 0) / pos.amount;
@@ -4796,7 +4852,7 @@ const checkTokenCriteria = (mint: string): {
                       let exactTokenAmount = passedOutputAmount;
                       let boughtPriceSol = buyAmt / (exactTokenAmount || 0.000001);
                       if (result.quoteOutAmountRaw && passedOutputAmount > 0) {
-                        const decimals = await fetchMintDecimals(mint, rpcUrl);
+                        const decimals = await resolveDecimals(mint, rpcUrl, result.quoteOutAmountRaw, exactTokenAmount);
                         exactTokenAmount = result.quoteOutAmountRaw / Math.pow(10, decimals);
                         boughtPriceSol = buyAmt / exactTokenAmount;
                       }
@@ -4863,7 +4919,8 @@ const checkTokenCriteria = (mint: string): {
                     const quote = await getJupiterQuote(SOL_MINT, mint, lamportsForQuote, 0).catch(() => null);
                     if (quote && Number(quote.outAmount) > 0) {
                       const exactTokenAmount = Number(quote.outAmount);
-                      const decimals = await fetchMintDecimals(mint, rpcUrl);
+                      const exactMathFallback = buyAmt / (currentPrice || 0.000001);
+                      const decimals = await resolveDecimals(mint, rpcUrl, exactTokenAmount, exactMathFallback);
                       const normalizedOut = exactTokenAmount / Math.pow(10, decimals);
                       if (normalizedOut > 0) {
                         boughtPriceSol = buyAmt / normalizedOut;
@@ -5579,7 +5636,21 @@ const checkTokenCriteria = (mint: string): {
       try {
         const lamportsToSell = pos.amountLamports || Math.floor((pos.simRealAmountTokens || 0) * 1_000_000);
         if (lamportsToSell > 0) {
-          const result = await executeJupiterSwap(mint, SOL_MINT, lamportsToSell);
+          const currentPrice = pos.currentPrice || pos.buyPrice || 0;
+          const tokensQty = pos.simRealAmountTokens || 0;
+          const simRealGross = currentPrice * tokensQty;
+          const simRealGrossPnLPercent = ((simRealGross - (pos.simRealSolSpent || 0.1)) / (pos.simRealSolSpent || 0.1)) * 100;
+          let dynamicSlippage = slippage;
+          if (simRealGrossPnLPercent > 0) dynamicSlippage = Math.max(0.3, Math.min(slippage, simRealGrossPnLPercent * 0.3));
+          else dynamicSlippage = Math.min(slippage, 1.0);
+          const slippageBps = Math.floor(dynamicSlippage * 100);
+          
+          const opFeesSol = getDynamicOperationalFeeSol(pos.recoveryMode, pos.simRealSolSpent || 0.1);
+          // If it's a stop loss or emergency, we don't enforce profit guard! We only enforce if we expect it to be a +pnl sell.
+          const isStopLossSignal = true; // Emergency force exit
+          const minExpectedOut = isStopLossSignal ? undefined : ((pos.simRealSolSpent || 0) + opFeesSol);
+          
+          const result = await executeJupiterSwap(mint, SOL_MINT, lamportsToSell, slippageBps, minExpectedOut);
           if (result.txid) {
              addLog(`✅ [SIMREAL REAL SWAP SUCCESS] Sold ${pos.symbol} on-chain | tx: ${result.txid.slice(0, 12)}...`, 'sell');
              signature = result.txid;
