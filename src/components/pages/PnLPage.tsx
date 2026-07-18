@@ -5734,6 +5734,230 @@ const checkTokenCriteria = (mint: string): {
     addLog(`✅ [SIMREAL SELL] Sold ${pos.symbol} for ${sellAmtSol.toFixed(4)} SOL | Net P&L: ${(tradePnlPct * 100).toFixed(2)}% | Profit: ${profitSol >= 0 ? '+' : ''}${profitSol.toFixed(4)} SOL`, 'sell');
   };
 
+  const executeSimRealBuy = async (mint: string, buyAmt: number) => {
+    const cleanMint = mint.trim();
+    if (!cleanMint) {
+      addLog(`❌ [SIMREAL BUY] Error: Token address is empty.`, 'err');
+      return;
+    }
+    const isAddress = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(cleanMint);
+    if (!isAddress) {
+      addLog(`❌ [SIMREAL BUY] Error: Invalid Solana token address format: "${cleanMint}".`, 'err');
+      return;
+    }
+
+    if (cleanMint.toLowerCase().startsWith('sim') || cleanMint.toLowerCase().endsWith('mock')) {
+      addLog(`❌ [SIM BLOCK] Trading for tokens starting with 'sim' is strictly blocked: ${cleanMint}`, 'warn');
+      return;
+    }
+
+    const storeState = useAppStore.getState();
+    if (storeState.simRealBalance < buyAmt) {
+      addLog(`❌ [SIMREAL BUY SKIP] Insufficient simreal wallet balance: ${storeState.simRealBalance.toFixed(4)} SOL (Required: ${buyAmt.toFixed(4)} SOL)`, 'warn');
+      return;
+    }
+
+    addLog(`🔍 [SIMREAL BUY] Initiating manual SimReal trade for ${cleanMint.slice(0, 8)}...`, 'info');
+
+    let symbol = 'UNKNOWN';
+    let currentPrice = 0;
+
+    // Check if we have tokenMetrics
+    const existingMetric = storeState.tokenMetrics[cleanMint];
+    if (existingMetric) {
+      symbol = existingMetric.symbol || 'UNKNOWN';
+      currentPrice = existingMetric.priceNative || 0;
+    } else {
+      // Fetch details via DexScreener proxy
+      try {
+        const res = await fetch(`/api/dex/tokens/${cleanMint}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.pairs && data.pairs.length > 0) {
+            const solPairs = data.pairs.filter((p: any) => 
+              (p.quoteToken?.address === SOL_MINT || p.quoteToken?.symbol === 'SOL') &&
+              (p.chainKb === 'solana' || p.chainId === 'solana' || p.dexId)
+            );
+            const targetPairs = solPairs.length > 0 ? solPairs : data.pairs;
+            const sortedPairs = [...targetPairs].sort((a, b) => parseFloat(b.liquidity?.usd || '0') - parseFloat(a.liquidity?.usd || '0'));
+            const bestPair = sortedPairs[0];
+            if (bestPair) {
+              symbol = bestPair.baseToken?.symbol || 'UNKNOWN';
+              currentPrice = parseFloat(bestPair.priceNative || '0');
+              
+              const formattedMetric: TokenMetric = {
+                address: cleanMint,
+                symbol,
+                priceUsd: parseFloat(bestPair.priceUsd || '0'),
+                priceNative: currentPrice,
+                marketCap: bestPair.fdv || 0,
+                liquidity: bestPair.liquidity?.usd || 0,
+                volume24h: bestPair.volume?.h24 || 0,
+                discoveredAt: Date.now(),
+                lastUpdated: Date.now(),
+                buyCount: bestPair.txns?.h24?.buys || 0,
+                sellCount: bestPair.txns?.h24?.sells || 0,
+                buyVolume: bestPair.volume?.h24 || 0,
+                sellVolume: 0,
+                percentageIncrease: bestPair.priceChange?.h24 || 0,
+                recentBuysTimeline: [],
+                category: cleanMint.toLowerCase().endsWith('pump') ? 'PUMP_FUN' : 'RAYDIUM',
+                isRugSafe: true,
+                mintAuthorityRevoked: true,
+                freezeAuthorityRevoked: true,
+                liquidityBurned: true,
+                top10Percentage: 8.5
+              };
+              storeState.setTokenMetrics(prev => ({
+                ...prev,
+                [cleanMint]: formattedMetric
+              }));
+            }
+          }
+        }
+      } catch (err: any) {
+        addLog(`⚠️ [SIMREAL BUY] DexScreener fetch warning: ${err.message}. Proceeding with Jupiter lookup.`, 'warn');
+      }
+    }
+
+    const quoteRequestTime = Date.now();
+    const isFallbackSim = !!(privateKey && jupiterBalance === 0);
+
+    if (privateKey && !isFallbackSim) {
+      addLog(`[SIMREAL REAL SWAP] Initiating real buy for ${symbol} via Jupiter...`, 'buy');
+      try {
+        const amountLamports = Math.floor(buyAmt * 1_000_000_000);
+        const result = await executeJupiterSwap(SOL_MINT, cleanMint, amountLamports);
+        if (result.txid) {
+          const passedOutputAmount = typeof result.outputAmount === 'number' && !isNaN(result.outputAmount) ? result.outputAmount : 0;
+          let exactTokenAmount = passedOutputAmount;
+          let boughtPriceSol = buyAmt / (exactTokenAmount || 0.000001);
+          if (result.quoteOutAmountRaw && passedOutputAmount > 0) {
+            const decimals = await resolveDecimals(cleanMint, jupRpcUrlToUse, result.quoteOutAmountRaw, exactTokenAmount);
+            exactTokenAmount = result.quoteOutAmountRaw / Math.pow(10, decimals);
+            boughtPriceSol = buyAmt / exactTokenAmount;
+          }
+          
+          storeState.setSimRealBalance(prev => Math.max(0, prev - buyAmt));
+          
+          const newRealTrade: SniperTrade = {
+            id: `simreal-buy-${Date.now()}`,
+            type: 'BUY',
+            token: symbol,
+            address: cleanMint,
+            amount: buyAmt,
+            timestamp: quoteRequestTime,
+            signature: result.txid,
+            tokenAmount: exactTokenAmount
+          };
+          storeState.setSimRealTrades(prev => [newRealTrade, ...prev]);
+          
+          const rawAmtLamp = result.quoteOutAmountRaw || Math.floor(exactTokenAmount * 1_000_000);
+
+          setPositions(prev => {
+            const existing = prev[cleanMint] || {
+              symbol: symbol,
+              buyPrice: boughtPriceSol,
+              currentPrice: currentPrice || boughtPriceSol,
+              solSpent: buyAmt,
+              amount: exactTokenAmount,
+              entryTime: quoteRequestTime,
+              txid: result.txid
+            };
+            const updated = {
+              ...existing,
+              simRealBought: true,
+              simRealBoughtPriceSol: boughtPriceSol,
+              simRealAmountTokens: exactTokenAmount,
+              simRealSolSpent: buyAmt,
+              simRealBoughtTime: quoteRequestTime,
+              amountLamports: rawAmtLamp,
+              txid: result.txid
+            };
+            positionsRef.current = {
+              ...prev,
+              [cleanMint]: updated
+            };
+            return positionsRef.current;
+          });
+          
+          addLog(`✅ [SIMREAL REAL SWAP] Bought ${symbol} @ ${boughtPriceSol.toFixed(8)} SOL | tx: ${result.txid.slice(0, 12)}...`, 'buy');
+        } else {
+          throw new Error("Jupiter swap transaction ID missing.");
+        }
+      } catch (err: any) {
+        addLog(`❌ [SIMREAL REAL SWAP FAILED] Real entry failed for ${symbol}: ${err.message}.`, 'err');
+      }
+    } else {
+      const lamportsForQuote = Math.floor(buyAmt * 1_000_000_000);
+      let boughtPriceSol = currentPrice || 0.000001;
+      try {
+        const quote = await getJupiterQuote(SOL_MINT, cleanMint, lamportsForQuote, 0).catch(() => null);
+        if (quote && Number(quote.outAmount) > 0) {
+          const exactTokenAmount = Number(quote.outAmount);
+          const exactMathFallback = buyAmt / (currentPrice || 0.000001);
+          const decimals = await resolveDecimals(cleanMint, jupRpcUrlToUse, exactTokenAmount, exactMathFallback);
+          const normalizedOut = exactTokenAmount / Math.pow(10, decimals);
+          if (normalizedOut > 0) {
+            boughtPriceSol = buyAmt / normalizedOut;
+            addLog(`[SIMREAL QUOTE REFRESH] Got fresh buy quote price for ${symbol}: ${boughtPriceSol.toFixed(8)} SOL`, 'info');
+          }
+        } else {
+          addLog(`[SIMREAL QUOTE WARNING] Could not retrieve fresh quote for ${symbol}. Using price: ${boughtPriceSol.toFixed(8)} SOL`, 'warn');
+        }
+      } catch (e: any) {
+        addLog(`[SIMREAL QUOTE ERROR] Error requesting quote for ${symbol}: ${e.message}`, 'warn');
+      }
+      
+      const tokensQty = buyAmt / boughtPriceSol;
+      storeState.setSimRealBalance(prev => Math.max(0, prev - buyAmt));
+      
+      const newSimTrade: SniperTrade = {
+        id: `simreal-buy-${Date.now()}`,
+        type: 'BUY',
+        token: symbol,
+        address: cleanMint,
+        amount: buyAmt,
+        timestamp: quoteRequestTime,
+        signature: 'SIMREAL_BN_' + Math.random().toString(36).substring(7),
+        tokenAmount: tokensQty
+      };
+      storeState.setSimRealTrades(prev => [newSimTrade, ...prev]);
+
+      setPositions(prev => {
+        const existing = prev[cleanMint] || {
+          symbol: symbol,
+          buyPrice: boughtPriceSol,
+          currentPrice: currentPrice || boughtPriceSol,
+          solSpent: buyAmt,
+          amount: tokensQty,
+          entryTime: quoteRequestTime,
+          txid: 'simulation-copy'
+        };
+        const updated = {
+          ...existing,
+          simRealBought: true,
+          simRealBoughtPriceSol: boughtPriceSol,
+          simRealAmountTokens: tokensQty,
+          simRealSolSpent: buyAmt,
+          simRealBoughtTime: quoteRequestTime,
+          simRealIsVirtualFallback: isFallbackSim ? true : undefined
+        };
+        positionsRef.current = {
+          ...prev,
+          [cleanMint]: updated
+        };
+        return positionsRef.current;
+      });
+      
+      if (isFallbackSim) {
+        addLog(`⚠️ [SIMREAL FALLBACK BUY] Bought ${symbol} for ${buyAmt.toFixed(4)} SOL via simulation (Fallback active: On-chain balance is 0.0000 SOL)`, 'info');
+      } else {
+        addLog(`✅ [SIMREAL BUY] Bought ${symbol} for ${buyAmt.toFixed(4)} SOL @ ${boughtPriceSol.toFixed(8)} SOL`, 'buy');
+      }
+    }
+  };
+
   const resetSimRealWallet = () => {
     const storeState = useAppStore.getState();
     storeState.setSimRealBalance(() => 10.0);
@@ -5825,6 +6049,7 @@ const checkTokenCriteria = (mint: string): {
     simrealControlRef.current = {
       executeSimRealSell,
       resetSimRealWallet,
+      executeSimRealBuy,
       privateKey
     };
   }

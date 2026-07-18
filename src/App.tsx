@@ -5931,6 +5931,11 @@ export default function App() {
             await simrealControlRef.current.executeSimRealSell(mint);
           }
         }}
+        executeSimRealBuy={async (mint, amount) => {
+          if (simrealControlRef.current?.executeSimRealBuy) {
+            await simrealControlRef.current.executeSimRealBuy(mint, amount);
+          }
+        }}
         resetSimRealWallet={() => {
           if (simrealControlRef.current?.resetSimRealWallet) {
             simrealControlRef.current.resetSimRealWallet();

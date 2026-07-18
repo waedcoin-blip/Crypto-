@@ -72,6 +72,7 @@ interface SimRealPageProps {
   pumpSwapStopLoss: number;
   unknownStopLoss: number;
   executeSimRealSell: (mint: string) => Promise<void>;
+  executeSimRealBuy: (mint: string, amount: number) => Promise<void>;
   resetSimRealWallet: () => void;
   maxRebuyTimes: number;
   setMaxRebuyTimes: (v: number) => void;
@@ -98,6 +99,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
   pumpSwapStopLoss,
   unknownStopLoss,
   executeSimRealSell,
+  executeSimRealBuy,
   resetSimRealWallet,
   maxRebuyTimes,
   setMaxRebuyTimes,
@@ -105,6 +107,49 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
 }) => {
   const [showKey, setShowKey] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  // Manual independent trading states
+  const [manualMint, setManualMint] = useState('');
+  const [manualAmount, setManualAmount] = useState('0.1');
+  const [isBuying, setIsBuying] = useState(false);
+  const [buyStatus, setBuyStatus] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
+
+  const handleManualBuy = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBuyStatus(null);
+    const mint = manualMint.trim();
+    const amount = parseFloat(manualAmount);
+
+    if (!mint) {
+      setBuyStatus({ type: 'error', text: 'Token address is required.' });
+      return;
+    }
+    const isAddress = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mint);
+    if (!isAddress) {
+      setBuyStatus({ type: 'error', text: 'Invalid Solana address format.' });
+      return;
+    }
+    if (isNaN(amount) || amount <= 0) {
+      setBuyStatus({ type: 'error', text: 'Invalid SOL amount.' });
+      return;
+    }
+    if (simRealBalance < amount) {
+      setBuyStatus({ type: 'error', text: `Insufficient SimReal Balance (${simRealBalance.toFixed(4)} SOL).` });
+      return;
+    }
+
+    try {
+      setIsBuying(true);
+      setBuyStatus({ type: 'info', text: 'Initiating trade swap on-chain/simulation...' });
+      await executeSimRealBuy(mint, amount);
+      setBuyStatus({ type: 'success', text: `Successfully triggered independent swap for ${mint.slice(0, 8)}!` });
+      setManualMint(''); // clear input on success
+    } catch (err: any) {
+      setBuyStatus({ type: 'error', text: err?.message || 'Trade failed.' });
+    } finally {
+      setIsBuying(false);
+    }
+  };
 
   const handleCopy = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
@@ -384,6 +429,102 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                    </div>
                 )}
              </div>
+          </div>
+
+          {/* Direct Independent Swap Card */}
+          <div className="bg-[#10111a]/60 border border-[#1f212e] rounded-2xl flex flex-col p-4 space-y-3">
+             <div className="flex flex-col pb-2 border-b border-[#1f212e]">
+                <h2 className="text-[12px] uppercase tracking-[1px] text-emerald-400 font-bold flex items-center gap-2">
+                   <Zap className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
+                   Direct Independent Swap (Buy)
+                </h2>
+                <span className="text-[9px] text-slate-500 uppercase font-mono mt-0.5">Paste any contract to execute manual trades independently</span>
+             </div>
+
+             <form onSubmit={handleManualBuy} className="space-y-3">
+                <div className="flex flex-col gap-1">
+                   <label className="text-[10px] text-slate-400 font-mono uppercase tracking-wider">Token Mint Address</label>
+                   <input
+                      type="text"
+                      placeholder="Paste Solana Token Address (Mint)"
+                      value={manualMint}
+                      onChange={(e) => setManualMint(e.target.value)}
+                      disabled={isBuying}
+                      className="bg-[#07080e] border border-[#1f212e] rounded-lg px-3 py-1.5 text-xs text-[#e2e8f0] focus:outline-none focus:border-emerald-500/50 font-mono w-full"
+                   />
+                </div>
+
+                <div className="flex flex-col gap-1">
+                   <div className="flex justify-between items-center">
+                      <label className="text-[10px] text-slate-400 font-mono uppercase tracking-wider">Buy Amount (SOL)</label>
+                      <span className="text-[9px] text-slate-500 font-mono">Current: {simRealBalance.toFixed(4)} SOL available</span>
+                   </div>
+                   <input
+                      type="number"
+                      step="0.01"
+                      min="0.001"
+                      placeholder="0.1"
+                      value={manualAmount}
+                      onChange={(e) => setManualAmount(e.target.value)}
+                      disabled={isBuying}
+                      className="bg-[#07080e] border border-[#1f212e] rounded-lg px-3 py-1.5 text-xs text-[#e2e8f0] focus:outline-none focus:border-emerald-500/50 font-mono w-full"
+                   />
+                   
+                   {/* Quick Size Selection Buttons */}
+                   <div className="grid grid-cols-5 gap-1.5 pt-1">
+                      {['0.01', '0.05', '0.1', '0.5', '1.0'].map((val) => (
+                         <button
+                            key={`quick-size-${val}`}
+                            type="button"
+                            onClick={() => setManualAmount(val)}
+                            disabled={isBuying}
+                            className={cn(
+                               "text-[9px] font-bold py-1 px-1 text-center rounded transition-all font-mono",
+                               manualAmount === val 
+                                 ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40" 
+                                 : "bg-[#07080e] hover:bg-[#10111a] text-slate-400 border border-[#1f212e] hover:text-white"
+                            )}
+                         >
+                            {val}
+                         </button>
+                      ))}
+                   </div>
+                </div>
+
+                {buyStatus && (
+                   <div className={cn(
+                      "p-2.5 rounded-lg text-[10px] font-mono leading-normal border",
+                      buyStatus.type === 'error' ? "bg-rose-500/10 text-rose-400 border-rose-500/20" :
+                      buyStatus.type === 'success' ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" :
+                      "bg-blue-500/10 text-blue-400 border-blue-500/20"
+                   )}>
+                      {buyStatus.text}
+                   </div>
+                )}
+
+                <button
+                   type="submit"
+                   disabled={isBuying}
+                   className={cn(
+                      "w-full py-2 px-4 rounded-lg font-black uppercase text-[10px] tracking-wider transition-all flex items-center justify-center gap-1.5 active:scale-95 border",
+                      isBuying 
+                        ? "bg-amber-500/10 border-amber-500/30 text-amber-400 cursor-not-allowed" 
+                        : "bg-emerald-500/15 hover:bg-emerald-500/25 border-emerald-500/30 text-emerald-400 hover:text-emerald-300"
+                   )}
+                >
+                   {isBuying ? (
+                      <>
+                         <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                         Executing Swap...
+                      </>
+                   ) : (
+                      <>
+                         <Zap className="w-3.5 h-3.5" />
+                         Execute Swap (Buy)
+                      </>
+                   )}
+                </button>
+             </form>
           </div>
 
           <div className="bg-[#10111a]/60 border border-[#1f212e] rounded-2xl flex flex-col p-4">
