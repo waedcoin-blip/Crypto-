@@ -3769,6 +3769,8 @@ const checkTokenCriteria = (mint: string): {
       return;
     }
 
+    let simRealRealSwapOutputSol: number | undefined = undefined;
+
     // Real sell for Simreal active positions if privateKey is active
     if (pos.simRealBought && privateKey && !pos.simRealIsVirtualFallback) {
       addLog(`🚨 [SIMREAL REAL SWAP SELL] Initiating real on-chain sell for ${pos.symbol} via Jupiter...`, 'warn');
@@ -3778,6 +3780,10 @@ const checkTokenCriteria = (mint: string): {
           const result = await executeJupiterSwap(mint, SOL_MINT, lamportsToSell);
           if (result.txid) {
              addLog(`✅ [SIMREAL REAL SWAP SUCCESS] Sold ${pos.symbol} on-chain | tx: ${result.txid.slice(0, 12)}...`, 'sell');
+             const passedOutAmount = typeof result.outputAmount === 'number' && !isNaN(result.outputAmount) ? result.outputAmount : 0;
+             if (passedOutAmount > 0) {
+               simRealRealSwapOutputSol = passedOutAmount / 1_000_000_000;
+             }
           }
         } else {
           addLog(`⚠️ [SIMREAL REAL SWAP] No tokens/lamports found to sell on-chain for ${pos.symbol}`, 'warn');
@@ -3908,8 +3914,25 @@ const checkTokenCriteria = (mint: string): {
       // SimReal Copy Trade Sell logic (Simulation mode)
       if (pos.simRealBought && pos.simRealSolSpent) {
         const storeState = useAppStore.getState();
-        const tradePnlPct = walletNetPnlPct; 
-        const sellAmtSol = pos.simRealSolSpent * (1 + tradePnlPct);
+        let sellAmtSol = 0;
+        let tradePnlPct = 0;
+        
+        if (simRealRealSwapOutputSol !== undefined) {
+           sellAmtSol = simRealRealSwapOutputSol;
+           tradePnlPct = (sellAmtSol - pos.simRealSolSpent) / pos.simRealSolSpent;
+        } else {
+           const currentGrossSimReal = currentPrice * (pos.simRealAmountTokens || 0);
+           const currentPnLPercent = ((currentGrossSimReal - pos.simRealSolSpent) / pos.simRealSolSpent) * 100;
+           let dynamicSlippage = slippage;
+           if (currentPnLPercent > 0) dynamicSlippage = Math.max(0.3, Math.min(slippage, currentPnLPercent * 0.3));
+           else dynamicSlippage = Math.min(slippage, 1.0);
+           
+           const slippageFeeCalc = currentGrossSimReal * (dynamicSlippage / 100);
+           const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, pos.simRealSolSpent || 0.1);
+           sellAmtSol = Math.max(0, currentGrossSimReal - slippageFeeCalc - opFees);
+           tradePnlPct = (sellAmtSol - pos.simRealSolSpent) / pos.simRealSolSpent;
+        }
+        
         const profitSol = sellAmtSol - pos.simRealSolSpent;
         
         storeState.setSimRealBalance(prev => Math.max(0, prev + sellAmtSol));
@@ -4004,8 +4027,25 @@ const checkTokenCriteria = (mint: string): {
           // SimReal Copy Trade Sell logic (Live mode)
           if (pos.simRealBought && pos.simRealSolSpent) {
             const storeState = useAppStore.getState();
-            const tradePnlPct = actualPnlPct; 
-            const sellAmtSol = pos.simRealSolSpent * (1 + tradePnlPct);
+            let sellAmtSol = 0;
+            let tradePnlPct = 0;
+            
+            if (simRealRealSwapOutputSol !== undefined) {
+               sellAmtSol = simRealRealSwapOutputSol;
+               tradePnlPct = (sellAmtSol - pos.simRealSolSpent) / pos.simRealSolSpent;
+            } else {
+               const currentGrossSimReal = currentPrice * (pos.simRealAmountTokens || 0);
+               const currentPnLPercent = ((currentGrossSimReal - pos.simRealSolSpent) / pos.simRealSolSpent) * 100;
+               let dynamicSlippage = slippage;
+               if (currentPnLPercent > 0) dynamicSlippage = Math.max(0.3, Math.min(slippage, currentPnLPercent * 0.3));
+               else dynamicSlippage = Math.min(slippage, 1.0);
+               
+               const slippageFeeCalc = currentGrossSimReal * (dynamicSlippage / 100);
+               const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, pos.simRealSolSpent || 0.1);
+               sellAmtSol = Math.max(0, currentGrossSimReal - slippageFeeCalc - opFees);
+               tradePnlPct = (sellAmtSol - pos.simRealSolSpent) / pos.simRealSolSpent;
+            }
+            
             const profitSol = sellAmtSol - pos.simRealSolSpent;
             
             storeState.setSimRealBalance(prev => Math.max(0, prev + sellAmtSol));
@@ -4433,6 +4473,39 @@ const checkTokenCriteria = (mint: string): {
             }
           }
 
+
+
+
+          // Independent SimReal Auto-Sell Check (ensure to sell and transfer to wallet in +pnl after detecting slippage)
+          if (pos.simRealBought && pos.simRealSolSpent && !safeToExecute) {
+            const simRealGross = currentPrice * (pos.simRealAmountTokens || 0);
+            let simRealNetSolReturn = simRealGross;
+            let simRealNetPnlPct = 0;
+            
+            if (quote && pos.amountLamports && pos.amount) {
+               const guaranteedMinLamports = BigInt(quote.otherAmountThreshold);
+               const guaranteedSolOut = Number(guaranteedMinLamports) / 1_000_000_000.0;
+               const ratio = (pos.simRealAmountTokens || 0) / pos.amount;
+               const scaledSolOut = guaranteedSolOut * ratio;
+               const operationalFeesSol = getDynamicOperationalFeeSol(pos.recoveryMode, pos.simRealSolSpent); 
+               simRealNetSolReturn = Math.max(0, scaledSolOut - operationalFeesSol);
+            } else {
+               const simRealGrossPnLPercent = ((simRealGross - pos.simRealSolSpent) / pos.simRealSolSpent) * 100;
+               let dynamicSlippage = slippage;
+               if (simRealGrossPnLPercent > 0) dynamicSlippage = Math.max(0.3, Math.min(slippage, simRealGrossPnLPercent * 0.3));
+               else dynamicSlippage = Math.min(slippage, 1.0);
+               const slippageFeeCalc = simRealGross * (dynamicSlippage / 100);
+               const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, pos.simRealSolSpent || 0.1);
+               simRealNetSolReturn = Math.max(0, simRealGross - slippageFeeCalc - opFees);
+            }
+            simRealNetPnlPct = (simRealNetSolReturn - pos.simRealSolSpent) / pos.simRealSolSpent;
+            
+            if (simRealNetPnlPct > 0) {
+               executeReason = `SIMREAL SECURE PROFIT: ${pos.symbol} +${(simRealNetPnlPct * 100).toFixed(2)}% (NET)`;
+               safeToExecute = true;
+            }
+          }
+
           // SimReal Wallet Copy Buy Check:
           const currentPnLPct = netPnlPct * 100;
           if (currentPnLPct >= 1.0 && !pos.simRealBought && !simRealBoughtPending.current.has(mint)) {
@@ -4654,7 +4727,39 @@ const checkTokenCriteria = (mint: string): {
                }
              }
 
-            // SimReal Wallet Copy Buy Check:
+  
+
+          // Independent SimReal Auto-Sell Check (ensure to sell and transfer to wallet in +pnl after detecting slippage)
+          if (pos.simRealBought && pos.simRealSolSpent && !safeToExecute) {
+            const simRealGross = currentPrice * (pos.simRealAmountTokens || 0);
+            let simRealNetSolReturn = simRealGross;
+            let simRealNetPnlPct = 0;
+            
+            if (quote && pos.amountLamports && pos.amount) {
+               const guaranteedMinLamports = BigInt(quote.otherAmountThreshold);
+               const guaranteedSolOut = Number(guaranteedMinLamports) / 1_000_000_000.0;
+               const ratio = (pos.simRealAmountTokens || 0) / pos.amount;
+               const scaledSolOut = guaranteedSolOut * ratio;
+               const operationalFeesSol = getDynamicOperationalFeeSol(pos.recoveryMode, pos.simRealSolSpent); 
+               simRealNetSolReturn = Math.max(0, scaledSolOut - operationalFeesSol);
+            } else {
+               const simRealGrossPnLPercent = ((simRealGross - pos.simRealSolSpent) / pos.simRealSolSpent) * 100;
+               let dynamicSlippage = slippage;
+               if (simRealGrossPnLPercent > 0) dynamicSlippage = Math.max(0.3, Math.min(slippage, simRealGrossPnLPercent * 0.3));
+               else dynamicSlippage = Math.min(slippage, 1.0);
+               const slippageFeeCalc = simRealGross * (dynamicSlippage / 100);
+               const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, pos.simRealSolSpent || 0.1);
+               simRealNetSolReturn = Math.max(0, simRealGross - slippageFeeCalc - opFees);
+            }
+            simRealNetPnlPct = (simRealNetSolReturn - pos.simRealSolSpent) / pos.simRealSolSpent;
+            
+            if (simRealNetPnlPct > 0) {
+               executeReason = `SIMREAL SECURE PROFIT: ${pos.symbol} +${(simRealNetPnlPct * 100).toFixed(2)}% (NET)`;
+               safeToExecute = true;
+            }
+          }
+
+          // SimReal Wallet Copy Buy Check:
             const currentLivePnLPct = pnlPct * 100;
             if (currentLivePnLPct >= 1.0 && !pos.simRealBought && !simRealBoughtPending.current.has(mint)) {
               if (mint.toLowerCase().startsWith('sim') || (pos.symbol && pos.symbol.toLowerCase().startsWith('sim'))) {
