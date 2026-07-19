@@ -5,6 +5,7 @@ import bs58 from 'bs58';
 import { Buffer } from 'buffer';
 import { TokenMetric, TelemetryAlert, Trade, SniperTrade } from '../../types';
 import { useAppStore } from '../../store/appStore';
+import { useBuySignalStore } from '../../store/buySignalStore';
 import { getJupiterQuote, executeTxWithRPCFallback, getTokenBalanceRaw, getLatestBlockhashWithFallback, clearSimPriceCache, pingJupiterApi } from '../../services/jupiterService';
 import { db } from '../../lib/firebase';
 import { detectTokenStage } from '../../lib/utils';
@@ -1029,6 +1030,9 @@ export const PnLPage = ({
   const jupRpcUrlToUse = jupiterRpcUrl && jupiterRpcUrl.trim() !== "" ? jupiterRpcUrl.trim() : rpcUrl;
   
   const { simRealTrades, simRealBalance } = useAppStore();
+  const emitBuySignal = useBuySignalStore(state => state.emitSignal);
+  const signaledPositions = useRef<Set<string>>(new Set());
+  const latestPricesRef = useRef<Record<string, number>>({});
   
   const stopLossPct = Math.abs(stopLoss);
   const bondingCurveStopLossPct = Math.abs(bondingCurveStopLoss);
@@ -2306,6 +2310,12 @@ export const PnLPage = ({
         }
       }
 
+      for (const mint of Object.keys(prices)) {
+        if (prices[mint]?.price > 0) {
+          latestPricesRef.current[mint] = prices[mint].price;
+        }
+      }
+
       return prices;
     } catch (e) {
       // Fallback to on-chain for everything if API is completely timing out or down
@@ -2329,6 +2339,13 @@ export const PnLPage = ({
           };
         }
       }
+
+      for (const mint of Object.keys(prices)) {
+        if (prices[mint]?.price > 0) {
+          latestPricesRef.current[mint] = prices[mint].price;
+        }
+      }
+
       return prices;
     }
   }, [fetchJupiterPriceFallback]);
@@ -2763,6 +2780,63 @@ export const PnLPage = ({
       return [newLog, ...prev].slice(0, retentionLimit);
     });
   }, [retentionLimit]);
+
+  // ── SIGNAL EMITTER: +1% Profit Detection ──
+  // Monitors all active simulation positions.
+  // When any position crosses +1%, emits a buy signal for SimRealPage.
+  useEffect(() => {
+    const checkProfitTargets = () => {
+      if (!positions || Object.keys(positions).length === 0) return;
+
+      for (const [tokenAddress, position] of Object.entries(positions)) {
+        // Skip if already signaled for this position
+        const positionKey = `${tokenAddress}-${position.entryTime}`;
+        if (signaledPositions.current.has(positionKey)) continue;
+
+        // Skip if position doesn't have valid pricing
+        if (!position.buyPrice || position.buyPrice <= 0) continue;
+
+        // Fetch current price from your existing price cache or live data
+        const currentPrice = latestPricesRef.current[tokenAddress] || position.currentPrice;
+        if (!currentPrice || currentPrice <= 0) continue;
+
+        const profitPercent = ((currentPrice - position.buyPrice) / position.buyPrice) * 100;
+
+        if (profitPercent >= 1.0) {
+          // ── +1% HIT — EMIT SIGNAL ──
+          signaledPositions.current.add(positionKey);
+
+          emitBuySignal({
+            tokenAddress,
+            symbol: position.symbol || 'UNKNOWN',
+            buyPrice: position.buyPrice,
+            currentPrice,
+            profitPercent,
+            sourcePositionAmount: position.amount || 0,
+          });
+
+          addLog(`Signal sent: ${position.symbol} at +${profitPercent.toFixed(2)}% → SimRealPage`, 'success');
+        }
+      }
+    };
+
+    // Check every 2 seconds (aligns with price update frequency)
+    const interval = setInterval(checkProfitTargets, 2000);
+    return () => clearInterval(interval);
+  }, [positions, emitBuySignal, addLog]);
+
+  // ── SIGNAL CLEANUP: Sync signaledPositions Ref ──
+  // Automatically prunes keys from signaledPositions when their corresponding positions are closed.
+  useEffect(() => {
+    const currentKeys = new Set(
+      Object.entries(positions).map(([tokenAddress, position]) => `${tokenAddress}-${position.entryTime}`)
+    );
+    for (const positionKey of signaledPositions.current) {
+      if (!currentKeys.has(positionKey)) {
+        signaledPositions.current.delete(positionKey);
+      }
+    }
+  }, [positions]);
 
   useEffect(() => {
     if (!privateKey) {
