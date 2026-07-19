@@ -116,11 +116,12 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
   // ── ZUSTAND BUY SIGNALS PIPELINE STORE CONNECTION ──
   const signals = useBuySignalStore(state => state.signals);
   const stats = useBuySignalStore(state => state.stats);
-  const claimNextSignal = useBuySignalStore(state => state.claimNextSignal);
+  const claimNextPending = useBuySignalStore(state => state.claimNextPending);
+  const markExecuting = useBuySignalStore(state => state.markExecuting);
   const markExecuted = useBuySignalStore(state => state.markExecuted);
   const markFailed = useBuySignalStore(state => state.markFailed);
   const markRejected = useBuySignalStore(state => state.markRejected);
-  const pruneOldSignals = useBuySignalStore(state => state.pruneOldSignals);
+  const pruneOld = useBuySignalStore(state => state.pruneOld);
 
   // Lock to prevent concurrent processing of different signals
   const processingLock = useRef(false);
@@ -369,16 +370,19 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
 
       try {
         // 2. Claim next pending signal
-        const signal = claimNextSignal();
+        const signal = claimNextPending();
         if (!signal) {
           processingLock.current = false;
           return;
         }
 
-        const { tokenAddress, symbol, buyPrice, profitPercent } = signal;
+        const { tokenAddress, symbol, triggerPriceUsd, profitPercent } = signal;
         console.log(`[Pipeline] Processing signal for ${symbol} (+${profitPercent.toFixed(2)}%)`);
 
-        // 3. Execution Gates (checks)
+        // Mark as actively executing
+        markExecuting(signal.id);
+
+        // 3. Execution Gates & Fresh Quote Check
         const storeState = useAppStore.getState();
 
         // Check if token address starts with 'sim' (blocked)
@@ -422,6 +426,42 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
           return;
         }
 
+        // ── FETCH FRESH QUOTE FOR VERIFICATION ──
+        let freshPriceUsd = triggerPriceUsd;
+        let freshLiquidityUsd = signal.liquidityUsd;
+
+        try {
+          const res = await fetch(`/api/dex/tokens/${tokenAddress}`);
+          if (res.ok) {
+            const data = await res.json();
+            const pair = data?.pairs?.[0];
+            if (pair) {
+              freshPriceUsd = parseFloat(pair.priceUsd || '0');
+              freshLiquidityUsd = parseFloat(pair.liquidity?.usd || '0');
+            }
+          }
+        } catch (err) {
+          console.warn('[Pipeline] Failed to fetch fresh quote, using signal data');
+        }
+
+        // Gate 1: Check minimum liquidity (e.g. $10,000)
+        if (freshLiquidityUsd < 10_000) {
+          markRejected(signal.id, `Liquidity collapsed to $${freshLiquidityUsd.toFixed(0)} < $10,000`);
+          processingLock.current = false;
+          return;
+        }
+
+        // Gate 2: Deviation check (Pump guard: Max 15% above trigger price)
+        const priceIncreasePercent = ((freshPriceUsd - triggerPriceUsd) / triggerPriceUsd) * 100;
+        if (priceIncreasePercent > 15) {
+          markRejected(
+            signal.id,
+            `Price pumped too high after trigger: +${priceIncreasePercent.toFixed(2)}% > +15%`
+          );
+          processingLock.current = false;
+          return;
+        }
+
         // 4. All checks passed — execute real/sim trade
         console.log(`[Pipeline] Executing Jupiter copy-buy of ${symbol}...`);
         const activeRpcUrl = jupiterRpcUrl && jupiterRpcUrl.trim() !== "" ? jupiterRpcUrl.trim() : rpcUrl;
@@ -460,9 +500,9 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
       } catch (err: any) {
         console.error(`[Pipeline Error] Signal swap execution failed:`, err);
         const currentSignals = useBuySignalStore.getState().signals;
-        const activePickedUp = currentSignals.find(s => s.status === 'picked_up');
-        if (activePickedUp) {
-          markFailed(activePickedUp.id, err?.message || 'Transaction execution failed');
+        const activeExecuting = currentSignals.find(s => s.status === 'executing' || s.status === 'picked_up');
+        if (activeExecuting) {
+          markFailed(activeExecuting.id, err?.message || 'Transaction execution failed');
         }
       } finally {
         processingLock.current = false;
@@ -474,7 +514,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
 
     // Prune old signals every 30 seconds
     const pruneId = setInterval(() => {
-      pruneOldSignals(5 * 60 * 1000); // 5-minute deduplication window
+      pruneOld(5 * 60 * 1000); // 5-minute deduplication window
     }, 30000);
 
     return () => {
@@ -492,11 +532,12 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
     slippage,
     tokenMetrics,
     setPositions,
-    claimNextSignal,
+    claimNextPending,
+    markExecuting,
     markExecuted,
     markFailed,
     markRejected,
-    pruneOldSignals,
+    pruneOld,
   ]);
 
   const completedTrades = getCompletedSimRealTrades();

@@ -967,6 +967,27 @@ async function startServer() {
     }
   });
 
+  app.get("/api/dex/tokens/trending", async (req, res) => {
+    try {
+      const ids = TRENDING_MINTS.join(',');
+      const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${ids}`, {
+        headers: { 'User-Agent': 'Mozilla/5.0' }
+      });
+      if (response.ok) {
+        const text = await response.text();
+        const data = JSON.parse(text);
+        if (data && data.pairs && data.pairs.length > 0) {
+          return res.json(data);
+        }
+      }
+    } catch (e: any) {
+      console.warn("[server] trending scan api failed:", e.message);
+    }
+    // Fallback: simulated pairs
+    const pairs = TRENDING_MINTS.map(m => generateSimulatedPair(m));
+    res.json({ pairs });
+  });
+
   app.get(["/api/dex/token-profiles", "/api/dex/token-profiles/"], async (req, res) => {
     try {
       const deduplicatedProfiles = await dexProfilesCache.fetch("global-token-profiles", async () => {

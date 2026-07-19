@@ -6,6 +6,9 @@ import { Buffer } from 'buffer';
 import { TokenMetric, TelemetryAlert, Trade, SniperTrade } from '../../types';
 import { useAppStore } from '../../store/appStore';
 import { useBuySignalStore } from '../../store/buySignalStore';
+import { TokenScanner, ScannedToken } from '../../services/tokenScanner';
+import { DEFAULT_CRITERIA } from '../../config/tokenCriteria';
+import { useSimulationStore } from '../../store/simulationStore';
 import { getJupiterQuote, executeTxWithRPCFallback, getTokenBalanceRaw, getLatestBlockhashWithFallback, clearSimPriceCache, pingJupiterApi } from '../../services/jupiterService';
 import { db } from '../../lib/firebase';
 import { detectTokenStage } from '../../lib/utils';
@@ -1033,6 +1036,17 @@ export const PnLPage = ({
   const emitBuySignal = useBuySignalStore(state => state.emitSignal);
   const signaledPositions = useRef<Set<string>>(new Set());
   const latestPricesRef = useRef<Record<string, number>>({});
+
+  // ── Simulation Store & Background Scan Refs ──
+  const simPositions = useSimulationStore(state => state.positions);
+  const openSimPosition = useSimulationStore(state => state.openPosition);
+  const updateSimPrice = useSimulationStore(state => state.updatePrice);
+  const closeSimPosition = useSimulationStore(state => state.closePosition);
+  const markSimSignaled = useSimulationStore(state => state.markSignaled);
+  const hasSimPosition = useSimulationStore(state => state.hasPosition);
+
+  const scannerRef = useRef<TokenScanner | null>(null);
+  const monitoredTokensRef = useRef<Map<string, ScannedToken>>(new Map());
   
   const stopLossPct = Math.abs(stopLoss);
   const bondingCurveStopLossPct = Math.abs(bondingCurveStopLoss);
@@ -2781,62 +2795,166 @@ export const PnLPage = ({
     });
   }, [retentionLimit]);
 
-  // ── SIGNAL EMITTER: +1% Profit Detection ──
-  // Monitors all active simulation positions.
-  // When any position crosses +1%, emits a buy signal for SimRealPage.
+  // ── BACKGROUND SCAN & SIMULATION PIPELINE ──
+
+  // ── Initialize scanner on mount ──
   useEffect(() => {
-    const checkProfitTargets = () => {
-      if (!positions || Object.keys(positions).length === 0) return;
+    scannerRef.current = new TokenScanner(
+      DEFAULT_CRITERIA,
+      (token: ScannedToken) => {
+        // Callback when a token passes criteria — add to monitoring
+        monitoredTokensRef.current.set(token.address, token);
+      }
+    );
 
-      for (const [tokenAddress, position] of Object.entries(positions)) {
-        // Skip if already signaled for this position
-        const positionKey = `${tokenAddress}-${position.entryTime}`;
-        if (signaledPositions.current.has(positionKey)) continue;
+    return () => {
+      scannerRef.current = null;
+      monitoredTokensRef.current.clear();
+    };
+  }, []);
 
-        // Skip if position doesn't have valid pricing
-        if (!position.buyPrice || position.buyPrice <= 0) continue;
+  // ── TOKEN SCANNER LOOP ──
+  // Scans DEXScreener for new tokens meeting criteria.
+  // Opens simulation positions for qualifying tokens.
+  useEffect(() => {
+    if (!scannerRef.current) return;
 
-        // Fetch current price from your existing price cache or live data
-        const currentPrice = latestPricesRef.current[tokenAddress] || position.currentPrice;
-        if (!currentPrice || currentPrice <= 0) continue;
+    const scanLoop = async () => {
+      if (!scannerRef.current) return;
+      const tokens = await scannerRef.current.scanAndFilter();
 
-        const profitPercent = ((currentPrice - position.buyPrice) / position.buyPrice) * 100;
+      for (const token of tokens) {
+        // Skip if already have a simulation position
+        if (hasSimPosition(token.address)) continue;
 
-        if (profitPercent >= 1.0) {
-          // ── +1% HIT — EMIT SIGNAL ──
-          signaledPositions.current.add(positionKey);
+        // Open simulation position
+        openSimPosition(token, DEFAULT_CRITERIA.simulationBuyAmountSol);
 
-          emitBuySignal({
-            tokenAddress,
-            symbol: position.symbol || 'UNKNOWN',
-            buyPrice: position.buyPrice,
-            currentPrice,
-            profitPercent,
-            sourcePositionAmount: position.amount || 0,
-          });
+        // Start monitoring this token's price
+        monitoredTokensRef.current.set(token.address, token);
+        
+        addLog(`[Scanner] Passed criteria: ${token.symbol} | Liq: $${token.liquidityUsd.toFixed(0)} | Vol: $${token.volume24h.toFixed(0)}`, 'success');
+      }
+    };
 
-          addLog(`Signal sent: ${position.symbol} at +${profitPercent.toFixed(2)}% → SimRealPage`, 'success');
+    // Initial scan after 5 seconds
+    const initialTimer = setTimeout(scanLoop, 5000);
+
+    // Then every 30 seconds
+    const interval = setInterval(scanLoop, 30_000);
+
+    return () => {
+      clearTimeout(initialTimer);
+      clearInterval(interval);
+    };
+  }, [hasSimPosition, openSimPosition, addLog]);
+
+  // ── PRICE MONITORING LOOP ──
+  // Fetches current prices for all monitored tokens.
+  // Updates simulation positions.
+  useEffect(() => {
+    const updatePrices = async () => {
+      const tokens = Array.from(monitoredTokensRef.current.values());
+      if (tokens.length === 0) return;
+
+      // Batch fetch prices (up to 10 at a time to avoid rate limits)
+      const batch = tokens.slice(0, 10);
+
+      for (const token of batch) {
+        try {
+          const response = await fetch(`/api/dex/tokens/${token.address}`);
+          if (!response.ok) continue;
+
+          const data = await response.json();
+          const pair = data?.pairs?.[0];
+          if (!pair) continue;
+
+          const currentPrice = parseFloat(pair.priceUsd || '0');
+          if (currentPrice <= 0) continue;
+
+          // Update price cache
+          latestPricesRef.current[token.address] = currentPrice;
+
+          // Update simulation position
+          if (hasSimPosition(token.address)) {
+            updateSimPrice(token.address, currentPrice);
+          }
+
+        } catch (err) {
+          // Silently skip — price will retry on next loop
         }
       }
     };
 
-    // Check every 2 seconds (aligns with price update frequency)
-    const interval = setInterval(checkProfitTargets, 2000);
+    const interval = setInterval(updatePrices, 2000);
     return () => clearInterval(interval);
-  }, [positions, emitBuySignal, addLog]);
+  }, [hasSimPosition, updateSimPrice]);
 
-  // ── SIGNAL CLEANUP: Sync signaledPositions Ref ──
-  // Automatically prunes keys from signaledPositions when their corresponding positions are closed.
+  // ── SIGNAL EMISSION EFFECT ──
+  // Monitors all simulation positions.
+  // When any position hits +1%, emits a buy signal to SimRealPage.
   useEffect(() => {
-    const currentKeys = new Set(
-      Object.entries(positions).map(([tokenAddress, position]) => `${tokenAddress}-${position.entryTime}`)
-    );
-    for (const positionKey of signaledPositions.current) {
-      if (!currentKeys.has(positionKey)) {
-        signaledPositions.current.delete(positionKey);
+    const checkProfitTargets = () => {
+      const positionsArray = Object.values(simPositions);
+
+      for (const pos of positionsArray) {
+        // Skip if signal already emitted for this position
+        if (pos.signalEmitted) continue;
+
+        // Skip if no valid pricing
+        if (!pos.entryPriceUsd || pos.entryPriceUsd <= 0) continue;
+        if (!pos.currentPriceUsd || pos.currentPriceUsd <= 0) continue;
+
+        const profitPercent =
+          ((pos.currentPriceUsd - pos.entryPriceUsd) / pos.entryPriceUsd) * 100;
+
+        if (profitPercent >= DEFAULT_CRITERIA.signalProfitThreshold) {
+          // ── +1% HIT — EMIT BUY SIGNAL ──
+          markSimSignaled(pos.tokenAddress);
+
+          emitBuySignal({
+            tokenAddress: pos.tokenAddress,
+            symbol: pos.symbol,
+            name: pos.name,
+            entryPriceUsd: pos.entryPriceUsd,
+            triggerPriceUsd: pos.currentPriceUsd,
+            profitPercent,
+            liquidityUsd: pos.liquidityUsd,
+            volume24h: pos.volume24h,
+            dexId: pos.dexId,
+            pairAddress: pos.pairAddress,
+            simAmountSol: pos.amountSol,
+            simEntryTime: pos.entryTime,
+          });
+
+          addLog(`[Signal] ${pos.symbol} +${profitPercent.toFixed(2)}% → SimRealPage`, 'success');
+        }
       }
-    }
-  }, [positions]);
+    };
+
+    const interval = setInterval(checkProfitTargets, 1000);
+    return () => clearInterval(interval);
+  }, [simPositions, emitBuySignal, markSimSignaled, addLog]);
+
+  // ── AUTO-CLOSE STALE POSITIONS ──
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = Date.now();
+      const MAX_AGE = 30 * 60 * 1000; // 30 minutes
+
+      for (const pos of Object.values(simPositions)) {
+        if (now - pos.entryTime > MAX_AGE) {
+          closeSimPosition(pos.tokenAddress, 'timeout');
+          monitoredTokensRef.current.delete(pos.tokenAddress);
+        }
+      }
+
+      // Also prune old signals
+      useBuySignalStore.getState().pruneOld(10 * 60 * 1000);
+    }, 60_000);
+
+    return () => clearInterval(interval);
+  }, [simPositions, closeSimPosition]);
 
   useEffect(() => {
     if (!privateKey) {
