@@ -10,6 +10,9 @@ import { db } from '../../lib/firebase';
 import { detectTokenStage } from '../../lib/utils';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { checkTokenInProfitLast2Seconds, clearPriceHistories } from '../../services/priceTracker';
+import { encryptPrivateKey, decryptPrivateKey } from '../../lib/crypto';
+
+const HELIUS_API_KEY = (import.meta as any).env.VITE_HELIUS_API_KEY || 'e161791f-b336-40b9-80d6-f4c9f626833c';
 
 window.Buffer = window.Buffer || Buffer;
 
@@ -1040,7 +1043,7 @@ export const PnLPage = ({
 
   // Helius LaserStream (Ultra-Low Latency Ingestion gRPC) Configurations
   const [laserstreamEnabled, setLaserstreamEnabled] = useState(() => localStorage.getItem('hd_laserstream_enabled') === 'true');
-  const [laserstreamApiKey, setLaserstreamApiKey] = useState(() => localStorage.getItem('hd_laserstream_apiKey') || 'e161791f-b336-40b9-80d6-f4c9f626833c');
+  const [laserstreamApiKey, setLaserstreamApiKey] = useState(() => localStorage.getItem('hd_laserstream_apiKey') || HELIUS_API_KEY);
   const [laserstreamEndpoint, setLaserstreamEndpoint] = useState(() => localStorage.getItem('hd_laserstream_endpoint') || 'auto');
   const [laserstreamStatus, setLaserstreamStatus] = useState<'connected'|'disconnected'|'connecting'>('disconnected');
   const [laserstreamIsFallback, setLaserstreamIsFallback] = useState(false);
@@ -1628,16 +1631,19 @@ export const PnLPage = ({
         if (docSnap.exists()) {
           const data = docSnap.data();
           if (data.rpcUrl) {
-            const sanitized = data.rpcUrl.includes('winter-methodical-river') ? 'https://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c' : data.rpcUrl;
+            const sanitized = data.rpcUrl.includes('winter-methodical-river') ? `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}` : data.rpcUrl;
             setRpcUrl(sanitized);
           }
           if (data.rpcUrl2) {
-            const sanitized = data.rpcUrl2.includes('winter-methodical-river') ? 'https://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c' : data.rpcUrl2;
+            const sanitized = data.rpcUrl2.includes('winter-methodical-river') ? `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}` : data.rpcUrl2;
             setRpcUrl2(sanitized);
           }
           if (data.customWsUrl) setCustomWsUrl(data.customWsUrl);
           if (data.apiKey) setApiKey(data.apiKey);
-          if (data.privateKey) setPrivateKey(data.privateKey);
+          if (data.privateKey) {
+            const decrypted = await decryptPrivateKey(data.privateKey, user.uid);
+            setPrivateKey(decrypted);
+          }
           if (data.senderEnabled !== undefined) setSenderEnabled(data.senderEnabled === true);
           if (data.senderApiKey !== undefined) setSenderApiKey(String(data.senderApiKey));
           if (data.senderEndpoint !== undefined) setSenderEndpoint(String(data.senderEndpoint));
@@ -1685,18 +1691,20 @@ export const PnLPage = ({
           }
           
           const sanitizedRpcUrl = data.rpcUrl && data.rpcUrl.includes('winter-methodical-river') 
-            ? 'https://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c' 
+            ? `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}` 
             : (data.rpcUrl || rpcUrl);
           const sanitizedRpcUrl2 = data.rpcUrl2 && data.rpcUrl2.includes('winter-methodical-river') 
-            ? 'https://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c' 
+            ? `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}` 
             : (data.rpcUrl2 || rpcUrl2);
+
+          const decryptedKey = data.privateKey ? await decryptPrivateKey(data.privateKey, user.uid) : privateKey;
 
           lastLoadedSettingsRef.current = {
             rpcUrl: sanitizedRpcUrl,
             rpcUrl2: sanitizedRpcUrl2,
             customWsUrl: data.customWsUrl || customWsUrl,
             apiKey: data.apiKey || apiKey,
-            privateKey: data.privateKey || privateKey,
+            privateKey: decryptedKey,
             senderEnabled: data.senderEnabled !== undefined ? data.senderEnabled : senderEnabled,
             senderApiKey: data.senderApiKey !== undefined ? data.senderApiKey : senderApiKey,
             senderEndpoint: data.senderEndpoint !== undefined ? data.senderEndpoint : senderEndpoint,
@@ -1789,6 +1797,7 @@ export const PnLPage = ({
     
     const saveSettings = async () => {
       try {
+        const encryptedKey = await encryptPrivateKey(privateKey, user.uid);
         const docRef = doc(db, 'settings', user.uid);
         await setDoc(docRef, {
           userId: user.uid,
@@ -1796,7 +1805,7 @@ export const PnLPage = ({
           rpcUrl2,
           customWsUrl,
           apiKey,
-          privateKey,
+          privateKey: encryptedKey,
           senderEnabled,
           senderApiKey,
           senderEndpoint,
@@ -2011,7 +2020,7 @@ export const PnLPage = ({
         console.log("🔗 Vercel Detected: Connecting directly via WebSocket...");
         const wsUrl = (laserstreamApiKey && laserstreamApiKey.length > 20) 
           ? `wss://mainnet.helius-rpc.com/?api-key=${laserstreamApiKey}` 
-          : 'wss://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c';
+          : `wss://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`;
         
         const ws = new WebSocket(wsUrl);
         let pingTimer: any = null;
@@ -2638,7 +2647,7 @@ export const PnLPage = ({
       // We explicitly avoid onProgramAccountChange for the SPL Token Program on free/public RPCs,
       // as they are heavily rate-limited and throw "Unexpected server response: 429" / 403 on mount.
       let tokenSubId: number | null = null;
-      const isPublicRpc = rpcUrl.includes('api.mainnet-beta.solana.com') || rpcUrl.includes('e161791f-b336-40b9-80d6-f4c9f626833c');
+      const isPublicRpc = rpcUrl.includes('api.mainnet-beta.solana.com') || rpcUrl.includes(HELIUS_API_KEY);
       if (!isPublicRpc) {
         try {
           tokenSubId = conn.onProgramAccountChange(
@@ -6370,7 +6379,7 @@ const checkTokenCriteria = (mint: string): {
                         type="password" 
                         value={laserstreamApiKey} 
                         onChange={(e) => setLaserstreamApiKey(e.target.value)} 
-                        placeholder="e161791f-b336-40b9-80d6-f4c9f626833c" 
+                        placeholder={HELIUS_API_KEY} 
                         className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-1.5 text-[12px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors" 
                       />
                     </div>

@@ -28,6 +28,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { cn, detectTokenStage } from './lib/utils';
+import { encryptPrivateKey, decryptPrivateKey } from './lib/crypto';
 import { auth, db, signInWithGoogle, signInWithEmailAndPassword, createUserWithEmailAndPassword } from './lib/firebase';
 import { onAuthStateChanged, User, signOut } from 'firebase/auth';
 import { 
@@ -430,7 +431,7 @@ export default function App() {
   const [slippage, setSlippage] = useState(1.0); 
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('juipter_auto_apiKey') || '');
   const [jupiterRpcUrl, setJupiterRpcUrl] = useState(() => localStorage.getItem('juipter_auto_jupiterRpcUrl') || '');
-  const [privateKey, setPrivateKey] = useState(() => localStorage.getItem('juipter_auto_privateKey') || '');
+  const [privateKey, setPrivateKey] = useState('');
   const [telegramBotToken, setTelegramBotToken] = useState(() => localStorage.getItem('tg_bot_token') || '');
   const [telegramChatId, setTelegramChatId] = useState(() => localStorage.getItem('tg_chat_id') || '');
 
@@ -440,9 +441,41 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('juipter_auto_jupiterRpcUrl', jupiterRpcUrl);
   }, [jupiterRpcUrl]);
+
+  // Save encrypted private key to localStorage
   useEffect(() => {
-    localStorage.setItem('juipter_auto_privateKey', privateKey);
-  }, [privateKey]);
+    if (!privateKey) {
+      localStorage.removeItem('juipter_auto_privateKey');
+      return;
+    }
+    let active = true;
+    const encryptAndStore = async () => {
+      const uid = user?.uid || 'default_app_offline_salt';
+      const encrypted = await encryptPrivateKey(privateKey, uid);
+      if (active) {
+        localStorage.setItem('juipter_auto_privateKey', encrypted);
+      }
+    };
+    encryptAndStore();
+    return () => { active = false; };
+  }, [privateKey, user?.uid]);
+
+  // Load and decrypt private key on mount / user change
+  useEffect(() => {
+    let active = true;
+    const loadAndDecrypt = async () => {
+      const stored = localStorage.getItem('juipter_auto_privateKey');
+      if (stored) {
+        const uid = user?.uid || 'default_app_offline_salt';
+        const decrypted = await decryptPrivateKey(stored, uid);
+        if (active && decrypted !== privateKey) {
+          setPrivateKey(decrypted);
+        }
+      }
+    };
+    loadAndDecrypt();
+    return () => { active = false; };
+  }, [user?.uid]);
   useEffect(() => {
     localStorage.setItem('app_buyAmountSol', buyAmountSol.toString());
     localStorage.setItem('app_minTakeProfit', minTakeProfit.toString());
@@ -759,13 +792,15 @@ export default function App() {
         const errorMsg = data.error || data.description || 'Unknown error';
         if (!silent) setTradingStatus(`❌ Telegram Error: ${errorMsg}`);
         console.error('Telegram API error response:', data);
+        throw new Error(`Telegram Error: ${errorMsg}`);
       }
     } catch (err: any) {
       if (!silent) setTradingStatus('❌ Local Proxy Connection Error');
       console.error('Telegram Proxy Fetch failed. This usually means the backend server is unreachable or the request was blocked by the browser. Details:', err);
+      throw err;
+    } finally {
+      if (!silent) setTimeout(() => setTradingStatus(null), 5000);
     }
-    
-    if (!silent) setTimeout(() => setTradingStatus(null), 5000);
   };
 
   // Wallet Connection Alert
@@ -777,7 +812,7 @@ export default function App() {
         `Time: <b>${new Date().toLocaleTimeString()}</b>\n\n` +
         `<i>Matrix Dashboard status: ACTIVE</i>`,
         true
-      );
+      ).catch(err => console.warn('Telegram wallet connection alert failed:', err));
     }
   }, [publicKey]);
 
@@ -819,8 +854,9 @@ export default function App() {
       const parsed = JSON.parse(saved);
       if (!parsed || typeof parsed !== 'object') return {};
       
-      // Ensure all saved gems have correct categories on load
+      // Ensure all saved gems have correct categories on load and guard against corrupt items
       const forceSynced = Object.entries(parsed as Record<string, SavedGem>).reduce((acc, [mint, gem]) => {
+        if (!gem || typeof gem !== 'object') return acc;
         acc[mint] = {
           ...gem,
           category: gem.category || categorizeToken(gem.symbol || 'TOKEN', mint)
@@ -1082,8 +1118,14 @@ export default function App() {
     };
   }, [rpcUrl, rpcUrl2, isSecondaryActive, hardenedMaxLatency]);
 
-  // Load or generate session wallet
+  // Load or generate session wallet, syncing with auth/user logout state
   useEffect(() => {
+    if (!user) {
+      setSessionWallet(null);
+      localStorage.removeItem('matrix_session_key');
+      return;
+    }
+
     const savedKey = localStorage.getItem('matrix_session_key');
     if (savedKey) {
       try {
@@ -1091,9 +1133,10 @@ export default function App() {
         setSessionWallet(Keypair.fromSecretKey(decoded));
       } catch (e) {
         console.error('Failed to load session wallet');
+        localStorage.removeItem('matrix_session_key');
       }
     }
-  }, []);
+  }, [user]);
 
   const generateSessionWallet = () => {
     const kp = Keypair.generate();
@@ -1765,7 +1808,7 @@ export default function App() {
       };
       
       setMySniperTrades(prev => [newTrade, ...prev]);
-      if (sendTelegramAlert) sendTelegramAlert(`🟢 <b>BUY Execution</b>\nToken: ${symbol}\nAmount: ${buyAmountSol} SOL`);
+      if (sendTelegramAlert) sendTelegramAlert(`🟢 <b>BUY Execution</b>\nToken: ${symbol}\nAmount: ${buyAmountSol} SOL`).catch(err => console.warn('Telegram buy alert failed:', err));
       setActivePositions(prev => {
         const existing = prev[tokenAddress];
         const newAmount = existing ? existing.amount + entryAmountTokens : entryAmountTokens;
@@ -2036,7 +2079,7 @@ export default function App() {
         `Tx: <a href="https://solscan.io/tx/${signature}">View Tx</a>\n` +
         `<a href="${portLink}">📁 View My Portfolio</a>`,
         true
-      );
+      ).catch(err => console.warn('Telegram exit alert failed:', err));
       
       const newTrade: SniperTrade = {
         id: `sniped-sell-${Date.now()}`,
@@ -2269,7 +2312,7 @@ export default function App() {
         `Tx: <a href="https://solscan.io/tx/${signature}">View Tx</a>\n` +
         `<a href="${sellLink}">🔴 Quick Sell Position</a>`,
         true
-      );
+      ).catch(err => console.warn('Telegram snipe alert failed:', err));
       
       setTradingStatus(null);
     } catch (e: any) {
@@ -2480,24 +2523,37 @@ export default function App() {
 
   const playDiscoverySound = () => {
     try {
-      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      const oscillator = audioCtx.createOscillator();
-      const gainNode = audioCtx.createGain();
+      // Singleton AudioContext to bypass context limits (Bug 9)
+      if (typeof window !== 'undefined') {
+        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+        if (AudioContextClass) {
+          if (!(window as any).__sharedAudioCtx || (window as any).__sharedAudioCtx.state === 'closed') {
+            (window as any).__sharedAudioCtx = new AudioContextClass();
+          }
+          const audioCtx = (window as any).__sharedAudioCtx;
+          if (audioCtx.state === 'suspended') {
+            audioCtx.resume().catch(() => {});
+          }
 
-      oscillator.connect(gainNode);
-      gainNode.connect(audioCtx.destination);
+          const oscillator = audioCtx.createOscillator();
+          const gainNode = audioCtx.createGain();
 
-      oscillator.type = 'sine';
-      // Slightly higher pitch, extremely short for subtle discovery feel
-      oscillator.frequency.setValueAtTime(1400, audioCtx.currentTime);
-      oscillator.frequency.exponentialRampToValueAtTime(1200, audioCtx.currentTime + 0.05);
+          oscillator.connect(gainNode);
+          gainNode.connect(audioCtx.destination);
 
-      gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
-      gainNode.gain.linearRampToValueAtTime(0.04, audioCtx.currentTime + 0.002);
-      gainNode.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.08);
+          oscillator.type = 'sine';
+          // Slightly higher pitch, extremely short for subtle discovery feel
+          oscillator.frequency.setValueAtTime(1400, audioCtx.currentTime);
+          oscillator.frequency.exponentialRampToValueAtTime(1200, audioCtx.currentTime + 0.05);
 
-      oscillator.start();
-      oscillator.stop(audioCtx.currentTime + 0.08);
+          gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
+          gainNode.gain.linearRampToValueAtTime(0.04, audioCtx.currentTime + 0.002);
+          gainNode.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.08);
+
+          oscillator.start();
+          oscillator.stop(audioCtx.currentTime + 0.08);
+        }
+      }
     } catch (e) {
       // Browsers often block audio until user interaction
     }
@@ -2505,39 +2561,54 @@ export default function App() {
 
   const playAlertSound = () => {
     try {
-      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      const oscillator = audioCtx.createOscillator();
-      const gainNode = audioCtx.createGain();
+      // Singleton AudioContext to bypass context limits (Bug 9)
+      if (typeof window !== 'undefined') {
+        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+        if (AudioContextClass) {
+          if (!(window as any).__sharedAudioCtx || (window as any).__sharedAudioCtx.state === 'closed') {
+            (window as any).__sharedAudioCtx = new AudioContextClass();
+          }
+          const audioCtx = (window as any).__sharedAudioCtx;
+          if (audioCtx.state === 'suspended') {
+            audioCtx.resume().catch(() => {});
+          }
 
-      oscillator.connect(gainNode);
-      gainNode.connect(audioCtx.destination);
+          const oscillator = audioCtx.createOscillator();
+          const gainNode = audioCtx.createGain();
 
-      oscillator.type = 'sine';
-      oscillator.frequency.setValueAtTime(1000, audioCtx.currentTime);
-      
-      gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
-      gainNode.gain.linearRampToValueAtTime(0.08, audioCtx.currentTime + 0.005);
-      gainNode.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.15);
+          oscillator.connect(gainNode);
+          gainNode.connect(audioCtx.destination);
 
-      oscillator.start();
-      oscillator.stop(audioCtx.currentTime + 0.15);
+          oscillator.type = 'sine';
+          oscillator.frequency.setValueAtTime(1000, audioCtx.currentTime);
+          
+          gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
+          gainNode.gain.linearRampToValueAtTime(0.08, audioCtx.currentTime + 0.005);
+          gainNode.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.15);
+
+          oscillator.start();
+          oscillator.stop(audioCtx.currentTime + 0.15);
+        }
+      }
     } catch (e) {
       // Browsers often block audio until user interaction
     }
   };
 
   // Fetch token stats and security from DEXScreener
-  const fetchTokenSecurityData = async (mint: string, retries = 3, backoff = 1000) => {
+  const fetchTokenSecurityData = async (mint: string, retries = 3, backoff = 1000, isRetry = false) => {
     // Client-side throttling: Don't fetch the same mint more than once every 60 seconds
     const lastFetch = lastFetchTimes.current.get(mint) || 0;
-    if (Date.now() - lastFetch < 2000) return null;
+    if (Date.now() - lastFetch < 2000 && !isRetry) return null;
     
-    if (priceFetchLocks.current.has(mint)) return null;
+    if (!isRetry && priceFetchLocks.current.has(mint)) return null;
     
-    try {
+    if (!isRetry) {
       priceFetchLocks.current.add(mint);
       lastFetchTimes.current.set(mint, Date.now());
-      
+    }
+    
+    try {
       // Use the server-side proxy to benefit from caching and shared rate limits
       const response = await fetch(`/api/dex/tokens/${mint}`);
       
@@ -2546,15 +2617,13 @@ export default function App() {
           console.warn(`DexScreener Rate Limit for ${mint}. Retrying after ${backoff}ms...`);
           // Exponential backoff for rate limits
           await new Promise(res => setTimeout(res, backoff));
-          priceFetchLocks.current.delete(mint);
-          return fetchTokenSecurityData(mint, retries - 1, backoff * 2);
+          return await fetchTokenSecurityData(mint, retries - 1, backoff * 2, true);
         }
         return null;
       }
       
       const text = await response.text();
       if (!text || text.trim().startsWith('<')) {
-        priceFetchLocks.current.delete(mint);
         return null;
       }
       const data = JSON.parse(text);
@@ -2757,9 +2826,9 @@ export default function App() {
     } catch (e) {
       // console.error('DexScreener fetch failed', e);
     } finally {
-      setTimeout(() => {
+      if (!isRetry) {
         priceFetchLocks.current.delete(mint);
-      }, 1000);
+      }
     }
     return null;
   };
@@ -2863,7 +2932,7 @@ export default function App() {
                           `<a href="${buyLink}">🎯 QUICK BUY IN MATRIX</a>\n` +
                           `<a href="${sellLink}">🔴 QUICK SELL / VIEW PORTFOLIO</a>\n\n` +
                           `<a href="https://dexscreener.com/solana/${trade.tokenAddress}">📊 View on DexScreener</a>`;
-              sendTelegramAlert(msg, true);
+              sendTelegramAlert(msg, true).catch(err => console.warn('Telegram alert failed:', err));
               
               if (alertType === 'WHALE_BUY' || alertType === 'HIGH_BUY') {
                 setTelemetryAlerts(prev => [
@@ -3003,7 +3072,7 @@ export default function App() {
                               `<a href="${buyLinkX}">🎯 BUY ON JUPITER</a>\n` +
                               `<a href="${sellLinkX}">🔴 SELL ON JUPITER</a>\n\n` +
                               `<a href="https://dexscreener.com/solana/${trade.tokenAddress}">📊 View on DexScreener</a>`;
-                  sendTelegramAlert(msg, true);
+                  sendTelegramAlert(msg, true).catch(err => console.warn('Telegram alert failed:', err));
                 }
 
                 // TRIGGER AUTO-SNIPE (High-Frequency Scalper Mode)
@@ -3304,7 +3373,7 @@ export default function App() {
   const activeRequests = useRef(0);
   const MAX_CONCURRENT_RPC = 3;
 
-  const fetchTransactionWithRetry = async (signature: string, retries = 4, delay = 500): Promise<any> => {
+  const fetchTransactionWithRetry = async (signature: string, retries = 3, delay = 300): Promise<any> => {
     if (activeRequests.current >= MAX_CONCURRENT_RPC) {
       // If busy, wait a bit or skip purely background telemetry
       await new Promise(res => setTimeout(res, Math.random() * 2000));
@@ -3316,7 +3385,8 @@ export default function App() {
       for (let i = 0; i < retries; i++) {
           try {
             // Using Helius Enriched Transactions API for much better parsing and fewer rate limits
-            const response = await fetch("https://api-mainnet.helius-rpc.com/v0/transactions/?api-key=b422aec3-82c7-425c-a409-a48e744829ad", {
+            const heliusKey = (import.meta as any).env.VITE_HELIUS_API_KEY || 'b422aec3-82c7-425c-a409-a48e744829ad';
+            const response = await fetch(`https://api-mainnet.helius-rpc.com/v0/transactions/?api-key=${heliusKey}`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ transactions: [signature] })
@@ -3335,11 +3405,13 @@ export default function App() {
                 if (tx) return tx;
             }
 
-            // Hyper-fast polling for the first few attempts
-            await new Promise(res => setTimeout(res, delay + (Math.random() * 200)));
+            // Polling with capped backoff
+            const backoffDelay = delay * Math.pow(1.5, i);
+            await new Promise(res => setTimeout(res, backoffDelay + (Math.random() * 100)));
           } catch (e: any) {
             if (i === retries - 1) return null; // Don't throw, just return null on fail to keep feed alive
-            await new Promise(res => setTimeout(res, delay));
+            const backoffDelay = delay * Math.pow(1.5, i);
+            await new Promise(res => setTimeout(res, backoffDelay));
           }
       }
     } finally {
@@ -3386,19 +3458,16 @@ export default function App() {
         const signature = logs.signature;
         if (processedSigs.current.has(signature)) return;
 
+        const isMigration = logs.logs?.some(l => l.includes('Instruction: Initialize2'));
+        const samplingRate = isMigration ? 1.0 : 0.05;
+
         // Skip most trades to stay within free tier/demo context, but pick enough to feel "live"
-        // Reduced sampling from 15% to 5% to avoid 429 errors from RPC
-        if (Math.random() > 0.05 && !monitoredWallets.some(w => logs.logs?.some(l => l.includes(w.address)))) return;
+        // Reduced sampling from 15% to 5% to avoid 429 errors from RPC, with 100% sampling for migrations
+        if (Math.random() > samplingRate && !monitoredWallets.some(w => logs.logs?.some(l => l.includes(w.address)))) return;
+
+        processedSigs.current.add(signature);
 
         try {
-          const isMigration = logs.logs?.some(l => l.includes('Instruction: Initialize2'));
-          const signature = logs.signature;
-          if (processedSigs.current.has(signature)) return;
-
-          // Faster sampling for potential migrations
-          const samplingRate = isMigration ? 1.0 : 0.05;
-          if (Math.random() > samplingRate && !monitoredWallets.some(w => logs.logs?.some(l => l.includes(w.address)))) return;
-
           const tx = await fetchTransactionWithRetry(signature, 3, 500);
           let amount = 0;
           let diff = 0;
@@ -3587,7 +3656,7 @@ export default function App() {
                                  `<a href="${buyLinkXR}">🎯 QUICK BUY IN MATRIX</a>\n` +
                                  `<a href="${sellLinkXR}">🔴 QUICK SELL / VIEW PORTFOLIO</a>\n\n` +
                                  `<a href="https://dexscreener.com/solana/${mint}">📊 View on DexScreener</a>`;
-                     sendTelegramAlert(msg, true);
+                     sendTelegramAlert(msg, true).catch(err => console.warn('Telegram alert failed:', err));
                    }
 
                    setTokenMetrics(m => {
@@ -3616,7 +3685,7 @@ export default function App() {
                                        `<b>ACTIONS:</b>\n` +
                                        `<a href="${buyLink100}">🎯 QUICK BUY IN MATRIX</a>\n` +
                                        `<a href="${sellLink100}">🔴 QUICK SELL / VIEW PORTFOLIO</a>`;
-                       sendTelegramAlert(msg100x, true);
+                       sendTelegramAlert(msg100x, true).catch(err => console.warn('Telegram alert failed:', err));
                      }
                      
                    const isRugSafe = true;
@@ -5256,7 +5325,7 @@ export default function App() {
                   />
                 </div>
                 <button
-                  onClick={() => sendTelegramAlert('🔔 <b>Matrix Test Alert</b>\nYour Telegram bot is successfully connected!')}
+                  onClick={() => sendTelegramAlert('🔔 <b>Matrix Test Alert</b>\nYour Telegram bot is successfully connected!').catch(err => console.warn('Telegram test alert failed:', err))}
                   className="w-full bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 font-black uppercase text-[9px] tracking-widest py-2 rounded-lg transition-colors"
                 >
                   Test Connection
@@ -5910,6 +5979,7 @@ export default function App() {
       <SimRealPage 
         tokenMetrics={tokenMetrics}
         positions={simrealPositions}
+        setPositions={setSimrealPositions}
         simRealBalance={simRealBalance}
         simRealTrades={simRealTrades}
         maxPositions={maxPositions}

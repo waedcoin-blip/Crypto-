@@ -18,6 +18,8 @@ import {
 } from 'lucide-react';
 import { TokenMetric, SniperTrade } from '../../types';
 import { cn, detectTokenStage } from '../../lib/utils';
+import { useAppStore } from '../../store/appStore';
+import { simRealTradingEngine } from '../../engines/simRealTradingEngine';
 
 // Local helper matching the rest of the application
 const getDynamicOperationalFeeSol = (isRecovery: boolean = false, tradeAmountSol: number = 0.05): number => {
@@ -77,6 +79,7 @@ interface SimRealPageProps {
   maxRebuyTimes: number;
   setMaxRebuyTimes: (v: number) => void;
   jupiterLogs: { id: string; timestamp: number; type: 'QUOTE' | 'SWAP' | 'ERROR' | 'INFO'; message: string; details?: any }[];
+  setPositions?: React.Dispatch<React.SetStateAction<Record<string, any>>>;
 }
 
 export const SimRealPage: React.FC<SimRealPageProps> = ({
@@ -103,7 +106,8 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
   resetSimRealWallet,
   maxRebuyTimes,
   setMaxRebuyTimes,
-  jupiterLogs
+  jupiterLogs,
+  setPositions
 }) => {
   const [showKey, setShowKey] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -141,13 +145,78 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
     try {
       setIsBuying(true);
       setBuyStatus({ type: 'info', text: 'Initiating trade swap on-chain/simulation...' });
-      await executeSimRealBuy(mint, amount);
-      setBuyStatus({ type: 'success', text: `Successfully triggered independent swap for ${mint.slice(0, 8)}!` });
+      
+      const activeRpcUrl = jupiterRpcUrl && jupiterRpcUrl.trim() !== "" ? jupiterRpcUrl.trim() : rpcUrl;
+      
+      await simRealTradingEngine.executeBuy({
+        mint,
+        amountSol: amount,
+        privateKey,
+        apiKey,
+        rpcUrl: activeRpcUrl || 'https://api.mainnet-beta.solana.com',
+        slippage,
+        tokenMetrics,
+        updateState: ({ balanceOffset, newTrade, newPosition }) => {
+          // 1. Update balance in store
+          useAppStore.getState().setSimRealBalance(prev => Math.max(0, prev + balanceOffset));
+          // 2. Add trade to store
+          useAppStore.getState().setSimRealTrades(prev => [newTrade, ...prev]);
+          // 3. Update positions state
+          if (setPositions) {
+            setPositions(prev => ({
+              ...prev,
+              [mint]: newPosition
+            }));
+          } else {
+            // Fallback proxy to parent
+            executeSimRealBuy(mint, amount).catch(() => {});
+          }
+        }
+      });
+      
+      setBuyStatus({ type: 'success', text: `Successfully executed independent swap for ${mint.slice(0, 8)}!` });
       setManualMint(''); // clear input on success
     } catch (err: any) {
       setBuyStatus({ type: 'error', text: err?.message || 'Trade failed.' });
     } finally {
       setIsBuying(false);
+    }
+  };
+
+  const handleForceSell = async (mint: string) => {
+    const pos = positions[mint];
+    if (!pos) return;
+
+    try {
+      const activeRpcUrl = jupiterRpcUrl && jupiterRpcUrl.trim() !== "" ? jupiterRpcUrl.trim() : rpcUrl;
+      await simRealTradingEngine.executeSell({
+        mint,
+        position: pos,
+        privateKey,
+        apiKey,
+        rpcUrl: activeRpcUrl || 'https://api.mainnet-beta.solana.com',
+        slippage,
+        tokenMetrics,
+        updateState: ({ balanceOffset, newTrade }) => {
+          // 1. Update balance in store
+          useAppStore.getState().setSimRealBalance(prev => Math.max(0, prev + balanceOffset));
+          // 2. Add trade to store
+          useAppStore.getState().setSimRealTrades(prev => [newTrade, ...prev]);
+          // 3. Update positions state (remove the position)
+          if (setPositions) {
+            setPositions(prev => {
+              const next = { ...prev };
+              delete next[mint];
+              return next;
+            });
+          } else {
+            // Fallback proxy to parent
+            handleForceSell(mint).catch(() => {});
+          }
+        }
+      });
+    } catch (err: any) {
+      console.error("Independent sell failed:", err);
     }
   };
 
@@ -659,7 +728,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                           
                           <div className="col-span-2 pt-2">
                              <button 
-                               onClick={() => executeSimRealSell(mint)}
+                               onClick={() => handleForceSell(mint)}
                                className="w-full bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 transition-colors px-3 py-2 rounded-lg text-xs font-black uppercase tracking-widest border border-rose-500/20 group"
                               >
                                <span className="flex items-center justify-center gap-2">
