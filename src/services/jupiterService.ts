@@ -344,38 +344,53 @@ export const executeTxWithRPCFallback = async (
     "https://ny.mainnet.block-engine.jito.wtf/api/v1/transactions"
   ];
 
-  let sentViaJito = false;
-  try {
-    await Promise.any(
-      jitoEndpoints.map(endpoint =>
-        fetch(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ transactions: [serializedTx] })
-        }).then(res => { if (res.ok) return endpoint; throw new Error("Jito failed"); })
-      )
-    );
-    sentViaJito = true;
-  } catch (e) {}
-
   const rpcsToTry = [connection.rpcEndpoint];
 
-  // Broadcast to all RPCs immediately in parallel to maximize transaction propagation speed!
-  try {
-    await Promise.allSettled(rpcsToTry.map(async rpc => {
-      try {
-        const conn = new Connection(rpc, 'confirmed');
-        await conn.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
-      } catch (err) {}
-    }));
-  } catch (err) {}
+  // Robust parallel broadcaster: broadcasts to all RPCs + Jito endpoints immediately
+  const broadcastTransaction = async () => {
+    // Broadcast via Jito in parallel
+    try {
+      Promise.any(
+        jitoEndpoints.map(endpoint =>
+          fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ transactions: [serializedTx] })
+          }).then(res => { if (res.ok) return endpoint; throw new Error("Jito failed"); })
+        )
+      ).catch(() => {});
+    } catch (e) {}
+
+    // Broadcast via standard RPCs
+    try {
+      rpcsToTry.forEach(async rpc => {
+        try {
+          const conn = new Connection(rpc, 'confirmed');
+          await conn.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 0 });
+        } catch (err) {}
+      });
+    } catch (err) {}
+  };
+
+  // Initial broadcast
+  useAppStore.getState().addJupiterLog({
+    type: 'INFO',
+    message: `Broadcasting transaction: ${signature.slice(0, 8)}... (re-sending every 3s)`,
+  });
+  await broadcastTransaction();
+
+  // Set up periodic re-broadcasting every 3 seconds to ensure dropped transactions are replaced
+  const broadcastInterval = setInterval(() => {
+    console.log(`[TX] Re-broadcasting transaction: ${signature}`);
+    broadcastTransaction();
+  }, 3000);
 
   try {
     const finalSignature = await Promise.any(rpcsToTry.map(async rpc => {
       const conn = new Connection(rpc, 'confirmed');
       
       // Fast Signature Status Polling Loop
-      const deadline = Date.now() + 60000; // 60s max wait for final confirmation
+      const deadline = Date.now() + 90000; // 90s max wait for final confirmation
       while (Date.now() < deadline) {
         try {
           const value = await getSignatureStatusRobust(conn, signature);
@@ -396,7 +411,7 @@ export const executeTxWithRPCFallback = async (
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
 
-      throw new Error(`RPC ${rpc} timed out waiting for confirmation`);
+      throw new Error(`RPC ${rpc} timed out waiting for confirmation (90s). Signature: ${signature}. Check Solscan: https://solscan.io/tx/${signature}`);
     }));
 
     useAppStore.getState().addJupiterLog({
@@ -416,6 +431,8 @@ export const executeTxWithRPCFallback = async (
       message: `Swap Failed: ${errorMsg || 'All RPC endpoints failed to confirm'}`,
     });
     throw new Error(`Failed to confirm transaction: ${errorMsg || 'All RPC endpoints failed to confirm'}`);
+  } finally {
+    clearInterval(broadcastInterval);
   }
 };
 

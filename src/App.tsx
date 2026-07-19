@@ -3897,7 +3897,11 @@ export default function App() {
       connectionRef.current = new Connection(HELIUS_RPC, {
         wsEndpoint: HELIUS_WS,
         commitment: 'confirmed',
-        confirmTransactionInitialTimeout: 60000
+        confirmTransactionInitialTimeout: 90000,
+        disableRetryOnRateLimit: false,
+        httpHeaders: {
+          'Content-Type': 'application/json',
+        },
       });
       console.log('Solana connection established:', HELIUS_RPC);
     } catch (err) {
