@@ -211,33 +211,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
       setIsBuying(true);
       setBuyStatus({ type: 'info', text: 'Initiating trade swap on-chain/simulation...' });
       
-      const activeRpcUrl = jupiterRpcUrl && jupiterRpcUrl.trim() !== "" ? jupiterRpcUrl.trim() : rpcUrl;
-      
-      await simRealTradingEngine.executeBuy({
-        mint,
-        amountSol: amount,
-        privateKey,
-        apiKey,
-        rpcUrl: activeRpcUrl || 'https://api.mainnet-beta.solana.com',
-        slippage,
-        tokenMetrics,
-        updateState: ({ balanceOffset, newTrade, newPosition }) => {
-          // 1. Update balance in store
-          useAppStore.getState().setSimRealBalance(prev => Math.max(0, prev + balanceOffset));
-          // 2. Add trade to store
-          useAppStore.getState().setSimRealTrades(prev => [newTrade, ...prev]);
-          // 3. Update positions state
-          if (setPositions) {
-            setPositions(prev => ({
-              ...prev,
-              [mint]: newPosition
-            }));
-          } else {
-            // Fallback proxy to parent
-            executeSimRealBuy(mint, amount).catch(() => {});
-          }
-        }
-      });
+      await executeSimRealBuy(mint, amount);
       
       setBuyStatus({ type: 'success', text: `Successfully executed independent swap for ${mint.slice(0, 8)}!` });
       setManualMint(''); // clear input on success
@@ -253,33 +227,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
     if (!pos) return;
 
     try {
-      const activeRpcUrl = jupiterRpcUrl && jupiterRpcUrl.trim() !== "" ? jupiterRpcUrl.trim() : rpcUrl;
-      await simRealTradingEngine.executeSell({
-        mint,
-        position: pos,
-        privateKey,
-        apiKey,
-        rpcUrl: activeRpcUrl || 'https://api.mainnet-beta.solana.com',
-        slippage,
-        tokenMetrics,
-        updateState: ({ balanceOffset, newTrade }) => {
-          // 1. Update balance in store
-          useAppStore.getState().setSimRealBalance(prev => Math.max(0, prev + balanceOffset));
-          // 2. Add trade to store
-          useAppStore.getState().setSimRealTrades(prev => [newTrade, ...prev]);
-          // 3. Update positions state (remove the position)
-          if (setPositions) {
-            setPositions(prev => {
-              const next = { ...prev };
-              delete next[mint];
-              return next;
-            });
-          } else {
-            // Fallback proxy to parent
-            handleForceSell(mint).catch(() => {});
-          }
-        }
-      });
+      await executeSimRealSell(mint);
     } catch (err: any) {
       console.error("Independent sell failed:", err);
     }
@@ -521,38 +469,8 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
 
         // 4. All checks passed — execute real/sim trade
         console.log(`[Pipeline] Executing Jupiter copy-buy of ${symbol}...`);
-        const activeRpcUrl = jupiterRpcUrl && jupiterRpcUrl.trim() !== "" ? jupiterRpcUrl.trim() : rpcUrl;
-
-        let executedSignature = `tx-copy-${Date.now()}`;
-
-        await simRealTradingEngine.executeBuy({
-          mint: tokenAddress,
-          amountSol: buyAmt,
-          privateKey,
-          apiKey,
-          rpcUrl: activeRpcUrl || 'https://api.mainnet-beta.solana.com',
-          slippage,
-          tokenMetrics,
-          updateState: ({ balanceOffset, newTrade, newPosition }) => {
-            if (newTrade && newTrade.signature) {
-              executedSignature = newTrade.signature;
-            }
-            // Update balance in store
-            useAppStore.getState().setSimRealBalance(prev => Math.max(0, prev + balanceOffset));
-            // Add trade to store
-            useAppStore.getState().setSimRealTrades(prev => [newTrade, ...prev]);
-            // Update parent positions state
-            if (setPositions) {
-              setPositions(prev => ({
-                ...prev,
-                [tokenAddress]: newPosition
-              }));
-            }
-          }
-        });
-
-        // Claim success
-        markExecuted(signal.id, executedSignature);
+        await executeSimRealBuy(tokenAddress, buyAmt);
+        markExecuted(signal.id, `tx-copy-${Date.now()}`);
 
       } catch (err: any) {
         console.error(`[Pipeline Error] Signal swap execution failed:`, err);

@@ -4014,10 +4014,47 @@ const checkTokenCriteria = (mint: string): {
       return;
     }
 
+    // 1. Calculate SimReal PnL if SimReal is bought
+    let simRealNetPnlPct = 0;
+    if (pos.simRealBought && pos.simRealSolSpent) {
+      const simRealGross = currentPrice * (pos.simRealAmountTokens || 0);
+      const simRealGrossPnLPercent = ((simRealGross - pos.simRealSolSpent) / pos.simRealSolSpent) * 100;
+      let dynamicSlippage = slippage;
+      if (simRealGrossPnLPercent > 0) dynamicSlippage = Math.max(0.3, Math.min(slippage, simRealGrossPnLPercent * 0.3));
+      else dynamicSlippage = Math.min(slippage, 1.0);
+      
+      const slippageFeeCalc = simRealGross * (dynamicSlippage / 100);
+      const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, pos.simRealSolSpent || 0.1);
+      const simRealNetSolReturn = Math.max(0, simRealGross - slippageFeeCalc - opFees);
+      simRealNetPnlPct = (simRealNetSolReturn - pos.simRealSolSpent) / pos.simRealSolSpent;
+    }
+
+    // 2. Decide what needs to be sold
+    const shouldSellMain = !!pos.amount && pos.amount > 0 && !reason.includes('SIMREAL SECURE PROFIT');
+    const shouldSellSimReal = !!pos.simRealBought && (
+      reason.includes('SIMREAL SECURE PROFIT') ||
+      reason.includes('EMERGENCY') ||
+      reason.includes('FORCE') ||
+      reason.includes('MANUAL') ||
+      simRealNetPnlPct > 0
+    );
+
+    if (!shouldSellMain && !shouldSellSimReal) {
+      if (pos.simRealBought && !shouldSellSimReal) {
+        addLog(`[SIMREAL PROFIT HOLD] Keeping SimReal position for ${pos.symbol} open to sell with profit later (Current net P&L: ${(simRealNetPnlPct * 100).toFixed(2)}%).`, 'info');
+      }
+      return;
+    }
+
+    // Log the initiation of the sell
+    addLog(`🚨 [SELL PROCESS] Initiating sell for ${pos.symbol}. Main active: ${shouldSellMain}, SimReal active: ${shouldSellSimReal} | Reason: ${reason}`, 'info');
+
+    let isMainSold = false;
+    let isSimRealSold = false;
     let simRealRealSwapOutputSol: number | undefined = undefined;
 
     // Real sell for Simreal active positions if privateKey is active
-    if (pos.simRealBought && privateKey && !pos.simRealIsVirtualFallback) {
+    if (shouldSellSimReal && privateKey && !pos.simRealIsVirtualFallback) {
       addLog(`🚨 [SIMREAL REAL SWAP SELL] Initiating real on-chain sell for ${pos.symbol} via Jupiter...`, 'warn');
       try {
         const lamportsToSell = pos.amountLamports || Math.floor((pos.simRealAmountTokens || 0) * 1_000_000);
@@ -4030,8 +4067,7 @@ const checkTokenCriteria = (mint: string): {
           const slippageBps = Math.floor(dynamicSlippage * 100);
           
           const opFeesSol = getDynamicOperationalFeeSol(pos.recoveryMode, pos.simRealSolSpent || 0.1);
-          // If it's a stop loss or emergency, we don't enforce profit guard! We only enforce if we expect it to be a +pnl sell.
-          const isStopLossSignal = typeof reason !== 'undefined' ? (reason?.toLowerCase().includes('stop loss') || reason?.toLowerCase().includes('emergency') || reason?.toLowerCase().includes('force')) : false;
+          const isStopLossSignal = reason.toLowerCase().includes('stop loss') || reason.toLowerCase().includes('emergency') || reason.toLowerCase().includes('force');
           const minExpectedOut = isStopLossSignal ? undefined : ((pos.simRealSolSpent || 0) + opFeesSol);
           
           const result = await executeJupiterSwap(mint, SOL_MINT, lamportsToSell, slippageBps, minExpectedOut);
@@ -4048,299 +4084,278 @@ const checkTokenCriteria = (mint: string): {
       } catch (err: any) {
         if (err.message.includes('PROFIT GUARD')) {
            addLog(`❌ [SIMREAL REAL SWAP ABORTED] ${err.message} Keeping position open.`, 'warn');
-           return; // Abort the simulated sell too
+           return;
         }
         addLog(`❌ [SIMREAL REAL SWAP FAILED] Real sell swap failed: ${err.message}. Performing simulated emergency exit fallback.`, 'err');
       }
     }
 
-    if (true) {
-      const isStopLoss = reason.toLowerCase().includes('stop loss') || reason.toLowerCase().includes('recovery failed');
-      const isEmergency = reason.toLowerCase().includes('force') || reason.toLowerCase().includes('emergency') || reason.toLowerCase().includes('manual');
-      const isExitSignal = isStopLoss || isEmergency || reason.toLowerCase().includes('take profit') || reason.toLowerCase().includes('recovery');
-      
-      if (isEmergency) {
-        addLog(`🚨 [EMERGENCY FORCE EXIT] Initiating manual emergency exit for ${pos.symbol}...`, 'warn');
-      } else {
-        addLog(`[SIM] Selling ${pos.symbol} quoting real return...`, 'info');
-      }
-      
-      let netReceivedSOL = 0;
-      try {
-        if (pos.amountLamports) {
-           const metric = tokenMetricsRef.current[mint];
-           const poolLiquidityUsd = metric?.liquidity || 0;
-           let sellQuote = await getJupiterQuote(mint, SOL_MINT, pos.amountLamports, poolLiquidityUsd, undefined, undefined, pnlPct * 100);
-           
-           // Simulation USDC fallback sell (Target Token -> USDC -> SOL)
-           if (!sellQuote) {
-             try {
-               const sellUsdcQuote = await getJupiterQuote(mint, USDC_MINT, pos.amountLamports, poolLiquidityUsd, undefined, undefined, pnlPct * 100);
-               if (sellUsdcQuote && Number(sellUsdcQuote.outAmount) > 0) {
-                 const usdcReceived = Number(sellUsdcQuote.outAmount);
-                 const sellSolQuote = await getJupiterQuote(USDC_MINT, SOL_MINT, usdcReceived, 0, undefined, undefined, pnlPct * 100);
-                 if (sellSolQuote) {
-                   sellQuote = sellSolQuote;
-                   addLog(`[SIM USDC ROUTE] Successfully exit routed simulated sell via USDC for ${pos.symbol}!`, 'info');
-                 }
-               }
-             } catch (err) {
-               console.warn(`SIM USDC sell quote failed:`, err);
-             }
-           }
-
-           if (!sellQuote) throw new Error("No exit route found.");
-           
-           const guaranteedSolOutSell = Number(sellQuote.otherAmountThreshold) / 1_000_000_000;
-           const operationalFeesSol = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent);
-           const netReturnSell = guaranteedSolOutSell - operationalFeesSol;
-
-           // PROFIT GUARD: If it's not an exit signal, don't sell for a net loss
-           const slippageTol = 0.005; // 0.5% buffer for last-second price changes
-           if (!isExitSignal && netReturnSell < (pos.solSpent * (1.0 - slippageTol))) {
-             addLog(`[SIM ABORT] ${pos.symbol} profit margin too thin or dropping (${(netReturnSell - pos.solSpent) > 0 ? '+' : ''}${((netReturnSell - pos.solSpent) / pos.solSpent * 100).toFixed(1)}%). Aborting sell to prevent loss.`, 'warn');
-             pendingSellMintsRef.current.delete(mint);
-             return;
-           }
-
-           netReceivedSOL = Number(sellQuote.outAmount) / 1_000_000_000;
-        } else {
-           throw new Error("No lamports stored");
-        }
-      } catch (e: any) {
-        if (e.message.includes('dropped')) throw e; // bubble up abort
-        // Fallback
-        const grossReceived = currentPrice * (pos.amount || 0);
-        
-        const currentPnLPercent = pnlPct * 100;
-        let dynamicSlippage = slippage;
-        if (currentPnLPercent > 0) {
-          dynamicSlippage = Math.max(0.3, Math.min(slippage, currentPnLPercent * 0.3));
-        } else {
-          dynamicSlippage = Math.min(slippage, 1.0);
-        }
-        
-        const slippageFee = grossReceived * (dynamicSlippage / 100);
-        let fallbackNet = grossReceived - slippageFee;
-        
-        // Apply Profit Guard also to Fallback route
-        const operationalFeesSol = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent);
-        const netReturnSell = fallbackNet - operationalFeesSol;
-        const slippageTol = 0.005;
-        if (!isExitSignal && netReturnSell < (pos.solSpent * (1.0 - slippageTol))) {
-          addLog(`[SIM ABORT fallback] ${pos.symbol} fallback profit margin too thin (${((netReturnSell - pos.solSpent) / pos.solSpent * 100).toFixed(1)}%). Aborting sell to prevent loss.`, 'warn');
-          pendingSellMintsRef.current.delete(mint);
-          return;
-        }
-        
-        netReceivedSOL = Math.max(0, fallbackNet);
-      }
-      
-      await new Promise(resolve => setTimeout(resolve, 50)); // Simulate tx time
-
-      // FIX 1: actualPnl is based on token return (gross/netReceivedSOL) vs spent (entry) excluding fixed Jito tip
-      const actualPnlAmount = netReceivedSOL - pos.solSpent;
-      const actualPnlPct = actualPnlAmount / pos.solSpent;
-
-      // In actual balance, we deduct the simulated operational fee 
-      const realWalletReturn = Math.max(0, netReceivedSOL - getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent));
-      const walletNetPnlPct = (realWalletReturn - pos.solSpent) / pos.solSpent;
-      setSimWalletBalance(prev => prev + realWalletReturn);
-
-      setStats((s) => ({
-        trades: s.trades + 1,
-        wins: s.wins + (walletNetPnlPct > 0 ? 1 : 0),
-        losses: s.losses + (walletNetPnlPct <= 0 ? 1 : 0),
-        pnl: s.pnl + (realWalletReturn - pos.solSpent), 
-        bestTrade: (walletNetPnlPct > 0 && (!s.bestTrade || walletNetPnlPct > s.bestTrade)) ? walletNetPnlPct : s.bestTrade
-      }));
-
-      addLog(`✅ [SIM] Sold ${pos.symbol} | Net P&L: ${(walletNetPnlPct * 100).toFixed(1)}% (Wallet)`, 'sell');
-      
-      setTradeHistory(th => [{
-        id: `sim-sell-${Date.now()}`,
-        mint: mint,
-        buyTime: pos.entryTime,
-        sellTime: Date.now(),
-        buyAmountSol: pos.solSpent,
-        sellAmountSol: realWalletReturn, 
-        pnlPct: walletNetPnlPct * 100
-      }, ...th]);
-
-      if (actualPnlPct < 0) {
-        setBlacklistedMints(prev => Array.from(new Set([...prev, mint])));
-        addLog(`Blacklisted ${pos.symbol} due to negative PnL.`, 'warn');
-      }
-
-      // SimReal Copy Trade Sell logic (Simulation mode)
-      if (pos.simRealBought && pos.simRealSolSpent) {
-        const storeState = useAppStore.getState();
-        let sellAmtSol = 0;
-        let tradePnlPct = 0;
-        
-        if (simRealRealSwapOutputSol !== undefined) {
-           sellAmtSol = simRealRealSwapOutputSol;
-           tradePnlPct = (sellAmtSol - pos.simRealSolSpent) / pos.simRealSolSpent;
-        } else {
-           const currentGrossSimReal = currentPrice * (pos.simRealAmountTokens || 0);
-           const currentPnLPercent = ((currentGrossSimReal - pos.simRealSolSpent) / pos.simRealSolSpent) * 100;
-           let dynamicSlippage = slippage;
-           if (currentPnLPercent > 0) dynamicSlippage = Math.max(0.3, Math.min(slippage, currentPnLPercent * 0.3));
-           else dynamicSlippage = Math.min(slippage, 1.0);
-           
-           const slippageFeeCalc = currentGrossSimReal * (dynamicSlippage / 100);
-           const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, pos.simRealSolSpent || 0.1);
-           sellAmtSol = Math.max(0, currentGrossSimReal - slippageFeeCalc - opFees);
-           tradePnlPct = (sellAmtSol - pos.simRealSolSpent) / pos.simRealSolSpent;
-        }
-        
-        const profitSol = sellAmtSol - pos.simRealSolSpent;
-        
-        storeState.setSimRealBalance(prev => Math.max(0, prev + sellAmtSol));
-        
-        const newSimTrade: SniperTrade = {
-          id: `simreal-sell-${Date.now()}`,
-          type: 'SELL',
-          token: pos.symbol,
-          address: mint,
-          amount: sellAmtSol,
-          timestamp: Date.now(),
-          signature: 'SIMREAL_SL_' + Math.random().toString(36).substring(7),
-          pnl: tradePnlPct * 100,
-          tokenAmount: pos.simRealAmountTokens
-        };
-        storeState.setSimRealTrades(prev => [newSimTrade, ...prev]);
-        addLog(`[SIMREAL SELL] Sold ${pos.symbol} for ${sellAmtSol.toFixed(4)} SOL | Net P&L: ${(tradePnlPct * 100).toFixed(2)}% | Profit: ${profitSol >= 0 ? '+' : ''}${profitSol.toFixed(4)} SOL`, 'sell');
-      }
-
-      simRealBoughtPending.current.delete(mint);
-
-      setPositions((currPositions) => {
-        const next = { ...currPositions };
-        delete next[mint];
-        return next;
-      });
-      return;
-    }
-    
-    if (!pos) return;
-
-    let lamportsToSellRaw = pos.amountLamports;
-
-    if (!lamportsToSellRaw || lamportsToSellRaw <= 0) {
-      try {
-        const keypair = Keypair.fromSecretKey(bs58.decode(privateKey));
-        const activeWsUrl = (customWsUrl && customWsUrl.trim() !== "") ? customWsUrl.trim() : rpcUrl.replace('https', 'wss').replace('http', 'ws');
-        const conn = new Connection(rpcUrl, { commitment: 'confirmed', wsEndpoint: activeWsUrl });
-        const accounts = await conn.getParsedTokenAccountsByOwner(
-          keypair.publicKey,
-          { mint: new PublicKey(mint) }
-        );
-        if (accounts.value.length > 0) {
-           lamportsToSellRaw = parseInt(accounts.value[0].account.data.parsed.info.tokenAmount.amount, 10);
-        }
-      } catch (e) {
-        console.warn("Failed to fetch balance for dynamic sell", e);
-      }
-    }
-
-    const lamportsToSell = lamportsToSellRaw;
-    
-    try {
-      if (!pos || !lamportsToSell || lamportsToSell <= 0) {
-        addLog(`No original token lamports for ${pos?.symbol || mint}, using fallback or removing position`, 'warn');
-        setPositions((prev) => {
-          const newPos = { ...prev };
-          delete newPos[mint];
-          return newPos;
-        });
-        return;
-      }
-
-      addLog(`Ordering ${pos.symbol} → SOL...`, 'sell');
-      executeJupiterSwap(mint, SOL_MINT, lamportsToSell).then((result) => {
-          const actualPnlPct = pnlPct; // already decimal from latest logic
-          const pnlSOL = pos.solSpent * actualPnlPct;
-          setStats((s) => ({
-            trades: s.trades + 1,
-            wins: s.wins + (actualPnlPct > 0 ? 1 : 0),
-            losses: s.losses + (actualPnlPct <= 0 ? 1 : 0),
-            pnl: s.pnl + pnlSOL,
-            bestTrade: (actualPnlPct > 0 && (!s.bestTrade || actualPnlPct > s.bestTrade)) ? actualPnlPct : s.bestTrade
-          }));
-          addLog(`✅ Sold ${pos.symbol} | P&L: ${(actualPnlPct * 100).toFixed(1)}% | tx: ${result.txid.slice(0, 12)}...`, 'sell');
-          
-          setTradeHistory(th => [{
-            id: `trade-${Date.now()}`,
-            mint: mint,
-            buyTime: pos.entryTime,
-            sellTime: Date.now(),
-            buyAmountSol: pos.solSpent,
-            sellAmountSol: Math.max(0, pos.solSpent + pnlSOL),
-            pnlPct: Math.max(-100, actualPnlPct * 100)
-          }, ...th]);
-
-          if (pnlPct < 0) {
-            setBlacklistedMints(prev => Array.from(new Set([...prev, mint])));
-            addLog(`Blacklisted ${pos.symbol} due to negative PnL.`, 'warn');
-          }
-
-          // SimReal Copy Trade Sell logic (Live mode)
-          if (pos.simRealBought && pos.simRealSolSpent) {
-            const storeState = useAppStore.getState();
-            let sellAmtSol = 0;
-            let tradePnlPct = 0;
-            
-            if (simRealRealSwapOutputSol !== undefined) {
-               sellAmtSol = simRealRealSwapOutputSol;
-               tradePnlPct = (sellAmtSol - pos.simRealSolSpent) / pos.simRealSolSpent;
-            } else {
-               const currentGrossSimReal = currentPrice * (pos.simRealAmountTokens || 0);
-               const currentPnLPercent = ((currentGrossSimReal - pos.simRealSolSpent) / pos.simRealSolSpent) * 100;
-               let dynamicSlippage = slippage;
-               if (currentPnLPercent > 0) dynamicSlippage = Math.max(0.3, Math.min(slippage, currentPnLPercent * 0.3));
-               else dynamicSlippage = Math.min(slippage, 1.0);
-               
-               const slippageFeeCalc = currentGrossSimReal * (dynamicSlippage / 100);
-               const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, pos.simRealSolSpent || 0.1);
-               sellAmtSol = Math.max(0, currentGrossSimReal - slippageFeeCalc - opFees);
-               tradePnlPct = (sellAmtSol - pos.simRealSolSpent) / pos.simRealSolSpent;
+    // --- EXECUTE MAIN POSITION SELL ---
+    if (shouldSellMain) {
+      if (privateKey) {
+        // Real on-chain swap sell for main
+        addLog(`🚨 [REAL SWAP SELL] Initiating real on-chain sell for main position of ${pos.symbol} via Jupiter...`, 'warn');
+        try {
+          const lamportsToSellRaw = pos.amountLamports;
+          let lamportsToSell = lamportsToSellRaw;
+          if (!lamportsToSell || lamportsToSell <= 0) {
+            try {
+              const keypair = Keypair.fromSecretKey(bs58.decode(privateKey));
+              const activeWsUrl = (customWsUrl && customWsUrl.trim() !== "") ? customWsUrl.trim() : rpcUrl.replace('https', 'wss').replace('http', 'ws');
+              const conn = new Connection(rpcUrl, { commitment: 'confirmed', wsEndpoint: activeWsUrl });
+              const accounts = await conn.getParsedTokenAccountsByOwner(
+                keypair.publicKey,
+                { mint: new PublicKey(mint) }
+              );
+              if (accounts.value.length > 0) {
+                 lamportsToSell = parseInt(accounts.value[0].account.data.parsed.info.tokenAmount.amount, 10);
+              }
+            } catch (e) {
+              console.warn("Failed to fetch balance for dynamic sell", e);
             }
-            
-            const profitSol = sellAmtSol - pos.simRealSolSpent;
-            
-            storeState.setSimRealBalance(prev => Math.max(0, prev + sellAmtSol));
-            
-            const newSimTrade: SniperTrade = {
-              id: `simreal-sell-${Date.now()}`,
-              type: 'SELL',
-              token: pos.symbol,
-              address: mint,
-              amount: sellAmtSol,
-              timestamp: Date.now(),
-              signature: 'SIMREAL_SL_' + Math.random().toString(36).substring(7),
-              pnl: tradePnlPct * 100,
-              tokenAmount: pos.simRealAmountTokens
-            };
-            storeState.setSimRealTrades(prev => [newSimTrade, ...prev]);
-            addLog(`[SIMREAL SELL] Sold ${pos.symbol} for ${sellAmtSol.toFixed(4)} SOL | Net P&L: ${(tradePnlPct * 100).toFixed(2)}% | Profit: ${profitSol >= 0 ? '+' : ''}${profitSol.toFixed(4)} SOL`, 'sell');
           }
 
-          simRealBoughtPending.current.delete(mint);
+          if (!pos || !lamportsToSell || lamportsToSell <= 0) {
+            addLog(`No original token lamports for ${pos?.symbol || mint}, using fallback or removing position`, 'warn');
+            isMainSold = true;
+          } else {
+            addLog(`Ordering ${pos.symbol} → SOL...`, 'sell');
+            const result = await executeJupiterSwap(mint, SOL_MINT, lamportsToSell);
+            if (result.txid) {
+              const actualPnlPct = pnlPct;
+              const pnlSOL = pos.solSpent * actualPnlPct;
+              setStats((s) => ({
+                ...s,
+                trades: s.trades + 1,
+                wins: s.wins + (actualPnlPct > 0 ? 1 : 0),
+                losses: s.losses + (actualPnlPct <= 0 ? 1 : 0),
+                pnl: s.pnl + pnlSOL,
+                bestTrade: (actualPnlPct > 0 && (!s.bestTrade || actualPnlPct > s.bestTrade)) ? actualPnlPct : s.bestTrade
+              }));
+              addLog(`✅ Sold ${pos.symbol} on-chain | P&L: ${(actualPnlPct * 100).toFixed(1)}% | tx: ${result.txid.slice(0, 12)}...`, 'sell');
+              
+              setTradeHistory(th => [{
+                id: `trade-${Date.now()}`,
+                mint: mint,
+                buyTime: pos.entryTime,
+                sellTime: Date.now(),
+                buyAmountSol: pos.solSpent,
+                sellAmountSol: Math.max(0, pos.solSpent + pnlSOL),
+                pnlPct: Math.max(-100, actualPnlPct * 100)
+              }, ...th]);
 
-          setPositions((currPositions) => {
-            const next = { ...currPositions };
-            delete next[mint];
-            return next;
-          });
-        }).catch(e => {
-          addLog(`Sell error for ${pos.symbol}: ${e.message}`, 'err');
-        }).finally(() => {
-          pendingSellMintsRef.current.delete(mint);
-        });
-    } catch (e: any) {
-      addLog(`Sell error: ${e.message}`, 'err');
+              if (pnlPct < 0) {
+                setBlacklistedMints(prev => Array.from(new Set([...prev, mint])));
+                addLog(`Blacklisted ${pos.symbol} due to negative PnL.`, 'warn');
+              }
+              isMainSold = true;
+            } else {
+              throw new Error("Jupiter swap transaction ID missing.");
+            }
+          }
+        } catch (e: any) {
+          addLog(`Real main sell error: ${e.message}`, 'err');
+        }
+      } else {
+        // Simulated sell for main
+        addLog(`[SIM] Selling main position for ${pos.symbol} quoting real return...`, 'info');
+        let netReceivedSOL = 0;
+        try {
+          if (pos.amountLamports) {
+            const metric = tokenMetricsRef.current[mint];
+            const poolLiquidityUsd = metric?.liquidity || 0;
+            let sellQuote = await getJupiterQuote(mint, SOL_MINT, pos.amountLamports, poolLiquidityUsd, undefined, undefined, pnlPct * 100);
+            
+            if (!sellQuote) {
+              try {
+                const sellUsdcQuote = await getJupiterQuote(mint, USDC_MINT, pos.amountLamports, poolLiquidityUsd, undefined, undefined, pnlPct * 100);
+                if (sellUsdcQuote && Number(sellUsdcQuote.outAmount) > 0) {
+                  const usdcReceived = Number(sellUsdcQuote.outAmount);
+                  const sellSolQuote = await getJupiterQuote(USDC_MINT, SOL_MINT, usdcReceived, 0, undefined, undefined, pnlPct * 100);
+                  if (sellSolQuote) {
+                    sellQuote = sellSolQuote;
+                    addLog(`[SIM USDC ROUTE] Successfully exit routed simulated sell via USDC for ${pos.symbol}!`, 'info');
+                  }
+                }
+              } catch (err) {
+                console.warn(`SIM USDC sell quote failed:`, err);
+              }
+            }
+
+            if (!sellQuote) throw new Error("No exit route found.");
+            
+            const guaranteedSolOutSell = Number(sellQuote.otherAmountThreshold) / 1_000_000_000;
+            const operationalFeesSol = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent);
+            const netReturnSell = guaranteedSolOutSell - operationalFeesSol;
+
+            const isStopLoss = reason.toLowerCase().includes('stop loss') || reason.toLowerCase().includes('recovery failed');
+            const isEmergency = reason.toLowerCase().includes('force') || reason.toLowerCase().includes('emergency') || reason.toLowerCase().includes('manual');
+            const isExitSignal = isStopLoss || isEmergency || reason.toLowerCase().includes('take profit') || reason.toLowerCase().includes('recovery');
+
+            const slippageTol = 0.005;
+            if (!isExitSignal && netReturnSell < (pos.solSpent * (1.0 - slippageTol))) {
+              addLog(`[SIM ABORT] ${pos.symbol} profit margin too thin or dropping (${(netReturnSell - pos.solSpent) > 0 ? '+' : ''}${((netReturnSell - pos.solSpent) / pos.solSpent * 100).toFixed(1)}%). Aborting sell to prevent loss.`, 'warn');
+              pendingSellMintsRef.current.delete(mint);
+              return;
+            }
+
+            netReceivedSOL = Number(sellQuote.outAmount) / 1_000_000_000;
+          } else {
+            throw new Error("No lamports stored");
+          }
+        } catch (e: any) {
+          const grossReceived = currentPrice * (pos.amount || 0);
+          const currentPnLPercent = pnlPct * 100;
+          let dynamicSlippage = slippage;
+          if (currentPnLPercent > 0) {
+            dynamicSlippage = Math.max(0.3, Math.min(slippage, currentPnLPercent * 0.3));
+          } else {
+            dynamicSlippage = Math.min(slippage, 1.0);
+          }
+          
+          const slippageFee = grossReceived * (dynamicSlippage / 100);
+          let fallbackNet = grossReceived - slippageFee;
+          
+          const operationalFeesSol = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent);
+          const netReturnSell = fallbackNet - operationalFeesSol;
+          const slippageTol = 0.005;
+
+          const isStopLoss = reason.toLowerCase().includes('stop loss') || reason.toLowerCase().includes('recovery failed');
+          const isEmergency = reason.toLowerCase().includes('force') || reason.toLowerCase().includes('emergency') || reason.toLowerCase().includes('manual');
+          const isExitSignal = isStopLoss || isEmergency || reason.toLowerCase().includes('take profit') || reason.toLowerCase().includes('recovery');
+
+          if (!isExitSignal && netReturnSell < (pos.solSpent * (1.0 - slippageTol))) {
+            addLog(`[SIM ABORT fallback] ${pos.symbol} fallback profit margin too thin (${((netReturnSell - pos.solSpent) / pos.solSpent * 100).toFixed(1)}%). Aborting sell to prevent loss.`, 'warn');
+            pendingSellMintsRef.current.delete(mint);
+            return;
+          }
+          
+          netReceivedSOL = Math.max(0, fallbackNet);
+        }
+
+        const actualPnlAmount = netReceivedSOL - pos.solSpent;
+        const actualPnlPct = actualPnlAmount / pos.solSpent;
+
+        const realWalletReturn = Math.max(0, netReceivedSOL - getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent));
+        const walletNetPnlPct = (realWalletReturn - pos.solSpent) / pos.solSpent;
+        setSimWalletBalance(prev => prev + realWalletReturn);
+
+        setStats((s) => ({
+          trades: s.trades + 1,
+          wins: s.wins + (walletNetPnlPct > 0 ? 1 : 0),
+          losses: s.losses + (walletNetPnlPct <= 0 ? 1 : 0),
+          pnl: s.pnl + (realWalletReturn - pos.solSpent), 
+          bestTrade: (walletNetPnlPct > 0 && (!s.bestTrade || walletNetPnlPct > s.bestTrade)) ? walletNetPnlPct : s.bestTrade
+        }));
+
+        addLog(`✅ [SIM] Sold ${pos.symbol} | Net P&L: ${(walletNetPnlPct * 100).toFixed(1)}% (Wallet)`, 'sell');
+        
+        setTradeHistory(th => [{
+          id: `sim-sell-${Date.now()}`,
+          mint: mint,
+          buyTime: pos.entryTime,
+          sellTime: Date.now(),
+          buyAmountSol: pos.solSpent,
+          sellAmountSol: realWalletReturn, 
+          pnlPct: walletNetPnlPct * 100
+        }, ...th]);
+
+        if (actualPnlPct < 0) {
+          setBlacklistedMints(prev => Array.from(new Set([...prev, mint])));
+          addLog(`Blacklisted ${pos.symbol} due to negative PnL.`, 'warn');
+        }
+        isMainSold = true;
+      }
     }
+
+    // --- EXECUTE SIMREAL POSITION SELL ---
+    if (shouldSellSimReal) {
+      const storeState = useAppStore.getState();
+      let sellAmtSol = 0;
+      let tradePnlPct = 0;
+      let signature = 'SIMREAL_SL_' + Math.random().toString(36).substring(7);
+
+      if (privateKey && !pos.simRealIsVirtualFallback) {
+        if (simRealRealSwapOutputSol !== undefined) {
+          sellAmtSol = simRealRealSwapOutputSol;
+          tradePnlPct = (sellAmtSol - (pos.simRealSolSpent || 0.1)) / (pos.simRealSolSpent || 0.1);
+          isSimRealSold = true;
+        }
+      }
+
+      // Simulation fallback / simulated path for SimReal
+      if (!isSimRealSold) {
+        if (simRealRealSwapOutputSol !== undefined) {
+          sellAmtSol = simRealRealSwapOutputSol;
+          tradePnlPct = (sellAmtSol - (pos.simRealSolSpent || 0.1)) / (pos.simRealSolSpent || 0.1);
+        } else {
+          const currentGrossSimReal = currentPrice * (pos.simRealAmountTokens || 0);
+          const currentPnLPercent = (((currentGrossSimReal - (pos.simRealSolSpent || 0.1)) / (pos.simRealSolSpent || 0.1)) * 100);
+          let dynamicSlippage = slippage;
+          if (currentPnLPercent > 0) dynamicSlippage = Math.max(0.3, Math.min(slippage, currentPnLPercent * 0.3));
+          else dynamicSlippage = Math.min(slippage, 1.0);
+          
+          const slippageFeeCalc = currentGrossSimReal * (dynamicSlippage / 100);
+          const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, pos.simRealSolSpent || 0.1);
+          sellAmtSol = Math.max(0, currentGrossSimReal - slippageFeeCalc - opFees);
+          tradePnlPct = (sellAmtSol - (pos.simRealSolSpent || 0.1)) / (pos.simRealSolSpent || 0.1);
+        }
+        isSimRealSold = true;
+      }
+
+      const profitSol = sellAmtSol - (pos.simRealSolSpent || 0.1);
+      storeState.setSimRealBalance(prev => Math.max(0, prev + sellAmtSol));
+      
+      const newSimTrade: SniperTrade = {
+        id: `simreal-sell-${Date.now()}`,
+        type: 'SELL',
+        token: pos.symbol,
+        address: mint,
+        amount: sellAmtSol,
+        timestamp: Date.now(),
+        signature: signature,
+        pnl: tradePnlPct * 100,
+        tokenAmount: pos.simRealAmountTokens
+      };
+      storeState.setSimRealTrades(prev => [newSimTrade, ...prev]);
+      addLog(`[SIMREAL SELL] Sold ${pos.symbol} for ${sellAmtSol.toFixed(4)} SOL | Net P&L: ${(tradePnlPct * 100).toFixed(2)}% | Profit: ${profitSol >= 0 ? '+' : ''}${profitSol.toFixed(4)} SOL`, 'sell');
+    }
+
+    simRealBoughtPending.current.delete(mint);
+
+    // 3. Update Positions state based on what was sold
+    setPositions((currPositions) => {
+      const next = { ...currPositions };
+      const currentPos = next[mint];
+      if (!currentPos) return next;
+
+      const hasMainLeft = !isMainSold && !!currentPos.amount && currentPos.amount > 0;
+      const hasSimRealLeft = !isSimRealSold && !!currentPos.simRealBought;
+
+      if (!hasMainLeft && !hasSimRealLeft) {
+        delete next[mint];
+      } else if (isMainSold && hasSimRealLeft) {
+        next[mint] = {
+          ...currentPos,
+          amount: 0,
+          amountLamports: 0,
+          solSpent: 0,
+          buyPrice: 0,
+          entryTime: 0,
+        };
+      } else if (isSimRealSold && hasMainLeft) {
+        next[mint] = {
+          ...currentPos,
+          simRealBought: false,
+          simRealBoughtPriceSol: undefined,
+          simRealAmountTokens: undefined,
+          simRealSolSpent: undefined,
+          simRealBoughtTime: undefined,
+          simRealIsVirtualFallback: undefined,
+        };
+      }
+      return next;
+    });
   };
 
   const positionsRef = useRef(positions);
@@ -4739,32 +4754,35 @@ const checkTokenCriteria = (mint: string): {
               simRealNetPnlPct = (simRealNetSolReturn - pos.simRealSolSpent) / pos.simRealSolSpent;
             }
 
-            // General Position Strategy
-            if (netPnlPct >= currentTakeProfit / 100) {
-              if (pos.simRealBought && pos.simRealSolSpent && simRealNetPnlPct <= 0) {
-                 if (Math.random() < 0.05) {
-                    addLog(`[SIMREAL PROFIT GUARD] Main position hit Take Profit (+${(netPnlPct * 100).toFixed(1)}%), but SimReal is still in loss/thin margin (${(simRealNetPnlPct * 100).toFixed(2)}%). Delaying sell.`, 'info');
-                 }
-              } else {
-                 executeReason = `TAKE PROFIT: ${pos.symbol} +${(netPnlPct * 100).toFixed(1)}% (NET)`;
-                 safeToExecute = true;
-              }
-            } else if (inRecoveryMode && netPnlPct >= 0) {
-              if (pos.simRealBought && pos.simRealSolSpent && simRealNetPnlPct < 0) {
-                 // Wait
-              } else {
-                 executeReason = `RECOVERY BREAKEVEN: ${pos.symbol} returned capital`;
-                 safeToExecute = true;
-              }
-            } else if (inRecoveryMode && netPnlPct <= -0.85) {
-              executeReason = `RECOVERY FAILED: ${pos.symbol} hard stop at -85%`;
-              safeToExecute = true;
-            } else if (netPnlPct <= -currentSLPct / 100) {
-              if (isHoldProtected) {
-                 if (Math.random() < 0.1) addLog(`[HOLD BUFFER]: ${pos.symbol} at Stop Loss limit but under 25s hold time. Waiting.`, 'info');
-              } else {
-                 executeReason = `STOP LOSS: ${pos.symbol} ${(netPnlPct * 100).toFixed(1)}% (NET)`;
-                 safeToExecute = true;
+            // General Position Strategy (only if main position is active)
+            const isMainActive = typeof pos.amount === 'number' && pos.amount > 0;
+            if (isMainActive) {
+              if (netPnlPct >= currentTakeProfit / 100) {
+                if (pos.simRealBought && pos.simRealSolSpent && simRealNetPnlPct <= 0) {
+                   if (Math.random() < 0.05) {
+                      addLog(`[SIMREAL PROFIT HOLD] Main position hit Take Profit (+${(netPnlPct * 100).toFixed(1)}%), but SimReal is still in loss/thin margin (${(simRealNetPnlPct * 100).toFixed(2)}%). Delaying sell.`, 'info');
+                   }
+                } else {
+                   executeReason = `TAKE PROFIT: ${pos.symbol} +${(netPnlPct * 100).toFixed(1)}% (NET)`;
+                   safeToExecute = true;
+                }
+              } else if (inRecoveryMode && netPnlPct >= 0) {
+                if (pos.simRealBought && pos.simRealSolSpent && simRealNetPnlPct < 0) {
+                   // Wait
+                } else {
+                   executeReason = `RECOVERY BREAKEVEN: ${pos.symbol} returned capital`;
+                   safeToExecute = true;
+                }
+              } else if (inRecoveryMode && netPnlPct <= -0.85) {
+                executeReason = `RECOVERY FAILED: ${pos.symbol} hard stop at -85%`;
+                safeToExecute = true;
+              } else if (netPnlPct <= -currentSLPct / 100) {
+                if (isHoldProtected) {
+                   if (Math.random() < 0.1) addLog(`[HOLD BUFFER]: ${pos.symbol} at Stop Loss limit but under 25s hold time. Waiting.`, 'info');
+                } else {
+                   executeReason = `STOP LOSS: ${pos.symbol} ${(netPnlPct * 100).toFixed(1)}% (NET)`;
+                   safeToExecute = true;
+                }
               }
             }
 
@@ -4775,179 +4793,6 @@ const checkTokenCriteria = (mint: string): {
                  safeToExecute = true;
               }
             }
-
-          // SimReal Wallet Copy Buy Check:
-          const currentPnLPct = netPnlPct * 100;
-          if (currentPnLPct >= 1.0 && !pos.simRealBought && !simRealBoughtPending.current.has(mint)) {
-            if (mint.toLowerCase().startsWith('sim') || (pos.symbol && pos.symbol.toLowerCase().startsWith('sim'))) {
-              if (!simRealBoughtPending.current.has(mint)) {
-                simRealBoughtPending.current.add(mint);
-                addLog(`❌ [SIM BLOCK] Skipped SimReal buy of ${pos.symbol || 'Unknown'} (${mint}): Tokens starting with 'sim' are strictly blocked.`, 'warn');
-              }
-              continue;
-            }
-            const storeState = useAppStore.getState();
-            const completedSimRealCount = storeState.simRealTrades.filter(t => t.address === mint && t.type === 'BUY').length;
-            const isSimRealActiveCount = pos.simRealBought ? 1 : 0;
-            const totalSimRealTradedCount = completedSimRealCount + isSimRealActiveCount;
-
-            const activeMaxRebuyTimes = configRef.current.maxRebuyTimes !== undefined ? configRef.current.maxRebuyTimes : maxRebuyTimes;
-            if (totalSimRealTradedCount >= activeMaxRebuyTimes) {
-              simRealBoughtPending.current.add(mint);
-              addLog(`❌ [SIMREAL LIMIT BLOCK] Skipped SimReal buy of ${pos.symbol}: Token has already been traded ${totalSimRealTradedCount} times in SimReal (Limit: max ${activeMaxRebuyTimes}).`, 'warn');
-              continue;
-            }
-
-            simRealBoughtPending.current.add(mint);
-            const buyAmt = storeState.buyAmountSol || 0.1;
-            if (storeState.simRealBalance >= buyAmt) {
-              const quoteRequestTime = Date.now();
-              const isFallbackSim = !!(privateKey && jupiterBalance === 0);
-              if (privateKey && !isFallbackSim) {
-                addLog(`[SIMREAL REAL SWAP] Initiating real buy for ${pos.symbol} via Jupiter...`, 'buy');
-                try {
-                  const amountLamports = Math.floor(buyAmt * 1_000_000_000);
-                  const result = await executeJupiterSwap(SOL_MINT, mint, amountLamports);
-                  if (result.txid) {
-                    const passedOutputAmount = typeof result.outputAmount === 'number' && !isNaN(result.outputAmount) ? result.outputAmount : 0;
-                    let exactTokenAmount = passedOutputAmount;
-                    let boughtPriceSol = buyAmt / (exactTokenAmount || 0.000001);
-                    if (result.quoteOutAmountRaw && passedOutputAmount > 0) {
-                      const decimals = await resolveDecimals(mint, jupRpcUrlToUse, result.quoteOutAmountRaw, exactTokenAmount);
-                      exactTokenAmount = result.quoteOutAmountRaw / Math.pow(10, decimals);
-                      boughtPriceSol = buyAmt / exactTokenAmount;
-                    }
-                    
-                    storeState.setSimRealBalance(prev => Math.max(0, prev - buyAmt));
-                    
-                    const newRealTrade: SniperTrade = {
-                      id: `simreal-buy-${Date.now()}`,
-                      type: 'BUY',
-                      token: pos.symbol,
-                      address: mint,
-                      amount: buyAmt,
-                      timestamp: quoteRequestTime,
-                      signature: result.txid,
-                      tokenAmount: exactTokenAmount
-                    };
-                    storeState.setSimRealTrades(prev => [newRealTrade, ...prev]);
-                    
-                    const exactTokenAmt = exactTokenAmount;
-                    const bPriceSol = boughtPriceSol;
-                    const txId = result.txid;
-                    const rawAmtLamp = result.quoteOutAmountRaw || Math.floor(exactTokenAmount * 1_000_000);
-
-                    setPositions(prev => {
-                      const existing = prev[mint] || {
-                        symbol: pos.symbol || 'Unknown',
-                        buyPrice: bPriceSol,
-                        currentPrice: currentPrice,
-                        solSpent: buyAmt,
-                        amount: exactTokenAmt,
-                        entryTime: quoteRequestTime,
-                        txid: txId
-                      };
-                      const updated = {
-                        ...existing,
-                        simRealBought: true,
-                        simRealBoughtPriceSol: bPriceSol,
-                        simRealAmountTokens: exactTokenAmt,
-                        simRealSolSpent: buyAmt,
-                        simRealBoughtTime: quoteRequestTime,
-                        amountLamports: rawAmtLamp,
-                        txid: txId
-                      };
-                      positionsRef.current = {
-                        ...prev,
-                        [mint]: updated
-                      };
-                      return positionsRef.current;
-                    });
-                    
-                    addLog(`✅ [SIMREAL REAL SWAP] Bought ${pos.symbol} @ ${boughtPriceSol.toFixed(8)} SOL | tx: ${result.txid.slice(0, 12)}...`, 'buy');
-                  } else {
-                    throw new Error("Jupiter swap transaction ID missing.");
-                  }
-                } catch (err: any) {
-                  addLog(`⚠️ [SIMREAL REAL SWAP FAILED] Real entry failed for ${pos.symbol}: ${err.message}. Deduction of ${buyAmt.toFixed(4)} SOL retrieved. Wallet balance matching original total operation.`, 'warn');
-                  simRealBoughtPending.current.delete(mint);
-                }
-              } else {
-                // Request fresh quote price!
-                const lamportsForQuote = Math.floor(buyAmt * 1_000_000_000);
-                let boughtPriceSol = currentPrice || 0.000001;
-                try {
-                  const quote = await getJupiterQuote(SOL_MINT, mint, lamportsForQuote, 0).catch(() => null);
-                  if (quote && Number(quote.outAmount) > 0) {
-                    const exactTokenAmount = Number(quote.outAmount);
-                    const exactMathFallback = buyAmt / (currentPrice || 0.000001);
-                    const decimals = await resolveDecimals(mint, jupRpcUrlToUse, exactTokenAmount, exactMathFallback);
-                    const normalizedOut = exactTokenAmount / Math.pow(10, decimals);
-                    if (normalizedOut > 0) {
-                      boughtPriceSol = buyAmt / normalizedOut;
-                      addLog(`[SIMREAL QUOTE REFRESH] Got fresh buy quote price for ${pos.symbol}: ${boughtPriceSol.toFixed(8)} SOL`, 'info');
-                    }
-                  } else {
-                    addLog(`[SIMREAL QUOTE WARNING] Could not retrieve fresh quote for ${pos.symbol}. Using price: ${boughtPriceSol.toFixed(8)} SOL`, 'warn');
-                  }
-                } catch (e: any) {
-                  addLog(`[SIMREAL QUOTE ERROR] Error requesting quote for ${pos.symbol}: ${e.message}`, 'warn');
-                }
-                const tokensQty = buyAmt / boughtPriceSol;
-                
-                storeState.setSimRealBalance(prev => Math.max(0, prev - buyAmt));
-                
-                const newSimTrade: SniperTrade = {
-                  id: `simreal-buy-${Date.now()}`,
-                  type: 'BUY',
-                  token: pos.symbol,
-                  address: mint,
-                  amount: buyAmt,
-                  timestamp: quoteRequestTime,
-                  signature: 'SIMREAL_BN_' + Math.random().toString(36).substring(7),
-                  tokenAmount: tokensQty
-                };
-                storeState.setSimRealTrades(prev => [newSimTrade, ...prev]);
-                
-                const bPriceSol = boughtPriceSol;
-                const tQty = tokensQty;
-
-                setPositions(prev => {
-                  const existing = prev[mint] || {
-                    symbol: pos.symbol || 'Unknown',
-                    buyPrice: bPriceSol,
-                    currentPrice: currentPrice,
-                    solSpent: buyAmt,
-                    amount: tQty,
-                    entryTime: quoteRequestTime,
-                    txid: 'simulation-copy'
-                  };
-                  const updated = {
-                    ...existing,
-                    simRealBought: true,
-                    simRealBoughtPriceSol: bPriceSol,
-                    simRealAmountTokens: tQty,
-                    simRealSolSpent: buyAmt,
-                    simRealBoughtTime: quoteRequestTime,
-                    simRealIsVirtualFallback: isFallbackSim ? true : undefined
-                  };
-                  positionsRef.current = {
-                    ...prev,
-                    [mint]: updated
-                  };
-                  return positionsRef.current;
-                });
-                
-                if (isFallbackSim) {
-                  addLog(`⚠️ [SIMREAL FALLBACK BUY] Bought ${pos.symbol} for ${buyAmt.toFixed(4)} SOL via simulation (Fallback active: On-chain balance is 0.0000 SOL)`, 'info');
-                } else {
-                  addLog(`[SIMREAL BUY] Bought ${pos.symbol} for ${buyAmt.toFixed(4)} SOL (Active position in profit >= 1%)`, 'info');
-                }
-              }
-            } else {
-              addLog(`[SIMREAL BUY SKIP] Insufficient simreal wallet balance: ${storeState.simRealBalance.toFixed(4)} SOL`, 'warn');
-            }
-          }
 
           if (safeToExecute) {
               pendingSellMintsRef.current.add(mint);
@@ -5005,31 +4850,35 @@ const checkTokenCriteria = (mint: string): {
               simRealNetPnlPct = (simRealNetSolReturn - pos.simRealSolSpent) / pos.simRealSolSpent;
             }
 
-            if (inRecoveryMode && pnlPct >= 0) {
-              if (pos.simRealBought && pos.simRealSolSpent && simRealNetPnlPct < 0) {
-                // Wait
-              } else {
-                executeReason = `RECOVERY BREAKEVEN: ${pos.symbol} returned capital`;
+            // General Position Strategy (only if main position is active)
+            const isMainActive = typeof pos.amount === 'number' && pos.amount > 0;
+            if (isMainActive) {
+              if (inRecoveryMode && pnlPct >= 0) {
+                if (pos.simRealBought && pos.simRealSolSpent && simRealNetPnlPct < 0) {
+                  // Wait
+                } else {
+                  executeReason = `RECOVERY BREAKEVEN: ${pos.symbol} returned capital`;
+                  safeToExecute = true;
+                }
+              } else if (inRecoveryMode && pnlPct <= -0.85) {
+                executeReason = `RECOVERY FAILED: ${pos.symbol} hard stop at -85%`;
                 safeToExecute = true;
-              }
-            } else if (inRecoveryMode && pnlPct <= -0.85) {
-              executeReason = `RECOVERY FAILED: ${pos.symbol} hard stop at -85%`;
-              safeToExecute = true;
-            } else if (pnlPct >= currentTakeProfit / 100) {
-              if (pos.simRealBought && pos.simRealSolSpent && simRealNetPnlPct <= 0) {
-                 if (Math.random() < 0.05) {
-                    addLog(`[SIMREAL PROFIT GUARD fallback] Main position hit Take Profit (+${(pnlPct * 100).toFixed(1)}%), but SimReal is still in loss/thin margin (${(simRealNetPnlPct * 100).toFixed(2)}%). Delaying sell.`, 'info');
-                 }
-              } else {
-                 executeReason = `TAKE PROFIT: ${pos.symbol} +${(pnlPct * 100).toFixed(1)}%`;
-                 safeToExecute = true;
-              }
-            } else if (pnlPct <= -currentSLPct / 100) {
-              if (isHoldProtected) {
-                if (Math.random() < 0.1) addLog(`[HOLD BUFFER]: ${pos.symbol} hitting Stop Loss. Waiting for 25s limit.`, 'info');
-              } else {
-                executeReason = `STOP LOSS: ${pos.symbol} ${(pnlPct * 100).toFixed(1)}%`;
-                safeToExecute = true;
+              } else if (pnlPct >= currentTakeProfit / 100) {
+                if (pos.simRealBought && pos.simRealSolSpent && simRealNetPnlPct <= 0) {
+                   if (Math.random() < 0.05) {
+                      addLog(`[SIMREAL PROFIT GUARD fallback] Main position hit Take Profit (+${(pnlPct * 100).toFixed(1)}%), but SimReal is still in loss/thin margin (${(simRealNetPnlPct * 100).toFixed(2)}%). Delaying sell.`, 'info');
+                   }
+                } else {
+                   executeReason = `TAKE PROFIT: ${pos.symbol} +${(pnlPct * 100).toFixed(1)}%`;
+                   safeToExecute = true;
+                }
+              } else if (pnlPct <= -currentSLPct / 100) {
+                if (isHoldProtected) {
+                  if (Math.random() < 0.1) addLog(`[HOLD BUFFER]: ${pos.symbol} hitting Stop Loss. Waiting for 25s limit.`, 'info');
+                } else {
+                  executeReason = `STOP LOSS: ${pos.symbol} ${(pnlPct * 100).toFixed(1)}%`;
+                  safeToExecute = true;
+                }
               }
             }
 
@@ -5038,179 +4887,6 @@ const checkTokenCriteria = (mint: string): {
               if (simRealNetPnlPct > 0) {
                  executeReason = `SIMREAL SECURE PROFIT: ${pos.symbol} +${(simRealNetPnlPct * 100).toFixed(2)}% (NET)`;
                  safeToExecute = true;
-              }
-            }
-
-          // SimReal Wallet Copy Buy Check:
-            const currentLivePnLPct = pnlPct * 100;
-            if (currentLivePnLPct >= 1.0 && !pos.simRealBought && !simRealBoughtPending.current.has(mint)) {
-              if (privateKey && (mint.toLowerCase().startsWith('sim') || (pos.symbol && pos.symbol.toLowerCase().startsWith('sim')))) {
-                if (!simRealBoughtPending.current.has(mint)) {
-                  simRealBoughtPending.current.add(mint);
-                  addLog(`❌ [SIM BLOCK] Skipped SimReal buy of ${pos.symbol || 'Unknown'} (${mint}): Tokens starting with 'sim' are strictly blocked.`, 'warn');
-                }
-                continue;
-              }
-              const storeState = useAppStore.getState();
-              const completedSimRealCount = storeState.simRealTrades.filter(t => t.address === mint && t.type === 'BUY').length;
-              const isSimRealActiveCount = pos.simRealBought ? 1 : 0;
-              const totalSimRealTradedCount = completedSimRealCount + isSimRealActiveCount;
-
-              const activeMaxRebuyTimes = configRef.current.maxRebuyTimes !== undefined ? configRef.current.maxRebuyTimes : maxRebuyTimes;
-              if (totalSimRealTradedCount >= activeMaxRebuyTimes) {
-                simRealBoughtPending.current.add(mint);
-                addLog(`❌ [SIMREAL LIMIT BLOCK] Skipped SimReal buy of ${pos.symbol}: Token has already been traded ${totalSimRealTradedCount} times in SimReal (Limit: max ${activeMaxRebuyTimes}).`, 'warn');
-                continue;
-              }
-
-              simRealBoughtPending.current.add(mint);
-              const buyAmt = storeState.buyAmountSol || 0.1;
-              if (storeState.simRealBalance >= buyAmt) {
-                const quoteRequestTime = Date.now();
-                const isFallbackSim = !!(privateKey && jupiterBalance === 0);
-                if (privateKey && !isFallbackSim) {
-                  addLog(`[SIMREAL REAL SWAP] Initiating real buy for ${pos.symbol} via Jupiter...`, 'buy');
-                  try {
-                    const amountLamports = Math.floor(buyAmt * 1_000_000_000);
-                    const result = await executeJupiterSwap(SOL_MINT, mint, amountLamports);
-                    if (result.txid) {
-                      const passedOutputAmount = typeof result.outputAmount === 'number' && !isNaN(result.outputAmount) ? result.outputAmount : 0;
-                      let exactTokenAmount = passedOutputAmount;
-                      let boughtPriceSol = buyAmt / (exactTokenAmount || 0.000001);
-                      if (result.quoteOutAmountRaw && passedOutputAmount > 0) {
-                        const decimals = await resolveDecimals(mint, jupRpcUrlToUse, result.quoteOutAmountRaw, exactTokenAmount);
-                        exactTokenAmount = result.quoteOutAmountRaw / Math.pow(10, decimals);
-                        boughtPriceSol = buyAmt / exactTokenAmount;
-                      }
-                      
-                      storeState.setSimRealBalance(prev => Math.max(0, prev - buyAmt));
-                      
-                      const newRealTrade: SniperTrade = {
-                        id: `simreal-buy-${Date.now()}`,
-                        type: 'BUY',
-                        token: pos.symbol,
-                        address: mint,
-                        amount: buyAmt,
-                        timestamp: quoteRequestTime,
-                        signature: result.txid,
-                        tokenAmount: exactTokenAmount
-                      };
-                      storeState.setSimRealTrades(prev => [newRealTrade, ...prev]);
-                      
-                      const exactTokenAmt = exactTokenAmount;
-                      const bPriceSol = boughtPriceSol;
-                      const txId = result.txid;
-                      const rawAmtLamp = result.quoteOutAmountRaw || Math.floor(exactTokenAmount * 1_000_000);
-
-                      setPositions(prev => {
-                        const existing = prev[mint] || {
-                          symbol: pos.symbol || 'Unknown',
-                          buyPrice: bPriceSol,
-                          currentPrice: currentPrice,
-                          solSpent: buyAmt,
-                          amount: exactTokenAmt,
-                          entryTime: quoteRequestTime,
-                          txid: txId
-                        };
-                        const updated = {
-                          ...existing,
-                          simRealBought: true,
-                          simRealBoughtPriceSol: bPriceSol,
-                          simRealAmountTokens: exactTokenAmt,
-                          simRealSolSpent: buyAmt,
-                          simRealBoughtTime: quoteRequestTime,
-                          amountLamports: rawAmtLamp,
-                          txid: txId
-                        };
-                        positionsRef.current = {
-                          ...prev,
-                          [mint]: updated
-                        };
-                        return positionsRef.current;
-                      });
-                      
-                      addLog(`✅ [SIMREAL REAL SWAP] Bought ${pos.symbol} @ ${boughtPriceSol.toFixed(8)} SOL | tx: ${result.txid.slice(0, 12)}...`, 'buy');
-                    } else {
-                      throw new Error("Jupiter swap transaction ID missing.");
-                    }
-                  } catch (err: any) {
-                    addLog(`⚠️ [SIMREAL REAL SWAP FAILED] Real entry failed for ${pos.symbol}: ${err.message}. Deduction of ${buyAmt.toFixed(4)} SOL retrieved. Wallet balance matching original total operation.`, 'warn');
-                    simRealBoughtPending.current.delete(mint);
-                  }
-                } else {
-                  // Request fresh quote price!
-                  const lamportsForQuote = Math.floor(buyAmt * 1_000_000_000);
-                  let boughtPriceSol = currentPrice || 0.000001;
-                  try {
-                    const quote = await getJupiterQuote(SOL_MINT, mint, lamportsForQuote, 0).catch(() => null);
-                    if (quote && Number(quote.outAmount) > 0) {
-                      const exactTokenAmount = Number(quote.outAmount);
-                      const exactMathFallback = buyAmt / (currentPrice || 0.000001);
-                      const decimals = await resolveDecimals(mint, jupRpcUrlToUse, exactTokenAmount, exactMathFallback);
-                      const normalizedOut = exactTokenAmount / Math.pow(10, decimals);
-                      if (normalizedOut > 0) {
-                        boughtPriceSol = buyAmt / normalizedOut;
-                        addLog(`[SIMREAL QUOTE REFRESH] Got fresh buy quote price for ${pos.symbol}: ${boughtPriceSol.toFixed(8)} SOL`, 'info');
-                      }
-                    } else {
-                      addLog(`[SIMREAL QUOTE WARNING] Could not retrieve fresh quote for ${pos.symbol}. Using price: ${boughtPriceSol.toFixed(8)} SOL`, 'warn');
-                    }
-                  } catch (e: any) {
-                    addLog(`[SIMREAL QUOTE ERROR] Error requesting quote for ${pos.symbol}: ${e.message}`, 'warn');
-                  }
-                  const tokensQty = buyAmt / boughtPriceSol;
-                  
-                  storeState.setSimRealBalance(prev => Math.max(0, prev - buyAmt));
-                  
-                  const newSimTrade: SniperTrade = {
-                    id: `simreal-buy-${Date.now()}`,
-                    type: 'BUY',
-                    token: pos.symbol,
-                    address: mint,
-                    amount: buyAmt,
-                    timestamp: quoteRequestTime,
-                    signature: 'SIMREAL_BN_' + Math.random().toString(36).substring(7),
-                    tokenAmount: tokensQty
-                  };
-                  storeState.setSimRealTrades(prev => [newSimTrade, ...prev]);
-                  
-                  const bPriceSol = boughtPriceSol;
-                  const tQty = tokensQty;
-
-                  setPositions(prev => {
-                    const existing = prev[mint] || {
-                      symbol: pos.symbol || 'Unknown',
-                      buyPrice: bPriceSol,
-                      currentPrice: currentPrice,
-                      solSpent: buyAmt,
-                      amount: tQty,
-                      entryTime: quoteRequestTime,
-                      txid: 'simulation-copy'
-                    };
-                    const updated = {
-                      ...existing,
-                      simRealBought: true,
-                      simRealBoughtPriceSol: bPriceSol,
-                      simRealAmountTokens: tQty,
-                      simRealSolSpent: buyAmt,
-                      simRealBoughtTime: quoteRequestTime,
-                      simRealIsVirtualFallback: isFallbackSim ? true : undefined
-                    };
-                    positionsRef.current = {
-                      ...prev,
-                      [mint]: updated
-                    };
-                    return positionsRef.current;
-                  });
-                  
-                  if (isFallbackSim) {
-                    addLog(`⚠️ [SIMREAL FALLBACK BUY] Bought ${pos.symbol} for ${buyAmt.toFixed(4)} SOL via simulation (Fallback active: On-chain balance is 0.0000 SOL)`, 'info');
-                  } else {
-                    addLog(`[SIMREAL BUY] Bought ${pos.symbol} for ${buyAmt.toFixed(4)} SOL (Active position in profit >= 1%)`, 'info');
-                  }
-                }
-              } else {
-                addLog(`[SIMREAL BUY SKIP] Insufficient simreal wallet balance: ${storeState.simRealBalance.toFixed(4)} SOL`, 'warn');
               }
             }
 
