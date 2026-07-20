@@ -4795,18 +4795,7 @@ const checkTokenCriteria = (mint: string): {
               }
             }
 
-            // Independent SimReal Auto-Sell Check (ensure to sell and transfer to wallet in +pnl after detecting slippage)
-            if (pos.simRealBought && pos.simRealSolSpent && !safeToExecute) {
-              const tpLimit = (configRef.current.simRealTakeProfit !== undefined ? configRef.current.simRealTakeProfit : 10) / 100;
-              const slLimit = (configRef.current.simRealStopLoss !== undefined ? configRef.current.simRealStopLoss : -10) / 100;
-              if (simRealNetPnlPct >= tpLimit) {
-                 executeReason = `SIMREAL SECURE PROFIT: ${pos.symbol} +${(simRealNetPnlPct * 100).toFixed(2)}% (NET)`;
-                 safeToExecute = true;
-              } else if (simRealNetPnlPct <= slLimit) {
-                 executeReason = `SIMREAL STOP LOSS: ${pos.symbol} ${(simRealNetPnlPct * 100).toFixed(2)}% (NET)`;
-                 safeToExecute = true;
-              }
-            }
+            // Independent SimReal auto-sell logic moved to SimRealPage
 
           if (safeToExecute) {
               pendingSellMintsRef.current.add(mint);
@@ -4896,18 +4885,7 @@ const checkTokenCriteria = (mint: string): {
               }
             }
 
-            // Independent SimReal Auto-Sell Check (ensure to sell and transfer to wallet in +pnl after detecting slippage)
-            if (pos.simRealBought && pos.simRealSolSpent && !safeToExecute) {
-              const tpLimit = (configRef.current.simRealTakeProfit !== undefined ? configRef.current.simRealTakeProfit : 10) / 100;
-              const slLimit = (configRef.current.simRealStopLoss !== undefined ? configRef.current.simRealStopLoss : -10) / 100;
-              if (simRealNetPnlPct >= tpLimit) {
-                 executeReason = `SIMREAL SECURE PROFIT: ${pos.symbol} +${(simRealNetPnlPct * 100).toFixed(2)}% (NET)`;
-                 safeToExecute = true;
-              } else if (simRealNetPnlPct <= slLimit) {
-                 executeReason = `SIMREAL STOP LOSS: ${pos.symbol} ${(simRealNetPnlPct * 100).toFixed(2)}% (NET)`;
-                 safeToExecute = true;
-              }
-            }
+            // Independent SimReal auto-sell logic moved to SimRealPage
 
             if (safeToExecute) {
               pendingSellMintsRef.current.add(mint);

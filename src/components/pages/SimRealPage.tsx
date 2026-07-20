@@ -523,6 +523,57 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
     pruneOld,
   ]);
 
+  // ── BACKGROUND WORKER: SimReal Active Positions TP/SL Monitor ──
+  useEffect(() => {
+    let active = true;
+
+    const monitorPositions = async () => {
+      if (!active) return;
+      
+      const tpLimit = (simRealTakeProfit !== undefined ? simRealTakeProfit : 10) / 100;
+      const slLimit = (simRealStopLoss !== undefined ? simRealStopLoss : -10) / 100;
+
+      for (const pos of activeSimrealPositions) {
+         if (!pos || !pos.simRealBought) continue;
+         
+         const mint = Object.keys(positions).find(k => positions[k] === pos);
+         if (!mint) continue;
+
+         const currentPrice = pos.currentPrice || pos.buyPrice || 0;
+         const tokensQty = pos.simRealAmountTokens || 0;
+         const spentSol = pos.simRealSolSpent || 0.1;
+
+         const currentGrossSimReal = currentPrice * tokensQty;
+         let netSimRealIfSold = currentGrossSimReal;
+
+         if (!privateKey) {
+            const slippageFee = currentGrossSimReal * (slippage / 100);
+            const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, spentSol);
+            netSimRealIfSold = Math.max(0, currentGrossSimReal - slippageFee - opFees);
+         }
+
+         const simRealNetPnlPct = (netSimRealIfSold - spentSol) / spentSol;
+
+         if (simRealNetPnlPct >= tpLimit || simRealNetPnlPct <= slLimit) {
+            console.log(`[SimReal TP/SL] Triggered sell for ${pos.symbol} at ${(simRealNetPnlPct * 100).toFixed(2)}% PnL`);
+            // Only process one auto-sell per tick to avoid overwhelming RPC
+            try {
+               await executeSimRealSell(mint);
+            } catch (e) {
+               console.error("Failed to auto-sell SimReal position:", e);
+            }
+            break; 
+         }
+      }
+    };
+
+    const interval = setInterval(monitorPositions, 3000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [positions, simRealTakeProfit, simRealStopLoss, privateKey, slippage, executeSimRealSell]);
+
   const completedTrades = getCompletedSimRealTrades();
 
   const totalBuySol = completedTrades.reduce((sum, t) => sum + t.buyAmountSol, 0);
