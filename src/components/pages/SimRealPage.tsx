@@ -442,9 +442,9 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
         // 3. Execution Gates & Fresh Quote Check
         const storeState = useAppStore.getState();
 
-        // Check if token address starts with 'sim' (blocked)
-        if (tokenAddress.toLowerCase().startsWith('sim') || symbol.toLowerCase().startsWith('sim')) {
-          markRejected(signal.id, 'Tokens starting with sim are strictly blocked.');
+        // Check if token address starts with 'sim' (blocked for real-money, allowed in simulation)
+        if (privateKey && (tokenAddress.toLowerCase().startsWith('sim') || symbol.toLowerCase().startsWith('sim'))) {
+          markRejected(signal.id, 'Tokens starting with sim are strictly blocked for real-money trading.');
           processingLock.current = false;
           return;
         }

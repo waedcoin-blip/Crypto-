@@ -2466,7 +2466,7 @@ export const PnLPage = ({
         const currentPnLPct = pnlFraction * 100;
 
         if (currentPnLPct >= 1.0 && !pos.simRealBought && !simRealBoughtPending.current.has(mint)) {
-          if (mint.toLowerCase().startsWith('sim') || (pos.symbol && pos.symbol.toLowerCase().startsWith('sim'))) {
+          if (privateKey && (mint.toLowerCase().startsWith('sim') || (pos.symbol && pos.symbol.toLowerCase().startsWith('sim')))) {
             if (!simRealBoughtPending.current.has(mint)) {
               simRealBoughtPending.current.add(mint);
               addLog(`❌ [SIM BLOCK] Skipped SimReal buy of ${pos.symbol || 'Unknown'} (${mint}): Tokens starting with 'sim' are strictly blocked.`, 'warn');
@@ -3686,8 +3686,8 @@ const checkTokenCriteria = (mint: string): {
   };
   
   const executeBuy = async (mint: string, symbol: string, price: any, solAmount: number, isManualDirectBuy = false) => {
-    // Block any token starting with 'sim'
-    if (mint.toLowerCase().startsWith('sim') || (symbol && symbol.toLowerCase().startsWith('sim'))) {
+    // Block any token starting with 'sim' if privateKey is active
+    if (privateKey && (mint.toLowerCase().startsWith('sim') || (symbol && symbol.toLowerCase().startsWith('sim')))) {
       addLog(`❌ [SIM BLOCK] Trading for tokens starting with 'sim' (symbol or address) is strictly blocked: ${symbol} (${mint})`, 'warn');
       return;
     }
@@ -4009,7 +4009,7 @@ const checkTokenCriteria = (mint: string): {
     let pos = positionsRef.current[mint];
     if (!pos) return;
 
-    if (mint.toLowerCase().startsWith('sim') || (pos.symbol && pos.symbol.toLowerCase().startsWith('sim'))) {
+    if (privateKey && (mint.toLowerCase().startsWith('sim') || (pos.symbol && pos.symbol.toLowerCase().startsWith('sim')))) {
       addLog(`❌ [SIM BLOCK] Trading for tokens starting with 'sim' is strictly blocked: ${pos.symbol} (${mint})`, 'warn');
       return;
     }
@@ -4715,57 +4715,66 @@ const checkTokenCriteria = (mint: string): {
               addLog(`RECOVERY MODE: ${pos.symbol} dropped to -50%. Will auto-sell at breakeven.`, 'warn');
             }
 
-          // General Position Strategy
-          if (netPnlPct >= currentTakeProfit / 100) {
-            executeReason = `TAKE PROFIT: ${pos.symbol} +${(netPnlPct * 100).toFixed(1)}% (NET)`;
-            safeToExecute = true;
-          } else if (inRecoveryMode && netPnlPct >= 0) {
-            executeReason = `RECOVERY BREAKEVEN: ${pos.symbol} returned capital`;
-            safeToExecute = true;
-          } else if (inRecoveryMode && netPnlPct <= -0.85) {
-            executeReason = `RECOVERY FAILED: ${pos.symbol} hard stop at -85%`;
-            safeToExecute = true;
-          } else if (netPnlPct <= -currentSLPct / 100) {
-            if (isHoldProtected) {
-               if (Math.random() < 0.1) addLog(`[HOLD BUFFER]: ${pos.symbol} at Stop Loss limit but under 25s hold time. Waiting.`, 'info');
-            } else {
-               executeReason = `STOP LOSS: ${pos.symbol} ${(netPnlPct * 100).toFixed(1)}% (NET)`;
-               safeToExecute = true;
-            }
-          }
-
-
-
-
-          // Independent SimReal Auto-Sell Check (ensure to sell and transfer to wallet in +pnl after detecting slippage)
-          if (pos.simRealBought && pos.simRealSolSpent && !safeToExecute) {
-            const simRealGross = currentPrice * (pos.simRealAmountTokens || 0);
-            let simRealNetSolReturn = simRealGross;
             let simRealNetPnlPct = 0;
-            
-            if (typeof quote !== 'undefined' && quote && pos.amountLamports && pos.amount) {
-               const guaranteedMinLamports = BigInt(quote.otherAmountThreshold);
-               const guaranteedSolOut = Number(guaranteedMinLamports) / 1_000_000_000.0;
-               const ratio = (pos.simRealAmountTokens || 0) / pos.amount;
-               const scaledSolOut = guaranteedSolOut * ratio;
-               const operationalFeesSol = getDynamicOperationalFeeSol(pos.recoveryMode, pos.simRealSolSpent); 
-               simRealNetSolReturn = Math.max(0, scaledSolOut - operationalFeesSol);
-            } else {
-               const simRealGrossPnLPercent = ((simRealGross - pos.simRealSolSpent) / pos.simRealSolSpent) * 100;
-               let dynamicSlippage = slippage;
-               if (simRealGrossPnLPercent > 0) dynamicSlippage = Math.max(0.3, Math.min(slippage, simRealGrossPnLPercent * 0.3));
-               else dynamicSlippage = Math.min(slippage, 1.0);
-               const slippageFeeCalc = simRealGross * (dynamicSlippage / 100);
-               const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, pos.simRealSolSpent || 0.1);
-               simRealNetSolReturn = Math.max(0, simRealGross - slippageFeeCalc - opFees);
+            if (pos.simRealBought && pos.simRealSolSpent) {
+              const simRealGross = currentPrice * (pos.simRealAmountTokens || 0);
+              let simRealNetSolReturn = simRealGross;
+              
+              if (typeof quote !== 'undefined' && quote && pos.amountLamports && pos.amount) {
+                 const guaranteedMinLamports = BigInt(quote.otherAmountThreshold);
+                 const guaranteedSolOut = Number(guaranteedMinLamports) / 1_000_000_000.0;
+                 const ratio = (pos.simRealAmountTokens || 0) / pos.amount;
+                 const scaledSolOut = guaranteedSolOut * ratio;
+                 const operationalFeesSol = getDynamicOperationalFeeSol(pos.recoveryMode, pos.simRealSolSpent); 
+                 simRealNetSolReturn = Math.max(0, scaledSolOut - operationalFeesSol);
+              } else {
+                 const simRealGrossPnLPercent = ((simRealGross - pos.simRealSolSpent) / pos.simRealSolSpent) * 100;
+                 let dynamicSlippage = slippage;
+                 if (simRealGrossPnLPercent > 0) dynamicSlippage = Math.max(0.3, Math.min(slippage, simRealGrossPnLPercent * 0.3));
+                 else dynamicSlippage = Math.min(slippage, 1.0);
+                 const slippageFeeCalc = simRealGross * (dynamicSlippage / 100);
+                 const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, pos.simRealSolSpent || 0.1);
+                 simRealNetSolReturn = Math.max(0, simRealGross - slippageFeeCalc - opFees);
+              }
+              simRealNetPnlPct = (simRealNetSolReturn - pos.simRealSolSpent) / pos.simRealSolSpent;
             }
-            simRealNetPnlPct = (simRealNetSolReturn - pos.simRealSolSpent) / pos.simRealSolSpent;
-            
-            if (simRealNetPnlPct > 0) {
-               executeReason = `SIMREAL SECURE PROFIT: ${pos.symbol} +${(simRealNetPnlPct * 100).toFixed(2)}% (NET)`;
-               safeToExecute = true;
+
+            // General Position Strategy
+            if (netPnlPct >= currentTakeProfit / 100) {
+              if (pos.simRealBought && pos.simRealSolSpent && simRealNetPnlPct <= 0) {
+                 if (Math.random() < 0.05) {
+                    addLog(`[SIMREAL PROFIT GUARD] Main position hit Take Profit (+${(netPnlPct * 100).toFixed(1)}%), but SimReal is still in loss/thin margin (${(simRealNetPnlPct * 100).toFixed(2)}%). Delaying sell.`, 'info');
+                 }
+              } else {
+                 executeReason = `TAKE PROFIT: ${pos.symbol} +${(netPnlPct * 100).toFixed(1)}% (NET)`;
+                 safeToExecute = true;
+              }
+            } else if (inRecoveryMode && netPnlPct >= 0) {
+              if (pos.simRealBought && pos.simRealSolSpent && simRealNetPnlPct < 0) {
+                 // Wait
+              } else {
+                 executeReason = `RECOVERY BREAKEVEN: ${pos.symbol} returned capital`;
+                 safeToExecute = true;
+              }
+            } else if (inRecoveryMode && netPnlPct <= -0.85) {
+              executeReason = `RECOVERY FAILED: ${pos.symbol} hard stop at -85%`;
+              safeToExecute = true;
+            } else if (netPnlPct <= -currentSLPct / 100) {
+              if (isHoldProtected) {
+                 if (Math.random() < 0.1) addLog(`[HOLD BUFFER]: ${pos.symbol} at Stop Loss limit but under 25s hold time. Waiting.`, 'info');
+              } else {
+                 executeReason = `STOP LOSS: ${pos.symbol} ${(netPnlPct * 100).toFixed(1)}% (NET)`;
+                 safeToExecute = true;
+              }
             }
-          }
+
+            // Independent SimReal Auto-Sell Check (ensure to sell and transfer to wallet in +pnl after detecting slippage)
+            if (pos.simRealBought && pos.simRealSolSpent && !safeToExecute) {
+              if (simRealNetPnlPct > 0) {
+                 executeReason = `SIMREAL SECURE PROFIT: ${pos.symbol} +${(simRealNetPnlPct * 100).toFixed(2)}% (NET)`;
+                 safeToExecute = true;
+              }
+            }
 
           // SimReal Wallet Copy Buy Check:
           const currentPnLPct = netPnlPct * 100;
@@ -4961,7 +4970,7 @@ const checkTokenCriteria = (mint: string): {
             }
           } else {
             // Live/Fallback Logic
-          const quote: any = undefined;
+            const quote: any = undefined;
             const currentGrossSol = currentPrice * (pos.amount || 0);
             let netSolIfSold = currentGrossSol;
             pnlPct = (netSolIfSold - (pos.solSpent || 0)) / (pos.solSpent || 1);
@@ -4972,60 +4981,70 @@ const checkTokenCriteria = (mint: string): {
                 addLog(`RECOVERY MODE: ${pos.symbol} dropped to -50%. Will auto-sell at breakeven.`, 'warn');
             }
 
-             if (inRecoveryMode && pnlPct >= 0) {
-               executeReason = `RECOVERY BREAKEVEN: ${pos.symbol} returned capital`;
-               safeToExecute = true;
-             } else if (inRecoveryMode && pnlPct <= -0.85) {
-               executeReason = `RECOVERY FAILED: ${pos.symbol} hard stop at -85%`;
-               safeToExecute = true;
-             } else if (pnlPct >= currentTakeProfit / 100) {
-               executeReason = `TAKE PROFIT: ${pos.symbol} +${(pnlPct * 100).toFixed(1)}%`;
-               safeToExecute = true;
-             } else if (pnlPct <= -currentSLPct / 100) {
-               if (isHoldProtected) {
-                 if (Math.random() < 0.1) addLog(`[HOLD BUFFER]: ${pos.symbol} hitting Stop Loss. Waiting for 25s limit.`, 'info');
-               } else {
-                 executeReason = `STOP LOSS: ${pos.symbol} ${(pnlPct * 100).toFixed(1)}%`;
-                 safeToExecute = true;
-               }
-             }
-
-  
-
-          // Independent SimReal Auto-Sell Check (ensure to sell and transfer to wallet in +pnl after detecting slippage)
-          if (pos.simRealBought && pos.simRealSolSpent && !safeToExecute) {
-            const simRealGross = currentPrice * (pos.simRealAmountTokens || 0);
-            let simRealNetSolReturn = simRealGross;
             let simRealNetPnlPct = 0;
-            
-            if (typeof quote !== 'undefined' && quote && pos.amountLamports && pos.amount) {
-               const guaranteedMinLamports = BigInt(quote.otherAmountThreshold);
-               const guaranteedSolOut = Number(guaranteedMinLamports) / 1_000_000_000.0;
-               const ratio = (pos.simRealAmountTokens || 0) / pos.amount;
-               const scaledSolOut = guaranteedSolOut * ratio;
-               const operationalFeesSol = getDynamicOperationalFeeSol(pos.recoveryMode, pos.simRealSolSpent); 
-               simRealNetSolReturn = Math.max(0, scaledSolOut - operationalFeesSol);
-            } else {
-               const simRealGrossPnLPercent = ((simRealGross - pos.simRealSolSpent) / pos.simRealSolSpent) * 100;
-               let dynamicSlippage = slippage;
-               if (simRealGrossPnLPercent > 0) dynamicSlippage = Math.max(0.3, Math.min(slippage, simRealGrossPnLPercent * 0.3));
-               else dynamicSlippage = Math.min(slippage, 1.0);
-               const slippageFeeCalc = simRealGross * (dynamicSlippage / 100);
-               const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, pos.simRealSolSpent || 0.1);
-               simRealNetSolReturn = Math.max(0, simRealGross - slippageFeeCalc - opFees);
+            if (pos.simRealBought && pos.simRealSolSpent) {
+              const simRealGross = currentPrice * (pos.simRealAmountTokens || 0);
+              let simRealNetSolReturn = simRealGross;
+              
+              if (typeof quote !== 'undefined' && quote && pos.amountLamports && pos.amount) {
+                 const guaranteedMinLamports = BigInt(quote.otherAmountThreshold);
+                 const guaranteedSolOut = Number(guaranteedMinLamports) / 1_000_000_000.0;
+                 const ratio = (pos.simRealAmountTokens || 0) / pos.amount;
+                 const scaledSolOut = guaranteedSolOut * ratio;
+                 const operationalFeesSol = getDynamicOperationalFeeSol(pos.recoveryMode, pos.simRealSolSpent); 
+                 simRealNetSolReturn = Math.max(0, scaledSolOut - operationalFeesSol);
+              } else {
+                 const simRealGrossPnLPercent = ((simRealGross - pos.simRealSolSpent) / pos.simRealSolSpent) * 100;
+                 let dynamicSlippage = slippage;
+                 if (simRealGrossPnLPercent > 0) dynamicSlippage = Math.max(0.3, Math.min(slippage, simRealGrossPnLPercent * 0.3));
+                 else dynamicSlippage = Math.min(slippage, 1.0);
+                 const slippageFeeCalc = simRealGross * (dynamicSlippage / 100);
+                 const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, pos.simRealSolSpent || 0.1);
+                 simRealNetSolReturn = Math.max(0, simRealGross - slippageFeeCalc - opFees);
+              }
+              simRealNetPnlPct = (simRealNetSolReturn - pos.simRealSolSpent) / pos.simRealSolSpent;
             }
-            simRealNetPnlPct = (simRealNetSolReturn - pos.simRealSolSpent) / pos.simRealSolSpent;
-            
-            if (simRealNetPnlPct > 0) {
-               executeReason = `SIMREAL SECURE PROFIT: ${pos.symbol} +${(simRealNetPnlPct * 100).toFixed(2)}% (NET)`;
-               safeToExecute = true;
+
+            if (inRecoveryMode && pnlPct >= 0) {
+              if (pos.simRealBought && pos.simRealSolSpent && simRealNetPnlPct < 0) {
+                // Wait
+              } else {
+                executeReason = `RECOVERY BREAKEVEN: ${pos.symbol} returned capital`;
+                safeToExecute = true;
+              }
+            } else if (inRecoveryMode && pnlPct <= -0.85) {
+              executeReason = `RECOVERY FAILED: ${pos.symbol} hard stop at -85%`;
+              safeToExecute = true;
+            } else if (pnlPct >= currentTakeProfit / 100) {
+              if (pos.simRealBought && pos.simRealSolSpent && simRealNetPnlPct <= 0) {
+                 if (Math.random() < 0.05) {
+                    addLog(`[SIMREAL PROFIT GUARD fallback] Main position hit Take Profit (+${(pnlPct * 100).toFixed(1)}%), but SimReal is still in loss/thin margin (${(simRealNetPnlPct * 100).toFixed(2)}%). Delaying sell.`, 'info');
+                 }
+              } else {
+                 executeReason = `TAKE PROFIT: ${pos.symbol} +${(pnlPct * 100).toFixed(1)}%`;
+                 safeToExecute = true;
+              }
+            } else if (pnlPct <= -currentSLPct / 100) {
+              if (isHoldProtected) {
+                if (Math.random() < 0.1) addLog(`[HOLD BUFFER]: ${pos.symbol} hitting Stop Loss. Waiting for 25s limit.`, 'info');
+              } else {
+                executeReason = `STOP LOSS: ${pos.symbol} ${(pnlPct * 100).toFixed(1)}%`;
+                safeToExecute = true;
+              }
             }
-          }
+
+            // Independent SimReal Auto-Sell Check (ensure to sell and transfer to wallet in +pnl after detecting slippage)
+            if (pos.simRealBought && pos.simRealSolSpent && !safeToExecute) {
+              if (simRealNetPnlPct > 0) {
+                 executeReason = `SIMREAL SECURE PROFIT: ${pos.symbol} +${(simRealNetPnlPct * 100).toFixed(2)}% (NET)`;
+                 safeToExecute = true;
+              }
+            }
 
           // SimReal Wallet Copy Buy Check:
             const currentLivePnLPct = pnlPct * 100;
             if (currentLivePnLPct >= 1.0 && !pos.simRealBought && !simRealBoughtPending.current.has(mint)) {
-              if (mint.toLowerCase().startsWith('sim') || (pos.symbol && pos.symbol.toLowerCase().startsWith('sim'))) {
+              if (privateKey && (mint.toLowerCase().startsWith('sim') || (pos.symbol && pos.symbol.toLowerCase().startsWith('sim')))) {
                 if (!simRealBoughtPending.current.has(mint)) {
                   simRealBoughtPending.current.add(mint);
                   addLog(`❌ [SIM BLOCK] Skipped SimReal buy of ${pos.symbol || 'Unknown'} (${mint}): Tokens starting with 'sim' are strictly blocked.`, 'warn');
@@ -5828,8 +5847,8 @@ const checkTokenCriteria = (mint: string): {
     const pos = positions[mint];
     if (!pos || !pos.simRealBought) return;
 
-    if (mint.toLowerCase().startsWith('sim') || (pos.symbol && pos.symbol.toLowerCase().startsWith('sim'))) {
-      addLog(`❌ [SIM BLOCK] Trading for tokens starting with 'sim' is strictly blocked: ${pos.symbol} (${mint})`, 'warn');
+    if (privateKey && (mint.toLowerCase().startsWith('sim') || (pos.symbol && pos.symbol.toLowerCase().startsWith('sim')))) {
+      addLog(`❌ [SIM BLOCK] Trading for tokens starting with 'sim' is strictly blocked for real-money trading: ${pos.symbol} (${mint})`, 'warn');
       return;
     }
 
@@ -5941,14 +5960,15 @@ const checkTokenCriteria = (mint: string): {
       addLog(`❌ [SIMREAL BUY] Error: Token address is empty.`, 'err');
       return;
     }
-    const isAddress = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(cleanMint);
+    const isSimToken = cleanMint.toLowerCase().startsWith('sim') || cleanMint.toLowerCase().endsWith('mock');
+    const isAddress = isSimToken || /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(cleanMint);
     if (!isAddress) {
       addLog(`❌ [SIMREAL BUY] Error: Invalid Solana token address format: "${cleanMint}".`, 'err');
       return;
     }
 
-    if (cleanMint.toLowerCase().startsWith('sim') || cleanMint.toLowerCase().endsWith('mock')) {
-      addLog(`❌ [SIM BLOCK] Trading for tokens starting with 'sim' is strictly blocked: ${cleanMint}`, 'warn');
+    if (privateKey && isSimToken) {
+      addLog(`❌ [SIM BLOCK] Trading for tokens starting with 'sim' is strictly blocked for real-money trading: ${cleanMint}`, 'warn');
       return;
     }
 
