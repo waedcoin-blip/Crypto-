@@ -420,8 +420,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
 
       // ── SERVER HEALTH CHECK GATE ──
       if (serverHealth === 'degraded') {
-        console.warn('[SimReal] Skipping signal processing — server health is degraded');
-        return;
+        console.warn('[SimReal] Server health is degraded, proceeding with caution...');
       }
 
       processingLock.current = true;

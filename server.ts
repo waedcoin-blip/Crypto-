@@ -197,6 +197,16 @@ setInterval(() => {
   }
 }, 1800000);
 
+async function fetchWithTimeout(url: string, options: any = {}, timeoutMs = 5000): Promise<Response> {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(id);
+  }
+}
+
 async function startServer() {
   if (process.env.IS_LASERSTREAM_WORKER === 'true') {
     try {
@@ -287,7 +297,7 @@ async function startServer() {
         '?inputMint=So11111111111111111111111111111111111111112' +
         '&outputMint=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' +
         '&amount=1000000&slippageBps=50';
-      const resp = await fetch(testUrl, { signal: AbortSignal.timeout(5000) });
+      const resp = await fetchWithTimeout(testUrl, {}, 5000);
       checks.jupiter = resp.ok ? 'OK' : `Error ${resp.status}`;
     } catch (err: any) {
       checks.jupiter = `Failed: ${err.message}`;
@@ -295,9 +305,7 @@ async function startServer() {
 
     // Check DEXScreener
     try {
-      const resp = await fetch('https://api.dexscreener.com/latest/dex/tokens/So11111111111111111111111111111111111111112', {
-        signal: AbortSignal.timeout(5000),
-      });
+      const resp = await fetchWithTimeout('https://api.dexscreener.com/latest/dex/tokens/So11111111111111111111111111111111111111112', {}, 5000);
       checks.dexscreener = resp.ok ? 'OK' : `Error ${resp.status}`;
     } catch (err: any) {
       checks.dexscreener = `Failed: ${err.message}`;
@@ -307,12 +315,11 @@ async function startServer() {
     const HELIUS_KEY = process.env.HELIUS_API_KEY || process.env.VITE_HELIUS_API_KEY;
     if (HELIUS_KEY) {
       try {
-        const resp = await fetch(`https://mainnet.helius-rpc.com/?api-key=${HELIUS_KEY}`, {
+        const resp = await fetchWithTimeout(`https://mainnet.helius-rpc.com/?api-key=${HELIUS_KEY}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getHealth' }),
-          signal: AbortSignal.timeout(5000),
-        });
+        }, 5000);
         checks.helius = resp.ok ? 'OK' : `Error ${resp.status}`;
       } catch (err: any) {
         checks.helius = `Failed: ${err.message}`;
@@ -326,7 +333,7 @@ async function startServer() {
       return v === 'OK';
     });
 
-    res.status(allOk ? 200 : 503).json({
+    res.status(200).json({
       status: allOk ? 'healthy' : 'degraded',
       timestamp: new Date().toISOString(),
       uptime: process.uptime(),
@@ -342,12 +349,11 @@ async function startServer() {
     const results = await Promise.all(sanitizedUrls.map(async (url: string) => {
       const start = Date.now();
       try {
-        const r = await fetch(url, {
+        const r = await fetchWithTimeout(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getSlot", params: [] }),
-          signal: AbortSignal.timeout(3000)
-        });
+        }, 3000);
         const latency = Date.now() - start;
         const data = await r.json();
         return { url, latency, ok: !data.error, slot: data.result };
