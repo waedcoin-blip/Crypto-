@@ -61,6 +61,10 @@ interface SimRealPageProps {
   simRealBalance: number;
   simRealTrades: SniperTrade[];
   maxPositions: number;
+  simRealTakeProfit: number;
+  setSimRealTakeProfit: (v: number) => void;
+  simRealStopLoss: number;
+  setSimRealStopLoss: (v: number) => void;
   slippage: number;
   privateKey: string;
   setPrivateKey: (v: string) => void;
@@ -89,6 +93,10 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
   simRealBalance,
   simRealTrades,
   maxPositions,
+  simRealTakeProfit,
+  setSimRealTakeProfit,
+  simRealStopLoss,
+  setSimRealStopLoss,
   slippage,
   privateKey,
   setPrivateKey,
@@ -639,6 +647,32 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                       onChange={(e) => setMaxRebuyTimes(Number(e.target.value))}
                       className="bg-[#07080e] border border-[#1f212e] rounded-lg px-3 py-1.5 text-xs text-[#e2e8f0] focus:outline-none focus:border-emerald-500/50 font-mono w-full"
                    />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                   <div className="flex flex-col gap-1">
+                      <div className="flex justify-between items-center">
+                         <label className="text-[10px] text-slate-400 font-mono uppercase tracking-wider">Take Profit</label>
+                         <span className="text-[9px] text-emerald-400 font-mono">%</span>
+                      </div>
+                      <input
+                         type="number"
+                         value={simRealTakeProfit}
+                         onChange={(e) => setSimRealTakeProfit(Number(e.target.value))}
+                         className="bg-[#07080e] border border-[#1f212e] rounded-lg px-3 py-1.5 text-xs text-[#e2e8f0] focus:outline-none focus:border-emerald-500/50 font-mono w-full"
+                      />
+                   </div>
+                   <div className="flex flex-col gap-1">
+                      <div className="flex justify-between items-center">
+                         <label className="text-[10px] text-slate-400 font-mono uppercase tracking-wider">Stop Loss</label>
+                         <span className="text-[9px] text-rose-400 font-mono">%</span>
+                      </div>
+                      <input
+                         type="number"
+                         value={simRealStopLoss}
+                         onChange={(e) => setSimRealStopLoss(-Math.abs(Number(e.target.value)))}
+                         className="bg-[#07080e] border border-[#1f212e] rounded-lg px-3 py-1.5 text-xs text-[#e2e8f0] focus:outline-none focus:border-emerald-500/50 font-mono w-full"
+                      />
+                   </div>
                 </div>
 
                 {privateKey ? (

@@ -872,6 +872,10 @@ export const PnLPage = ({
     setUnknownStopLoss?: (v: number) => void;
     maxPositions: number;
     setMaxPositions: (v: number) => void;
+    simRealTakeProfit?: number;
+    setSimRealTakeProfit?: (v: number) => void;
+    simRealStopLoss?: number;
+    setSimRealStopLoss?: (v: number) => void;
     slippage: number;
     setSlippage: (v: number) => void;
     hardenedMinBondingProgress?: number;
@@ -975,6 +979,8 @@ export const PnLPage = ({
     pumpSwapStopLoss = -15, setPumpSwapStopLoss = () => {},
     unknownStopLoss = -20, setUnknownStopLoss = () => {},
     maxPositions, setMaxPositions,
+    simRealTakeProfit = 10, setSimRealTakeProfit = () => {},
+    simRealStopLoss = -10, setSimRealStopLoss = () => {},
     slippage, setSlippage,
     hardenedMinBondingProgress = 0, setHardenedMinBondingProgress = () => {},
     hardenedMaxBondingProgress = 100, setHardenedMaxBondingProgress = () => {},
@@ -1576,7 +1582,7 @@ export const PnLPage = ({
   }, [blacklistedMints]);
 
   const configRef = useRef({
-    takeProfitPct, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct, slippage, privateKey, tradeAmount, maxPositions,
+    takeProfitPct, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct, slippage, privateKey, tradeAmount, maxPositions, simRealTakeProfit, simRealStopLoss,
     hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax,
     hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore,
     hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s,
@@ -1588,7 +1594,7 @@ export const PnLPage = ({
   });
 
   configRef.current = {
-    takeProfitPct, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct, slippage, privateKey, tradeAmount, maxPositions,
+    takeProfitPct, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct, slippage, privateKey, tradeAmount, maxPositions, simRealTakeProfit, simRealStopLoss,
     hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax,
     hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore,
     hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s,
@@ -3686,6 +3692,7 @@ const checkTokenCriteria = (mint: string): {
   };
   
   const executeBuy = async (mint: string, symbol: string, price: any, solAmount: number, isManualDirectBuy = false) => {
+    const { maxPositions, privateKey, slippage } = configRef.current;
     // Block any token starting with 'sim' if privateKey is active
     if (privateKey && (mint.toLowerCase().startsWith('sim') || (symbol && symbol.toLowerCase().startsWith('sim')))) {
       addLog(`❌ [SIM BLOCK] Trading for tokens starting with 'sim' (symbol or address) is strictly blocked: ${symbol} (${mint})`, 'warn');
@@ -4006,6 +4013,7 @@ const checkTokenCriteria = (mint: string): {
   };
 
   const executeSell = async (mint: string, currentPrice: number, pnlPct: number, reason: string = '') => {
+    const { privateKey, slippage } = configRef.current;
     let pos = positionsRef.current[mint];
     if (!pos) return;
 
@@ -4788,8 +4796,13 @@ const checkTokenCriteria = (mint: string): {
 
             // Independent SimReal Auto-Sell Check (ensure to sell and transfer to wallet in +pnl after detecting slippage)
             if (pos.simRealBought && pos.simRealSolSpent && !safeToExecute) {
-              if (simRealNetPnlPct > 0) {
+              const tpLimit = (configRef.current.simRealTakeProfit !== undefined ? configRef.current.simRealTakeProfit : 10) / 100;
+              const slLimit = (configRef.current.simRealStopLoss !== undefined ? configRef.current.simRealStopLoss : -10) / 100;
+              if (simRealNetPnlPct >= tpLimit) {
                  executeReason = `SIMREAL SECURE PROFIT: ${pos.symbol} +${(simRealNetPnlPct * 100).toFixed(2)}% (NET)`;
+                 safeToExecute = true;
+              } else if (simRealNetPnlPct <= slLimit) {
+                 executeReason = `SIMREAL STOP LOSS: ${pos.symbol} ${(simRealNetPnlPct * 100).toFixed(2)}% (NET)`;
                  safeToExecute = true;
               }
             }
@@ -4884,8 +4897,13 @@ const checkTokenCriteria = (mint: string): {
 
             // Independent SimReal Auto-Sell Check (ensure to sell and transfer to wallet in +pnl after detecting slippage)
             if (pos.simRealBought && pos.simRealSolSpent && !safeToExecute) {
-              if (simRealNetPnlPct > 0) {
+              const tpLimit = (configRef.current.simRealTakeProfit !== undefined ? configRef.current.simRealTakeProfit : 10) / 100;
+              const slLimit = (configRef.current.simRealStopLoss !== undefined ? configRef.current.simRealStopLoss : -10) / 100;
+              if (simRealNetPnlPct >= tpLimit) {
                  executeReason = `SIMREAL SECURE PROFIT: ${pos.symbol} +${(simRealNetPnlPct * 100).toFixed(2)}% (NET)`;
+                 safeToExecute = true;
+              } else if (simRealNetPnlPct <= slLimit) {
+                 executeReason = `SIMREAL STOP LOSS: ${pos.symbol} ${(simRealNetPnlPct * 100).toFixed(2)}% (NET)`;
                  safeToExecute = true;
               }
             }

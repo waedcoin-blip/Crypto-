@@ -428,6 +428,8 @@ export default function App() {
   const [pumpSwapStopLoss, setPumpSwapStopLoss] = useState(() => Number(localStorage.getItem('app_pumpSwapStopLoss')) || -15);
   const [unknownStopLoss, setUnknownStopLoss] = useState(() => Number(localStorage.getItem('app_unknownStopLoss')) || -20);
   const [maxPositions, setMaxPositions] = useState(() => Number(localStorage.getItem('app_maxPositions')) || 5);
+  const [simRealTakeProfit, setSimRealTakeProfit] = useState(() => Number(localStorage.getItem('app_simRealTakeProfit')) || 10);
+  const [simRealStopLoss, setSimRealStopLoss] = useState(() => Number(localStorage.getItem('app_simRealStopLoss')) || -10);
   const [slippage, setSlippage] = useState(1.0); 
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('juipter_auto_apiKey') || '');
   const [jupiterRpcUrl, setJupiterRpcUrl] = useState(() => localStorage.getItem('juipter_auto_jupiterRpcUrl') || '');
@@ -486,7 +488,9 @@ export default function App() {
     localStorage.setItem('app_pumpSwapStopLoss', pumpSwapStopLoss.toString());
     localStorage.setItem('app_unknownStopLoss', unknownStopLoss.toString());
     localStorage.setItem('app_maxPositions', maxPositions.toString());
-  }, [buyAmountSol, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, unknownStopLoss, maxPositions]);
+    localStorage.setItem('app_simRealTakeProfit', simRealTakeProfit.toString());
+    localStorage.setItem('app_simRealStopLoss', simRealStopLoss.toString());
+  }, [buyAmountSol, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, unknownStopLoss, maxPositions, simRealTakeProfit, simRealStopLoss]);
 
   useEffect(() => {
     localStorage.setItem('tg_bot_token', telegramBotToken);
@@ -5885,6 +5889,8 @@ export default function App() {
           pumpSwapStopLoss, setPumpSwapStopLoss,
           unknownStopLoss, setUnknownStopLoss,
           maxPositions, setMaxPositions,
+          simRealTakeProfit, setSimRealTakeProfit,
+          simRealStopLoss, setSimRealStopLoss,
           slippage, setSlippage,
           hardenedMinBondingProgress,
           setHardenedMinBondingProgress,
@@ -5987,6 +5993,10 @@ export default function App() {
         simRealBalance={simRealBalance}
         simRealTrades={simRealTrades}
         maxPositions={maxPositions}
+        simRealTakeProfit={simRealTakeProfit}
+        setSimRealTakeProfit={setSimRealTakeProfit}
+        simRealStopLoss={simRealStopLoss}
+        setSimRealStopLoss={setSimRealStopLoss}
         slippage={slippage}
         privateKey={privateKey}
         setPrivateKey={setPrivateKey}
