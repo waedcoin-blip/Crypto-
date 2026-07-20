@@ -277,8 +277,61 @@ async function startServer() {
   process.on('SIGINT', () => clearInterval(cacheCleanupInterval));
 
   // API Routes
-  app.get("/api/health", (req, res) => {
-    res.json({ status: "ok", timestamp: new Date().toISOString(), uptime: process.uptime() });
+  app.get("/api/health", async (req, res) => {
+    const checks: Record<string, string> = {};
+
+    // Check Jupiter Quote API
+    try {
+      const testUrl =
+        'https://quote-api.jup.ag/v6/quote' +
+        '?inputMint=So11111111111111111111111111111111111111112' +
+        '&outputMint=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' +
+        '&amount=1000000&slippageBps=50';
+      const resp = await fetch(testUrl, { signal: AbortSignal.timeout(5000) });
+      checks.jupiter = resp.ok ? 'OK' : `Error ${resp.status}`;
+    } catch (err: any) {
+      checks.jupiter = `Failed: ${err.message}`;
+    }
+
+    // Check DEXScreener
+    try {
+      const resp = await fetch('https://api.dexscreener.com/latest/dex/tokens/So11111111111111111111111111111111111111112', {
+        signal: AbortSignal.timeout(5000),
+      });
+      checks.dexscreener = resp.ok ? 'OK' : `Error ${resp.status}`;
+    } catch (err: any) {
+      checks.dexscreener = `Failed: ${err.message}`;
+    }
+
+    // Check Helius
+    const HELIUS_KEY = process.env.HELIUS_API_KEY || process.env.VITE_HELIUS_API_KEY;
+    if (HELIUS_KEY) {
+      try {
+        const resp = await fetch(`https://mainnet.helius-rpc.com/?api-key=${HELIUS_KEY}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getHealth' }),
+          signal: AbortSignal.timeout(5000),
+        });
+        checks.helius = resp.ok ? 'OK' : `Error ${resp.status}`;
+      } catch (err: any) {
+        checks.helius = `Failed: ${err.message}`;
+      }
+    } else {
+      checks.helius = 'No API key configured';
+    }
+
+    const allOk = Object.entries(checks).every(([k, v]) => {
+      if (k === 'helius' && v.startsWith('No API key')) return true;
+      return v === 'OK';
+    });
+
+    res.status(allOk ? 200 : 503).json({
+      status: allOk ? 'healthy' : 'degraded',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      checks,
+    });
   });
 
   // RPC latency probe endpoint (client uses to test their configured RPCs)
@@ -458,7 +511,7 @@ async function startServer() {
     }
   });
 
-  app.get("/api/jup/quote", async (req, res) => {
+  app.get(["/api/jup/quote", "/api/jupiter/quote"], async (req, res) => {
     let jupUrl = "";
     try {
       const { baseUrl, inputMint, outputMint, amount, slippageBps, t } = req.query;
@@ -635,7 +688,7 @@ async function startServer() {
     }
   });
 
-  app.post("/api/jup/swap", async (req, res) => {
+  app.post(["/api/jup/swap", "/api/jupiter/swap"], async (req, res) => {
     let jupUrl = "";
     try {
       const { baseUrl } = req.query;

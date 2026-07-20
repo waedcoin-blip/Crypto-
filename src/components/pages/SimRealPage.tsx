@@ -113,6 +113,57 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
   const [showKey, setShowKey] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
+  // ── SERVER HEALTH MONITORING ──
+  const [serverHealth, setServerHealth] = useState<'unknown' | 'ok' | 'degraded'>('unknown');
+  const [healthError, setHealthError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    const checkHealth = async () => {
+      try {
+        const res = await fetch('/api/health');
+        if (!res.ok) {
+          const text = await res.text();
+          let errStr = `HTTP ${res.status}`;
+          try {
+            const parsed = JSON.parse(text);
+            errStr = parsed.error || parsed.message || errStr;
+          } catch {}
+          if (active) {
+            setServerHealth('degraded');
+            setHealthError(errStr);
+          }
+          return;
+        }
+        const data = await res.json();
+        if (active) {
+          setServerHealth(data.status === 'healthy' ? 'ok' : 'degraded');
+          if (data.status !== 'healthy') {
+            const degradedDetails = Object.entries(data.checks || {})
+              .filter(([, v]) => v !== 'OK')
+              .map(([k, v]) => `${k}: ${v}`)
+              .join(', ');
+            setHealthError(degradedDetails || 'Some dependencies are degraded');
+          } else {
+            setHealthError(null);
+          }
+        }
+      } catch (err: any) {
+        if (active) {
+          setServerHealth('degraded');
+          setHealthError(err?.message || 'Server check failed');
+        }
+      }
+    };
+
+    checkHealth();
+    const interval = setInterval(checkHealth, 30_000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, []);
+
   // ── ZUSTAND BUY SIGNALS PIPELINE STORE CONNECTION ──
   const signals = useBuySignalStore(state => state.signals);
   const stats = useBuySignalStore(state => state.stats);
@@ -366,6 +417,13 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
     const processSignalQueue = async () => {
       // 1. Check lock
       if (processingLock.current || !workerActive) return;
+
+      // ── SERVER HEALTH CHECK GATE ──
+      if (serverHealth === 'degraded') {
+        console.warn('[SimReal] Skipping signal processing — server health is degraded');
+        return;
+      }
+
       processingLock.current = true;
 
       try {
@@ -558,6 +616,21 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
           <p className="text-xs uppercase tracking-widest font-mono text-slate-500 mt-1">
             Simulated Real-Time Copy Trader and Automated Active Wallet Execution
           </p>
+          <div className="flex items-center gap-2 mt-2">
+            <span className={`w-2 h-2 rounded-full inline-block ${
+              serverHealth === 'ok' ? 'bg-emerald-400 animate-pulse' :
+              serverHealth === 'degraded' ? 'bg-amber-400 animate-pulse' : 'bg-slate-500'
+            }`} />
+            <span className="text-[10px] uppercase font-mono tracking-wider font-bold text-slate-400 flex items-center gap-1.5">
+              Server status: <span className={
+                serverHealth === 'ok' ? 'text-emerald-400' :
+                serverHealth === 'degraded' ? 'text-amber-400' : 'text-slate-500'
+              }>{serverHealth === 'ok' ? 'ONLINE' : serverHealth === 'degraded' ? 'DEGRADED' : 'CHECKING...'}</span>
+            </span>
+            {healthError && (
+              <span className="text-[9px] text-amber-500 font-mono">({healthError})</span>
+            )}
+          </div>
         </div>
         
         <div className="bg-[#10111a]/60 border border-[#1f212e] rounded-xl px-4 py-3 flex items-center gap-4">
