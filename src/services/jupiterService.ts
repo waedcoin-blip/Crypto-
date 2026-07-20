@@ -704,7 +704,14 @@ export const getJupiterQuote = async (
     return quote;
   } catch (error: any) {
     const errStr = error?.toString() || '';
-    if (!errStr.includes('NO_ROUTES_FOUND') && !errStr.includes('Proxy error 429')) {
+    const isTransientError = errStr.includes('NO_ROUTES_FOUND') || 
+                             errStr.includes('Proxy error 429') ||
+                             errStr.includes('Proxy error 500') ||
+                             errStr.includes('Proxy error 502') ||
+                             errStr.includes('Proxy error 503') ||
+                             errStr.includes('Proxy error 504');
+                             
+    if (!isTransientError) {
       console.error("Jupiter quote failed:", error);
       useAppStore.getState().addJupiterLog({
         type: 'ERROR',
