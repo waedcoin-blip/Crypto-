@@ -4038,9 +4038,10 @@ const checkTokenCriteria = (mint: string): {
     }
 
     // 2. Decide what needs to be sold
-    const shouldSellMain = !!pos.amount && pos.amount > 0 && !reason.includes('SIMREAL SECURE PROFIT');
+    const shouldSellMain = !!pos.amount && pos.amount > 0 && !reason.includes('SIMREAL SECURE PROFIT') && !reason.includes('SIMREAL STOP LOSS');
     const shouldSellSimReal = !!pos.simRealBought && (
       reason.includes('SIMREAL SECURE PROFIT') ||
+      reason.includes('SIMREAL STOP LOSS') ||
       reason.includes('EMERGENCY') ||
       reason.includes('FORCE') ||
       reason.includes('MANUAL') ||
