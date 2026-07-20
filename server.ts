@@ -3,6 +3,10 @@ import path from "path";
 // import { fileURLToPath } from "url";
 import compression from "compression";
 import fs from "fs";
+import dotenv from 'dotenv';
+
+dotenv.config({ path: '.env.local' });
+dotenv.config();
 import { startLaserStream, stopLaserStream, isLaserStreamUsingFallback, isLaserStreamSimulated, getActiveLaserStreamEndpoint } from "./src/engines/LaserstreamIngestion";
 import { testFtpConnection, backupFtpData, deployFtpDist } from "./src/services/ftpService";
 
@@ -256,13 +260,13 @@ async function startServer() {
   );
 
   const dexTokenCache = new SwrCache<any>(
-    5000,    // Soft TTL: 5s
+    15000,   // Soft TTL: 15s
     60000,   // Hard TTL: 60s
     2000     // Max capacity
   );
 
   const dexPairsCache = new SwrCache<any>(
-    5000,    // Soft TTL: 5s
+    15000,   // Soft TTL: 15s
     60000,   // Hard TTL: 60s
     2000     // Max capacity
   );
@@ -292,13 +296,22 @@ async function startServer() {
 
     // Check Jupiter Quote API
     try {
+      const jupKey = process.env.VITE_JUPITER_API_KEY || process.env.JUPITER_API_KEY || '';
       const testUrl =
-        'https://quote-api.jup.ag/v6/quote' +
+        'https://api.jup.ag/swap/v1/quote' +
         '?inputMint=So11111111111111111111111111111111111111112' +
         '&outputMint=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' +
-        '&amount=1000000&slippageBps=50';
-      const resp = await fetchWithTimeout(testUrl, {}, 5000);
-      checks.jupiter = resp.ok ? 'OK' : `Error ${resp.status}`;
+        '&amount=1000000&slippageBps=50' +
+        '&restrictIntermediateTokens=true';
+      const headers: Record<string, string> = { 'Accept': 'application/json' };
+      if (jupKey) headers['x-api-key'] = jupKey;
+      const resp = await fetchWithTimeout(testUrl, { headers }, 5000);
+      if (resp.ok) {
+        checks.jupiter = 'OK';
+      } else {
+        const text = await resp.text().catch(() => '');
+        checks.jupiter = `Error ${resp.status}: ${text.slice(0, 100)}`;
+      }
     } catch (err: any) {
       checks.jupiter = `Failed: ${err.message}`;
     }
@@ -521,7 +534,7 @@ async function startServer() {
     let jupUrl = "";
     try {
       const { baseUrl, inputMint, outputMint, amount, slippageBps, t } = req.query;
-      const apiKey = req.headers['x-api-key'] as string;
+      const apiKey = (req.headers['x-api-key'] as string) || process.env.VITE_JUPITER_API_KEY || process.env.JUPITER_API_KEY;
 
       const isValidSolanaAddress = (addr: any) => {
         if (!addr || typeof addr !== 'string') return false;
@@ -698,7 +711,7 @@ async function startServer() {
     let jupUrl = "";
     try {
       const { baseUrl } = req.query;
-      const apiKey = req.headers['x-api-key'] as string;
+      const apiKey = (req.headers['x-api-key'] as string) || process.env.VITE_JUPITER_API_KEY || process.env.JUPITER_API_KEY;
       
       let base = String(baseUrl || "https://api.jup.ag");
       
@@ -1028,23 +1041,28 @@ async function startServer() {
 
   app.get("/api/dex/tokens/trending", async (req, res) => {
     try {
-      const ids = TRENDING_MINTS.join(',');
-      const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${ids}`, {
-        headers: { 'User-Agent': 'Mozilla/5.0' }
-      });
-      if (response.ok) {
-        const text = await response.text();
-        const data = JSON.parse(text);
-        if (data && data.pairs && data.pairs.length > 0) {
-          return res.json(data);
+      const data = await dexTokenCache.fetch("trending_tokens", async () => {
+        const ids = TRENDING_MINTS.join(',');
+        const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${ids}`, {
+          headers: { 'User-Agent': 'Mozilla/5.0' }
+        });
+        if (!response.ok) {
+          throw new Error(`DexScreener API status: ${response.status}`);
         }
-      }
+        const text = await response.text();
+        const parsed = JSON.parse(text);
+        if (!parsed || !parsed.pairs || parsed.pairs.length === 0) {
+          throw new Error(`Empty pairs from DexScreener`);
+        }
+        return parsed;
+      });
+      return res.json(data);
     } catch (e: any) {
-      console.warn("[server] trending scan api failed:", e.message);
+      console.warn("[server] trending scan api failed or rate-limited:", e.message);
+      // Fallback: simulated pairs
+      const pairs = TRENDING_MINTS.map(m => generateSimulatedPair(m));
+      res.json({ pairs });
     }
-    // Fallback: simulated pairs
-    const pairs = TRENDING_MINTS.map(m => generateSimulatedPair(m));
-    res.json({ pairs });
   });
 
   app.get(["/api/dex/token-profiles", "/api/dex/token-profiles/"], async (req, res) => {
