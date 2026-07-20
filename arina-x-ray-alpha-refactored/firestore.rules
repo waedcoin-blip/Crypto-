@@ -1,0 +1,62 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    match /test/connection {
+      allow read: if true;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function isValidWallet(data) {
+      return data.keys().hasAll(['address', 'userId', 'createdAt', 'label']) &&
+             data.keys().size() == 4 &&
+             data.address is string && data.address.size() <= 64 &&
+             data.userId == request.auth.uid &&
+             data.createdAt == request.time &&
+             data.label is string && data.label.size() <= 32;
+    }
+
+    match /wallets/{walletId} {
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow get: if isSignedIn() && resource.data.userId == request.auth.uid;
+      
+      allow create: if isSignedIn() && 
+                    isValidId(walletId) && 
+                    isValidWallet(incoming());
+                    
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      
+      // Updates usually not needed for simple monitoring list, 
+      // but if we allow label changes:
+      allow update: if isSignedIn() && 
+                    resource.data.userId == request.auth.uid &&
+                    isValidWallet(incoming()) &&
+                    incoming().address == resource.data.address &&
+                    incoming().userId == resource.data.userId &&
+                    incoming().createdAt == resource.data.createdAt;
+    }
+
+    match /settings/{userId} {
+      allow read, write: if isSignedIn() && request.auth.uid == userId;
+    }
+  }
+}

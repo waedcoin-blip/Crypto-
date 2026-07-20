@@ -1,0 +1,486 @@
+299-      .catch(err => console.error('❌ Matrix Backend Connectivity Issue:', err));
+300-  }, []);
+301-
+302-  const sendTelegramAlert = async (msg: string, silent = false) => {
+303-    if (!telegramBotToken || !telegramChatId) {
+304-      if (!silent) setTradingStatus('⚠️ Configure Telegram Bot Token and Chat ID first');
+305-      return;
+306-    }
+307-    
+308-    if (!silent) setTradingStatus('📡 Sending Telegram Alert...');
+309:    try {
+310-      const response = await fetch('/api/telegram', {
+311-        method: 'POST',
+312-        headers: { 'Content-Type': 'application/json' },
+313-        body: JSON.stringify({
+314-          token: telegramBotToken,
+315-          chatId: telegramChatId,
+316-          text: msg
+317-        })
+318-      });
+319-      
+--
+372-  // New Effect to trigger the search when manualGemInput is set via deep link
+373-  useEffect(() => {
+374-    if (manualGemInput && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(manualGemInput) && currentPage === 'portfolio') {
+375-      handleManualAddGem();
+376-    }
+377-  }, [manualGemInput, currentPage]);
+378-
+379-  const [savedGems, setSavedGems] = useState<Record<string, SavedGem>>(() => {
+380-    const saved = localStorage.getItem('arina_saved_gems');
+381-    if (!saved || saved === 'null') return {};
+382:    try {
+383-      const parsed = JSON.parse(saved);
+384-      if (!parsed || typeof parsed !== 'object') return {};
+385-      
+386-      // Ensure all saved gems have correct categories on load
+387-      const forceSynced = Object.entries(parsed as Record<string, SavedGem>).reduce((acc, [mint, gem]) => {
+388-        acc[mint] = {
+389-          ...gem,
+390-          category: gem.category || categorizeToken(gem.symbol || 'TOKEN', mint)
+391-        };
+392-        return acc;
+--
+441-      addNotification('Please enter a valid token address');
+442-      return;
+443-    }
+444-    
+445-    // Check if we already have this gem saved
+446-    let targetSymbol = savedGems[address]?.symbol;
+447-    
+448-    if (!savedGems[address]) {
+449-      setIsAddingGem(true);
+450-      addNotification('Scanning token security data...');
+451:      try {
+452-        const security = await fetchTokenSecurityData(address);
+453-        if (security && security.symbol) {
+454-          targetSymbol = security.symbol;
+455-          const fakeMetric = { address, symbol: targetSymbol, priceUsd: security.priceUsd };
+456-          toggleSaveGem({ ...fakeMetric } as any);
+457-          addNotification(`Added ${targetSymbol} to Matrix`);
+458-        } else {
+459-          targetSymbol = 'UNKNOWN';
+460-          addNotification('Metadata unavailable. Adding by address.');
+461-          toggleSaveGem({ address, symbol: 'UNKNOWN', priceUsd: security?.priceUsd || 0 } as any);
+--
+511-          category: categorizeToken(item.symbol, item.address)
+512-        }
+513-      } as Record<string, SavedGem>;
+514-    });
+515-  };
+516-
+517-  // Ping Jupiter V6 API on startup to confirm connection
+518-  useEffect(() => {
+519-    let mounted = true;
+520-    const pingJupiter = async () => {
+521:      try {
+522-        const quote = await getJupiterQuote(
+523-          'So11111111111111111111111111111111111111112', // SOL
+524-          'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+525-          100000,
+526-          50
+527-        );
+528-        if (mounted) {
+529-          if (quote) {
+530-            setJupiterConnected(true);
+531-          } else {
+--
+541-    return () => {
+542-      mounted = false;
+543-      clearInterval(interval);
+544-    };
+545-  }, []);
+546-
+547-  // Load or generate session wallet
+548-  useEffect(() => {
+549-    const savedKey = localStorage.getItem('matrix_session_key');
+550-    if (savedKey) {
+551:      try {
+552-        const decoded = bs58.decode(savedKey);
+553-        setSessionWallet(Keypair.fromSecretKey(decoded));
+554-      } catch (e) {
+555-        console.error('Failed to load session wallet');
+556-      }
+557-    }
+558-  }, []);
+559-
+560-  const generateSessionWallet = () => {
+561-    const kp = Keypair.generate();
+--
+577-    );
+578-
+579-    if (highProfitToken) {
+580-      alertedTokens.current.add(highProfitToken.address);
+581-      setHighProfitAlert({
+582-        symbol: highProfitToken.symbol,
+583-        address: highProfitToken.address,
+584-        profit: highProfitToken.percentageIncrease
+585-      });
+586-      
+587:      try {
+588-        const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+589-        const oscillator = audioCtx.createOscillator();
+590-        const gainNode = audioCtx.createGain();
+591-        oscillator.connect(gainNode);
+592-        gainNode.connect(audioCtx.destination);
+593-        oscillator.type = 'square';
+594-        oscillator.frequency.setValueAtTime(400, audioCtx.currentTime);
+595-        oscillator.frequency.exponentialRampToValueAtTime(800, audioCtx.currentTime + 0.2);
+596-        gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
+597-        gainNode.gain.linearRampToValueAtTime(0.1, audioCtx.currentTime + 0.1);
+--
+745-      addNotification(`Active position already exists for ${symbol}`);
+746-      return;
+747-    }
+748-
+749-    if (!isLiveTrading && simulationBalance < buyAmountSol) {
+750-      addNotification(`Insufficient Simulation Balance (Need ${buyAmountSol} SOL)`);
+751-      return;
+752-    }
+753-
+754-    setTradingStatus(`Executing Matrix Buy: ${symbol}...`);
+755:    try {
+756-      let signature = 'SIM_MANUAL_BUY_' + Math.random().toString(36).substring(7);
+757-
+758-      if (isLiveTrading) {
+759-        if (!sessionWallet && !publicKey) {
+760-          throw new Error("No wallet connected for Live Trading");
+761-        }
+762-        
+763-        const lamports = Math.floor(buyAmountSol * 1_000_000_000);
+764-        const quote = await getJupiterQuote(
+765-          'So11111111111111111111111111111111111111112', // SOL
+--
+843-  const handleManualSell = async (tokenAddress: string, symbol: string) => {
+844-    if (!activePositions[tokenAddress]) return;
+845-    executeAutoSell(tokenAddress, symbol);
+846-  };
+847-
+848-  const executePartialSell = async (tokenAddress: string, symbol: string, percent: number, flag: string) => {
+849-    const position = activePositions[tokenAddress];
+850-    if (!position) return;
+851-    setTradingStatus(`Partial Sell ${symbol} (${percent*100}%)...`);
+852-    if (sendTelegramAlert) sendTelegramAlert(`🟡 <b>PARTIAL SELL (${(percent*100).toFixed(0)}%)</b>\nToken: ${symbol}`);
+853:    try {
+854-      await new Promise(resolve => setTimeout(resolve, 800));
+855-      setActivePositions(prev => {
+856-        const p = prev[tokenAddress];
+857-        if (!p) return prev;
+858-        return {
+859-          ...prev,
+860-          [tokenAddress]: {
+861-            ...p,
+862-            amount: p.amount * (1 - percent),
+863-            [flag]: true
+--
+881-      setTradingStatus('Idle');
+882-    }
+883-  };
+884-
+885-  const executeAutoSell = async (tokenAddress: string, symbol: string) => {
+886-    const position = activePositions[tokenAddress];
+887-    if (!position) return;
+888-    
+889-    setTradingStatus(`Selling ${symbol} (Profit/Loss Hit)...`);
+890-    
+891:    try {
+892-      let signature = 'SIM_SELL_' + Math.random().toString(36).substring(7);
+893-
+894-      if (isLiveTrading) {
+895-        if (!sessionWallet && !publicKey) {
+896-          throw new Error("No wallet connected for Live Trading");
+897-        }
+898-        console.warn("Live Sell requires exact SPL token balance, mocking Jupiter broadcast...");
+899-        await new Promise(resolve => setTimeout(resolve, 800));
+900-        // We'll leave `signature` as simulated because actual spl-token queries require token libraries not imported yet
+901-      } else {
+--
+960-    if (activePositions[tokenAddress]) return;
+961-    
+962-    if (!isLiveTrading && simulationBalance < buyAmountSol) {
+963-      console.log("Auto-Sniper: Insufficient simulation balance");
+964-      return;
+965-    }
+966-
+967-    autoBoughtTokens.current.add(tokenAddress);
+968-    setTradingStatus(`Sniper Triggered: ${symbol}...`);
+969-
+970:    try {
+971-      let signature = 'SIM_BN_' + Math.random().toString(36).substring(7);
+972-
+973-      if (isLiveTrading && sessionWallet) {
+974-        // Jupiter V6 Live Buy via Session Wallet
+975-        const lamports = Math.floor(buyAmountSol * 1_000_000_000);
+976-        const quote = await getJupiterQuote(
+977-          'So11111111111111111111111111111111111111112', // SOL
+978-          tokenAddress,
+979-          lamports,
+980-          slippage * 100 // bps
+--
+1104-        })) || []
+1105-      },
+1106-      operationType,
+1107-      path
+1108-    }
+1109-    console.error('Firestore Error: ', JSON.stringify(errInfo));
+1110-    throw new Error(JSON.stringify(errInfo));
+1111-  }
+1112-
+1113-  const handleLogin = async () => {
+1114:    try {
+1115-      await signInWithGoogle();
+1116-    } catch (err: any) {
+1117-      if (err.message === 'SIGN_IN_POPUP_BLOCKED') {
+1118-        addNotification("⚠️ Sign-in popup was blocked. Please check your browser settings and try again.");
+1119-      } else {
+1120-        console.error("Login failed:", err);
+1121-      }
+1122-    }
+1123-  };
+1124-
+--
+1164-      });
+1165-    }, 10000); 
+1166-    return () => clearInterval(interval);
+1167-  }, []);
+1168-
+1169-  const priceFetchLocks = useRef<Set<string>>(new Set());
+1170-  const lastFetchTimes = useRef<Map<string, number>>(new Map());
+1171-  const hasPlayedDiscoverySound = useRef<Set<string>>(new Set());
+1172-
+1173-  const playDiscoverySound = () => {
+1174:    try {
+1175-      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+1176-      const oscillator = audioCtx.createOscillator();
+1177-      const gainNode = audioCtx.createGain();
+1178-
+1179-      oscillator.connect(gainNode);
+1180-      gainNode.connect(audioCtx.destination);
+1181-
+1182-      oscillator.type = 'sine';
+1183-      // Slightly higher pitch, extremely short for subtle discovery feel
+1184-      oscillator.frequency.setValueAtTime(1400, audioCtx.currentTime);
+--
+1189-      gainNode.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.08);
+1190-
+1191-      oscillator.start();
+1192-      oscillator.stop(audioCtx.currentTime + 0.08);
+1193-    } catch (e) {
+1194-      // Browsers often block audio until user interaction
+1195-    }
+1196-  };
+1197-
+1198-  const playAlertSound = () => {
+1199:    try {
+1200-      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+1201-      const oscillator = audioCtx.createOscillator();
+1202-      const gainNode = audioCtx.createGain();
+1203-
+1204-      oscillator.connect(gainNode);
+1205-      gainNode.connect(audioCtx.destination);
+1206-
+1207-      oscillator.type = 'sine';
+1208-      oscillator.frequency.setValueAtTime(1000, audioCtx.currentTime);
+1209-      
+--
+1219-  };
+1220-
+1221-  // Fetch token stats and security from DEXScreener
+1222-  const fetchTokenSecurityData = async (mint: string, retries = 3, backoff = 1000) => {
+1223-    // Client-side throttling: Don't fetch the same mint more than once every 60 seconds
+1224-    const lastFetch = lastFetchTimes.current.get(mint) || 0;
+1225-    if (Date.now() - lastFetch < 2000) return null;
+1226-    
+1227-    if (priceFetchLocks.current.has(mint)) return null;
+1228-    
+1229:    try {
+1230-      priceFetchLocks.current.add(mint);
+1231-      lastFetchTimes.current.set(mint, Date.now());
+1232-      
+1233-      // Use the server-side proxy to benefit from caching and shared rate limits
+1234-      const response = await fetch(`/api/dex/tokens/${mint}`);
+1235-      
+1236-      if (!response.ok) {
+1237-        if (response.status === 429 && retries > 0) {
+1238-          console.warn(`DexScreener Rate Limit for ${mint}. Retrying after ${backoff}ms...`);
+1239-          // Exponential backoff for rate limits
+--
+1624-      })) as {id: string, address: string, label: string}[];
+1625-      setMonitoredWallets(wallets);
+1626-    }, (error) => {
+1627-      handleFirestoreError(error, OperationType.GET, 'wallets');
+1628-    });
+1629-
+1630-    return () => unsubscribe();
+1631-  }, [user]);
+1632-
+1633-  const safePublicKey = (addr: string) => {
+1634:    try {
+1635-      if (!addr || typeof addr !== 'string') return null;
+1636-      return new PublicKey(addr.trim());
+1637-    } catch (e) {
+1638-      return null;
+1639-    }
+1640-  };
+1641-
+1642-  const addWallet = async () => {
+1643-    if (!user || !address) return;
+1644-    const pubKey = safePublicKey(address);
+1645-    if (!pubKey) {
+1646-      setError('Invalid Solana Public Key');
+1647-      return;
+1648-    }
+1649-
+1650:    try {
+1651-      await addDoc(collection(db, 'wallets'), {
+1652-        address: address.trim(),
+1653-        label: walletLabel || `محفظة ${monitoredWallets.length + 1}`,
+1654-        userId: user.uid,
+1655-        createdAt: serverTimestamp()
+1656-      });
+1657-      setAddress('');
+1658-      setWalletLabel('');
+1659-    } catch (err: any) {
+1660-      if (err.message && err.message.includes('permission')) {
+1661-        handleFirestoreError(err, OperationType.WRITE, 'wallets');
+1662-      }
+1663-      setError(err.message || 'Error adding wallet');
+1664-    }
+1665-  };
+1666-
+1667-  const removeWallet = async (id: string) => {
+1668:    try {
+1669-      await deleteDoc(doc(db, 'wallets', id));
+1670-    } catch (err: any) {
+1671-      if (err.message && err.message.includes('permission')) {
+1672-        handleFirestoreError(err, OperationType.DELETE, `wallets/${id}`);
+1673-      }
+1674-      setError(err.message || 'Error removing wallet');
+1675-    }
+1676-  };
+1677-
+1678-  const activeRequests = useRef(0);
+1679-  const MAX_CONCURRENT_RPC = 3;
+1680-
+1681-  const fetchTransactionWithRetry = async (signature: string, retries = 4, delay = 500): Promise<any> => {
+1682-    if (activeRequests.current >= MAX_CONCURRENT_RPC) {
+1683-      // If busy, wait a bit or skip purely background telemetry
+1684-      await new Promise(res => setTimeout(res, Math.random() * 2000));
+1685-      if (activeRequests.current >= MAX_CONCURRENT_RPC) return null;
+1686-    }
+1687-
+1688-    activeRequests.current++;
+1689:    try {
+1690-      const isHeliusAPI = true;
+1691-      for (let i = 0; i < retries; i++) {
+1692:          try {
+1693-            // Using Helius Enriched Transactions API for much better parsing and fewer rate limits
+1694-            const response = await fetch("https://api-mainnet.helius-rpc.com/v0/transactions/?api-key=b422aec3-82c7-425c-a409-a48e744829ad", {
+1695-                method: "POST",
+1696-                headers: { "Content-Type": "application/json" },
+1697-                body: JSON.stringify({ transactions: [signature] })
+1698-            });
+1699-
+1700-            if (!response.ok) {
+1701-                const status = response.status;
+1702-                if (status === 429) throw new Error('429 Rate limit');
+--
+1757-
+1758-        // Rate limit global fetches to avoid hitting RPC limits quickly
+1759-        // Only fetch if it looks like a big buy or randomly sampled
+1760-        const signature = logs.signature;
+1761-        if (processedSigs.current.has(signature)) return;
+1762-
+1763-        // Skip most trades to stay within free tier/demo context, but pick enough to feel "live"
+1764-        // Reduced sampling from 15% to 5% to avoid 429 errors from RPC
+1765-        if (Math.random() > 0.05 && !monitoredWallets.some(w => logs.logs.some(l => l.includes(w.address)))) return;
+1766-
+1767:        try {
+1768-          const isMigration = logs.logs.some(l => l.includes('Instruction: Initialize2'));
+1769-          const signature = logs.signature;
+1770-          if (processedSigs.current.has(signature)) return;
+1771-
+1772-          // Faster sampling for potential migrations
+1773-          const samplingRate = isMigration ? 1.0 : 0.05;
+1774-          if (Math.random() > samplingRate && !monitoredWallets.some(w => logs.logs.some(l => l.includes(w.address)))) return;
+1775-
+1776-          const tx = await fetchTransactionWithRetry(signature, 3, 500);
+1777-          let amount = 0;
+--
+2023-        if (!pubKey) {
+2024-          console.error('Invalid address in monitored list:', wallet.address);
+2025-          return;
+2026-        }
+2027-
+2028-        const id = connectionRef.current!.onLogs(pubKey, async (logs) => {
+2029-            const signature = logs.signature;
+2030-            const uniqueId = `trade-${signature}-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
+2031-            let parsedTrade: Trade | null = null;
+2032-
+2033:            try {
+2034-              const tx = await fetchTransactionWithRetry(signature);
+2035-
+2036-              if (tx && tx.meta) {
+2037-                const postTokenBalances = tx.meta.postTokenBalances || [];
+2038-                if (postTokenBalances.length > 0) {
+2039-                  const balance = postTokenBalances[0];
+2040-                  const preTokenBalances = tx.meta.preTokenBalances || [];
+2041-                  const preBalance = preTokenBalances.find(b => b.accountIndex === balance.accountIndex);
+2042-                  const preAmt = preBalance ? Number(preBalance.uiTokenAmount.uiAmount) : 0;
+2043-                  const postAmt = Number(balance.uiTokenAmount.uiAmount);
+--
+2118-    }
+2119-
+2120-    return () => {
+2121-      Object.keys(subscriptionIds.current).forEach(addr => {
+2122-        connectionRef.current?.removeOnLogsListener(subscriptionIds.current[addr]);
+2123-      });
+2124-    };
+2125-  }, [isMonitoring, monitoredWallets]);
+2126-
+2127-  const copyToClipboard = async (text: string, id: string) => {
+2128:    try {
+2129-      await navigator.clipboard.writeText(text);
+2130-      setCopiedId(id);
+2131-      setTimeout(() => setCopiedId(null), 2000);
+2132-    } catch (err) {
+2133-      console.error('Failed to copy!', err);
+2134-    }
+2135-  };
+2136-
+2137-  useEffect(() => {
+2138-    // Using Helius RPC for high-performance monitoring
+2139:    try {
+2140-      const HELIUS_RPC = 'https://mainnet.helius-rpc.com/?api-key=b422aec3-82c7-425c-a409-a48e744829ad';
+2141-      const HELIUS_WS = 'wss://mainnet.helius-rpc.com/?api-key=b422aec3-82c7-425c-a409-a48e744829ad';
+2142-      connectionRef.current = new Connection(HELIUS_RPC, {
+2143-        wsEndpoint: HELIUS_WS,
+2144-        commitment: 'confirmed',
+2145-        confirmTransactionInitialTimeout: 60000
+2146-      });
+2147-    } catch (err) {
+2148-      console.error('Failed to initialize Solana connection', err);
+2149-    }
+--
+2174-    if (user) {
+2175-      await addWallet();
+2176-    } else {
+2177-      setError('يرجى تسجيل الدخول أولاً لإضافة محفظة.');
+2178-    }
+2179-  };
+2180-
+2181-  const analyzeTrader = async () => {
+2182-    if (trades.length === 0) return;
+2183-    setIsAnalyzing(true);
+2184:    try {
+2185-      // Simulate analysis delay
+2186-      await new Promise(resolve => setTimeout(resolve, 1000));
+2187-      setAnalysis("ميزة الذكاء الاصطناعي معطلة حالياً لتوفير التوكنز (تم إزالتها بناءً على طلبك).");
+2188-    } catch (err) {
+2189-      console.error(err);
+2190-      setAnalysis("خطأ في التحليل.");
+2191-    } finally {
+2192-      setIsAnalyzing(false);
+2193-    }
+2194-  };
