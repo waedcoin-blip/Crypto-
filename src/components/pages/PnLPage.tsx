@@ -5204,7 +5204,9 @@ const checkTokenCriteria = (mint: string): {
           try {
             addLog(`📡 [DEXSCREENER ENGINE] Connecting directly to DexScreener API...`, 'info');
             const directRes = await fetch('https://api.dexscreener.com/token-profiles/latest/v1');
-            if (directRes.ok) {
+            if (directRes.status === 429) {
+               addLog(`❌ [DEXSCREENER ENGINE] Rate limited (HTTP 429) on direct fallback.`, 'error');
+            } else if (directRes.ok) {
               const directText = await directRes.text();
               if (directText && !directText.trim().startsWith('<')) {
                 profiles = JSON.parse(directText);

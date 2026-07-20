@@ -1002,17 +1002,79 @@ async function startServer() {
   app.get("/api/dex/tokens/:mint", async (req, res) => {
     const { mint } = req.params;
     try {
-      const data = await dexTokenCache.fetch(mint, async () => {
-        const { response, text } = await fetchWithRetry(`https://api.dexscreener.com/latest/dex/tokens/${mint}`, {
-          headers: { 'User-Agent': 'Mozilla/5.0' }
-        }, 3);
-        if (!response.ok) {
-          throw new Error(`DexScreener API status: ${response.status}`);
+      const mintList = Array.from(new Set(mint.split(',').map(m => m.trim()).filter(Boolean)));
+      if (mintList.length === 0) {
+        return res.json({ schemaVersion: "1.0.0", pairs: [] });
+      }
+
+      const pairs: any[] = [];
+      const missingMints: string[] = [];
+      const now = Date.now();
+
+      // Check cache for each mint individually
+      for (const m of mintList) {
+        const cached = dexTokenCache.get(m);
+        // Only use cache if it's completely fresh (not stale) to prevent returning mixed old/new data,
+        // or if it's stale but we want to avoid rate limits, we could use it. 
+        // For SwrCache, it handles background revalidation inside fetch(). Since we are bypassing it,
+        // let's do a simplified approach:
+        if (cached && !cached.isStale) {
+          if (cached.data && cached.data.pairs) {
+             pairs.push(...cached.data.pairs);
+          }
+        } else {
+          missingMints.push(m);
         }
-        return JSON.parse(text);
+      }
+
+      // If we have missing mints, fetch them in chunks of 30 (DexScreener limit)
+      if (missingMints.length > 0) {
+         for (let i = 0; i < missingMints.length; i += 30) {
+            const chunk = missingMints.slice(i, i + 30);
+            const ids = chunk.join(',');
+            
+            try {
+              // Instead of calling fetchWithRetry directly, we can use dexTokenCache.fetch on the chunk
+              // But we want to cache individual mints!
+              const { response, text } = await fetchWithRetry(`https://api.dexscreener.com/latest/dex/tokens/${ids}`, {
+                headers: { 'User-Agent': 'Mozilla/5.0' }
+              }, 3, 2000);
+              
+              if (response.ok) {
+                const parsed = JSON.parse(text);
+                if (parsed && parsed.pairs) {
+                   pairs.push(...parsed.pairs);
+                   // Cache the results back into individual mints
+                   const pairsByMint: Record<string, any[]> = {};
+                   for (const p of parsed.pairs) {
+                      const baseAddr = p.baseToken?.address;
+                      if (baseAddr) {
+                         if (!pairsByMint[baseAddr]) pairsByMint[baseAddr] = [];
+                         pairsByMint[baseAddr].push(p);
+                      }
+                   }
+                   for (const [m, p] of Object.entries(pairsByMint)) {
+                      dexTokenCache.set(m, { schemaVersion: "1.0.0", pairs: p });
+                   }
+                }
+              }
+            } catch (chunkErr: any) {
+              console.warn(`[DEXSCREENER PROXY WARNING]: chunk fetch failed for ${ids} (${chunkErr.message})`);
+              // For missing mints, we can use simulated pairs as fallback
+              for (const m of chunk) {
+                 const fallbackPair = generateSimulatedPair(m);
+                 pairs.push(fallbackPair);
+                 dexTokenCache.set(m, { schemaVersion: "1.0.0", pairs: [fallbackPair] });
+              }
+            }
+         }
+      }
+
+      res.json({
+         schemaVersion: "1.0.0",
+         pairs
       });
 
-      res.json(data);
     } catch (error: any) {
       console.warn(`[DEXSCREENER PROXY WARNING]: fetch failed for ${mint} (${error.message}). Serving deterministic simulation.`);
       
@@ -1043,13 +1105,12 @@ async function startServer() {
     try {
       const data = await dexTokenCache.fetch("trending_tokens", async () => {
         const ids = TRENDING_MINTS.join(',');
-        const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${ids}`, {
+        const { response, text } = await fetchWithRetry(`https://api.dexscreener.com/latest/dex/tokens/${ids}`, {
           headers: { 'User-Agent': 'Mozilla/5.0' }
-        });
+        }, 3, 2000);
         if (!response.ok) {
           throw new Error(`DexScreener API status: ${response.status}`);
         }
-        const text = await response.text();
         const parsed = JSON.parse(text);
         if (!parsed || !parsed.pairs || parsed.pairs.length === 0) {
           throw new Error(`Empty pairs from DexScreener`);
@@ -1079,20 +1140,19 @@ async function startServer() {
           "https://api.dexscreener.com/token-boosts/top/v1"
         ];
 
-        const fetchPromises = endpoints.map(async (url) => {
+        const allItems: any[] = [];
+        for (const url of endpoints) {
           try {
-            const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), 6000);
-            const response = await fetch(url, { 
-              headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
-              signal: controller.signal 
-            });
-            clearTimeout(timeout);
+            console.log(`[DEXSCREENER INGESTION] Fetching ${url}...`);
+            const { response, text } = await fetchWithRetry(url, { 
+              headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' }
+             }, 3, 2000);
+            
             if (!response.ok) {
               console.warn(`[DEXSCREENER INGESTION] Endpoints ${url} returned code ${response.status}`);
-              return [];
+              continue;
             }
-            const json = await response.json();
+            const json = JSON.parse(text);
             
             let items: any[] = [];
             if (Array.isArray(json)) {
@@ -1107,18 +1167,11 @@ async function startServer() {
                 }
               }
             }
-            return items;
+            allItems.push(...items);
+            // Delay to prevent 429
+            await new Promise(resolve => setTimeout(resolve, 1000));
           } catch (err: any) {
             console.error(`[DEXSCREENER INGESTION] Error fetching ${url}:`, err.message);
-            return [];
-          }
-        });
-
-        const results = await Promise.allSettled(fetchPromises);
-        const allItems: any[] = [];
-        for (const result of results) {
-          if (result.status === "fulfilled") {
-            allItems.push(...result.value);
           }
         }
 
