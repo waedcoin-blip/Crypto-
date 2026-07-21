@@ -546,11 +546,8 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
     const monitorPositions = async () => {
       if (!active) return;
       
-      for (const pos of activeSimrealPositions) {
+      for (const [mint, pos] of Object.entries(positions)) {
          if (!pos || !pos.simRealBought) continue;
-         
-         const mint = Object.keys(positions).find(k => positions[k] === pos);
-         if (!mint) continue;
          
          const tokenMetric = tokenMetrics[mint];
          const stageInfo = tokenMetric ? detectTokenStage(tokenMetric) : { stage: 'UNKNOWN', platform: 'UNKNOWN', isBonding: false, isMigrated: false, isNewListing: false, isNearMigration: false, bondingProgress: 0 } as const;
@@ -565,18 +562,23 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
              tpLimit = (simRealTakeProfitBonding !== undefined ? simRealTakeProfitBonding : 100) / 100;
              slLimit = (simRealStopLossBonding !== undefined ? simRealStopLossBonding : -20) / 100;
          } else if (stageInfo.platform === 'PUMPSWAP') {
-             tpLimit = (simRealTakeProfitRaydium !== undefined ? simRealTakeProfitRaydium : 50) / 100; // No specific PumpSwap TP provided by user, reusing Raydium or Bonding? Wait, we can reuse bonding since it's pre-raydium
+             tpLimit = (simRealTakeProfitRaydium !== undefined ? simRealTakeProfitRaydium : 50) / 100;
              slLimit = (simRealStopLossPumpSwap !== undefined ? simRealStopLossPumpSwap : -15) / 100;
          } else {
              tpLimit = (simRealTakeProfitRaydium !== undefined ? simRealTakeProfitRaydium : 50) / 100;
              slLimit = (simRealStopLossUnknown !== undefined ? simRealStopLossUnknown : -20) / 100;
          }
 
-         const currentPrice = pos.currentPrice || pos.buyPrice || 0;
-         const tokensQty = pos.simRealAmountTokens || 0;
-         const spentSol = pos.simRealSolSpent || 0.1;
+         const spentSol = pos.simRealSolSpent || pos.solSpent || 0.1;
+         const boughtPrice = pos.simRealBoughtPriceSol || pos.buyPrice || pos.currentPrice || 0.000001;
+         const currPrice = pos.currentPrice || pos.buyPrice || boughtPrice;
+         const tokensQty = (pos.simRealAmountTokens && pos.simRealAmountTokens > 0)
+           ? pos.simRealAmountTokens
+           : (pos.amount && pos.amount > 0)
+           ? pos.amount
+           : (spentSol / boughtPrice);
 
-         const currentGrossSimReal = currentPrice * tokensQty;
+         const currentGrossSimReal = currPrice * tokensQty;
          let netSimRealIfSold = currentGrossSimReal;
 
          if (!privateKey) {
