@@ -18,8 +18,9 @@ import {
 } from 'lucide-react';
 import { TokenMetric, SniperTrade } from '../../types';
 import { cn, detectTokenStage } from '../../lib/utils';
-import { createSimRealTradingEngine, SimRealTradingEngine, SimRealPosition } from '../../engines/simRealTradingEngine';
 import { useAppStore } from '../../store/appStore';
+import { useBuySignalStore } from '../../store/buySignalStore';
+import { simRealTradingEngine } from '../../engines/simRealTradingEngine';
 
 // Local helper matching the rest of the application
 const getDynamicOperationalFeeSol = (isRecovery: boolean = false, tradeAmountSol: number = 0.05): number => {
@@ -60,6 +61,10 @@ interface SimRealPageProps {
   simRealBalance: number;
   simRealTrades: SniperTrade[];
   maxPositions: number;
+  simRealTakeProfit: number;
+  setSimRealTakeProfit: (v: number) => void;
+  simRealStopLoss: number;
+  setSimRealStopLoss: (v: number) => void;
   slippage: number;
   privateKey: string;
   setPrivateKey: (v: string) => void;
@@ -74,15 +79,12 @@ interface SimRealPageProps {
   pumpSwapStopLoss: number;
   unknownStopLoss: number;
   executeSimRealSell: (mint: string) => Promise<void>;
+  executeSimRealBuy: (mint: string, amount: number) => Promise<void>;
   resetSimRealWallet: () => void;
   maxRebuyTimes: number;
   setMaxRebuyTimes: (v: number) => void;
   jupiterLogs: { id: string; timestamp: number; type: 'QUOTE' | 'SWAP' | 'ERROR' | 'INFO'; message: string; details?: any }[];
-  // NEW: independent trading engine wiring
-  maxTakeProfit?: number;
-  buyAmountSol?: number;
-  onSimRealBuySignal?: (mint: string, symbol: string, entryPrice: number, buyAmountSol: number) => void;
-  simrealEngineRef?: React.MutableRefObject<SimRealTradingEngine | null>;
+  setPositions?: React.Dispatch<React.SetStateAction<Record<string, any>>>;
 }
 
 export const SimRealPage: React.FC<SimRealPageProps> = ({
@@ -91,6 +93,10 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
   simRealBalance,
   simRealTrades,
   maxPositions,
+  simRealTakeProfit,
+  setSimRealTakeProfit,
+  simRealStopLoss,
+  setSimRealStopLoss,
   slippage,
   privateKey,
   setPrivateKey,
@@ -105,30 +111,135 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
   pumpSwapStopLoss,
   unknownStopLoss,
   executeSimRealSell,
+  executeSimRealBuy,
   resetSimRealWallet,
   maxRebuyTimes,
   setMaxRebuyTimes,
   jupiterLogs,
-  maxTakeProfit = 50,
-  buyAmountSol = 0.1,
-  simrealEngineRef
+  setPositions
 }) => {
   const [showKey, setShowKey] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
-  // --- INDEPENDENT TRADING ENGINE ---
-  // Owns real position/balance state once a private key is unlocked. PnLPage no
-  // longer executes real swaps — it only calls engineRef.current.enqueueBuySignal()
-  // via App.tsx's simrealEngineRef bridge when a paper position hits +1%.
-  const engineRef = useRef<SimRealTradingEngine | null>(null);
-  const [engineBalance, setEngineBalance] = useState<number>(simRealBalance);
-  const [enginePositions, setEnginePositions] = useState<SimRealPosition[]>([]);
-  const [engineStatus, setEngineStatus] = useState<'stopped' | 'running' | 'error'>('stopped');
-  const [engineError, setEngineError] = useState<string>('');
-  const tokenMetricsRef = useRef(tokenMetrics);
-  useEffect(() => { tokenMetricsRef.current = tokenMetrics; }, [tokenMetrics]);
+  // ── SERVER HEALTH MONITORING ──
+  const [serverHealth, setServerHealth] = useState<'unknown' | 'ok' | 'degraded'>('unknown');
+  const [healthError, setHealthError] = useState<string | null>(null);
 
-  const { setSimRealBalance: setGlobalSimRealBalance, setSimRealTrades: setGlobalSimRealTrades } = useAppStore();
+  useEffect(() => {
+    let active = true;
+    const checkHealth = async () => {
+      try {
+        const res = await fetch('/api/health');
+        if (!res.ok) {
+          const text = await res.text();
+          let errStr = `HTTP ${res.status}`;
+          try {
+            const parsed = JSON.parse(text);
+            errStr = parsed.error || parsed.message || errStr;
+          } catch {}
+          if (active) {
+            setServerHealth('degraded');
+            setHealthError(errStr);
+          }
+          return;
+        }
+        const data = await res.json();
+        if (active) {
+          setServerHealth(data.status === 'healthy' ? 'ok' : 'degraded');
+          if (data.status !== 'healthy') {
+            const degradedDetails = Object.entries(data.checks || {})
+              .filter(([, v]) => v !== 'OK')
+              .map(([k, v]) => `${k}: ${v}`)
+              .join(', ');
+            setHealthError(degradedDetails || 'Some dependencies are degraded');
+          } else {
+            setHealthError(null);
+          }
+        }
+      } catch (err: any) {
+        if (active) {
+          setServerHealth('degraded');
+          setHealthError(err?.message || 'Server check failed');
+        }
+      }
+    };
+
+    checkHealth();
+    const interval = setInterval(checkHealth, 30_000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, []);
+
+  // ── ZUSTAND BUY SIGNALS PIPELINE STORE CONNECTION ──
+  const signals = useBuySignalStore(state => state.signals);
+  const stats = useBuySignalStore(state => state.stats);
+  const claimNextPending = useBuySignalStore(state => state.claimNextPending);
+  const markExecuting = useBuySignalStore(state => state.markExecuting);
+  const markExecuted = useBuySignalStore(state => state.markExecuted);
+  const markFailed = useBuySignalStore(state => state.markFailed);
+  const markRejected = useBuySignalStore(state => state.markRejected);
+  const pruneOld = useBuySignalStore(state => state.pruneOld);
+
+  // Lock to prevent concurrent processing of different signals
+  const processingLock = useRef(false);
+
+  // Manual independent trading states
+  const [manualMint, setManualMint] = useState('');
+  const [manualAmount, setManualAmount] = useState('0.1');
+  const [isBuying, setIsBuying] = useState(false);
+  const [buyStatus, setBuyStatus] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
+
+  const handleManualBuy = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBuyStatus(null);
+    const mint = manualMint.trim();
+    const amount = parseFloat(manualAmount);
+
+    if (!mint) {
+      setBuyStatus({ type: 'error', text: 'Token address is required.' });
+      return;
+    }
+    const isAddress = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mint);
+    if (!isAddress) {
+      setBuyStatus({ type: 'error', text: 'Invalid Solana address format.' });
+      return;
+    }
+    if (isNaN(amount) || amount <= 0) {
+      setBuyStatus({ type: 'error', text: 'Invalid SOL amount.' });
+      return;
+    }
+    if (simRealBalance < amount) {
+      setBuyStatus({ type: 'error', text: `Insufficient SimReal Balance (${simRealBalance.toFixed(4)} SOL).` });
+      return;
+    }
+
+    try {
+      setIsBuying(true);
+      setBuyStatus({ type: 'info', text: 'Initiating trade swap on-chain/simulation...' });
+      
+      await executeSimRealBuy(mint, amount);
+      
+      setBuyStatus({ type: 'success', text: `Successfully executed independent swap for ${mint.slice(0, 8)}!` });
+      setManualMint(''); // clear input on success
+    } catch (err: any) {
+      setBuyStatus({ type: 'error', text: err?.message || 'Trade failed.' });
+    } finally {
+      setIsBuying(false);
+    }
+  };
+
+  const handleForceSell = async (mint: string) => {
+    const pos = positions[mint];
+    if (!pos) return;
+
+    try {
+      await executeSimRealSell(mint);
+    } catch (err: any) {
+      console.error("Independent sell failed:", err);
+    }
+  };
 
   const handleCopy = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
@@ -197,87 +308,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
       clearInterval(interval);
     };
   }, [privateKey, rpcUrl, jupiterRpcUrl, customWsUrl]);
-
-  // --- INDEPENDENT TRADING ENGINE LIFECYCLE ---
-  // Starts once the wallet is connected; stops on unmount or when the key/RPC changes.
-  useEffect(() => {
-    if (!privateKey || jupiterStatus !== 'CONNECTED') {
-      if (engineRef.current) {
-        engineRef.current.stop();
-        engineRef.current = null;
-        if (simrealEngineRef) simrealEngineRef.current = null;
-        setEngineStatus('stopped');
-      }
-      return;
-    }
-
-    const activeRpcUrl = jupiterRpcUrl && jupiterRpcUrl.trim() !== "" ? jupiterRpcUrl.trim() : (rpcUrl || '');
-    if (!activeRpcUrl) return;
-
-    const engine = createSimRealTradingEngine({
-      privateKey,
-      apiKey: apiKey || '',
-      rpcUrl: activeRpcUrl,
-      defaultSlippagePct: slippage,
-      initialBalance: simRealBalance,
-      stopLoss,
-      takeProfit: maxTakeProfit,
-      getTokenMetrics: () => tokenMetricsRef.current,
-      onPositionUpdate: (position) => {
-        setEnginePositions((prev) => {
-          const isNew = !prev.some(p => p.mint === position.mint);
-          const updated = prev.filter(p => p.mint !== position.mint);
-          if (isNew && position.status === 'filled') {
-            // Record the BUY in the global trade store so PnLPage's rebuy-limit
-            // check (which reads simRealTrades) sees engine-executed buys too.
-            setGlobalSimRealTrades(prevTrades => [{
-              id: `simreal-engine-buy-${position.mint}-${position.boughtAt}`,
-              type: 'BUY',
-              token: position.symbol,
-              address: position.mint,
-              amount: position.solSpent,
-              timestamp: position.boughtAt,
-              signature: position.txid || '',
-              tokenAmount: position.tokenAmount
-            }, ...prevTrades]);
-          }
-          return [...updated, position];
-        });
-      },
-      onBalanceUpdate: (balance) => {
-        setEngineBalance(balance);
-        setGlobalSimRealBalance(() => balance);
-      },
-      onTradeComplete: (trade) => {
-        setEnginePositions((prev) => prev.filter(p => p.mint !== trade.mint));
-        setGlobalSimRealTrades(prevTrades => [{
-          id: `simreal-engine-sell-${trade.mint}-${trade.timestamp}`,
-          type: 'SELL',
-          token: trade.symbol,
-          address: trade.mint,
-          amount: trade.solReceived,
-          timestamp: trade.timestamp,
-          signature: trade.txid,
-          pnl: trade.pnlPct
-        }, ...prevTrades]);
-      },
-      onError: (err) => setEngineError(err.message)
-    });
-
-    engine.start();
-    engineRef.current = engine;
-    if (simrealEngineRef) simrealEngineRef.current = engine;
-    setEngineStatus('running');
-    setEngineError('');
-
-    return () => {
-      engine.stop();
-      if (engineRef.current === engine) engineRef.current = null;
-      if (simrealEngineRef?.current === engine) simrealEngineRef.current = null;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [privateKey, jupiterStatus, jupiterRpcUrl, rpcUrl, apiKey, slippage, stopLoss, maxTakeProfit]);
-
+  
   const activeSimrealPositions = Object.values(positions).filter(pos => pos && pos.simRealBought);
 
   const getCompletedSimRealTrades = () => {
@@ -335,6 +366,214 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
     return completed.reverse();
   };
 
+  // ── BACKGROUND WORKER: Buy Signal Pipeline ──
+  useEffect(() => {
+    let workerActive = true;
+
+    const processSignalQueue = async () => {
+      // 1. Check lock
+      if (processingLock.current || !workerActive) return;
+
+      // ── SERVER HEALTH CHECK GATE ──
+      if (serverHealth === 'degraded') {
+        console.warn('[SimReal] Server health is degraded, proceeding with caution...');
+      }
+
+      processingLock.current = true;
+
+      try {
+        // 2. Claim next pending signal
+        const signal = claimNextPending();
+        if (!signal) {
+          processingLock.current = false;
+          return;
+        }
+
+        const { tokenAddress, symbol, triggerPriceUsd, profitPercent } = signal;
+        console.log(`[Pipeline] Processing signal for ${symbol} (+${profitPercent.toFixed(2)}%)`);
+
+        // Mark as actively executing
+        markExecuting(signal.id);
+
+        // 3. Execution Gates & Fresh Quote Check
+        const storeState = useAppStore.getState();
+
+        // Check if token address starts with 'sim' (blocked for real-money, allowed in simulation)
+        if (privateKey && (tokenAddress.toLowerCase().startsWith('sim') || symbol.toLowerCase().startsWith('sim'))) {
+          markRejected(signal.id, 'Tokens starting with sim are strictly blocked for real-money trading.');
+          processingLock.current = false;
+          return;
+        }
+
+        // Check if we already have an active SimReal position for this token
+        const hasActivePosition = positions && positions[tokenAddress]?.simRealBought;
+        if (hasActivePosition) {
+          markRejected(signal.id, `Already holding active SimReal position for ${symbol}`);
+          processingLock.current = false;
+          return;
+        }
+
+        // Check rebuy limits (maxRebuyTimes)
+        const completedSimRealCount = storeState.simRealTrades.filter(
+          t => t.address === tokenAddress && t.type === 'BUY'
+        ).length;
+        const activeMaxRebuyTimes = maxRebuyTimes !== undefined ? maxRebuyTimes : 3;
+
+        if (completedSimRealCount >= activeMaxRebuyTimes) {
+          markRejected(
+            signal.id,
+            `Exceeded rebuy limit of ${activeMaxRebuyTimes} (Already traded ${completedSimRealCount} times)`
+          );
+          processingLock.current = false;
+          return;
+        }
+
+        // Check wallet balance
+        const buyAmt = storeState.buyAmountSol || 0.1;
+        if (storeState.simRealBalance < buyAmt) {
+          markRejected(
+            signal.id,
+            `Insufficient SimReal Balance (${storeState.simRealBalance.toFixed(4)} SOL < ${buyAmt} SOL)`
+          );
+          processingLock.current = false;
+          return;
+        }
+
+        // ── FETCH FRESH QUOTE FOR VERIFICATION ──
+        let freshPriceUsd = triggerPriceUsd;
+        let freshLiquidityUsd = signal.liquidityUsd;
+
+        try {
+          const res = await fetch(`/api/dex/tokens/${tokenAddress}`);
+          if (res.ok) {
+            const data = await res.json();
+            const pair = data?.pairs?.[0];
+            if (pair) {
+              freshPriceUsd = parseFloat(pair.priceUsd || '0');
+              freshLiquidityUsd = parseFloat(pair.liquidity?.usd || '0');
+            }
+          }
+        } catch (err) {
+          console.warn('[Pipeline] Failed to fetch fresh quote, using signal data');
+        }
+
+        // Gate 1: Check minimum liquidity (e.g. $10,000)
+        if (freshLiquidityUsd < 10_000) {
+          markRejected(signal.id, `Liquidity collapsed to $${freshLiquidityUsd.toFixed(0)} < $10,000`);
+          processingLock.current = false;
+          return;
+        }
+
+        // Gate 2: Deviation check (Pump guard: Max 15% above trigger price)
+        const priceIncreasePercent = ((freshPriceUsd - triggerPriceUsd) / triggerPriceUsd) * 100;
+        if (priceIncreasePercent > 15) {
+          markRejected(
+            signal.id,
+            `Price pumped too high after trigger: +${priceIncreasePercent.toFixed(2)}% > +15%`
+          );
+          processingLock.current = false;
+          return;
+        }
+
+        // 4. All checks passed — execute real/sim trade
+        console.log(`[Pipeline] Executing Jupiter copy-buy of ${symbol}...`);
+        await executeSimRealBuy(tokenAddress, buyAmt);
+        markExecuted(signal.id, `tx-copy-${Date.now()}`);
+
+      } catch (err: any) {
+        console.error(`[Pipeline Error] Signal swap execution failed:`, err);
+        const currentSignals = useBuySignalStore.getState().signals;
+        const activeExecuting = currentSignals.find(s => s.status === 'executing' || s.status === 'picked_up');
+        if (activeExecuting) {
+          markFailed(activeExecuting.id, err?.message || 'Transaction execution failed');
+        }
+      } finally {
+        processingLock.current = false;
+      }
+    };
+
+    // Run queue check every 1.5 seconds
+    const intervalId = setInterval(processSignalQueue, 1500);
+
+    // Prune old signals every 30 seconds
+    const pruneId = setInterval(() => {
+      pruneOld(5 * 60 * 1000); // 5-minute deduplication window
+    }, 30000);
+
+    return () => {
+      workerActive = false;
+      clearInterval(intervalId);
+      clearInterval(pruneId);
+    };
+  }, [
+    positions,
+    maxRebuyTimes,
+    privateKey,
+    apiKey,
+    jupiterRpcUrl,
+    rpcUrl,
+    slippage,
+    tokenMetrics,
+    setPositions,
+    claimNextPending,
+    markExecuting,
+    markExecuted,
+    markFailed,
+    markRejected,
+    pruneOld,
+  ]);
+
+  // ── BACKGROUND WORKER: SimReal Active Positions TP/SL Monitor ──
+  useEffect(() => {
+    let active = true;
+
+    const monitorPositions = async () => {
+      if (!active) return;
+      
+      const tpLimit = (simRealTakeProfit !== undefined ? simRealTakeProfit : 10) / 100;
+      const slLimit = (simRealStopLoss !== undefined ? simRealStopLoss : -10) / 100;
+
+      for (const pos of activeSimrealPositions) {
+         if (!pos || !pos.simRealBought) continue;
+         
+         const mint = Object.keys(positions).find(k => positions[k] === pos);
+         if (!mint) continue;
+
+         const currentPrice = pos.currentPrice || pos.buyPrice || 0;
+         const tokensQty = pos.simRealAmountTokens || 0;
+         const spentSol = pos.simRealSolSpent || 0.1;
+
+         const currentGrossSimReal = currentPrice * tokensQty;
+         let netSimRealIfSold = currentGrossSimReal;
+
+         if (!privateKey) {
+            const slippageFee = currentGrossSimReal * (slippage / 100);
+            const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, spentSol);
+            netSimRealIfSold = Math.max(0, currentGrossSimReal - slippageFee - opFees);
+         }
+
+         const simRealNetPnlPct = (netSimRealIfSold - spentSol) / spentSol;
+
+         if (simRealNetPnlPct >= tpLimit || simRealNetPnlPct <= slLimit) {
+            console.log(`[SimReal TP/SL] Triggered sell for ${pos.symbol} at ${(simRealNetPnlPct * 100).toFixed(2)}% PnL`);
+            // Only process one auto-sell per tick to avoid overwhelming RPC
+            try {
+               await executeSimRealSell(mint);
+            } catch (e) {
+               console.error("Failed to auto-sell SimReal position:", e);
+            }
+            break; 
+         }
+      }
+    };
+
+    const interval = setInterval(monitorPositions, 3000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [positions, simRealTakeProfit, simRealStopLoss, privateKey, slippage, executeSimRealSell]);
+
   const completedTrades = getCompletedSimRealTrades();
 
   const totalBuySol = completedTrades.reduce((sum, t) => sum + t.buyAmountSol, 0);
@@ -353,6 +592,21 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
           <p className="text-xs uppercase tracking-widest font-mono text-slate-500 mt-1">
             Simulated Real-Time Copy Trader and Automated Active Wallet Execution
           </p>
+          <div className="flex items-center gap-2 mt-2">
+            <span className={`w-2 h-2 rounded-full inline-block ${
+              serverHealth === 'ok' ? 'bg-emerald-400 animate-pulse' :
+              serverHealth === 'degraded' ? 'bg-amber-400 animate-pulse' : 'bg-slate-500'
+            }`} />
+            <span className="text-[10px] uppercase font-mono tracking-wider font-bold text-slate-400 flex items-center gap-1.5">
+              Server status: <span className={
+                serverHealth === 'ok' ? 'text-emerald-400' :
+                serverHealth === 'degraded' ? 'text-amber-400' : 'text-slate-500'
+              }>{serverHealth === 'ok' ? 'ONLINE' : serverHealth === 'degraded' ? 'DEGRADED' : 'CHECKING...'}</span>
+            </span>
+            {healthError && (
+              <span className="text-[9px] text-amber-500 font-mono">({healthError})</span>
+            )}
+          </div>
         </div>
         
         <div className="bg-[#10111a]/60 border border-[#1f212e] rounded-xl px-4 py-3 flex items-center gap-4">
@@ -445,6 +699,32 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                       className="bg-[#07080e] border border-[#1f212e] rounded-lg px-3 py-1.5 text-xs text-[#e2e8f0] focus:outline-none focus:border-emerald-500/50 font-mono w-full"
                    />
                 </div>
+                <div className="grid grid-cols-2 gap-3">
+                   <div className="flex flex-col gap-1">
+                      <div className="flex justify-between items-center">
+                         <label className="text-[10px] text-slate-400 font-mono uppercase tracking-wider">Take Profit</label>
+                         <span className="text-[9px] text-emerald-400 font-mono">%</span>
+                      </div>
+                      <input
+                         type="number"
+                         value={simRealTakeProfit}
+                         onChange={(e) => setSimRealTakeProfit(Number(e.target.value))}
+                         className="bg-[#07080e] border border-[#1f212e] rounded-lg px-3 py-1.5 text-xs text-[#e2e8f0] focus:outline-none focus:border-emerald-500/50 font-mono w-full"
+                      />
+                   </div>
+                   <div className="flex flex-col gap-1">
+                      <div className="flex justify-between items-center">
+                         <label className="text-[10px] text-slate-400 font-mono uppercase tracking-wider">Stop Loss</label>
+                         <span className="text-[9px] text-rose-400 font-mono">%</span>
+                      </div>
+                      <input
+                         type="number"
+                         value={simRealStopLoss}
+                         onChange={(e) => setSimRealStopLoss(-Math.abs(Number(e.target.value)))}
+                         className="bg-[#07080e] border border-[#1f212e] rounded-lg px-3 py-1.5 text-xs text-[#e2e8f0] focus:outline-none focus:border-emerald-500/50 font-mono w-full"
+                      />
+                   </div>
+                </div>
 
                 {privateKey ? (
                    <div className="p-3 bg-emerald-500/5 border border-emerald-500/20 rounded-xl space-y-2">
@@ -490,70 +770,100 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
              </div>
           </div>
 
-          {/* --- INDEPENDENT TRADING ENGINE STATUS & POSITIONS --- */}
-          <div className="bg-[#10111a]/60 border border-[#1f212e] rounded-2xl flex flex-col p-4">
-            <div className="flex justify-between items-center pb-3 border-b border-[#1f212e] mb-4">
-              <div className="flex flex-col">
-                <h2 className="text-[12px] uppercase tracking-[1px] text-cyan-300 font-bold">
-                  Independent Engine ({enginePositions.length} positions)
+          {/* Direct Independent Swap Card */}
+          <div className="bg-[#10111a]/60 border border-[#1f212e] rounded-2xl flex flex-col p-4 space-y-3">
+             <div className="flex flex-col pb-2 border-b border-[#1f212e]">
+                <h2 className="text-[12px] uppercase tracking-[1px] text-emerald-400 font-bold flex items-center gap-2">
+                   <Zap className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
+                   Direct Independent Swap (Buy)
                 </h2>
-                <span className="text-[9px] text-slate-500 uppercase font-mono mt-0.5">
-                  Receives +1% signals from PnL scanner, executes real Jupiter swaps directly
-                </span>
-              </div>
-              <span className={cn(
-                "text-[10px] font-mono px-2 py-0.5 rounded border font-bold",
-                engineStatus === 'running' ? "text-emerald-300 bg-emerald-500/10 border-emerald-500/20 animate-pulse" : "text-slate-400 bg-slate-500/10 border-slate-500/20"
-              )}>
-                {engineStatus.toUpperCase()}
-              </span>
-            </div>
+                <span className="text-[9px] text-slate-500 uppercase font-mono mt-0.5">Paste any contract to execute manual trades independently</span>
+             </div>
 
-            {engineError && (
-              <div className="mb-3 bg-rose-500/10 border border-rose-500/20 rounded-lg p-2 flex items-start gap-2">
-                <AlertTriangle className="w-3.5 h-3.5 text-rose-400 flex-shrink-0 mt-0.5" />
-                <span className="text-[11px] text-rose-300 font-mono">{engineError}</span>
-              </div>
-            )}
+             <form onSubmit={handleManualBuy} className="space-y-3">
+                <div className="flex flex-col gap-1">
+                   <label className="text-[10px] text-slate-400 font-mono uppercase tracking-wider">Token Mint Address</label>
+                   <input
+                      type="text"
+                      placeholder="Paste Solana Token Address (Mint)"
+                      value={manualMint}
+                      onChange={(e) => setManualMint(e.target.value)}
+                      disabled={isBuying}
+                      className="bg-[#07080e] border border-[#1f212e] rounded-lg px-3 py-1.5 text-xs text-[#e2e8f0] focus:outline-none focus:border-emerald-500/50 font-mono w-full"
+                   />
+                </div>
 
-            <div className="text-[11px] text-slate-400 font-mono mb-3">
-              Engine balance: <span className="text-cyan-300 font-bold">{engineBalance.toFixed(4)} SOL</span>
-            </div>
+                <div className="flex flex-col gap-1">
+                   <div className="flex justify-between items-center">
+                      <label className="text-[10px] text-slate-400 font-mono uppercase tracking-wider">Buy Amount (SOL)</label>
+                      <span className="text-[9px] text-slate-500 font-mono">Current: {simRealBalance.toFixed(4)} SOL available</span>
+                   </div>
+                   <input
+                      type="number"
+                      step="0.01"
+                      min="0.001"
+                      placeholder="0.1"
+                      value={manualAmount}
+                      onChange={(e) => setManualAmount(e.target.value)}
+                      disabled={isBuying}
+                      className="bg-[#07080e] border border-[#1f212e] rounded-lg px-3 py-1.5 text-xs text-[#e2e8f0] focus:outline-none focus:border-emerald-500/50 font-mono w-full"
+                   />
+                   
+                   {/* Quick Size Selection Buttons */}
+                   <div className="grid grid-cols-5 gap-1.5 pt-1">
+                      {['0.01', '0.05', '0.1', '0.5', '1.0'].map((val) => (
+                         <button
+                            key={`quick-size-${val}`}
+                            type="button"
+                            onClick={() => setManualAmount(val)}
+                            disabled={isBuying}
+                            className={cn(
+                               "text-[9px] font-bold py-1 px-1 text-center rounded transition-all font-mono",
+                               manualAmount === val 
+                                 ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40" 
+                                 : "bg-[#07080e] hover:bg-[#10111a] text-slate-400 border border-[#1f212e] hover:text-white"
+                            )}
+                         >
+                            {val}
+                         </button>
+                      ))}
+                   </div>
+                </div>
 
-            {enginePositions.length === 0 ? (
-              <div className="bg-[#10111a]/40 border border-[#1f212e] border-dashed rounded-xl p-6 text-center text-[#64748b] text-[11px] font-mono">
-                No engine-held positions yet. Waiting for +1% signals.
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {enginePositions.map((pos) => {
-                  const metric = tokenMetrics[pos.mint];
-                  const currentPrice = metric?.priceNative || 0;
-                  const currentValue = currentPrice * pos.tokenAmount;
-                  const pnl = currentValue - pos.solSpent;
-                  const pnlPct = pos.solSpent > 0 ? (pnl / pos.solSpent) * 100 : 0;
-                  return (
-                    <div key={pos.mint} className="flex items-center justify-between bg-[#10111a]/40 border border-[#1f212e] rounded-lg px-3 py-2">
-                      <div className="flex flex-col">
-                        <span className="text-[12px] font-bold text-slate-200">{pos.symbol}</span>
-                        <span className="text-[10px] font-mono text-slate-500">{pos.solSpent.toFixed(4)} SOL spent</span>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <span className={cn("text-[11px] font-mono font-bold", pnl >= 0 ? "text-emerald-400" : "text-rose-400")}>
-                          {pnl >= 0 ? '+' : ''}{pnlPct.toFixed(1)}%
-                        </span>
-                        <button
-                          onClick={() => engineRef.current?.manualSell(pos.mint)}
-                          className="bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 transition-colors px-2 py-1 rounded text-[10px] font-black uppercase tracking-widest border border-rose-500/20"
-                        >
-                          Sell
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+                {buyStatus && (
+                   <div className={cn(
+                      "p-2.5 rounded-lg text-[10px] font-mono leading-normal border",
+                      buyStatus.type === 'error' ? "bg-rose-500/10 text-rose-400 border-rose-500/20" :
+                      buyStatus.type === 'success' ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" :
+                      "bg-blue-500/10 text-blue-400 border-blue-500/20"
+                   )}>
+                      {buyStatus.text}
+                   </div>
+                )}
+
+                <button
+                   type="submit"
+                   disabled={isBuying}
+                   className={cn(
+                      "w-full py-2 px-4 rounded-lg font-black uppercase text-[10px] tracking-wider transition-all flex items-center justify-center gap-1.5 active:scale-95 border",
+                      isBuying 
+                        ? "bg-amber-500/10 border-amber-500/30 text-amber-400 cursor-not-allowed" 
+                        : "bg-emerald-500/15 hover:bg-emerald-500/25 border-emerald-500/30 text-emerald-400 hover:text-emerald-300"
+                   )}
+                >
+                   {isBuying ? (
+                      <>
+                         <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                         Executing Swap...
+                      </>
+                   ) : (
+                      <>
+                         <Zap className="w-3.5 h-3.5" />
+                         Execute Swap (Buy)
+                      </>
+                   )}
+                </button>
+             </form>
           </div>
 
           <div className="bg-[#10111a]/60 border border-[#1f212e] rounded-2xl flex flex-col p-4">
@@ -688,13 +998,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                           
                           <div className="col-span-2 pt-2">
                              <button 
-                               onClick={() => {
-                                 if (engineRef.current?.hasPosition(mint)) {
-                                   engineRef.current.manualSell(mint);
-                                 } else {
-                                   executeSimRealSell(mint);
-                                 }
-                               }}
+                               onClick={() => handleForceSell(mint)}
                                className="w-full bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 transition-colors px-3 py-2 rounded-lg text-xs font-black uppercase tracking-widest border border-rose-500/20 group"
                               >
                                <span className="flex items-center justify-center gap-2">
@@ -779,6 +1083,107 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
 
         {/* Right Column: Wallet Trades history */}
         <div className="lg:col-span-7">
+          {/* Zustand Buy Signals Pipeline Dashboard */}
+          <div className="bg-[#10111a]/60 border border-[#1f212e] rounded-2xl flex flex-col p-4 mb-6">
+            <div className="pb-3 border-b border-[#1f212e] mb-4 flex justify-between items-center">
+              <div className="flex flex-col">
+                <h2 className="text-[12px] uppercase tracking-[1px] text-emerald-400 font-bold flex items-center gap-2">
+                  <Zap className="w-4 h-4 text-emerald-400" />
+                  Cross-Page Buy Signals Pipeline
+                </h2>
+                <span className="text-[9px] text-slate-500 uppercase font-mono mt-0.5">Zustand Real-Time Signal Bridge (PnLPage → SimRealPage)</span>
+              </div>
+              <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2.5 py-0.5 rounded border border-emerald-500/20 font-bold">
+                {signals.length} Signals Captured
+              </span>
+            </div>
+
+            {/* Signal Stats Grid */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+              <div className="bg-[#0a0b14] border border-[#1f212e] rounded-xl p-3 flex flex-col">
+                <span className="text-[9px] text-slate-500 font-mono uppercase">Total Emitted</span>
+                <span className="text-lg font-mono font-black text-white">{stats.totalEmitted}</span>
+              </div>
+              <div className="bg-[#0a0b14] border border-[#1f212e] rounded-xl p-3 flex flex-col">
+                <span className="text-[9px] text-slate-500 font-mono uppercase">Total Executed</span>
+                <span className="text-lg font-mono font-black text-emerald-400">{stats.totalExecuted}</span>
+              </div>
+              <div className="bg-[#0a0b14] border border-[#1f212e] rounded-xl p-3 flex flex-col">
+                <span className="text-[9px] text-slate-500 font-mono uppercase">Total Failed</span>
+                <span className="text-lg font-mono font-black text-rose-400">{stats.totalFailed}</span>
+              </div>
+              <div className="bg-[#0a0b14] border border-[#1f212e] rounded-xl p-3 flex flex-col">
+                <span className="text-[9px] text-slate-500 font-mono uppercase">Total Rejected</span>
+                <span className="text-lg font-mono font-black text-amber-400">{stats.totalRejected}</span>
+              </div>
+            </div>
+
+            {/* Active Signals Queue / History */}
+            <div className="overflow-x-auto max-h-[250px] scrollbar-none">
+              {signals.length === 0 ? (
+                <div className="text-center text-[#64748b] py-8 text-[11px] font-mono">
+                  No signals received in this session yet. Waiting for any simulated position on the PnLPage to cross +1% profit...
+                </div>
+              ) : (
+                <table className="w-full text-left border-collapse text-[10px] font-mono whitespace-nowrap">
+                  <thead>
+                    <tr className="text-[#64748b] border-b border-[#1f212e]">
+                      <th className="pb-2 font-medium pr-4">Timestamp</th>
+                      <th className="pb-2 font-medium pr-4">Token</th>
+                      <th className="pb-2 font-medium pr-4">Emit Profit %</th>
+                      <th className="pb-2 font-medium pr-4">Status</th>
+                      <th className="pb-2 font-medium">Outcome / Reason</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...signals].reverse().slice(0, 15).map(sig => {
+                      const ageSec = Math.floor((Date.now() - sig.timestamp) / 1000);
+                      let ageString = `${ageSec}s ago`;
+                      if (ageSec >= 60) {
+                        ageString = `${Math.floor(ageSec / 60)}m ${ageSec % 60}s ago`;
+                      }
+
+                      return (
+                        <tr key={sig.id} className="border-b border-[#1f212e]/50 last:border-0 hover:bg-[#1f212e]/30 transition-colors">
+                          <td className="py-2 text-slate-400 pr-4">{ageString}</td>
+                          <td className="py-2 font-bold text-white pr-4">
+                            <span className="text-[#c7f284]">{sig.symbol}</span>
+                            <span className="text-[8px] text-slate-500 ml-1">({sig.tokenAddress.slice(0, 4)}...{sig.tokenAddress.slice(-4)})</span>
+                          </td>
+                          <td className="py-2 text-[#c7f284] pr-4 font-black">+{sig.profitPercent.toFixed(2)}%</td>
+                          <td className="py-2 pr-4">
+                            <span className={cn(
+                              "px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider",
+                              sig.status === 'pending' ? "bg-blue-500/10 text-blue-400 border border-blue-500/20" :
+                              sig.status === 'picked_up' ? "bg-amber-500/10 text-amber-400 border border-amber-500/20 animate-pulse" :
+                              sig.status === 'executed' ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" :
+                              sig.status === 'rejected' ? "bg-slate-500/10 text-slate-400 border border-slate-500/20" :
+                              "bg-rose-500/10 text-rose-400 border border-rose-500/20"
+                            )}>
+                              {sig.status}
+                            </span>
+                          </td>
+                          <td className="py-2 text-slate-300 max-w-[200px] truncate">
+                            {sig.status === 'executed' && sig.txSignature && (
+                              <span className="text-emerald-400 font-semibold text-[9px] break-all">
+                                {sig.txSignature}
+                              </span>
+                            )}
+                            {(sig.status === 'rejected' || sig.status === 'failed') && sig.rejectionReason && (
+                              <span className="text-slate-400 text-[9px]">
+                                {sig.rejectionReason}
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+
           <div className="bg-[#10111a]/60 border border-[#1f212e] rounded-2xl flex flex-col p-4">
             <div className="pb-3 border-b border-[#1f212e] mb-4 flex justify-between items-center">
               <div className="flex flex-col">

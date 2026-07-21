@@ -107,7 +107,11 @@ async function getFastestRegionalHub(apiKey: string, excludeHubs: Set<string> = 
     availableHubs.map(async url => {
       const start = Date.now();
       try {
-        await fetch(url, { method: 'OPTIONS', signal: AbortSignal.timeout(2000) }).catch(() => null);
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 2000);
+        await fetch(url, { method: 'OPTIONS', signal: controller.signal })
+          .catch(() => null)
+          .finally(() => clearTimeout(timeoutId));
         return { url, latency: Date.now() - start };
       } catch {
         return { url, latency: 9999 };

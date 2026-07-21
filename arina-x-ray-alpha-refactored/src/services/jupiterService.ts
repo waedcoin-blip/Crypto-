@@ -344,38 +344,53 @@ export const executeTxWithRPCFallback = async (
     "https://ny.mainnet.block-engine.jito.wtf/api/v1/transactions"
   ];
 
-  let sentViaJito = false;
-  try {
-    await Promise.any(
-      jitoEndpoints.map(endpoint =>
-        fetch(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ transactions: [serializedTx] })
-        }).then(res => { if (res.ok) return endpoint; throw new Error("Jito failed"); })
-      )
-    );
-    sentViaJito = true;
-  } catch (e) {}
-
   const rpcsToTry = [connection.rpcEndpoint];
 
-  // Broadcast to all RPCs immediately in parallel to maximize transaction propagation speed!
-  try {
-    await Promise.allSettled(rpcsToTry.map(async rpc => {
-      try {
-        const conn = new Connection(rpc, 'confirmed');
-        await conn.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
-      } catch (err) {}
-    }));
-  } catch (err) {}
+  // Robust parallel broadcaster: broadcasts to all RPCs + Jito endpoints immediately
+  const broadcastTransaction = async () => {
+    // Broadcast via Jito in parallel
+    try {
+      Promise.any(
+        jitoEndpoints.map(endpoint =>
+          fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ transactions: [serializedTx] })
+          }).then(res => { if (res.ok) return endpoint; throw new Error("Jito failed"); })
+        )
+      ).catch(() => {});
+    } catch (e) {}
+
+    // Broadcast via standard RPCs
+    try {
+      rpcsToTry.forEach(async rpc => {
+        try {
+          const conn = new Connection(rpc, 'confirmed');
+          await conn.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 0 });
+        } catch (err) {}
+      });
+    } catch (err) {}
+  };
+
+  // Initial broadcast
+  useAppStore.getState().addJupiterLog({
+    type: 'INFO',
+    message: `Broadcasting transaction: ${signature.slice(0, 8)}... (re-sending every 3s)`,
+  });
+  await broadcastTransaction();
+
+  // Set up periodic re-broadcasting every 3 seconds to ensure dropped transactions are replaced
+  const broadcastInterval = setInterval(() => {
+    console.log(`[TX] Re-broadcasting transaction: ${signature}`);
+    broadcastTransaction();
+  }, 3000);
 
   try {
     const finalSignature = await Promise.any(rpcsToTry.map(async rpc => {
       const conn = new Connection(rpc, 'confirmed');
       
       // Fast Signature Status Polling Loop
-      const deadline = Date.now() + 60000; // 60s max wait for final confirmation
+      const deadline = Date.now() + 90000; // 90s max wait for final confirmation
       while (Date.now() < deadline) {
         try {
           const value = await getSignatureStatusRobust(conn, signature);
@@ -396,7 +411,7 @@ export const executeTxWithRPCFallback = async (
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
 
-      throw new Error(`RPC ${rpc} timed out waiting for confirmation`);
+      throw new Error(`RPC ${rpc} timed out waiting for confirmation (90s). Signature: ${signature}. Check Solscan: https://solscan.io/tx/${signature}`);
     }));
 
     useAppStore.getState().addJupiterLog({
@@ -416,6 +431,8 @@ export const executeTxWithRPCFallback = async (
       message: `Swap Failed: ${errorMsg || 'All RPC endpoints failed to confirm'}`,
     });
     throw new Error(`Failed to confirm transaction: ${errorMsg || 'All RPC endpoints failed to confirm'}`);
+  } finally {
+    clearInterval(broadcastInterval);
   }
 };
 
@@ -687,7 +704,14 @@ export const getJupiterQuote = async (
     return quote;
   } catch (error: any) {
     const errStr = error?.toString() || '';
-    if (!errStr.includes('NO_ROUTES_FOUND') && !errStr.includes('Proxy error 429')) {
+    const isTransientError = errStr.includes('NO_ROUTES_FOUND') || 
+                             errStr.includes('Proxy error 429') ||
+                             errStr.includes('Proxy error 500') ||
+                             errStr.includes('Proxy error 502') ||
+                             errStr.includes('Proxy error 503') ||
+                             errStr.includes('Proxy error 504');
+                             
+    if (!isTransientError) {
       console.error("Jupiter quote failed:", error);
       useAppStore.getState().addJupiterLog({
         type: 'ERROR',
@@ -994,324 +1018,3 @@ const executeTxViaJitoWithFallback = async (tx: VersionedTransaction): Promise<s
     return null;
   }
 };
-
-// ─── SHARED SWAP EXECUTOR: real on-chain buy/sell used by SimRealPage's ────
-// independent trading engine. Moved here (out of PnLPage) so there is a
-// single, non-duplicated implementation of the quote->build->sign->send
-// pipeline (including the USDC-routing fallback) for any caller that needs
-// to execute a real trade.
-export const SOL_MINT = 'So11111111111111111111111111111111111111112';
-export const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
-
-  export const executeJupiterSwap = async (
-  swapConfig: { privateKey: string; apiKey: string; rpcUrl: string; defaultSlippagePct: number },
-  inputMint: string,
-  outputMint: string,
-  amount: number,
-  customSlippageBps?: number,
-  minExpectedOutSol?: number
-): Promise<{ txid: string; outputAmount: number; quoteOutAmountRaw: string; estimatedPriceSol: number }> => {
-    if (inputMint.toLowerCase().startsWith('sim') || outputMint.toLowerCase().startsWith('sim')) {
-      throw new Error("Trading of tokens starting with 'sim' is strictly blocked.");
-    }
-
-    if (!swapConfig.privateKey) throw new Error("Private Key missing");
-    const keypair = Keypair.fromSecretKey(bs58.decode(swapConfig.privateKey));
-    const connection = new Connection(swapConfig.rpcUrl);
-
-    let baseUrl = 'https://api.jup.ag';
-    let apiHeaders: Record<string, string> = {};
-    if (swapConfig.apiKey) {
-      if (swapConfig.apiKey.startsWith('http')) {
-        baseUrl = swapConfig.apiKey;
-      } else {
-        apiHeaders['x-api-key'] = swapConfig.apiKey;
-      }
-    }
-
-    if (baseUrl.includes('jup.ag/portfolio') || baseUrl.includes('jup.ag/swap')) {
-      throw new Error('Please do not use your Jupiter portfolio URL. Leave the API URL blank to use the default one, or use a valid Jupiter API endpoint.');
-    }
-    const normalizedBaseUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
-
-    const singleSwapInner = async (inMint: string, outMint: string, swapAmt: number, attempt = 1): Promise<any> => {
-      useAppStore.getState().addJupiterLog({
-        type: 'QUOTE',
-        message: `Requesting direct quote ${inMint.slice(0,6)} -> ${outMint.slice(0,6)}`,
-        details: { amount: swapAmt }
-      });
-      const slippageToUse = customSlippageBps !== undefined ? customSlippageBps : Math.floor(swapConfig.defaultSlippagePct * 100);
-      const quoteUrl = `/api/jup/quote?baseUrl=${encodeURIComponent(normalizedBaseUrl)}&inputMint=${inMint}&outputMint=${outMint}&amount=${Math.floor(swapAmt)}&slippageBps=${slippageToUse}&t=${Date.now()}`;
-      
-      let quoteResponse;
-      const quoteRes = await fetch(quoteUrl, { headers: apiHeaders });
-      const quoteText = await quoteRes.text();
-      try {
-        if (!quoteRes.ok) {
-          let errorData: any;
-          try {
-            errorData = JSON.parse(quoteText);
-          } catch (e) {}
-
-          if (quoteRes.status === 400 && errorData?.errorCode === 'TOKEN_NOT_TRADABLE') {
-            throw new Error('Token is not tradable on Jupiter yet.');
-          }
-
-          if (quoteRes.status === 500 && typeof errorData?.error === 'string' && errorData.error.includes('Missing token program')) {
-            throw new Error('Token is missing a required program (it might not be fully launched or supported on Jupiter).');
-          }
-
-          if (quoteRes.status === 429) {
-            throw new Error('Jupiter API Rate Limited (429). Retrying or waiting may be required.');
-          }
-
-          if (quoteRes.status === 500 && errorData?.error === "Fetch failed") {
-            throw new Error(`Jupiter Proxy Error: ${errorData.message} (${errorData.detail}). Targeting: ${errorData.url}`);
-          }
-
-          if (quoteRes.status === 404) {
-             throw new Error("Jupiter Quote API returned 404. If you don't have a premium URL, please leave the API URL BLANK in settings.");
-          }
-          throw new Error(`Status ${quoteRes.status}: ${quoteText.slice(0, 100)}`);
-        }
-        quoteResponse = JSON.parse(quoteText);
-        useAppStore.getState().addJupiterLog({
-          type: 'INFO',
-          message: `Direct Quote Success: ${quoteResponse.outAmount}`,
-          details: { outAmount: quoteResponse.outAmount }
-        });
-        
-        if (minExpectedOutSol !== undefined && outMint === SOL_MINT) {
-           const guaranteedSol = Number(quoteResponse.otherAmountThreshold) / 1_000_000_000;
-           if (guaranteedSol < minExpectedOutSol) {
-             throw new Error(`PROFIT GUARD: Jupiter guaranteed out (${guaranteedSol.toFixed(4)} SOL) is lower than the required minimum (${minExpectedOutSol.toFixed(4)} SOL). Swap aborted.`);
-           }
-        }
-      } catch (e: any) {
-        useAppStore.getState().addJupiterLog({
-          type: 'ERROR',
-          message: `Direct Quote Error: ${e.message}`,
-        });
-        throw new Error(e.message.startsWith('Jupiter') ? e.message : `Jupiter Quote API Error: ${e.message}`);
-      }
-
-      if (quoteResponse.error) throw new Error(quoteResponse.error);
-
-      const swapRes = await fetch(`/api/jup/swap?baseUrl=${encodeURIComponent(normalizedBaseUrl)}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...apiHeaders
-        },
-        body: JSON.stringify({
-          quoteResponse,
-          userPublicKey: keypair.publicKey.toString(),
-          wrapAndUnwrapSol: true,
-          dynamicComputeUnitLimit: true,
-          prioritizationFeeLamports: 150000,
-        })
-      });
-      const swapText = await swapRes.text();
-      let swapTxResp;
-      try {
-        if (!swapRes.ok) {
-          let errorData: any;
-          try {
-            errorData = JSON.parse(swapText);
-          } catch (e) {}
-
-          if (swapRes.status === 500 && errorData?.error === "Fetch failed") {
-            throw new Error(`Jupiter Proxy Error: ${errorData.message} (${errorData.detail}). Targeting: ${errorData.url}`);
-          }
-          throw new Error(`Status ${swapRes.status}: ${swapText.slice(0, 100)}`);
-        }
-        swapTxResp = JSON.parse(swapText);
-        useAppStore.getState().addJupiterLog({
-          type: 'INFO',
-          message: `Direct Swap Transaction Built Successfully`,
-        });
-      } catch (e: any) {
-        useAppStore.getState().addJupiterLog({
-          type: 'ERROR',
-          message: `Direct Swap Build Error: ${e.message}`,
-        });
-        throw new Error(e.message.startsWith('Jupiter') ? e.message : `Jupiter Swap API Error: ${e.message}`);
-      }
-
-      if (swapTxResp.error) throw new Error(swapTxResp.error);
-
-      const swapTransactionBuf = Buffer.from(swapTxResp.swapTransaction, 'base64');
-      const transaction = VersionedTransaction.deserialize(swapTransactionBuf);
-
-      // ─── OPTIMIZATION: Inject super fresh blockhash to prevent expiration ───
-      try {
-        const latestBlockhash = await getLatestBlockhashWithFallback(connection);
-        transaction.message.recentBlockhash = latestBlockhash.blockhash;
-        useAppStore.getState().addJupiterLog({
-          type: 'INFO',
-          message: `Injected fresh blockhash: ${latestBlockhash.blockhash.slice(0, 8)}...`,
-        });
-      } catch (bhErr: any) {
-        console.warn("Failed to inject fresh blockhash, using Jupiter's original:", bhErr.message || bhErr);
-      }
-
-      transaction.sign([keypair]);
-
-      try {
-        const txid = await executeTxWithRPCFallback(transaction, connection);
-        return { 
-          txid, 
-          outputAmount: parseFloat(quoteResponse.outAmount), 
-          quoteOutAmountRaw: quoteResponse.outAmount, 
-          estimatedPriceSol: parseFloat(quoteResponse.inAmount) / parseFloat(quoteResponse.outAmount) 
-        };
-      } catch (execErr: any) {
-        if (execErr.message?.includes('timed out waiting for confirmation') && attempt < 3) {
-          useAppStore.getState().addJupiterLog({
-            type: 'ERROR',
-            message: `Swap timeout detected. Retrying immediately (Attempt ${attempt + 1}/3)...`,
-          });
-          return singleSwapInner(inMint, outMint, swapAmt, attempt + 1);
-        }
-        throw execErr;
-      }
-    };
-
-    const isBuy = (inputMint === SOL_MINT && outputMint !== USDC_MINT && outputMint !== SOL_MINT);
-    const isSell = (inputMint !== SOL_MINT && inputMint !== USDC_MINT && outputMint === SOL_MINT);
-    const forceUsdcRouting = localStorage.getItem('force_usdc_routing') === 'true';
-
-    // True USDC-swapping logic requested by user
-    if (forceUsdcRouting && (isBuy || isSell)) {
-      if (isBuy) {
-        useAppStore.getState().addJupiterLog({ type: 'INFO', message: `[USDC ROUTE] Phase 1: Swapping ${(amount / 1e9).toFixed(4)} SOL to USDC...` });
-        const res1 = await singleSwapInner(SOL_MINT, USDC_MINT, amount);
-        useAppStore.getState().addJupiterLog({ type: 'INFO', message: `[USDC ROUTE] Phase 1 Success: Received ${res1.outputAmount} USDC | tx: ${res1.txid.slice(0, 10)}...` });
-        
-        // Short pause to allow balance indexing
-        await new Promise(resolve => setTimeout(resolve, 100));
-
-        let tradeUsdcAmount = Math.floor(res1.outputAmount);
-        try {
-          const onchainBalStr = await getTokenBalanceRaw(connection, keypair.publicKey.toBase58(), USDC_MINT);
-          const onchainBalNum = parseInt(onchainBalStr, 10);
-          if (onchainBalNum > 0) {
-            tradeUsdcAmount = onchainBalNum;
-            useAppStore.getState().addJupiterLog({ type: 'INFO', message: `[USDC ROUTE] Using on-chain balance: ${(onchainBalNum / 1e6).toFixed(4)} USDC` });
-          } else {
-            tradeUsdcAmount = parseInt(res1.quoteOutAmountRaw, 10);
-          }
-        } catch (e) {
-          tradeUsdcAmount = parseInt(res1.quoteOutAmountRaw, 10);
-        }
-
-        useAppStore.getState().addJupiterLog({ type: 'INFO', message: `[USDC ROUTE] Phase 2: Swapping USDC to target token...` });
-        const res2 = await singleSwapInner(USDC_MINT, outputMint, tradeUsdcAmount);
-        useAppStore.getState().addJupiterLog({ type: 'INFO', message: `[USDC ROUTE] Phase 2 Success: Bought target token | tx: ${res2.txid.slice(0, 10)}...` });
-        
-        const finalTokenAmount = res2.outputAmount;
-        const finalPriceSol = (amount / 1e9) / (finalTokenAmount || 1);
-        
-        return {
-          txid: res2.txid,
-          outputAmount: finalTokenAmount,
-          quoteOutAmountRaw: res2.quoteOutAmountRaw,
-          estimatedPriceSol: finalPriceSol
-        };
-      } else {
-        useAppStore.getState().addJupiterLog({ type: 'INFO', message: `[USDC ROUTE] Sell Phase 1: Swapping target token to USDC...` });
-        const res1 = await singleSwapInner(inputMint, USDC_MINT, amount);
-        useAppStore.getState().addJupiterLog({ type: 'INFO', message: `[USDC ROUTE] Sell Phase 1 Success: Received ${res1.outputAmount} USDC | tx: ${res1.txid.slice(0, 10)}...` });
-
-        await new Promise(resolve => setTimeout(resolve, 100));
-
-        let tradeUsdcAmount = Math.floor(res1.outputAmount);
-        try {
-          const onchainBalStr = await getTokenBalanceRaw(connection, keypair.publicKey.toBase58(), USDC_MINT);
-          const onchainBalNum = parseInt(onchainBalStr, 10);
-          if (onchainBalNum > 0) {
-            tradeUsdcAmount = onchainBalNum;
-          } else {
-            tradeUsdcAmount = parseInt(res1.quoteOutAmountRaw, 10);
-          }
-        } catch (e) {
-          tradeUsdcAmount = parseInt(res1.quoteOutAmountRaw, 10);
-        }
-
-        useAppStore.getState().addJupiterLog({ type: 'INFO', message: `[USDC ROUTE] Sell Phase 2: Swapping USDC to SOL...` });
-        const res2 = await singleSwapInner(USDC_MINT, SOL_MINT, tradeUsdcAmount);
-        useAppStore.getState().addJupiterLog({ type: 'INFO', message: `[USDC ROUTE] Sell Phase 2 Success: Swap complete | tx: ${res2.txid.slice(0, 10)}...` });
-
-        return {
-          txid: res2.txid,
-          outputAmount: res2.outputAmount,
-          quoteOutAmountRaw: res2.quoteOutAmountRaw,
-          estimatedPriceSol: res1.estimatedPriceSol
-        };
-      }
-    } else {
-      // Direct Route attempt with automatic fallback to USDC routing on failures
-      try {
-        return await singleSwapInner(inputMint, outputMint, amount);
-      } catch (err: any) {
-        const errorMsg = err.message || '';
-        const isRouteError = errorMsg.includes('NO_ROUTES_FOUND') || 
-                             errorMsg.includes('COULD_NOT_FIND_ANY_ROUTE') ||
-                             errorMsg.includes('COULD_NOT_FIND_ROUTE') ||
-                             errorMsg.includes('ROUTE_NOT_FOUND') ||
-                             errorMsg.includes('COULD_NOT_FIND') ||
-                             errorMsg.includes('Route not found') || 
-                             errorMsg.includes('Could not find any route') ||
-                             errorMsg.includes('TOKEN_NOT_TRADABLE') ||
-                             errorMsg.includes('not tradable on Jupiter') ||
-                             errorMsg.includes('Status 400') ||
-                             errorMsg.includes('Status 500');
-        
-        if (isRouteError && (isBuy || isSell)) {
-          useAppStore.getState().addJupiterLog({ type: 'INFO', message: `[AUTO USDC ROUTER] Direct route unavailable. Falling back to USDC exchange path...` });
-          if (isBuy) {
-            useAppStore.getState().addJupiterLog({ type: 'INFO', message: `[USDC ROUTE] Phase 1: Swapping ${(amount / 1e9).toFixed(4)} SOL to USDC...` });
-            const res1 = await singleSwapInner(SOL_MINT, USDC_MINT, amount);
-            await new Promise(resolve => setTimeout(resolve, 100));
-            
-            let tradeUsdcAmount = parseInt(res1.quoteOutAmountRaw, 10);
-            try {
-              const onchainBalStr = await getTokenBalanceRaw(connection, keypair.publicKey.toBase58(), USDC_MINT);
-              const onchainBalNum = parseInt(onchainBalStr, 10);
-              if (onchainBalNum > 0) tradeUsdcAmount = onchainBalNum;
-            } catch (e) {}
-
-            useAppStore.getState().addJupiterLog({ type: 'INFO', message: `[USDC ROUTE] Phase 2: Swapping USDC to target token...` });
-            const res2 = await singleSwapInner(USDC_MINT, outputMint, tradeUsdcAmount);
-            return {
-              txid: res2.txid,
-              outputAmount: res2.outputAmount,
-              quoteOutAmountRaw: res2.quoteOutAmountRaw,
-              estimatedPriceSol: (amount / 1e9) / (res2.outputAmount || 1)
-            };
-          } else {
-            useAppStore.getState().addJupiterLog({ type: 'INFO', message: `[USDC ROUTE] Sell Phase 1: Swapping target token to USDC...` });
-            const res1 = await singleSwapInner(inputMint, USDC_MINT, amount);
-            await new Promise(resolve => setTimeout(resolve, 100));
-
-            let tradeUsdcAmount = parseInt(res1.quoteOutAmountRaw, 10);
-            try {
-              const onchainBalStr = await getTokenBalanceRaw(connection, keypair.publicKey.toBase58(), USDC_MINT);
-              const onchainBalNum = parseInt(onchainBalStr, 10);
-              if (onchainBalNum > 0) tradeUsdcAmount = onchainBalNum;
-            } catch (e) {}
-
-            useAppStore.getState().addJupiterLog({ type: 'INFO', message: `[USDC ROUTE] Sell Phase 2: Swapping USDC to SOL...` });
-            const res2 = await singleSwapInner(USDC_MINT, SOL_MINT, tradeUsdcAmount);
-            return {
-              txid: res2.txid,
-              outputAmount: res2.outputAmount,
-              quoteOutAmountRaw: res2.quoteOutAmountRaw,
-              estimatedPriceSol: res1.estimatedPriceSol
-            };
-          }
-        }
-        throw err;
-      }
-    }
-  };
