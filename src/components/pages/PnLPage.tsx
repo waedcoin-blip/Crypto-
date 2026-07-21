@@ -2563,6 +2563,8 @@ export const PnLPage = ({
                     return positionsRef.current;
                   });
                   addLog(`✅ [SIMREAL REAL SWAP] Bought ${pos.symbol} @ ${boughtPriceSol.toFixed(8)} SOL | tx: ${result.txid.slice(0, 12)}...`, 'buy');
+                  // Transfer to SimReal: Sell main position
+                  executeSell(mint, newPrice, currentPnLPct / 100, 'TRANSFER TO SIMREAL');
                 } else {
                   throw new Error("Jupiter swap transaction ID missing.");
                 }
@@ -2637,6 +2639,8 @@ export const PnLPage = ({
               } else {
                 addLog(`[SIMREAL BUY] Bought ${pos.symbol} for ${buyAmt.toFixed(4)} SOL (Active position in profit >= 1%)`, 'info');
               }
+              // Transfer to SimReal: Sell main position
+              executeSell(mint, newPrice, currentPnLPct / 100, 'TRANSFER TO SIMREAL');
             }
           } else {
             addLog(`[SIMREAL BUY SKIP] Insufficient simreal wallet balance: ${storeState.simRealBalance.toFixed(4)} SOL`, 'warn');
@@ -4049,9 +4053,11 @@ const checkTokenCriteria = (mint: string): {
       simRealNetPnlPct = (simRealNetSolReturn - pos.simRealSolSpent) / pos.simRealSolSpent;
     }
 
+    const isTransferToSimReal = reason.includes('TRANSFER TO SIMREAL');
+
     // 2. Decide what needs to be sold
     const shouldSellMain = !!pos.amount && pos.amount > 0 && !reason.includes('SIMREAL SECURE PROFIT') && !reason.includes('SIMREAL STOP LOSS');
-    const shouldSellSimReal = !!pos.simRealBought && (
+    const shouldSellSimReal = !!pos.simRealBought && !isTransferToSimReal && (
       reason.includes('SIMREAL SECURE PROFIT') ||
       reason.includes('SIMREAL STOP LOSS') ||
       reason.includes('EMERGENCY') ||
@@ -4073,6 +4079,22 @@ const checkTokenCriteria = (mint: string): {
     let isMainSold = false;
     let isSimRealSold = false;
     let simRealRealSwapOutputSol: number | undefined = undefined;
+
+    if (isTransferToSimReal) {
+      addLog(`[TRANSFER] Moving ${pos.symbol} entirely to SimReal. Closing simulation tracking without API quote.`, 'info');
+      // Just mark it as sold silently to remove from PnLPage active list
+      isMainSold = true;
+      
+      setTradeHistory(th => [{
+        id: `sim-sell-${Date.now()}`,
+        mint: mint,
+        buyTime: pos.entryTime,
+        sellTime: Date.now(),
+        buyAmountSol: pos.solSpent,
+        sellAmountSol: pos.solSpent * (1 + pnlPct), 
+        pnlPct: pnlPct * 100
+      }, ...th]);
+    }
 
     // Real sell for Simreal active positions if privateKey is active
     if (shouldSellSimReal && privateKey && !pos.simRealIsVirtualFallback) {
@@ -4112,7 +4134,7 @@ const checkTokenCriteria = (mint: string): {
     }
 
     // --- EXECUTE MAIN POSITION SELL ---
-    if (shouldSellMain) {
+    if (shouldSellMain && !isMainSold) {
       if (privateKey) {
         // Real on-chain swap sell for main
         addLog(`🚨 [REAL SWAP SELL] Initiating real on-chain sell for main position of ${pos.symbol} via Jupiter...`, 'warn');
