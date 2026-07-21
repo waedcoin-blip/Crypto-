@@ -61,10 +61,18 @@ interface SimRealPageProps {
   simRealBalance: number;
   simRealTrades: SniperTrade[];
   maxPositions: number;
-  simRealTakeProfit: number;
-  setSimRealTakeProfit: (v: number) => void;
-  simRealStopLoss: number;
-  setSimRealStopLoss: (v: number) => void;
+  simRealTakeProfitRaydium: number;
+  setSimRealTakeProfitRaydium: (v: number) => void;
+  simRealTakeProfitBonding: number;
+  setSimRealTakeProfitBonding: (v: number) => void;
+  simRealStopLossRaydium: number;
+  setSimRealStopLossRaydium: (v: number) => void;
+  simRealStopLossBonding: number;
+  setSimRealStopLossBonding: (v: number) => void;
+  simRealStopLossPumpSwap: number;
+  setSimRealStopLossPumpSwap: (v: number) => void;
+  simRealStopLossUnknown: number;
+  setSimRealStopLossUnknown: (v: number) => void;
   slippage: number;
   privateKey: string;
   setPrivateKey: (v: string) => void;
@@ -93,10 +101,18 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
   simRealBalance,
   simRealTrades,
   maxPositions,
-  simRealTakeProfit,
-  setSimRealTakeProfit,
-  simRealStopLoss,
-  setSimRealStopLoss,
+  simRealTakeProfitRaydium,
+  setSimRealTakeProfitRaydium,
+  simRealTakeProfitBonding,
+  setSimRealTakeProfitBonding,
+  simRealStopLossRaydium,
+  setSimRealStopLossRaydium,
+  simRealStopLossBonding,
+  setSimRealStopLossBonding,
+  simRealStopLossPumpSwap,
+  setSimRealStopLossPumpSwap,
+  simRealStopLossUnknown,
+  setSimRealStopLossUnknown,
   slippage,
   privateKey,
   setPrivateKey,
@@ -530,14 +546,31 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
     const monitorPositions = async () => {
       if (!active) return;
       
-      const tpLimit = (simRealTakeProfit !== undefined ? simRealTakeProfit : 10) / 100;
-      const slLimit = (simRealStopLoss !== undefined ? simRealStopLoss : -10) / 100;
-
       for (const pos of activeSimrealPositions) {
          if (!pos || !pos.simRealBought) continue;
          
          const mint = Object.keys(positions).find(k => positions[k] === pos);
          if (!mint) continue;
+         
+         const tokenMetric = tokenMetrics[mint];
+         const stageInfo = tokenMetric ? detectTokenStage(tokenMetric) : { stage: 'UNKNOWN', platform: 'UNKNOWN', isBonding: false, isMigrated: false, isNewListing: false, isNearMigration: false, bondingProgress: 0 } as const;
+         
+         let tpLimit = 0.50; // default 50%
+         let slLimit = -0.15; // default -15%
+         
+         if (stageInfo.platform === 'RAYDIUM' || stageInfo.isMigrated) {
+             tpLimit = (simRealTakeProfitRaydium !== undefined ? simRealTakeProfitRaydium : 50) / 100;
+             slLimit = (simRealStopLossRaydium !== undefined ? simRealStopLossRaydium : -15) / 100;
+         } else if (stageInfo.platform === 'PUMP_FUN' && stageInfo.stage === 'BONDING') {
+             tpLimit = (simRealTakeProfitBonding !== undefined ? simRealTakeProfitBonding : 100) / 100;
+             slLimit = (simRealStopLossBonding !== undefined ? simRealStopLossBonding : -20) / 100;
+         } else if (stageInfo.platform === 'PUMPSWAP') {
+             tpLimit = (simRealTakeProfitRaydium !== undefined ? simRealTakeProfitRaydium : 50) / 100; // No specific PumpSwap TP provided by user, reusing Raydium or Bonding? Wait, we can reuse bonding since it's pre-raydium
+             slLimit = (simRealStopLossPumpSwap !== undefined ? simRealStopLossPumpSwap : -15) / 100;
+         } else {
+             tpLimit = (simRealTakeProfitRaydium !== undefined ? simRealTakeProfitRaydium : 50) / 100;
+             slLimit = (simRealStopLossUnknown !== undefined ? simRealStopLossUnknown : -20) / 100;
+         }
 
          const currentPrice = pos.currentPrice || pos.buyPrice || 0;
          const tokensQty = pos.simRealAmountTokens || 0;
@@ -572,7 +605,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
       active = false;
       clearInterval(interval);
     };
-  }, [positions, simRealTakeProfit, simRealStopLoss, privateKey, slippage, executeSimRealSell]);
+  }, [positions, tokenMetrics, simRealTakeProfitRaydium, simRealTakeProfitBonding, simRealStopLossRaydium, simRealStopLossBonding, simRealStopLossPumpSwap, simRealStopLossUnknown, privateKey, slippage, executeSimRealSell]);
 
   const completedTrades = getCompletedSimRealTrades();
 
@@ -699,30 +732,86 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                       className="bg-[#07080e] border border-[#1f212e] rounded-lg px-3 py-1.5 text-xs text-[#e2e8f0] focus:outline-none focus:border-emerald-500/50 font-mono w-full"
                    />
                 </div>
-                <div className="grid grid-cols-2 gap-3">
-                   <div className="flex flex-col gap-1">
-                      <div className="flex justify-between items-center">
-                         <label className="text-[10px] text-slate-400 font-mono uppercase tracking-wider">Take Profit</label>
-                         <span className="text-[9px] text-emerald-400 font-mono">%</span>
+                <div className="space-y-3">
+                   <div className="grid grid-cols-2 gap-3">
+                      <div className="flex flex-col gap-1">
+                         <div className="flex justify-between items-center">
+                            <label className="text-[10px] text-slate-400 font-mono uppercase tracking-wider">TP (Raydium)</label>
+                            <span className="text-[9px] text-emerald-400 font-mono">%</span>
+                         </div>
+                         <input
+                            type="number"
+                            value={simRealTakeProfitRaydium}
+                            onChange={(e) => setSimRealTakeProfitRaydium(Number(e.target.value))}
+                            className="bg-[#07080e] border border-[#1f212e] rounded-lg px-3 py-1.5 text-xs text-[#e2e8f0] focus:outline-none focus:border-emerald-500/50 font-mono w-full"
+                         />
                       </div>
-                      <input
-                         type="number"
-                         value={simRealTakeProfit}
-                         onChange={(e) => setSimRealTakeProfit(Number(e.target.value))}
-                         className="bg-[#07080e] border border-[#1f212e] rounded-lg px-3 py-1.5 text-xs text-[#e2e8f0] focus:outline-none focus:border-emerald-500/50 font-mono w-full"
-                      />
+                      <div className="flex flex-col gap-1">
+                         <div className="flex justify-between items-center">
+                            <label className="text-[10px] text-slate-400 font-mono uppercase tracking-wider">SL (Raydium)</label>
+                            <span className="text-[9px] text-rose-400 font-mono">%</span>
+                         </div>
+                         <input
+                            type="number"
+                            value={simRealStopLossRaydium}
+                            onChange={(e) => setSimRealStopLossRaydium(-Math.abs(Number(e.target.value)))}
+                            className="bg-[#07080e] border border-[#1f212e] rounded-lg px-3 py-1.5 text-xs text-[#e2e8f0] focus:outline-none focus:border-emerald-500/50 font-mono w-full"
+                         />
+                      </div>
                    </div>
-                   <div className="flex flex-col gap-1">
-                      <div className="flex justify-between items-center">
-                         <label className="text-[10px] text-slate-400 font-mono uppercase tracking-wider">Stop Loss</label>
-                         <span className="text-[9px] text-rose-400 font-mono">%</span>
+                   
+                   <div className="grid grid-cols-2 gap-3">
+                      <div className="flex flex-col gap-1">
+                         <div className="flex justify-between items-center">
+                            <label className="text-[10px] text-slate-400 font-mono uppercase tracking-wider">TP (Bonding)</label>
+                            <span className="text-[9px] text-emerald-400 font-mono">%</span>
+                         </div>
+                         <input
+                            type="number"
+                            value={simRealTakeProfitBonding}
+                            onChange={(e) => setSimRealTakeProfitBonding(Number(e.target.value))}
+                            className="bg-[#07080e] border border-[#1f212e] rounded-lg px-3 py-1.5 text-xs text-[#e2e8f0] focus:outline-none focus:border-emerald-500/50 font-mono w-full"
+                         />
                       </div>
-                      <input
-                         type="number"
-                         value={simRealStopLoss}
-                         onChange={(e) => setSimRealStopLoss(-Math.abs(Number(e.target.value)))}
-                         className="bg-[#07080e] border border-[#1f212e] rounded-lg px-3 py-1.5 text-xs text-[#e2e8f0] focus:outline-none focus:border-emerald-500/50 font-mono w-full"
-                      />
+                      <div className="flex flex-col gap-1">
+                         <div className="flex justify-between items-center">
+                            <label className="text-[10px] text-slate-400 font-mono uppercase tracking-wider">SL (Bonding)</label>
+                            <span className="text-[9px] text-rose-400 font-mono">%</span>
+                         </div>
+                         <input
+                            type="number"
+                            value={simRealStopLossBonding}
+                            onChange={(e) => setSimRealStopLossBonding(-Math.abs(Number(e.target.value)))}
+                            className="bg-[#07080e] border border-[#1f212e] rounded-lg px-3 py-1.5 text-xs text-[#e2e8f0] focus:outline-none focus:border-emerald-500/50 font-mono w-full"
+                         />
+                      </div>
+                   </div>
+
+                   <div className="grid grid-cols-2 gap-3">
+                      <div className="flex flex-col gap-1">
+                         <div className="flex justify-between items-center">
+                            <label className="text-[10px] text-slate-400 font-mono uppercase tracking-wider">SL (PumpSwap)</label>
+                            <span className="text-[9px] text-rose-400 font-mono">%</span>
+                         </div>
+                         <input
+                            type="number"
+                            value={simRealStopLossPumpSwap}
+                            onChange={(e) => setSimRealStopLossPumpSwap(-Math.abs(Number(e.target.value)))}
+                            className="bg-[#07080e] border border-[#1f212e] rounded-lg px-3 py-1.5 text-xs text-[#e2e8f0] focus:outline-none focus:border-emerald-500/50 font-mono w-full"
+                         />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                         <div className="flex justify-between items-center">
+                            <label className="text-[10px] text-slate-400 font-mono uppercase tracking-wider">SL (Unknown)</label>
+                            <span className="text-[9px] text-rose-400 font-mono">%</span>
+                         </div>
+                         <input
+                            type="number"
+                            value={simRealStopLossUnknown}
+                            onChange={(e) => setSimRealStopLossUnknown(-Math.abs(Number(e.target.value)))}
+                            className="bg-[#07080e] border border-[#1f212e] rounded-lg px-3 py-1.5 text-xs text-[#e2e8f0] focus:outline-none focus:border-emerald-500/50 font-mono w-full"
+                         />
+                      </div>
                    </div>
                 </div>
 

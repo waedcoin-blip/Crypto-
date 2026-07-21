@@ -872,10 +872,18 @@ export const PnLPage = ({
     setUnknownStopLoss?: (v: number) => void;
     maxPositions: number;
     setMaxPositions: (v: number) => void;
-    simRealTakeProfit?: number;
-    setSimRealTakeProfit?: (v: number) => void;
-    simRealStopLoss?: number;
-    setSimRealStopLoss?: (v: number) => void;
+    simRealTakeProfitRaydium?: number;
+    setSimRealTakeProfitRaydium?: (v: number) => void;
+    simRealTakeProfitBonding?: number;
+    setSimRealTakeProfitBonding?: (v: number) => void;
+    simRealStopLossRaydium?: number;
+    setSimRealStopLossRaydium?: (v: number) => void;
+    simRealStopLossBonding?: number;
+    setSimRealStopLossBonding?: (v: number) => void;
+    simRealStopLossPumpSwap?: number;
+    setSimRealStopLossPumpSwap?: (v: number) => void;
+    simRealStopLossUnknown?: number;
+    setSimRealStopLossUnknown?: (v: number) => void;
     slippage: number;
     setSlippage: (v: number) => void;
     hardenedMinBondingProgress?: number;
@@ -979,8 +987,12 @@ export const PnLPage = ({
     pumpSwapStopLoss = -15, setPumpSwapStopLoss = () => {},
     unknownStopLoss = -20, setUnknownStopLoss = () => {},
     maxPositions, setMaxPositions,
-    simRealTakeProfit = 10, setSimRealTakeProfit = () => {},
-    simRealStopLoss = -10, setSimRealStopLoss = () => {},
+    simRealTakeProfitRaydium = 50, setSimRealTakeProfitRaydium = () => {},
+    simRealTakeProfitBonding = 100, setSimRealTakeProfitBonding = () => {},
+    simRealStopLossRaydium = -15, setSimRealStopLossRaydium = () => {},
+    simRealStopLossBonding = -20, setSimRealStopLossBonding = () => {},
+    simRealStopLossPumpSwap = -15, setSimRealStopLossPumpSwap = () => {},
+    simRealStopLossUnknown = -20, setSimRealStopLossUnknown = () => {},
     slippage, setSlippage,
     hardenedMinBondingProgress = 0, setHardenedMinBondingProgress = () => {},
     hardenedMaxBondingProgress = 100, setHardenedMaxBondingProgress = () => {},
@@ -1582,7 +1594,7 @@ export const PnLPage = ({
   }, [blacklistedMints]);
 
   const configRef = useRef({
-    takeProfitPct, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct, slippage, privateKey, tradeAmount, maxPositions, simRealTakeProfit, simRealStopLoss,
+    takeProfitPct, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct, slippage, privateKey, tradeAmount, maxPositions, simRealTakeProfitRaydium, simRealTakeProfitBonding, simRealStopLossRaydium, simRealStopLossBonding, simRealStopLossPumpSwap, simRealStopLossUnknown,
     hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax,
     hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore,
     hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s,
@@ -1594,7 +1606,7 @@ export const PnLPage = ({
   });
 
   configRef.current = {
-    takeProfitPct, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct, slippage, privateKey, tradeAmount, maxPositions, simRealTakeProfit, simRealStopLoss,
+    takeProfitPct, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct, slippage, privateKey, tradeAmount, maxPositions, simRealTakeProfitRaydium, simRealTakeProfitBonding, simRealStopLossRaydium, simRealStopLossBonding, simRealStopLossPumpSwap, simRealStopLossUnknown,
     hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax,
     hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore,
     hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s,
