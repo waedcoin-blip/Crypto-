@@ -600,7 +600,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
       }
     };
 
-    const interval = setInterval(monitorPositions, 3000);
+    const interval = setInterval(monitorPositions, 2000);
     return () => {
       active = false;
       clearInterval(interval);

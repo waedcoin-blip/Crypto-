@@ -2458,7 +2458,7 @@ export const PnLPage = ({
   useEffect(() => {
     const activeMintsList = Object.keys(positions).filter(k => {
       const p = positions[k];
-      return p && typeof p === 'object' && p.symbol && typeof p.amount === 'number' && p.amount > 0;
+      return p && typeof p === 'object' && p.symbol && ((typeof p.amount === 'number' && p.amount > 0) || !!p.simRealBought);
     });
     if (activeMintsList.length === 0) return;
     
@@ -2667,11 +2667,11 @@ export const PnLPage = ({
         });
         return changed ? next : prev;
       });
-    }, 4000); // 4s sync for positions
+    }, 2000); // 2s sync for positions
     return () => clearInterval(interval);
   }, [Object.keys(positions).filter(k => {
     const p = positions[k];
-    return p && typeof p === 'object' && p.symbol && typeof p.amount === 'number' && p.amount > 0;
+    return p && typeof p === 'object' && p.symbol && ((typeof p.amount === 'number' && p.amount > 0) || !!p.simRealBought);
   }).join(','), getTokenPrices]);
 
   useEffect(() => {
@@ -7364,7 +7364,7 @@ const checkTokenCriteria = (mint: string): {
                 {activeLogTab === 'diagnostics' && (() => {
                   const activeMints = Object.keys(positions).filter(k => {
                     const p = positions[k];
-                    return p && typeof p === 'object' && p.symbol && typeof p.amount === 'number' && p.amount > 0;
+                    return p && typeof p === 'object' && p.symbol && ((typeof p.amount === 'number' && p.amount > 0) || !!p.simRealBought);
                   });
                   const candidates = Object.entries(tokenMetricsRef.current).filter(
                     ([mint]) => !activeMints.includes(mint) && !blacklistedMints.includes(mint)
@@ -7489,7 +7489,7 @@ const checkTokenCriteria = (mint: string): {
                 {activeLogTab === 'leaderboard' && (() => {
                   const activeMints = Object.keys(positions).filter(k => {
                     const p = positions[k];
-                    return p && typeof p === 'object' && p.symbol && typeof p.amount === 'number' && p.amount > 0;
+                    return p && typeof p === 'object' && p.symbol && ((typeof p.amount === 'number' && p.amount > 0) || !!p.simRealBought);
                   });
                   const candidates = Object.entries(tokenMetricsRef.current)
                     .filter(([mint]) => !activeMints.includes(mint) && !blacklistedMints.includes(mint))
