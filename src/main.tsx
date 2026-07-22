@@ -113,8 +113,8 @@ export const WS_URLS = RPC_URLS.map((rpc, index) => {
 
 // Override global WebSocket to load balance websocket connections
 const OriginalWebSocket = window.WebSocket;
-(window as any).WebSocket = class LoadBalancedWebSocket extends OriginalWebSocket {
-  constructor(url: string | URL, protocols?: string | string[]) {
+if (OriginalWebSocket) {
+  const CustomWebSocket = function (this: any, url: string | URL, protocols?: string | string[]) {
     let targetUrl = url.toString();
     
     // Normalize to handle trailing slashes or query arguments
@@ -124,19 +124,27 @@ const OriginalWebSocket = window.WebSocket;
       
       if (targetUrl.startsWith(ws1) || targetUrl.startsWith(ws2)) {
         const selectedWs = WS_URLS[wsCounter % WS_URLS.length].replace(/\/$/, '');
-        // Replace the matched base with the selected base
         if (targetUrl.startsWith(ws1)) {
-           targetUrl = targetUrl.replace(ws1, selectedWs);
+          targetUrl = targetUrl.replace(ws1, selectedWs);
         } else if (targetUrl.startsWith(ws2)) {
-           targetUrl = targetUrl.replace(ws2, selectedWs);
+          targetUrl = targetUrl.replace(ws2, selectedWs);
         }
         wsCounter++;
       }
     }
     
-    super(targetUrl, protocols);
-  }
-};
+    return protocols !== undefined
+      ? new OriginalWebSocket(targetUrl, protocols)
+      : new OriginalWebSocket(targetUrl);
+  } as any;
+
+  CustomWebSocket.prototype = OriginalWebSocket.prototype;
+  CustomWebSocket.CONNECTING = OriginalWebSocket.CONNECTING;
+  CustomWebSocket.OPEN = OriginalWebSocket.OPEN;
+  CustomWebSocket.CLOSING = OriginalWebSocket.CLOSING;
+  CustomWebSocket.CLOSED = OriginalWebSocket.CLOSED;
+  (window as any).WebSocket = CustomWebSocket;
+}
 
 // Override global fetch to intercept requests to RPC nodes
 const originalFetch = window.fetch;
@@ -154,35 +162,26 @@ window.fetch = async (...args) => {
     const rpc2 = RPC_URLS[1].replace(/\/$/, '');
     
     if (url.startsWith(rpc1) || url.startsWith(rpc2)) {
-      // Fire requests to all RPCs simultaneously and return the fastest valid response (Promise.any)
-      return Promise.any(
-        RPC_URLS.map(async (rpcUrl) => {
-          const selectedRpc = rpcUrl.replace(/\/$/, '');
-          let newUrl = url;
-          if (url.startsWith(rpc1)) {
-             newUrl = url.replace(rpc1, selectedRpc);
-          } else if (url.startsWith(rpc2)) {
-             newUrl = url.replace(rpc2, selectedRpc);
-          }
-          
-          let newArgs = [...args] as any;
-          if (typeof newArgs[0] === 'string') {
-            newArgs[0] = newUrl;
-          } else {
-            // Re-create request for the new URL if it was a Request object
-            newArgs[0] = new Request(newUrl, newArgs[0] as any);
-          }
-          
-          const res = await originalFetch(newArgs[0], newArgs[1]);
-          if (!res.ok) {
-            throw new Error(`RPC returned ${res.status}`);
-          }
-          return res;
-        })
-      ).catch(e => {
-        // Fallback to original if all parallel requests fail
-        return originalFetch(args[0], args[1]);
-      });
+      const selectedRpc = RPC_URLS[rpcCounter % RPC_URLS.length].replace(/\/$/, '');
+      rpcCounter++;
+      let newUrl = url;
+      if (url.startsWith(rpc1)) {
+        newUrl = url.replace(rpc1, selectedRpc);
+      } else if (url.startsWith(rpc2)) {
+        newUrl = url.replace(rpc2, selectedRpc);
+      }
+      
+      let newArgs = [...args] as any;
+      if (typeof newArgs[0] === 'string') {
+        newArgs[0] = newUrl;
+      } else if (newArgs[0] && typeof newArgs[0] === 'object' && 'url' in newArgs[0]) {
+        try {
+          newArgs[0] = new Request(newUrl, newArgs[0] as any);
+        } catch {
+          newArgs[0] = newUrl;
+        }
+      }
+      return originalFetch(newArgs[0], newArgs[1]);
     }
   }
 

@@ -12,8 +12,11 @@ export const SafetyPage = ({ tokenMetrics }: { tokenMetrics: Record<string, Toke
   };
 
   const filteredTokens = tokens.filter(token => {
+    if (!token) return false;
     const profitPct = token.percentageIncrease || 0;
-    const buyMomentum = (token.buyCount / (token.sellCount || 1)) >= 3;
+    const buyCount = token.buyCount || 0;
+    const sellCount = token.sellCount || 1;
+    const buyMomentum = (buyCount / sellCount) >= 3;
     const isNew = (Date.now() - (token.discoveredAt || 0)) < 86400000; // Under 24h
     return profitPct > 50 && buyMomentum && isNew;
   });
@@ -37,16 +40,16 @@ export const SafetyPage = ({ tokenMetrics }: { tokenMetrics: Record<string, Toke
               filteredTokens.map(token => (
                 <div key={token.address} className="bg-gray-900 border border-gray-800 p-4 rounded-xl flex items-center justify-between">
                   <div>
-                    <h4 className="font-bold text-lg">{token.symbol}</h4>
+                    <h4 className="font-bold text-lg">{token.symbol || 'UNKNOWN'}</h4>
                     <p 
                       className="text-xs text-gray-400 font-mono cursor-pointer hover:text-white"
-                      onClick={() => navigator.clipboard.writeText(token.address)}
+                      onClick={() => token.address && navigator.clipboard.writeText(token.address)}
                       title="Click to copy address"
                     >
-                      {token.address.slice(0, 6)}...{token.address.slice(-4)}
+                      {token.address ? `${token.address.slice(0, 6)}...${token.address.slice(-4)}` : 'N/A'}
                     </p>
                     <div className="text-[10px] text-gray-500 mt-1">
-                      Age: {getAge(token.discoveredAt)}
+                      Age: {token.discoveredAt ? getAge(token.discoveredAt) : 'N/A'}
                     </div>
                   </div>
                   <div className="flex flex-col items-end gap-1">

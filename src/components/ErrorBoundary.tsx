@@ -29,10 +29,21 @@ export class ErrorBoundary extends React.Component<any, any> {
   public render() {
     if (this.state.hasError) {
       return (
-        <div style={{ padding: '20px', color: 'red', backgroundColor: '#111', height: '100vh', overflow: 'auto' }}>
-          <h1>Something went wrong in the App.</h1>
-          <pre>{this.state.error?.toString()}</pre>
-          <pre>{this.state.errorInfo?.componentStack}</pre>
+        <div className="min-h-screen bg-slate-950 text-slate-100 p-6 flex flex-col items-center justify-center font-sans">
+          <div className="max-w-xl w-full bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl space-y-4">
+            <h1 className="text-xl font-bold text-red-400">Application Error Encountered</h1>
+            <p className="text-sm text-slate-400">An uncaught exception occurred in a component. You can reload the app to recover.</p>
+            <pre className="bg-slate-950 p-3 rounded-lg text-xs font-mono text-rose-300 overflow-x-auto max-h-40">{this.state.error?.toString()}</pre>
+            <button 
+              onClick={() => {
+                this.setState({ hasError: false, error: undefined, errorInfo: undefined });
+                window.location.reload();
+              }} 
+              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium text-sm transition-colors cursor-pointer"
+            >
+              Reload Application
+            </button>
+          </div>
         </div>
       );
     }

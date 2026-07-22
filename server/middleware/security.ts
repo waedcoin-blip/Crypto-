@@ -9,30 +9,15 @@ import { config } from '../config/index.js';
 import { logger, securityLogger } from '../utils/logger.js';
 
 export const securityHeaders = helmet({
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      imgSrc: ["'self'", 'data:', 'https:', 'blob:'],
-      connectSrc: ["'self'", 'https://api.jup.ag', 'https://api.dexscreener.com', 'https://mainnet.helius-rpc.com', 'wss:'],
-    },
-  },
-  crossOriginEmbedderPolicy: false, // Allow embedded content
+  contentSecurityPolicy: false,
+  frameguard: false,
+  crossOriginEmbedderPolicy: false,
+  crossOriginOpenerPolicy: false,
+  crossOriginResourcePolicy: false,
 });
 
 export const corsMiddleware = cors({
-  origin: (origin, callback) => {
-    // Allow requests with no origin (mobile apps, curl, etc.)
-    if (!origin) return callback(null, true);
-
-    if (config.ALLOWED_ORIGINS.includes(origin) || config.NODE_ENV === 'development') {
-      callback(null, true);
-    } else {
-      securityLogger.warn({ origin }, 'CORS blocked request');
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
+  origin: true,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key'],
