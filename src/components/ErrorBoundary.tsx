@@ -34,15 +34,32 @@ export class ErrorBoundary extends React.Component<any, any> {
             <h1 className="text-xl font-bold text-red-400">Application Error Encountered</h1>
             <p className="text-sm text-slate-400">An uncaught exception occurred in a component. You can reload the app to recover.</p>
             <pre className="bg-slate-950 p-3 rounded-lg text-xs font-mono text-rose-300 overflow-x-auto max-h-40">{this.state.error?.toString()}</pre>
-            <button 
-              onClick={() => {
-                this.setState({ hasError: false, error: undefined, errorInfo: undefined });
-                window.location.reload();
-              }} 
-              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium text-sm transition-colors cursor-pointer"
-            >
-              Reload Application
-            </button>
+            <div className="flex gap-3 pt-2">
+              <button 
+                onClick={() => {
+                  this.setState({ hasError: false, error: undefined, errorInfo: undefined });
+                  window.location.reload();
+                }} 
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium text-sm transition-colors cursor-pointer"
+              >
+                Reload Application
+              </button>
+              <button 
+                onClick={() => {
+                  try {
+                    localStorage.clear();
+                    sessionStorage.clear();
+                  } catch (e) {
+                    console.error('Failed to clear storage:', e);
+                  }
+                  this.setState({ hasError: false, error: undefined, errorInfo: undefined });
+                  window.location.reload();
+                }} 
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg font-medium text-sm transition-colors cursor-pointer"
+              >
+                Reset Cache & Reload
+              </button>
+            </div>
           </div>
         </div>
       );
