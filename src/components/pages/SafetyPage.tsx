@@ -4,7 +4,7 @@ import { TokenMetric } from '../../types';
 import { cn } from '../../lib/utils';
 
 export const SafetyPage = ({ tokenMetrics }: { tokenMetrics: Record<string, TokenMetric> }) => {
-  const tokens = Object.values(tokenMetrics);
+  const tokens = Object.values(tokenMetrics || {});
 
   const getAge = (timestamp: number) => {
     const minutes = Math.floor((Date.now() - timestamp) / 60000);

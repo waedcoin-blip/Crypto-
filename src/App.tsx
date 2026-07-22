@@ -1437,7 +1437,7 @@ export default function App() {
           const metrics: AdvancedTokenMetrics = {
             mintAddress: token.address,
             bondingCurveProgress: token.bondingCurveProgress || 0,
-            isRaydiumListed: !token.address.toLowerCase().endsWith('pump') && 
+            isRaydiumListed: !(token.address || '').toLowerCase().endsWith('pump') && 
                              (!(token.dexId || '').toLowerCase().includes('pump') || (token.dexId || '').toLowerCase().includes('pumpswap')) && 
                              (token.bondingCurveProgress === undefined || token.bondingCurveProgress >= 99.5),
             marketCapUsd: token.marketCap || 0,
@@ -2197,7 +2197,7 @@ export default function App() {
 
     let actualBuyAmountSol = buyAmountSol;
     const metric = tokenMetrics[tokenAddress];
-    if (metric && (((metric.dexId?.includes('pump') && !metric.dexId?.toLowerCase().includes('pumpswap')) || tokenAddress.endsWith('pump')))) {
+    if (metric && (((metric.dexId?.includes('pump') && !metric.dexId?.toLowerCase().includes('pumpswap')) || (tokenAddress || '').endsWith('pump')))) {
        const poolLiquidityUsd = metric.liquidity || 0;
        const safeMaxBuyUsd = poolLiquidityUsd * 0.0025;
        const safeMaxBuySol = safeMaxBuyUsd / 140.0; // Approx sol price
@@ -2700,10 +2700,10 @@ export default function App() {
         // Bonding Curve Progress Simulation (Pump.fun specific)
         // Formula: (1,073,000,000 - Current Virtual Token Reserves) / 793,100,000 * 100
         let bondingCurveProgress = undefined;
-        const isGraduatedLocal = !mint.toLowerCase().endsWith('pump');
+        const isGraduatedLocal = !(mint || '').toLowerCase().endsWith('pump');
         if (isGraduatedLocal) {
           bondingCurveProgress = 100.0;
-        } else if (dexId.toLowerCase().includes('pump') && !dexId.toLowerCase().includes('pumpswap')) {
+        } else if ((dexId || '').toLowerCase().includes('pump') && !(dexId || '').toLowerCase().includes('pumpswap')) {
           if (priceNative > 0) {
             const virtualTokenReserves = Math.sqrt(32190000000 / priceNative);
             const calculatedProgress = ((1073000000 - virtualTokenReserves) / 793100000) * 100;
@@ -2886,7 +2886,7 @@ export default function App() {
           ].filter(item => Date.now() - item.t < 5 * 60 * 1000);
 
           const ageMins = (Date.now() - (current.discoveredAt || Date.now())) / 60000;
-          const isRaydiumListed = !trade.tokenAddress.toLowerCase().endsWith('pump');
+          const isRaydiumListed = !(trade.tokenAddress || '').toLowerCase().endsWith('pump');
           const mc = current.marketCap || 0;
           const liq = current.liquidity || 0;
           const liqRatio = mc > 0 ? liq / mc : 0;
@@ -2896,7 +2896,7 @@ export default function App() {
 
           if (trade.type === 'buy' && ageMins >= 0.5) {
             // Detect Migration
-            if (trade.token.toLowerCase().includes('migrating') || (current.bondingCurveProgress || 0) >= 99.5) {
+            if ((trade.token || '').toLowerCase().includes('migrating') || (current.bondingCurveProgress || 0) >= 99.5) {
               alertType = 'MIGRATED';
             }
 
@@ -3534,7 +3534,7 @@ export default function App() {
 
                 // Determine alert type - Prioritize MIGRATED
                 let alertType: 'WHALE_BUY' | 'HIGH_BUY' | 'VOLUME_SPIKE' | 'MIGRATED' | 'GOLDEN_CROSS' = 'VOLUME_SPIKE';
-                const isRaydiumListed = !mint.toLowerCase().endsWith('pump');
+                const isRaydiumListed = !(mint || '').toLowerCase().endsWith('pump');
                 const calibratedMinMcap = isRaydiumListed ? 65000 : 110000;
 
                 if (isMigration) {
@@ -6190,18 +6190,19 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {(Object.values(tokenMetrics) as TokenMetric[])
+                    {(Object.values(tokenMetrics || {}) as TokenMetric[])
                       .filter(m => {
-                        const buy30s = (m.recentBuysTimeline || []).filter(t => Date.now() - t.t < 30000).length;
+                        if (!m || !m.address) return false;
+                        const buy30s = (m.recentBuysTimeline || []).filter(t => t && Date.now() - t.t < 30000).length;
                         
-                        
-                        const saved = savedGems[m.address];
+                        const saved = savedGems ? savedGems[m.address] : undefined;
                         if (saved) {
                           const currentPrice = m.priceUsd || (m.marketCap && m.supply ? m.marketCap / m.supply : 0);
                           const gain = (saved.priceAtSave > 0 && currentPrice > 0) ? ((currentPrice / saved.priceAtSave) - 1) * 100 : 0;
-                          if (gain < 0) return false; // Filter out tracked but underperforming tokens
+                          if (gain < 0) return false;
                         }
-if (alphaProtocol === 'GEMS_100X') {
+
+                        if (alphaProtocol === 'GEMS_100X') {
                           const mc = m.marketCap || 0; 
                           const vol = m.volume24h || 0; 
                           const liq = m.liquidity || 0; 
@@ -6211,7 +6212,6 @@ if (alphaProtocol === 'GEMS_100X') {
                           const buySellRatio = (m.buyCount || 0) / (m.sellCount || 1); 
                           const hasHolders = (m.holderCount || 0) >= 0;
                           const safeDev = true;
-                          const buy30sVol = (m.recentBuysTimeline || []).filter(t => Date.now() - t.t < 30000).reduce((a, b) => a + b.a, 0);
                           const hasVelocity = true;
                           return isMcValid && isVolValid && isLiqValid && buySellRatio >= 0 && hasHolders && safeDev && m.isRugSafe !== false && hasVelocity;
                         }
@@ -6229,7 +6229,7 @@ if (alphaProtocol === 'GEMS_100X') {
                         }
 
                         if (alphaProtocol === 'MIGRATED') {
-                          return m.latestAlert === 'MIGRATED' || (m.bondingCurveProgress || 0) >= 99.5 || !m.address.toLowerCase().endsWith('pump');
+                          return m.latestAlert === 'MIGRATED' || (m.bondingCurveProgress || 0) >= 99.5 || !(m.address && m.address.toLowerCase().endsWith('pump'));
                         }
 
                         const baseFilter = (m.buyCount || 0) >= 2;
@@ -6239,18 +6239,19 @@ if (alphaProtocol === 'GEMS_100X') {
                         if (!isBuyingMore) return false;
                         
                         if (alphaProtocol === 'SNIPER') {
-                          return (m.percentageIncrease || 0) >= 15 && (buy30s >= 2 || (m.buyCount / (m.sellCount || 1)) >= 3);
+                          return (m.percentageIncrease || 0) >= 15 && (buy30s >= 2 || ((m.buyCount || 0) / (m.sellCount || 1)) >= 3);
                         }
-                        if (alphaProtocol === 'HIGH_PROFIT') return (m.percentageIncrease || 0) >= 60 && m.isRugSafe !== false && ((m.volume24h || 0) / (m.marketCap || 1)) >= 1.0;
+                        if (alphaProtocol === 'HIGH_PROFIT') return (m.percentageIncrease || 0) >= 60 && m.isRugSafe !== false && (((m.volume24h || 0) / (m.marketCap || 1)) >= 1.0);
                         if (alphaProtocol === 'WHALE_BUY') return m.latestAlert === 'WHALE_BUY' || m.latestAlert === 'HIGH_BUY';
-                        if (alphaProtocol === 'NEW_DISCOVERY') return (Date.now() - m.discoveredAt) < 300000;
+                        if (alphaProtocol === 'NEW_DISCOVERY') return (Date.now() - (m.discoveredAt || Date.now())) < 300000;
                         if (alphaProtocol === 'ALL') return (m.percentageIncrease || 0) >= 40;
                         return true;
                       })
                       .sort((a, b) => {
+                        if (!a || !b) return 0;
                         if (alphaProtocol === 'SNIPER' || alphaProtocol === 'GEMS_100X') {
-                          const a30sCount = (a.recentBuysTimeline || []).filter(t => Date.now() - t.t < 30000).length;
-                          const b30sCount = (b.recentBuysTimeline || []).filter(t => Date.now() - t.t < 30000).length;
+                          const a30sCount = (a.recentBuysTimeline || []).filter(t => t && Date.now() - t.t < 30000).length;
+                          const b30sCount = (b.recentBuysTimeline || []).filter(t => t && Date.now() - t.t < 30000).length;
                           
                           if (alphaProtocol === 'GEMS_100X') {
                             if (b30sCount !== a30sCount) return b30sCount - a30sCount;
@@ -6259,21 +6260,26 @@ if (alphaProtocol === 'GEMS_100X') {
                           
                           if (b30sCount !== a30sCount) return b30sCount - a30sCount;
                         }
-                        const bRatio = b.buyCount / (b.sellCount || 1);
-                        const aRatio = a.buyCount / (a.sellCount || 1);
+                        const bRatio = (b.buyCount || 0) / (b.sellCount || 1);
+                        const aRatio = (a.buyCount || 0) / (a.sellCount || 1);
                         if (Math.abs(bRatio - aRatio) > 0.5) return bRatio - aRatio;
                         return (b.discoveredAt || 0) - (a.discoveredAt || 0);
                       })
                       .slice(0, 30).map((metric: TokenMetric) => {
-                        const last30sVol = (metric.recentBuysTimeline || []).filter(t => Date.now() - t.t < 30000).reduce((acc, curr) => acc + curr.a, 0);
-                        const buyFreq30s = (metric.recentBuysTimeline || []).filter(t => Date.now() - t.t < 30000).length;
+                        if (!metric || !metric.address) return null;
+                        const buyFreq30s = (metric.recentBuysTimeline || []).filter(t => t && Date.now() - t.t < 30000).length;
                         const isSprinting = buyFreq30s > 8;
                         const alphaScore = Math.min(100, Math.floor(
-                          ((metric.liquidity / 8000) * 30) + 
-                          ((metric.volume24h / 20000) * 30) + 
-                          ((metric.holderCount || 0) / 100 * 20) +
+                          (((metric.liquidity || 0) / 8000) * 30) + 
+                          (((metric.volume24h || 0) / 20000) * 30) + 
+                          (((metric.holderCount || 0) / 100) * 20) +
                           (buyFreq30s * 2)
                         ));
+                        const symbol = metric.symbol || 'UNK';
+                        const address = metric.address;
+                        const buyCount = metric.buyCount || 0;
+                        const sellCount = metric.sellCount || 0;
+                        const pctInc = metric.percentageIncrease || 0;
 
                         return (
                         <tr 
@@ -6293,7 +6299,7 @@ if (alphaProtocol === 'GEMS_100X') {
                                 metric.latestAlert === 'HIGH_BUY' ? "bg-amber-500 text-white border-amber-400 shadow-[0_0_15px_rgba(245,158,11,0.4)]" :
                                 "bg-indigo-500/10 border-indigo-500/20 text-indigo-400"
                               )}>
-                                {metric.symbol.slice(0, 3)}
+                                {(metric.symbol || 'UNK').slice(0, 3)}
                               </div>
                               <div>
                                 <div className="flex items-center gap-2">
@@ -6325,7 +6331,7 @@ if (alphaProtocol === 'GEMS_100X') {
                                   )}
                                 </div>
                                 <div className="flex items-center gap-1">
-                                  <span className="text-[10px] font-mono text-slate-500">{metric.address.slice(0, 6)}...{metric.address.slice(-4)}</span>
+                                  <span className="text-[10px] font-mono text-slate-500">{(metric.address || '').slice(0, 6)}...{(metric.address || '').slice(-4)}</span>
                                   <button onClick={() => copyToClipboard(metric.address, metric.address)} className="text-slate-600 hover:text-white transition-colors">
                                     {copiedId === metric.address ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
                                   </button>
@@ -6446,17 +6452,18 @@ if (alphaProtocol === 'GEMS_100X') {
                         </tr>
                       );
                     })}
-                    {(Object.values(tokenMetrics) as TokenMetric[]).filter(m => {
-                      const buy30s = (m.recentBuysTimeline || []).filter(t => Date.now() - t.t < 30000).length;
+                    {(Object.values(tokenMetrics || {}) as TokenMetric[]).filter(m => {
+                      if (!m || !m.address) return false;
+                      const buy30s = (m.recentBuysTimeline || []).filter(t => t && Date.now() - t.t < 30000).length;
                       
-                      
-                        const saved = savedGems[m.address];
-                        if (saved) {
-                          const currentPrice = m.priceUsd || (m.marketCap && m.supply ? m.marketCap / m.supply : 0);
-                          const gain = (saved.priceAtSave > 0 && currentPrice > 0) ? ((currentPrice / saved.priceAtSave) - 1) * 100 : 0;
-                          if (gain < 0) return false; // Filter out tracked but underperforming tokens
-                        }
-if (alphaProtocol === 'GEMS_100X') {
+                      const saved = savedGems ? savedGems[m.address] : undefined;
+                      if (saved) {
+                        const currentPrice = m.priceUsd || (m.marketCap && m.supply ? m.marketCap / m.supply : 0);
+                        const gain = (saved.priceAtSave > 0 && currentPrice > 0) ? ((currentPrice / saved.priceAtSave) - 1) * 100 : 0;
+                        if (gain < 0) return false;
+                      }
+
+                      if (alphaProtocol === 'GEMS_100X') {
                         const mc = m.marketCap || 0; 
                         const vol = m.volume24h || 0; 
                         const liq = m.liquidity || 0; 
@@ -6466,19 +6473,24 @@ if (alphaProtocol === 'GEMS_100X') {
                         const buySellRatio = (m.buyCount || 0) / (m.sellCount || 1); 
                         const hasHolders = (m.holderCount || 0) >= 0;
                         const safeDev = true;
-                        const buy30sVol = (m.recentBuysTimeline || []).filter(t => Date.now() - t.t < 30000).reduce((a, b) => a + b.a, 0);
                         const hasVelocity = true;
                         return isMcValid && isVolValid && isLiqValid && buySellRatio >= 0 && hasHolders && safeDev && m.isRugSafe !== false && hasVelocity;
                       }
 
                       if (alphaProtocol === 'JUPITER_AUTO') { 
-                        const isEarly = (Date.now() - (m.discoveredAt || Date.now())) <= 5 * 60 * 1000;
+                        const tokenAgeMs = Date.now() - (m.discoveredAt || Date.now());
+                        const isAgeValid = tokenAgeMs > 300000;
+                        const hasVol = (m.volume24h || 0) >= 5000;
+                        const hasLiq = (m.liquidity || 0) >= 2000;
+                        const isBondingCurve = (m.marketCap || 0) < 100000;
+                        const progressPass = !isBondingCurve || (m.marketCap || 0) >= 62000;
+
                         const hasMomentum = (m.percentageIncrease || 0) >= 20 || ((m.buyCount || 0) / (m.sellCount || 1) >= 1.5);
-                        return isEarly && hasMomentum && m.isRugSafe !== false;
+                        return isAgeValid && hasVol && hasLiq && progressPass && hasMomentum && m.isRugSafe !== false;
                       }
 
                       if (alphaProtocol === 'MIGRATED') {
-                        return m.latestAlert === 'MIGRATED' || (m.bondingCurveProgress || 0) >= 99.5 || !m.address.toLowerCase().endsWith('pump');
+                        return m.latestAlert === 'MIGRATED' || (m.bondingCurveProgress || 0) >= 99.5 || !(m.address && m.address.toLowerCase().endsWith('pump'));
                       }
 
                       const baseFilter = (m.buyCount || 0) >= 2;
@@ -6487,11 +6499,11 @@ if (alphaProtocol === 'GEMS_100X') {
                       if (!isBuyingMore) return false;
 
                       if (alphaProtocol === 'SNIPER') {
-                        return (m.percentageIncrease || 0) >= 15 && (buy30s >= 2 || (m.buyCount / (m.sellCount || 1)) >= 3);
+                        return (m.percentageIncrease || 0) >= 15 && (buy30s >= 2 || ((m.buyCount || 0) / (m.sellCount || 1)) >= 3);
                       }
-                      if (alphaProtocol === 'HIGH_PROFIT') return (m.percentageIncrease || 0) >= 60 && m.isRugSafe !== false && ((m.volume24h || 0) / (m.marketCap || 1)) >= 1.0;
+                      if (alphaProtocol === 'HIGH_PROFIT') return (m.percentageIncrease || 0) >= 60 && m.isRugSafe !== false && (((m.volume24h || 0) / (m.marketCap || 1)) >= 1.0);
                       if (alphaProtocol === 'WHALE_BUY') return m.latestAlert === 'WHALE_BUY' || m.latestAlert === 'HIGH_BUY';
-                      if (alphaProtocol === 'NEW_DISCOVERY') return (Date.now() - m.discoveredAt) < 300000;
+                      if (alphaProtocol === 'NEW_DISCOVERY') return (Date.now() - (m.discoveredAt || Date.now())) < 300000;
                       return (m.percentageIncrease || 0) >= 40;
                     }).length === 0 && (
                       <tr>
@@ -6508,18 +6520,19 @@ if (alphaProtocol === 'GEMS_100X') {
 
               {/* Mobile Card View */}
               <div className="lg:hidden overflow-y-auto scrollbar-none flex-1 p-4 space-y-4">
-                {(Object.values(tokenMetrics) as TokenMetric[])
+                {(Object.values(tokenMetrics || {}) as TokenMetric[])
                   .filter(m => {
-                    const buy30s = (m.recentBuysTimeline || []).filter(t => Date.now() - t.t < 30000).length;
+                    if (!m || !m.address) return false;
+                    const buy30s = (m.recentBuysTimeline || []).filter(t => t && Date.now() - t.t < 30000).length;
                     
-                    
-                        const saved = savedGems[m.address];
-                        if (saved) {
-                          const currentPrice = m.priceUsd || (m.marketCap && m.supply ? m.marketCap / m.supply : 0);
-                          const gain = (saved.priceAtSave > 0 && currentPrice > 0) ? ((currentPrice / saved.priceAtSave) - 1) * 100 : 0;
-                          if (gain < 0) return false; // Filter out tracked but underperforming tokens
-                        }
-if (alphaProtocol === 'GEMS_100X') {
+                    const saved = savedGems ? savedGems[m.address] : undefined;
+                    if (saved) {
+                      const currentPrice = m.priceUsd || (m.marketCap && m.supply ? m.marketCap / m.supply : 0);
+                      const gain = (saved.priceAtSave > 0 && currentPrice > 0) ? ((currentPrice / saved.priceAtSave) - 1) * 100 : 0;
+                      if (gain < 0) return false;
+                    }
+
+                    if (alphaProtocol === 'GEMS_100X') {
                       const mc = m.marketCap || 0; 
                       const vol = m.volume24h || 0; 
                       const liq = m.liquidity || 0; 
@@ -6529,7 +6542,6 @@ if (alphaProtocol === 'GEMS_100X') {
                       const buySellRatio = (m.buyCount || 0) / (m.sellCount || 1); 
                       const hasHolders = (m.holderCount || 0) >= 0;
                       const safeDev = true;
-                      const buy30sVol = (m.recentBuysTimeline || []).filter(t => Date.now() - t.t < 30000).reduce((a, b) => a + b.a, 0);
                       const hasVelocity = true;
                       return isMcValid && isVolValid && isLiqValid && buySellRatio >= 0 && hasHolders && safeDev && m.isRugSafe !== false && hasVelocity;
                     }
@@ -6547,7 +6559,7 @@ if (alphaProtocol === 'GEMS_100X') {
                     }
 
                     if (alphaProtocol === 'MIGRATED') {
-                      return m.latestAlert === 'MIGRATED' || (m.bondingCurveProgress || 0) >= 99.5 || !m.address.toLowerCase().endsWith('pump');
+                      return m.latestAlert === 'MIGRATED' || (m.bondingCurveProgress || 0) >= 99.5 || !(m.address && m.address.toLowerCase().endsWith('pump'));
                     }
 
                     const baseFilter = (m.buyCount || 0) >= 2;
@@ -6557,17 +6569,18 @@ if (alphaProtocol === 'GEMS_100X') {
                     if (!isBuyingMore) return false;
 
                     if (alphaProtocol === 'SNIPER') {
-                      return (m.percentageIncrease || 0) >= 15 && (buy30s >= 2 || (m.buyCount / (m.sellCount || 1)) >= 3);
+                      return (m.percentageIncrease || 0) >= 15 && (buy30s >= 2 || ((m.buyCount || 0) / (m.sellCount || 1)) >= 3);
                     }
-                    if (alphaProtocol === 'HIGH_PROFIT') return (m.percentageIncrease || 0) >= 60 && m.isRugSafe !== false && ((m.volume24h || 0) / (m.marketCap || 1)) >= 1.0;
+                    if (alphaProtocol === 'HIGH_PROFIT') return (m.percentageIncrease || 0) >= 60 && m.isRugSafe !== false && (((m.volume24h || 0) / (m.marketCap || 1)) >= 1.0);
                     if (alphaProtocol === 'WHALE_BUY') return m.latestAlert === 'WHALE_BUY' || m.latestAlert === 'HIGH_BUY';
-                    if (alphaProtocol === 'NEW_DISCOVERY') return (Date.now() - m.discoveredAt) < 300000;
+                    if (alphaProtocol === 'NEW_DISCOVERY') return (Date.now() - (m.discoveredAt || Date.now())) < 300000;
                     return (m.percentageIncrease || 0) >= 40;
                   })
                   .sort((a, b) => {
+                    if (!a || !b) return 0;
                     if (alphaProtocol === 'SNIPER' || alphaProtocol === 'GEMS_100X') {
-                      const a30sCount = (a.recentBuysTimeline || []).filter(t => Date.now() - t.t < 30000).length;
-                      const b30sCount = (b.recentBuysTimeline || []).filter(t => Date.now() - t.t < 30000).length;
+                      const a30sCount = (a.recentBuysTimeline || []).filter(t => t && Date.now() - t.t < 30000).length;
+                      const b30sCount = (b.recentBuysTimeline || []).filter(t => t && Date.now() - t.t < 30000).length;
                       
                       if (alphaProtocol === 'GEMS_100X') {
                         if (b30sCount !== a30sCount) return b30sCount - a30sCount;
@@ -6576,8 +6589,8 @@ if (alphaProtocol === 'GEMS_100X') {
                       
                       if (b30sCount !== a30sCount) return b30sCount - a30sCount;
                     }
-                    const bRatio = b.buyCount / (b.sellCount || 1);
-                    const aRatio = a.buyCount / (a.sellCount || 1);
+                    const bRatio = (b.buyCount || 0) / (b.sellCount || 1);
+                    const aRatio = (a.buyCount || 0) / (a.sellCount || 1);
                     if (Math.abs(bRatio - aRatio) > 0.5) return bRatio - aRatio;
                     return (b.discoveredAt || 0) - (a.discoveredAt || 0);
                   })
@@ -6604,11 +6617,11 @@ if (alphaProtocol === 'GEMS_100X') {
                             metric.latestAlert === 'MIGRATED' ? "bg-rose-600 text-white border border-rose-400 shadow-[0_0_15px_rgba(225,29,72,0.4)]" :
                             "bg-indigo-500/10 border border-indigo-500/20 text-indigo-400"
                           )}>
-                            {metric.symbol.slice(0, 3)}
+                            {(metric.symbol || 'UNK').slice(0, 3)}
                           </div>
                           <div className="min-w-0">
                             <div className="flex items-center gap-2 mb-1">
-                              <p className="text-sm font-black text-white uppercase leading-none truncate">{metric.symbol}</p>
+                              <p className="text-sm font-black text-white uppercase leading-none truncate">{metric.symbol || 'UNKNOWN'}</p>
                               {metric.latestAlert === 'MIGRATED' && (
                                 <span className="text-[7px] text-rose-400 font-black animate-bounce shrink-0">🚀</span>
                               )}
@@ -6650,13 +6663,13 @@ if (alphaProtocol === 'GEMS_100X') {
                         <div className="text-right">
                           <div className={cn(
                             "inline-flex items-center gap-1 font-black text-sm",
-                            metric.percentageIncrease >= 0 ? "text-emerald-400" : "text-rose-400"
+                            (metric.percentageIncrease || 0) >= 0 ? "text-emerald-400" : "text-rose-400"
                           )}>
-                            {metric.percentageIncrease.toFixed(2)}%
+                            {(metric.percentageIncrease || 0).toFixed(2)}%
                           </div>
                           <div className="flex flex-col items-end gap-0.5 mt-1">
-                            <p className="text-[9px] text-slate-500 font-mono font-bold uppercase tracking-widest">{metric.buyCount}B / {metric.sellCount}S</p>
-                            <p className="text-[10px] font-black text-emerald-400">{(metric.buyCount / (metric.sellCount || 1)).toFixed(1)}x Ratio</p>
+                            <p className="text-[9px] text-slate-500 font-mono font-bold uppercase tracking-widest">{metric.buyCount || 0}B / {metric.sellCount || 0}S</p>
+                            <p className="text-[10px] font-black text-emerald-400">{((metric.buyCount || 0) / (metric.sellCount || 1)).toFixed(1)}x Ratio</p>
                           </div>
                         </div>
                       </div>
@@ -6664,7 +6677,7 @@ if (alphaProtocol === 'GEMS_100X') {
                       <div className="grid grid-cols-2 gap-3 pt-3 border-t border-slate-800/50">
                         <div className="flex items-center gap-2 bg-slate-900/50 px-2 py-1.5 rounded-xl border border-slate-700 min-w-0">
                           <code className="text-[10px] font-mono text-indigo-200 truncate flex-1 leading-relaxed">
-                            {metric.address.slice(0, 6)}...{metric.address.slice(-6)}
+                            {(metric.address || '').slice(0, 6)}...{(metric.address || '').slice(-6)}
                           </code>
                           <button 
                             onClick={() => copyToClipboard(metric.address, metric.address)}

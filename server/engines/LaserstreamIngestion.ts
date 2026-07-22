@@ -13,6 +13,8 @@ import { subscribe, type LaserstreamConfig, type SubscribeRequest, shutdownAllSt
 import { Connection, PublicKey } from '@solana/web3.js';
 import { fork } from 'child_process';
 import type { ChildProcess } from 'child_process';
+import path from 'path';
+import fs from 'fs';
 import { logger, laserLogger } from '../utils/logger.js';
 import { config } from '../config/index.js';
 import { isBenignError } from '../utils/errors.js';
@@ -370,11 +372,17 @@ export async function startLaserStream(
   const apiKey = options.apiKey || config.HELIUS_API_KEY || '';
   const programs = options.programAddresses || [...DEFAULT_PROGRAMS];
 
-  // Free key → simulation mode
+  // If key is known default/free, attempt High-Speed WebSocket fallback directly or simulation stream
   if (isFreeOrDefaultKey(apiKey)) {
-    laserLogger.info('Free/default API key detected, using simulation stream');
-    startSimulationStream(eventBusCallback);
-    return null;
+    laserLogger.info('Free/default API key detected, utilizing High-Speed WebSocket stream protocol');
+    state.isUsingFallback = true;
+    try {
+      await startFallbackWebSocket(programs, eventBusCallback, apiKey, options.customWsUrl);
+      return null;
+    } catch {
+      startSimulationStream(eventBusCallback);
+      return null;
+    }
   }
 
   // Auto-select endpoint
@@ -426,8 +434,19 @@ export async function startLaserStream(
     laserLogger.info('Spawning isolated worker process for gRPC');
 
     const workerOptions = { apiKey, endpoint, programAddresses: programs };
+    let scriptPath = process.argv[1];
+    if (!scriptPath || scriptPath.trim() === '' || !fs.existsSync(scriptPath)) {
+      if (fs.existsSync(path.resolve(process.cwd(), 'dist/server.cjs'))) {
+        scriptPath = path.resolve(process.cwd(), 'dist/server.cjs');
+      } else {
+        scriptPath = path.resolve(process.cwd(), 'server.ts');
+      }
+    }
 
-    state.childProcess = fork(process.argv[1], [], {
+    const execArgv = scriptPath.endsWith('.ts') ? ['--import', 'tsx'] : [];
+
+    state.childProcess = fork(scriptPath, [], {
+      execArgv,
       env: {
         ...process.env,
         IS_LASERSTREAM_WORKER: 'true',

@@ -126,6 +126,15 @@ router.post('/config', asyncHandler(async (req, res) => {
     activeEndpoint: getActiveLaserStreamEndpoint(),
   };
 
+  broadcastToClients({
+    type: 'STATUS',
+    status: isActive ? 'connected' : 'disconnected',
+    laserstreamActive: isActive,
+    isFallback: isLaserStreamUsingFallback(),
+    isSimulated: isLaserStreamSimulated(),
+    activeEndpoint: getActiveLaserStreamEndpoint(),
+  } as any);
+
   res.json(status);
 }));
 

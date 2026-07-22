@@ -8,7 +8,7 @@ export const PredictionPage = ({ tokenMetrics }: { tokenMetrics: Record<string, 
   
   // Real implementation would fetch from real APIs. For the scope of this frontend, we aggregate
   // from our AI-driven token metrics
-  const tokens = Object.values(tokenMetrics).filter(m => (m.marketCap || 0) > 100000 && m.isRugSafe !== false);
+  const tokens = Object.values(tokenMetrics || {}).filter(m => m && (m.marketCap || 0) > 100000 && m.isRugSafe !== false);
 
   return (
     <div className="p-4 lg:p-8 max-w-7xl mx-auto space-y-6 lg:space-y-12 pb-24 lg:pb-8">

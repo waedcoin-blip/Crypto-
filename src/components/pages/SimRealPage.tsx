@@ -325,7 +325,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
     };
   }, [privateKey, rpcUrl, jupiterRpcUrl, customWsUrl]);
   
-  const activeSimrealPositions = Object.values(positions).filter(pos => pos && pos.simRealBought);
+  const activeSimrealPositions = Object.values(positions || {}).filter(pos => pos && pos.simRealBought);
 
   const getCompletedSimRealTrades = () => {
     const completed: Array<{
@@ -341,7 +341,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
     }> = [];
     
     // simRealTrades has newest first, so we reverse it to process chronologically
-    const chronological = [...simRealTrades].reverse();
+    const chronological = [...(simRealTrades || [])].reverse();
     const openBuys: Record<string, Array<{ timestamp: number; amount: number; tokenAmount?: number }>> = {};
     
     for (const trade of chronological) {
@@ -546,7 +546,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
     const monitorPositions = async () => {
       if (!active) return;
       
-      for (const [mint, pos] of Object.entries(positions)) {
+      for (const [mint, pos] of Object.entries(positions || {})) {
          if (!pos || !pos.simRealBought) continue;
          
          const tokenMetric = tokenMetrics[mint];
@@ -987,7 +987,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                 </div>
               ) : (
                 <div className="grid grid-cols-1 gap-3">
-                  {Object.entries(positions)
+                  {Object.entries(positions || {})
                     .filter(([_, pos]) => pos && pos.simRealBought)
                     .map(([mint, pos]) => {
                       const currentPrice = pos.currentPrice || pos.buyPrice || 0;
@@ -1242,7 +1242,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                     </tr>
                   </thead>
                   <tbody>
-                    {[...signals].reverse().slice(0, 15).map(sig => {
+                    {[...(signals || [])].reverse().slice(0, 15).map(sig => {
                       const ageSec = Math.floor((Date.now() - sig.timestamp) / 1000);
                       let ageString = `${ageSec}s ago`;
                       if (ageSec >= 60) {

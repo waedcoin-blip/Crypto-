@@ -1078,7 +1078,7 @@ export const PnLPage = ({
   const [senderSwqos, setSenderSwqos] = useState(() => localStorage.getItem('hd_sender_swqos') === 'true');
 
   // Helius LaserStream (Ultra-Low Latency Ingestion gRPC) Configurations
-  const [laserstreamEnabled, setLaserstreamEnabled] = useState(() => localStorage.getItem('hd_laserstream_enabled') === 'true');
+  const [laserstreamEnabled, setLaserstreamEnabled] = useState(() => localStorage.getItem('hd_laserstream_enabled') !== 'false');
   const [laserstreamApiKey, setLaserstreamApiKey] = useState(() => localStorage.getItem('hd_laserstream_apiKey') || HELIUS_API_KEY);
   const [laserstreamEndpoint, setLaserstreamEndpoint] = useState(() => localStorage.getItem('hd_laserstream_endpoint') || 'auto');
   const [laserstreamStatus, setLaserstreamStatus] = useState<'connected'|'disconnected'|'connecting'>('disconnected');
@@ -2138,8 +2138,9 @@ export const PnLPage = ({
             }
             
             // Render on UI log to provide visual excitement and proof of functionality!
+            setLaserstreamStatus('connected');
             if (isSim) {
-              // Silently stream sandbox events without spamming system logs
+              addLog(`⚡ LaserStream Shred [Simulated]: [slot: ${slot}] sig: ${signature.substring(0, 8)}... (Local Sandbox Stream)`, 'info');
             } else if (isFallback) {
               addLog(`⚡ Live Direct Feed: [slot: ${slot}] sig: ${signature.substring(0, 8)}... (High-Speed WebSocket Logs Protocol)`, 'success');
             } else {
@@ -5972,7 +5973,7 @@ const checkTokenCriteria = (mint: string): {
     }> = [];
     
     // simRealTrades has newest first, so we reverse it to process chronologically
-    const chronological = [...simRealTrades].reverse();
+    const chronological = [...(simRealTrades || [])].reverse();
     const openBuys: Record<string, Array<{ timestamp: number; amount: number }>> = {};
     
     for (const trade of chronological) {
@@ -7087,7 +7088,7 @@ const checkTokenCriteria = (mint: string): {
           </div>
           <div className="flex flex-col flex-1">
             <div className="flex justify-between items-center pb-3">
-              <h2 className="text-[12px] uppercase tracking-[1px] text-[#94a3b8] font-bold">Active Positions ({Object.values(positions).filter(pos => pos && pos.symbol && pos.symbol.trim() !== '' && pos.symbol !== 'Unknown' && pos.buyPrice && !isNaN(pos.buyPrice) && pos.amount && !isNaN(pos.amount) && pos.solSpent && !isNaN(pos.solSpent)).length}/{maxPositions || '♾️'})</h2>
+              <h2 className="text-[12px] uppercase tracking-[1px] text-[#94a3b8] font-bold">Active Positions ({Object.values(positions || {}).filter(pos => pos && pos.symbol && pos.symbol.trim() !== '' && pos.symbol !== 'Unknown' && pos.buyPrice && !isNaN(pos.buyPrice) && pos.amount && !isNaN(pos.amount) && pos.solSpent && !isNaN(pos.solSpent)).length}/{maxPositions || '♾️'})</h2>
               {Object.values(tokenMetrics || {}).filter(m => {
                 const buy30s = (m.recentBuysTimeline || []).filter(t => Date.now() - t.t < 30000).length;
                 const buyRatio = m.buyCount / (m.sellCount || 1);
@@ -7107,7 +7108,7 @@ const checkTokenCriteria = (mint: string): {
               )}
             </div>
             <div className="flex-1 space-y-3">
-              {Object.values(positions).filter(pos => pos && pos.symbol && pos.symbol.trim() !== '' && pos.symbol !== 'Unknown' && typeof pos.buyPrice === 'number' && !isNaN(pos.buyPrice) && typeof pos.amount === 'number' && !isNaN(pos.amount) && typeof pos.solSpent === 'number' && !isNaN(pos.solSpent)).length === 0 ? (
+              {Object.values(positions || {}).filter(pos => pos && pos.symbol && pos.symbol.trim() !== '' && pos.symbol !== 'Unknown' && typeof pos.buyPrice === 'number' && !isNaN(pos.buyPrice) && typeof pos.amount === 'number' && !isNaN(pos.amount) && typeof pos.solSpent === 'number' && !isNaN(pos.solSpent)).length === 0 ? (
                 <div className="bg-[#10111a]/40 border border-[#1f212e] border-dashed rounded-2xl p-8 flex flex-col items-center justify-center text-center text-[#64748b]">
                   <div className="w-12 h-12 rounded-full bg-[#1a1b26] border border-[#2d2e3d] flex items-center justify-center mb-3">
                     <Search className="w-5 h-5 text-[#94a3b8] opacity-50" />
@@ -7117,7 +7118,7 @@ const checkTokenCriteria = (mint: string): {
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2 gap-3 content-start">
-                  {Object.entries(positions).filter(([_, pos]: [string, any]) => {
+                  {Object.entries(positions || {}).filter(([_, pos]: [string, any]) => {
                     // 🛡️ Robust validation filter to prevent displaying visually buggy/corrupt positions
                     if (
                       !pos ||
