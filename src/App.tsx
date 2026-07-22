@@ -28,6 +28,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { cn, detectTokenStage } from './lib/utils';
+import { DEFAULT_HELIUS_RPC, HELIUS_API_KEY } from './constants/solana';
 import { encryptPrivateKey, decryptPrivateKey } from './lib/crypto';
 import { auth, db, signInWithGoogle, signInWithEmailAndPassword, createUserWithEmailAndPassword } from './lib/firebase';
 import { onAuthStateChanged, User, signOut } from 'firebase/auth';
@@ -625,12 +626,12 @@ export default function App() {
 
   const [rpcLatency, setRpcLatency] = useState<number | null>(null);
   const [rpcUrl, setRpcUrl] = useState(() => {
-    const raw = localStorage.getItem('juipter_auto_rpcUrl') || 'https://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c';
-    return raw.includes('winter-methodical-river') ? 'https://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c' : raw;
+    const raw = localStorage.getItem('juipter_auto_rpcUrl') || DEFAULT_HELIUS_RPC;
+    return raw.includes('winter-methodical-river') ? DEFAULT_HELIUS_RPC : raw;
   });
   const [rpcUrl2, setRpcUrl2] = useState(() => {
-    const raw = localStorage.getItem('juipter_auto_rpcUrl2') || 'https://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c';
-    return raw.includes('winter-methodical-river') ? 'https://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c' : raw;
+    const raw = localStorage.getItem('juipter_auto_rpcUrl2') || DEFAULT_HELIUS_RPC;
+    return raw.includes('winter-methodical-river') ? DEFAULT_HELIUS_RPC : raw;
   });
   const [customWsUrl, setCustomWsUrl] = useState(() => localStorage.getItem('juipter_auto_wsUrl') || '');
   const [isSecondaryActive, setIsSecondaryActive] = useState(() => localStorage.getItem('juipter_rpc_secondary_active') === 'true');
@@ -3396,19 +3397,21 @@ export default function App() {
     try {
       for (let i = 0; i < retries; i++) {
           try {
-            // Using Helius Enriched Transactions API for much better parsing and fewer rate limits
-            const heliusKey = (import.meta as any).env.VITE_HELIUS_API_KEY || 'b422aec3-82c7-425c-a409-a48e744829ad';
-            const response = await fetch(`https://api-mainnet.helius-rpc.com/v0/transactions/?api-key=${heliusKey}`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ transactions: [signature] })
-            });
+            // Using Helius Enriched Transactions API if key is present
+            const heliusKey = HELIUS_API_KEY;
+            if (heliusKey) {
+              const response = await fetch(`https://api-mainnet.helius-rpc.com/v0/transactions/?api-key=${heliusKey}`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ transactions: [signature] })
+              });
 
-            if (response.ok) {
-                const data = await response.json();
-                if (data && data.length > 0) {
-                    return data[0]; // Return Helius parsed transaction
-                }
+              if (response.ok) {
+                  const data = await response.json();
+                  if (data && data.length > 0) {
+                      return data[0]; // Return Helius parsed transaction
+                  }
+              }
             }
             
             // Fallback to standard RPC if Helius returns nothing

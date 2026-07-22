@@ -98,6 +98,8 @@ function isFreeOrDefaultKey(key?: string): boolean {
   const k = key.trim().toLowerCase();
   return (
     k === 'e161791f-b336-40b9-80d6-f4c9f626833c' ||
+    k === '98ec7a83-f29a-4ead-aaa3-3f288daf43b7' ||
+    k === 'b422aec3-82c7-425c-a409-a48e744829ad' ||
     k === 'your_helius_api_key' ||
     k === 'default' ||
     k === 'free' ||
@@ -372,6 +374,9 @@ export async function startLaserStream(
   const apiKey = options.apiKey || config.HELIUS_API_KEY || '';
   const programs = options.programAddresses || [...DEFAULT_PROGRAMS];
 
+  // Stop previous stream first before setting active state
+  await stopLaserStream();
+
   // If key is known default/free, attempt High-Speed WebSocket fallback directly or simulation stream
   if (isFreeOrDefaultKey(apiKey)) {
     laserLogger.info('Free/default API key detected, utilizing High-Speed WebSocket stream protocol');
@@ -399,15 +404,13 @@ export async function startLaserStream(
     }
   }
 
-  // Reset state
+  // Set active state for gRPC stream
   state.isUsingFallback = false;
   state.isSimulated = false;
   state.activeEndpoint = endpoint;
   state.lastEventTime = Date.now();
 
   laserLogger.info({ endpoint, programs: programs.length }, 'Initializing LaserStream');
-
-  await stopLaserStream();
 
   // Handle fallback on error
   const handleFallback = (errorMsg?: string) => {
@@ -524,6 +527,7 @@ export async function startFallbackWebSocket(
 ): Promise<void> {
   stopFallbackWebSocket();
   state.isSimulated = false;
+  state.isUsingFallback = true;
 
   laserLogger.info('Connecting WebSocket fallback stream');
 
@@ -588,6 +592,9 @@ export async function startFallbackWebSocket(
     state.lastEventTime = Date.now();
   } catch (err: unknown) {
     laserLogger.error({ error: err instanceof Error ? err.message : String(err) }, 'WebSocket connection failed');
+
+    // Fallback to simulation stream while reconnecting so data flow remains uninterrupted
+    startSimulationStream(eventBusCallback);
 
     // Schedule retry
     if (state.fallbackReconnectTimer) clearTimeout(state.fallbackReconnectTimer);

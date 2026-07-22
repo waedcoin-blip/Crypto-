@@ -20,7 +20,11 @@ function sanitizeHtml(input: string): string {
 }
 
 router.post('/', asyncHandler(async (req, res) => {
-  const token = validateRequiredString(req.body.token, 'token');
+  const envToken = process.env.TELEGRAM_BOT_TOKEN || process.env.VITE_TELEGRAM_BOT_TOKEN;
+  const token = envToken || (req.body.token && typeof req.body.token === 'string' ? req.body.token.trim() : '');
+  if (!token) {
+    throw new BadGatewayError('Telegram bot token not configured');
+  }
   const chatId = validateRequiredString(req.body.chatId, 'chatId');
   const text = validateRequiredString(req.body.text, 'text');
 

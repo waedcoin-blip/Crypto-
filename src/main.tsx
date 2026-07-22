@@ -23,7 +23,7 @@ console.error = function (...args) {
     'NO_ROUTES_FOUND', 'No liquidity', 'User rejected', 'WalletNotConnected',
     'Transaction not confirmed', 'SIMULATION_ERROR', 'AbortError', 'Unexpected server response', 
     '429', 'ws error', 'WebSocket', 'websocket', 'failed: WebSocket is closed',
-    'connection to', 'failed', 'Unexpected server response: 429'
+    'connection to', 'failed', 'Unexpected server response: 429', 'Unexpected server response'
   ];
 
   if (benign.some(s => msg.includes(s) || msg.toLowerCase().includes(s.toLowerCase()))) {
@@ -88,13 +88,15 @@ import { PhantomWalletAdapter, SolflareWalletAdapter, TrustWalletAdapter } from 
 import { WalletModalProvider } from '@solana/wallet-adapter-react-ui';
 import '@solana/wallet-adapter-react-ui/styles.css';
 
+import { DEFAULT_HELIUS_RPC } from './constants/solana';
+
 // Using Helius RPC from App.tsx via environment or hardcoded fallback
 const savedRpc = localStorage.getItem('juipter_auto_rpcUrl');
 const savedRpc2 = localStorage.getItem('juipter_auto_rpcUrl2');
 const savedWs = localStorage.getItem('juipter_auto_wsUrl');
-const defaultRpc = 'https://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c';
+const defaultRpc = DEFAULT_HELIUS_RPC;
 const HELIUS_RPC = savedRpc || defaultRpc;
-const HELIUS_RPC_2 = savedRpc2 || "https://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c";
+const HELIUS_RPC_2 = savedRpc2 || DEFAULT_HELIUS_RPC;
 
 export const RPC_URLS = [HELIUS_RPC];
 if (HELIUS_RPC_2 && HELIUS_RPC_2.trim() !== "") {

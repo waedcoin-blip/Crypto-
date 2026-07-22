@@ -2115,11 +2115,13 @@ export const PnLPage = ({
         try {
           const data = JSON.parse(event.data);
           if (data.type === 'STATUS') {
-            if (data.laserstreamActive) {
+            if (data.laserstreamActive || data.status === 'connected') {
               setLaserstreamStatus('connected');
               setLaserstreamIsFallback(!!data.isFallback);
               setLaserstreamIsSimulated(!!data.isSimulated);
               setLaserstreamActiveEndpoint(data.activeEndpoint || null);
+            } else {
+              setLaserstreamStatus('disconnected');
             }
           } else if (data.type === 'ON_CHAIN_TX') {
             const signature = data.signature;

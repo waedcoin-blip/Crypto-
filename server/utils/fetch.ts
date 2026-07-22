@@ -52,7 +52,8 @@ export async function fetchWithRetry(
 
       // Handle rate limiting with backoff
       if (response.status === 429) {
-        const backoff = baseBackoffMs * Math.pow(2, i);
+        const jitter = Math.random() * 500;
+        const backoff = baseBackoffMs * Math.pow(2, i) + jitter;
         logger.warn({ url, attempt: i + 1, backoff }, 'Rate limited [429], backing off');
         if (i < retries - 1) {
           await sleep(backoff);
@@ -70,7 +71,8 @@ export async function fetchWithRetry(
       }
 
       if (i < retries - 1) {
-        const backoff = Math.max(500, baseBackoffMs * Math.pow(2, i));
+        const jitter = Math.random() * 500;
+        const backoff = Math.max(500, baseBackoffMs * Math.pow(2, i) + jitter);
         await sleep(backoff);
       }
     }

@@ -138,8 +138,15 @@ router.post('/config', asyncHandler(async (req, res) => {
   res.json(status);
 }));
 
+const MAX_SSE_CLIENTS = 100;
+
 // GET /api/laserstream/stream (SSE)
 router.get('/stream', (req, res) => {
+  if (clients.length >= MAX_SSE_CLIENTS) {
+    res.status(503).json({ error: 'SSE server capacity reached' });
+    return;
+  }
+
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
@@ -159,7 +166,7 @@ router.get('/stream', (req, res) => {
   res.write(
     `data: ${JSON.stringify({
       type: 'STATUS',
-      status: 'connected',
+      status: isActive ? 'connected' : 'disconnected',
       laserstreamActive: isActive,
       isFallback: isLaserStreamUsingFallback(),
       isSimulated: isLaserStreamSimulated(),
@@ -167,13 +174,16 @@ router.get('/stream', (req, res) => {
     })}\n\n`
   );
 
-  req.on('close', () => {
+  const cleanup = () => {
     const idx = clients.findIndex((c) => c.id === clientId);
     if (idx !== -1) {
       clients.splice(idx, 1);
       laserLogger.info({ clientId, remaining: clients.length }, 'SSE client disconnected');
     }
-  });
+  };
+
+  req.on('close', cleanup);
+  req.on('error', cleanup);
 });
 
 export { heartbeatInterval };

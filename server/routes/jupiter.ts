@@ -62,7 +62,7 @@ function buildJupiterQuoteUrl(
   if (isUnified && url.includes('/v6/')) {
     url = url.replace('/v6/', '/swap/v1/');
   }
-  if (isUnified && !url.includes('/swap/v1/')) {
+  if (isUnified && !url.includes('/swap/v1/') && url.includes('/quote')) {
     url = url.replace('/quote', '/swap/v1/quote');
   }
 

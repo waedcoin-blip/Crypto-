@@ -2,6 +2,7 @@ import { Connection, PublicKey, Transaction, VersionedTransaction, TransactionMe
 import { createJupiterApiClient, QuoteResponse } from '@jup-ag/api';
 import { useAppStore } from '../store/appStore';
 import { detectTokenStage } from '../lib/utils';
+import { DEFAULT_HELIUS_RPC } from '../constants/solana';
 
 // ─── RPC POOL: Smart multi-endpoint with health tracking ───────────────────
 export interface RpcEndpoint {
@@ -40,7 +41,7 @@ class RpcPool {
 
   getBestEndpoint(): string {
     const healthy = [...this.endpoints.values()].filter(e => e.healthy);
-    if (!healthy.length) return [...this.endpoints.values()][0]?.url || 'https://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c';
+    if (!healthy.length) return [...this.endpoints.values()][0]?.url || DEFAULT_HELIUS_RPC;
     return healthy.sort((a, b) => a.latencyMs - b.latencyMs)[0].url;
   }
 
@@ -95,7 +96,7 @@ export const pingJupiterApi = async (): Promise<{ healthy: boolean; pingMs: numb
 
 
 export const FALLBACK_RPCS = [
-  'https://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c'
+  DEFAULT_HELIUS_RPC
 ];
 
 FALLBACK_RPCS.forEach(url => rpcPool.addEndpoint(url));
