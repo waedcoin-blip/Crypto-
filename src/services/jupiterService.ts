@@ -755,7 +755,7 @@ export const createJupiterSwapTransaction = async (
     let tx = VersionedTransaction.deserialize(swapTransactionBuf);
 
     const activeConnection = connection || new Connection(
-      localStorage.getItem('juipter_auto_rpcUrl') || 'https://mainnet.helius-rpc.com/?api-key=e161791f-b336-40b9-80d6-f4c9f626833c',
+      localStorage.getItem('juipter_auto_rpcUrl') || DEFAULT_HELIUS_RPC,
       'confirmed'
     );
 

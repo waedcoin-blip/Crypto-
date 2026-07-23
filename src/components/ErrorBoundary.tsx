@@ -16,10 +16,30 @@ export class ErrorBoundary extends React.Component<any, any> {
   };
 
   public static getDerivedStateFromError(error: Error): State {
+    const msg = error?.message || String(error) || '';
+    const benign = [
+      'NO_ROUTES_FOUND', 'No liquidity', 'User rejected', 'WalletNotConnected',
+      'Transaction not confirmed', 'SIMULATION_ERROR', 'AbortError', 'Unexpected server response', 
+      '429', 'ws error', 'WebSocket', 'websocket', 'failed: WebSocket is closed',
+      'connection to', 'failed', 'Unexpected server response: 429'
+    ];
+    if (benign.some(s => msg.includes(s) || msg.toLowerCase().includes(s.toLowerCase()))) {
+      return { hasError: false };
+    }
     return { hasError: true, error };
   }
 
   public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    const msg = error?.message || String(error) || '';
+    const benign = [
+      'NO_ROUTES_FOUND', 'No liquidity', 'User rejected', 'WalletNotConnected',
+      'Transaction not confirmed', 'SIMULATION_ERROR', 'AbortError', 'Unexpected server response', 
+      '429', 'ws error', 'WebSocket', 'websocket', 'failed: WebSocket is closed',
+      'connection to', 'failed', 'Unexpected server response: 429'
+    ];
+    if (benign.some(s => msg.includes(s) || msg.toLowerCase().includes(s.toLowerCase()))) {
+      return; // Ignore benign errors silently
+    }
     this.setState({
       errorInfo
     });

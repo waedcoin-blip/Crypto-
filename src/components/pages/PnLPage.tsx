@@ -16,7 +16,7 @@ import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { checkTokenInProfitLast2Seconds, clearPriceHistories } from '../../services/priceTracker';
 import { encryptPrivateKey, decryptPrivateKey } from '../../lib/crypto';
 
-const HELIUS_API_KEY = (import.meta as any).env.VITE_HELIUS_API_KEY || 'e161791f-b336-40b9-80d6-f4c9f626833c';
+import { DEFAULT_HELIUS_RPC, DEFAULT_HELIUS_WS, HELIUS_API_KEY } from '../../constants/solana';
 
 window.Buffer = window.Buffer || Buffer;
 
@@ -1667,11 +1667,11 @@ export const PnLPage = ({
         if (docSnap.exists()) {
           const data = docSnap.data();
           if (data.rpcUrl) {
-            const sanitized = data.rpcUrl.includes('winter-methodical-river') ? `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}` : data.rpcUrl;
+            const sanitized = data.rpcUrl.includes('winter-methodical-river') ? DEFAULT_HELIUS_RPC : data.rpcUrl;
             setRpcUrl(sanitized);
           }
           if (data.rpcUrl2) {
-            const sanitized = data.rpcUrl2.includes('winter-methodical-river') ? `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}` : data.rpcUrl2;
+            const sanitized = data.rpcUrl2.includes('winter-methodical-river') ? DEFAULT_HELIUS_RPC : data.rpcUrl2;
             setRpcUrl2(sanitized);
           }
           if (data.customWsUrl) setCustomWsUrl(data.customWsUrl);
@@ -1727,10 +1727,10 @@ export const PnLPage = ({
           }
           
           const sanitizedRpcUrl = data.rpcUrl && data.rpcUrl.includes('winter-methodical-river') 
-            ? `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}` 
+            ? DEFAULT_HELIUS_RPC 
             : (data.rpcUrl || rpcUrl);
           const sanitizedRpcUrl2 = data.rpcUrl2 && data.rpcUrl2.includes('winter-methodical-river') 
-            ? `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}` 
+            ? DEFAULT_HELIUS_RPC 
             : (data.rpcUrl2 || rpcUrl2);
 
           const decryptedKey = data.privateKey ? await decryptPrivateKey(data.privateKey, user.uid) : privateKey;
@@ -2054,9 +2054,9 @@ export const PnLPage = ({
       if (laserstreamActiveEndpoint && laserstreamActiveEndpoint.includes('Vercel')) {
         // Vercel serverless doesn't support SSE, connect WebSocket directly
         console.log("🔗 Vercel Detected: Connecting directly via WebSocket...");
-        const wsUrl = (laserstreamApiKey && laserstreamApiKey.length > 20) 
+        const wsUrl = (laserstreamApiKey && laserstreamApiKey.length > 20 && laserstreamApiKey !== 'default' && laserstreamApiKey !== 'free') 
           ? `wss://mainnet.helius-rpc.com/?api-key=${laserstreamApiKey}` 
-          : `wss://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`;
+          : DEFAULT_HELIUS_WS;
         
         const ws = new WebSocket(wsUrl);
         let pingTimer: any = null;
@@ -2101,7 +2101,7 @@ export const PnLPage = ({
       eventSource = new EventSource('/api/laserstream/stream');
 
       eventSource.onerror = (err) => {
-        console.error("LaserStream SSE connection error:", err);
+        console.warn("LaserStream SSE connection status:", err);
         setLaserstreamStatus('disconnected');
         eventSource?.close();
         
