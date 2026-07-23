@@ -4,6 +4,42 @@ import compression from "compression";
 import fs from "fs";
 import dotenv from "dotenv";
 
+// ─── MONKEY-PATCH CONSOLE TO SUPPRESS BENIGN METRIC/WS LIMITS ──────────────
+const originalConsoleError = console.error;
+console.error = function (...args) {
+  const msg = args.map(arg => {
+    if (arg instanceof Error) {
+      return arg.message + '\n' + arg.stack;
+    }
+    if (arg && typeof arg === 'object') {
+      try { return JSON.stringify(arg); } catch (e) { return String(arg); }
+    }
+    return String(arg);
+  }).join(' ');
+
+  const benign = [
+    'Unexpected server response', '429', 'ws error', 'WebSocket', 'websocket',
+    'failed: WebSocket is closed'
+  ];
+
+  if (benign.some(s => msg.includes(s) || msg.toLowerCase().includes(s.toLowerCase()))) {
+    return;
+  }
+  originalConsoleError.apply(console, args);
+};
+
+const originalConsoleWarn = console.warn;
+console.warn = function (...args) {
+  const msg = args.map(arg => String(arg)).join(' ');
+  const benign = [
+    'Unexpected server response', '429', 'ws error', 'WebSocket', 'websocket'
+  ];
+  if (benign.some(s => msg.includes(s) || msg.toLowerCase().includes(s.toLowerCase()))) {
+    return;
+  }
+  originalConsoleWarn.apply(console, args);
+};
+
 dotenv.config({ path: ".env.local" });
 dotenv.config();
 

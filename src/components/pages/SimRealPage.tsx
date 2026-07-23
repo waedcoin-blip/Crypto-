@@ -65,6 +65,9 @@ interface SimRealPageProps {
   setSimRealTakeProfitRaydium: (v: number) => void;
   simRealTakeProfitBonding: number;
   setSimRealTakeProfitBonding: (v: number) => void;
+  // Added PumpSwap Take Profit support to fix TP state missing bugs
+  simRealTakeProfitPumpSwap?: number;
+  setSimRealTakeProfitPumpSwap?: (v: number) => void;
   simRealStopLossRaydium: number;
   setSimRealStopLossRaydium: (v: number) => void;
   simRealStopLossBonding: number;
@@ -105,6 +108,8 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
   setSimRealTakeProfitRaydium,
   simRealTakeProfitBonding,
   setSimRealTakeProfitBonding,
+  simRealTakeProfitPumpSwap,
+  setSimRealTakeProfitPumpSwap,
   simRealStopLossRaydium,
   setSimRealStopLossRaydium,
   simRealStopLossBonding,
@@ -277,13 +282,17 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
     }
 
     let isMounted = true;
+    let currentRequestId = 0; // Fixes race condition on wallet connection checking
+
     const checkWallet = async () => {
+      const requestId = ++currentRequestId;
       try {
         setJupiterStatus('CONNECTING');
         let keypair;
         try {
           keypair = Keypair.fromSecretKey(bs58.decode(privateKey));
         } catch (e) {
+          if (!isMounted || requestId !== currentRequestId) return;
           setJupiterStatus('ERROR');
           setJupiterAddress('');
           setJupiterBalance(null);
@@ -291,10 +300,12 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
         }
 
         const pubKeyStr = keypair.publicKey.toBase58();
+        if (!isMounted || requestId !== currentRequestId) return;
         setJupiterAddress(pubKeyStr);
 
         const activeRpcUrl = jupiterRpcUrl && jupiterRpcUrl.trim() !== "" ? jupiterRpcUrl.trim() : rpcUrl;
         if (!activeRpcUrl) {
+          if (!isMounted || requestId !== currentRequestId) return;
           setJupiterStatus('ERROR');
           return;
         }
@@ -303,14 +314,14 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
         const conn = new Connection(activeRpcUrl, { commitment: 'confirmed', wsEndpoint: activeWsUrl });
 
         const lamports = await conn.getBalance(keypair.publicKey, 'confirmed');
+        if (!isMounted || requestId !== currentRequestId) return;
+        
         const solBal = lamports / 1_000_000_000;
-
-        if (isMounted) {
-          setJupiterBalance(solBal);
-          setJupiterStatus('CONNECTED');
-        }
+        setJupiterBalance(solBal);
+        setJupiterStatus('CONNECTED');
+        
       } catch (err) {
-        if (isMounted) {
+        if (isMounted && requestId === currentRequestId) {
           setJupiterStatus('ERROR');
         }
       }
@@ -363,7 +374,12 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
             tokenAmount: buy.tokenAmount || trade.tokenAmount
           });
         } else {
-          const estimatedBuySol = trade.pnl !== undefined ? (trade.amount / (1 + trade.pnl / 100)) : (trade.amount / 1.01);
+          // Fixes Improper PnL Percentage Math - Division by Zero issue
+          const pnlDenom = trade.pnl !== undefined ? (1 + trade.pnl / 100) : 1.01;
+          const estimatedBuySol = (trade.pnl !== undefined && pnlDenom !== 0) 
+            ? (trade.amount / pnlDenom) 
+            : (trade.amount / 1.01);
+            
           completed.push({
             id: trade.id,
             mint: trade.address,
@@ -396,6 +412,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
       }
 
       processingLock.current = true;
+      let executingSignalId: string | null = null;
 
       try {
         // 2. Claim next pending signal
@@ -404,6 +421,8 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
           processingLock.current = false;
           return;
         }
+        
+        executingSignalId = signal.id;
 
         const { tokenAddress, symbol, triggerPriceUsd, profitPercent } = signal;
         console.log(`[Pipeline] Processing signal for ${symbol} (+${profitPercent.toFixed(2)}%)`);
@@ -498,10 +517,9 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
 
       } catch (err: any) {
         console.error(`[Pipeline Error] Signal swap execution failed:`, err);
-        const currentSignals = useBuySignalStore.getState().signals;
-        const activeExecuting = currentSignals.find(s => s.status === 'executing' || s.status === 'picked_up');
-        if (activeExecuting) {
-          markFailed(activeExecuting.id, err?.message || 'Transaction execution failed');
+        // Fixes Overwrites & Lost Updates on Zustand Signal Execution Failures
+        if (executingSignalId) {
+          markFailed(executingSignalId, err?.message || 'Transaction execution failed');
         }
       } finally {
         processingLock.current = false;
@@ -539,6 +557,15 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
     pruneOld,
   ]);
 
+  // Fixes Incorrect Dependency Array for TP/SL Monitor Worker
+  const positionsRef = useRef(positions);
+  const tokenMetricsRef = useRef(tokenMetrics);
+  
+  useEffect(() => {
+    positionsRef.current = positions;
+    tokenMetricsRef.current = tokenMetrics;
+  }, [positions, tokenMetrics]);
+
   // ── BACKGROUND WORKER: SimReal Active Positions TP/SL Monitor ──
   useEffect(() => {
     let active = true;
@@ -546,10 +573,13 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
     const monitorPositions = async () => {
       if (!active) return;
       
-      for (const [mint, pos] of Object.entries(positions || {})) {
+      const currentPositions = positionsRef.current;
+      const currentTokenMetrics = tokenMetricsRef.current;
+      
+      for (const [mint, pos] of Object.entries(currentPositions || {})) {
          if (!pos || !pos.simRealBought) continue;
          
-         const tokenMetric = tokenMetrics[mint];
+         const tokenMetric = currentTokenMetrics[mint];
          const stageInfo = tokenMetric ? detectTokenStage(tokenMetric) : { stage: 'UNKNOWN', platform: 'UNKNOWN', isBonding: false, isMigrated: false, isNewListing: false, isNearMigration: false, bondingProgress: 0 } as const;
          
          let tpLimit = 0.50; // default 50%
@@ -562,7 +592,8 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
              tpLimit = (simRealTakeProfitBonding !== undefined ? simRealTakeProfitBonding : 100) / 100;
              slLimit = (simRealStopLossBonding !== undefined ? simRealStopLossBonding : -20) / 100;
          } else if (stageInfo.platform === 'PUMPSWAP') {
-             tpLimit = (simRealTakeProfitRaydium !== undefined ? simRealTakeProfitRaydium : 50) / 100;
+             // Fixes Hardcoded / Fallback Logic Mismatch in TP/SL Calculation
+             tpLimit = (simRealTakeProfitPumpSwap !== undefined ? simRealTakeProfitPumpSwap : (simRealTakeProfitRaydium !== undefined ? simRealTakeProfitRaydium : 50)) / 100;
              slLimit = (simRealStopLossPumpSwap !== undefined ? simRealStopLossPumpSwap : -15) / 100;
          } else {
              tpLimit = (simRealTakeProfitRaydium !== undefined ? simRealTakeProfitRaydium : 50) / 100;
@@ -591,13 +622,14 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
 
          if (simRealNetPnlPct >= tpLimit || simRealNetPnlPct <= slLimit) {
             console.log(`[SimReal TP/SL] Triggered sell for ${pos.symbol} at ${(simRealNetPnlPct * 100).toFixed(2)}% PnL`);
-            // Only process one auto-sell per tick to avoid overwhelming RPC
+            
+            // Fixes Concurrent Automated Sells Caused by Unhandled Promises inside for Loop
             try {
                await executeSimRealSell(mint);
             } catch (e) {
-               console.error("Failed to auto-sell SimReal position:", e);
+               console.error(`Failed to auto-sell SimReal position for ${mint}:`, e);
             }
-            break; 
+            // Removed `break;` so a single failure doesn't prevent evaluating subsequent positions
          }
       }
     };
@@ -607,7 +639,18 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
       active = false;
       clearInterval(interval);
     };
-  }, [positions, tokenMetrics, simRealTakeProfitRaydium, simRealTakeProfitBonding, simRealStopLossRaydium, simRealStopLossBonding, simRealStopLossPumpSwap, simRealStopLossUnknown, privateKey, slippage, executeSimRealSell]);
+  }, [
+    simRealTakeProfitRaydium, 
+    simRealTakeProfitBonding, 
+    simRealTakeProfitPumpSwap,
+    simRealStopLossRaydium, 
+    simRealStopLossBonding, 
+    simRealStopLossPumpSwap, 
+    simRealStopLossUnknown, 
+    privateKey, 
+    slippage, 
+    executeSimRealSell
+  ]);
 
   const completedTrades = getCompletedSimRealTrades();
 
@@ -950,6 +993,18 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                    <div className="grid grid-cols-2 gap-3">
                       <div className="flex flex-col gap-1">
                          <div className="flex justify-between items-center">
+                            <label className="text-[10px] text-slate-400 font-mono uppercase tracking-wider">TP (PumpSwap)</label>
+                            <span className="text-[9px] text-emerald-400 font-mono">%</span>
+                         </div>
+                         <input
+                            type="number"
+                            value={simRealTakeProfitPumpSwap !== undefined ? simRealTakeProfitPumpSwap : simRealTakeProfitRaydium}
+                            onChange={(e) => setSimRealTakeProfitPumpSwap && setSimRealTakeProfitPumpSwap(Number(e.target.value))}
+                            className="bg-[#07080e] border border-[#1f212e] rounded-lg px-3 py-1.5 text-xs text-[#e2e8f0] focus:outline-none focus:border-emerald-500/50 font-mono w-full"
+                         />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                         <div className="flex justify-between items-center">
                             <label className="text-[10px] text-slate-400 font-mono uppercase tracking-wider">SL (PumpSwap)</label>
                             <span className="text-[9px] text-rose-400 font-mono">%</span>
                          </div>
@@ -960,18 +1015,19 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                             className="bg-[#07080e] border border-[#1f212e] rounded-lg px-3 py-1.5 text-xs text-[#e2e8f0] focus:outline-none focus:border-emerald-500/50 font-mono w-full"
                          />
                       </div>
-                      <div className="flex flex-col gap-1">
-                         <div className="flex justify-between items-center">
-                            <label className="text-[10px] text-slate-400 font-mono uppercase tracking-wider">SL (Unknown)</label>
-                            <span className="text-[9px] text-rose-400 font-mono">%</span>
-                         </div>
-                         <input
-                            type="number"
-                            value={simRealStopLossUnknown}
-                            onChange={(e) => setSimRealStopLossUnknown(-Math.abs(Number(e.target.value)))}
-                            className="bg-[#07080e] border border-[#1f212e] rounded-lg px-3 py-1.5 text-xs text-[#e2e8f0] focus:outline-none focus:border-emerald-500/50 font-mono w-full"
-                         />
+                   </div>
+
+                   <div className="flex flex-col gap-1 w-1/2 pr-1.5">
+                      <div className="flex justify-between items-center">
+                         <label className="text-[10px] text-slate-400 font-mono uppercase tracking-wider">SL (Unknown)</label>
+                         <span className="text-[9px] text-rose-400 font-mono">%</span>
                       </div>
+                      <input
+                         type="number"
+                         value={simRealStopLossUnknown}
+                         onChange={(e) => setSimRealStopLossUnknown(-Math.abs(Number(e.target.value)))}
+                         className="bg-[#07080e] border border-[#1f212e] rounded-lg px-3 py-1.5 text-xs text-[#e2e8f0] focus:outline-none focus:border-emerald-500/50 font-mono w-full"
+                      />
                    </div>
                 </div>
 
@@ -1026,7 +1082,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                         activeTP = simRealTakeProfitBonding;
                         activeSL = simRealStopLossBonding;
                       } else if (stage.platform === 'PUMPSWAP') {
-                        activeTP = simRealTakeProfitRaydium; // reuse since no specific pumpswap TP UI
+                        activeTP = simRealTakeProfitPumpSwap !== undefined ? simRealTakeProfitPumpSwap : simRealTakeProfitRaydium; 
                         activeSL = simRealStopLossPumpSwap;
                       } else {
                         activeTP = simRealTakeProfitRaydium;
