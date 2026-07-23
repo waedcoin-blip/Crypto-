@@ -124,6 +124,40 @@ router.get('/search', asyncHandler(async (req, res) => {
   }
 }));
 
+// GET /api/dex/tokens/trending
+router.get('/tokens/trending', asyncHandler(async (req, res) => {
+  try {
+    const data = await trendingCache.fetch('trending_tokens', async () => {
+      const ids = TRENDING_MINTS.join(',');
+      const { response, text } = await fetchWithRetry(
+        `https://api.dexscreener.com/latest/dex/tokens/${ids}`,
+        { headers: { 'User-Agent': 'Mozilla/5.0' } },
+        3,
+        2000
+      );
+
+      if (!response.ok) {
+        throw new Error(`DexScreener API status: ${response.status}`);
+      }
+
+      const parsed = JSON.parse(text);
+      if (!parsed?.pairs?.length) {
+        throw new Error('Empty pairs from DexScreener');
+      }
+
+      return parsed;
+    });
+
+    res.json(data);
+  } catch (e: any) {
+    dexLogger.warn({ error: e.message }, 'Trending fetch failed, using simulation');
+    const pairs = TRENDING_MINTS.map((m) => generateSimulatedPair(m));
+    res.json({ pairs });
+  }
+}));
+
+
+
 // GET /api/dex/tokens/:mint
 router.get('/tokens/:mint', asyncHandler(async (req, res) => {
   const mintParam = req.params.mint;
@@ -193,38 +227,6 @@ router.get('/tokens/:mint', asyncHandler(async (req, res) => {
   }
 
   res.json({ schemaVersion: '1.0.0', pairs });
-}));
-
-// GET /api/dex/tokens/trending
-router.get('/tokens/trending', asyncHandler(async (req, res) => {
-  try {
-    const data = await trendingCache.fetch('trending_tokens', async () => {
-      const ids = TRENDING_MINTS.join(',');
-      const { response, text } = await fetchWithRetry(
-        `https://api.dexscreener.com/latest/dex/tokens/${ids}`,
-        { headers: { 'User-Agent': 'Mozilla/5.0' } },
-        3,
-        2000
-      );
-
-      if (!response.ok) {
-        throw new Error(`DexScreener API status: ${response.status}`);
-      }
-
-      const parsed = JSON.parse(text);
-      if (!parsed?.pairs?.length) {
-        throw new Error('Empty pairs from DexScreener');
-      }
-
-      return parsed;
-    });
-
-    res.json(data);
-  } catch (e: any) {
-    dexLogger.warn({ error: e.message }, 'Trending fetch failed, using simulation');
-    const pairs = TRENDING_MINTS.map((m) => generateSimulatedPair(m));
-    res.json({ pairs });
-  }
 }));
 
 // GET /api/dex/token-profiles

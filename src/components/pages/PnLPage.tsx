@@ -248,7 +248,7 @@ const TerminalConsole: React.FC<TerminalConsoleProps> = ({ logs, setLogs, retent
         searchMatcher = (log: LogEvent) => {
           return rx.test(log.msg || '') || rx.test(log.category || '') || rx.test(log.type || '');
         };
-      } catch (err) {
+        } catch (err) {
         // invalid regex, ignore querying
       }
     }
@@ -325,7 +325,7 @@ const TerminalConsole: React.FC<TerminalConsoleProps> = ({ logs, setLogs, retent
       navigator.clipboard.writeText(JSON.stringify(meta, null, 2));
       setCopiedId(id);
       setTimeout(() => setCopiedId(null), 2000);
-    } catch (err) {
+      } catch (err) {
       console.warn("Failed to copy metadata", err);
     }
   };
@@ -1402,7 +1402,7 @@ export const PnLPage = ({
             const solPrice = parseFloat(solData?.data?.['So11111111111111111111111111111111111111112']?.price || '150');
             priceNative = priceUsd / solPrice;
           }
-        } catch (err) {
+          } catch (err) {
           console.warn("Pricing index unreachable", err);
         }
       }
@@ -1784,7 +1784,7 @@ export const PnLPage = ({
             tradeHistory: JSON.stringify(tradeHistory)
           };
         }
-      } catch (err) {
+        } catch (err) {
         console.error('Error loading settings from Firestore:', err);
       } finally {
         isFirestoreLoading.current = false;
@@ -2253,7 +2253,7 @@ export const PnLPage = ({
         }
       }
       return null;
-    } catch (err) {
+      } catch (err) {
       console.warn(`Failed to fetch Jupiter fallback price for ${tokenMint}`, err);
       return null;
     }
@@ -2487,6 +2487,22 @@ export const PnLPage = ({
         const currentPnLPct = pnlFraction * 100;
 
         if (currentPnLPct >= 1.0 && !pos.simRealBought && !simRealBoughtPending.current.has(mint)) {
+          const simPos = simPositions[mint];
+          if (!simPos) continue; // Must be tracked in simPositions to emit a full signal
+          emitBuySignal({
+            tokenAddress: mint,
+            symbol: pos.symbol,
+            name: pos.symbol, // or simPos.name
+            entryPriceUsd: pos.buyPrice,
+            triggerPriceUsd: newPrice,
+            profitPercent: currentPnLPct,
+            liquidityUsd: simPos.liquidityUsd,
+            volume24h: simPos.volume24h,
+            dexId: simPos.dexId,
+            pairAddress: simPos.pairAddress,
+            simAmountSol: simPos.amountSol,
+            simEntryTime: simPos.entryTime
+          });
           if (privateKey && (mint.toLowerCase().startsWith('sim') || (pos.symbol && pos.symbol.toLowerCase().startsWith('sim')))) {
             if (!simRealBoughtPending.current.has(mint)) {
               simRealBoughtPending.current.add(mint);
@@ -2884,32 +2900,30 @@ export const PnLPage = ({
       const tokens = Array.from(monitoredTokensRef.current.values());
       if (tokens.length === 0) return;
 
-      // Batch fetch prices (up to 10 at a time to avoid rate limits)
-      const batch = tokens.slice(0, 10);
+      // Batch fetch prices
+      for (let i = 0; i < tokens.length; i += 5) { 
+        const batch = tokens.slice(i, i + 5); 
+        await Promise.all(batch.map(async (token) => {
+          try {
+            const response = await fetch(`/api/dex/tokens/${token.address}`);
+            if (!response.ok) return;
+            const data = await response.json();
+            const pair = data?.pairs?.[0];
+            if (!pair) return;
+            const currentPrice = parseFloat(pair.priceUsd || '0');
+            if (currentPrice <= 0) return;
 
-      for (const token of batch) {
-        try {
-          const response = await fetch(`/api/dex/tokens/${token.address}`);
-          if (!response.ok) continue;
+            // Update price cache
+            latestPricesRef.current[token.address] = currentPrice;
 
-          const data = await response.json();
-          const pair = data?.pairs?.[0];
-          if (!pair) continue;
-
-          const currentPrice = parseFloat(pair.priceUsd || '0');
-          if (currentPrice <= 0) continue;
-
-          // Update price cache
-          latestPricesRef.current[token.address] = currentPrice;
-
-          // Update simulation position
-          if (hasSimPosition(token.address)) {
-            updateSimPrice(token.address, currentPrice);
+            // Update simulation position
+            if (hasSimPosition(token.address)) {
+              updateSimPrice(token.address, currentPrice);
+            }
+          } catch (err) {
+            // Silently skip
           }
-
-        } catch (err) {
-          // Silently skip — price will retry on next loop
-        }
+        }));
       }
     };
 
@@ -3912,7 +3926,7 @@ const checkTokenCriteria = (mint: string): {
                 addLog(`[SIM USDC ROUTE] Successfully routed simulated quote via USDC for ${symbol}!`, 'info');
               }
             }
-          } catch (err) {
+            } catch (err) {
             console.warn(`SIM USDC quote failed:`, err);
           }
         }
@@ -4234,7 +4248,7 @@ const checkTokenCriteria = (mint: string): {
                     addLog(`[SIM USDC ROUTE] Successfully exit routed simulated sell via USDC for ${pos.symbol}!`, 'info');
                   }
                 }
-              } catch (err) {
+                } catch (err) {
                 console.warn(`SIM USDC sell quote failed:`, err);
               }
             }
@@ -5587,7 +5601,7 @@ const checkTokenCriteria = (mint: string): {
           tradeHistory: JSON.stringify([]),
           updatedAt: new Date().toISOString()
         }, { merge: true });
-      } catch (err) {
+        } catch (err) {
         console.error('Error resetting settings in Firestore:', err);
       }
     }

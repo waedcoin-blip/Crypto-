@@ -38,21 +38,15 @@ export interface TokenCriteria {
 }
 
 export const DEFAULT_CRITERIA: TokenCriteria = {
-  minLiquidityUsd: 5000,
-  minVolume24hUsd: 10000,
-  maxTokenAgeMs: 24 * 60 * 60 * 1000, // 24 hours
-  minBuyers: 10,
-  excludedMints: new Set([
-    'So11111111111111111111111111111111111111112', // wSOL
-    'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
-    'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
-    '7dHbWXmci3dT8UFYWYZweBLXgycu7Y3iL6trKn1Y7ARj', // stSOL
-    'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So', // mSOL
-  ]),
-  minPriceChange5m: 0.5,    // must be moving up
-  maxPriceChange5m: 50,      // not already 50x'd
+  minLiquidityUsd: 0,
+  minVolume24hUsd: 0,
+  maxTokenAgeMs: 99999999999,
+  minBuyers: 0,
+  excludedMints: new Set(),
+  minPriceChange5m: -9999,
+  maxPriceChange5m: 9999,
   simulationBuyAmountSol: 0.1,
   realBuyAmountSol: 0.05,
-  signalProfitThreshold: 1.0, // +1%
-  slippageBps: 500,           // 5%
+  signalProfitThreshold: -100,
+  slippageBps: 500,
 };

@@ -431,6 +431,8 @@ export default function App() {
   const [maxPositions, setMaxPositions] = useState(() => Number(localStorage.getItem('app_maxPositions')) || 5);
   const [simRealTakeProfitRaydium, setSimRealTakeProfitRaydium] = useState(() => Number(localStorage.getItem('app_simRealTakeProfitRaydium')) || 50);
   const [simRealTakeProfitBonding, setSimRealTakeProfitBonding] = useState(() => Number(localStorage.getItem('app_simRealTakeProfitBonding')) || 100);
+  const [simRealTakeProfitPumpSwap, setSimRealTakeProfitPumpSwap] = useState(() => Number(localStorage.getItem('app_simRealTakeProfitPumpSwap')) || 50);
+  const [simRealTakeProfitUnknown, setSimRealTakeProfitUnknown] = useState(() => Number(localStorage.getItem('app_simRealTakeProfitUnknown')) || 50);
   const [simRealStopLossRaydium, setSimRealStopLossRaydium] = useState(() => Number(localStorage.getItem('app_simRealStopLossRaydium')) || -15);
   const [simRealStopLossBonding, setSimRealStopLossBonding] = useState(() => Number(localStorage.getItem('app_simRealStopLossBonding')) || -20);
   const [simRealStopLossPumpSwap, setSimRealStopLossPumpSwap] = useState(() => Number(localStorage.getItem('app_simRealStopLossPumpSwap')) || -15);
@@ -495,11 +497,13 @@ export default function App() {
     localStorage.setItem('app_maxPositions', maxPositions.toString());
     localStorage.setItem('app_simRealTakeProfitRaydium', simRealTakeProfitRaydium.toString());
     localStorage.setItem('app_simRealTakeProfitBonding', simRealTakeProfitBonding.toString());
+    localStorage.setItem('app_simRealTakeProfitPumpSwap', simRealTakeProfitPumpSwap.toString());
+    localStorage.setItem('app_simRealTakeProfitUnknown', simRealTakeProfitUnknown.toString());
     localStorage.setItem('app_simRealStopLossRaydium', simRealStopLossRaydium.toString());
     localStorage.setItem('app_simRealStopLossBonding', simRealStopLossBonding.toString());
     localStorage.setItem('app_simRealStopLossPumpSwap', simRealStopLossPumpSwap.toString());
     localStorage.setItem('app_simRealStopLossUnknown', simRealStopLossUnknown.toString());
-  }, [buyAmountSol, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, unknownStopLoss, maxPositions, simRealTakeProfitRaydium, simRealTakeProfitBonding, simRealStopLossRaydium, simRealStopLossBonding, simRealStopLossPumpSwap, simRealStopLossUnknown]);
+  }, [buyAmountSol, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, unknownStopLoss, maxPositions, simRealTakeProfitRaydium, simRealTakeProfitBonding, simRealTakeProfitPumpSwap, simRealTakeProfitUnknown, simRealStopLossRaydium, simRealStopLossBonding, simRealStopLossPumpSwap, simRealStopLossUnknown]);
 
   useEffect(() => {
     localStorage.setItem('tg_bot_token', telegramBotToken);
@@ -6029,6 +6033,10 @@ export default function App() {
         setSimRealTakeProfitRaydium={setSimRealTakeProfitRaydium}
         simRealTakeProfitBonding={simRealTakeProfitBonding}
         setSimRealTakeProfitBonding={setSimRealTakeProfitBonding}
+        simRealTakeProfitPumpSwap={simRealTakeProfitPumpSwap}
+        setSimRealTakeProfitPumpSwap={setSimRealTakeProfitPumpSwap}
+        simRealTakeProfitUnknown={simRealTakeProfitUnknown}
+        setSimRealTakeProfitUnknown={setSimRealTakeProfitUnknown}
         simRealStopLossRaydium={simRealStopLossRaydium}
         setSimRealStopLossRaydium={setSimRealStopLossRaydium}
         simRealStopLossBonding={simRealStopLossBonding}
