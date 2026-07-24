@@ -1309,11 +1309,33 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                           {log.type}
                         </span>
                         <span className={cn(
-                          "font-bold break-words",
+                          "font-bold break-words flex-1",
                           log.type === 'ERROR' ? "text-rose-400" : "text-slate-300"
                         )}>
                           {log.message}
                         </span>
+                        {(() => {
+                          const logStr = `${log.message} ${typeof log.details === 'object' ? JSON.stringify(log.details) : String(log.details || '')}`;
+                          const matchAddr = logStr.match(/(?:outputMint|inputMint|tokenAddress|address|mint)[\"':\s]+([a-zA-Z0-9]{32,44})/i) ||
+                                            logStr.match(/\b([a-zA-Z0-9]{32,44}(?:pump)?)\b/);
+                          if (matchAddr && matchAddr[1] && matchAddr[1] !== 'So11111111111111111111111111111111111111112') {
+                            const mint = matchAddr[1];
+                            return (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  executeSimRealBuy(mint, 0.1);
+                                }}
+                                className="px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-wider bg-emerald-500/20 hover:bg-emerald-500/35 text-emerald-300 border border-emerald-500/40 transition-all flex items-center gap-1 shrink-0 active:scale-95 cursor-pointer ml-auto"
+                                title={`Execute direct swap for token ${mint}`}
+                              >
+                                <Zap className="w-2.5 h-2.5 text-emerald-400 animate-pulse" />
+                                <span>BUY</span>
+                              </button>
+                            );
+                          }
+                          return null;
+                        })()}
                       </div>
                       {log.details && (
                         <div className="mt-1 bg-[#05050a] rounded border border-[#1f212e]/50 p-2 overflow-x-auto text-[9px] text-slate-400 break-all whitespace-pre-wrap">
