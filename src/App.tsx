@@ -1435,6 +1435,19 @@ export default function App() {
         if (maxPosLimitReached) {
           // Max positions limit reached: stop searching new tokens and clear candidate buffer
           clearPriceHistories();
+          
+          // Actually purge candidates from the tokenMetrics buffer to free up memory
+          state.setTokenMetrics(prev => {
+             const next = { ...prev };
+             let changed = false;
+             Object.keys(next).forEach(mint => {
+                if (!state.activePositions[mint] && !pendingTrades.current.has(mint) && !savedGems[mint]) {
+                   delete next[mint];
+                   changed = true;
+                }
+             });
+             return changed ? next : prev;
+          });
         } else {
           const tokens = tokensForTracking;
 

@@ -11,6 +11,7 @@ interface PriceTick {
 
 // A global sliding window of price ticks per token mint
 const candidatePriceHistories: Record<string, PriceTick[]> = {};
+let lastGlobalPrune = Date.now();
 
 export function clearPriceHistories() {
   for (const key of Object.keys(candidatePriceHistories)) {
@@ -42,6 +43,21 @@ export function recordCandidatePrice(tokenAddress: string, price: number) {
   
   if (history.length === 0) {
     delete candidatePriceHistories[tokenAddress];
+  }
+
+  // Global prune every 10 seconds
+  if (now - lastGlobalPrune > 10000) {
+    lastGlobalPrune = now;
+    const pruneCutoff = now - 5000;
+    for (const key of Object.keys(candidatePriceHistories)) {
+      const h = candidatePriceHistories[key];
+      while (h.length > 0 && h[0].timestamp < pruneCutoff) {
+        h.shift();
+      }
+      if (h.length === 0) {
+        delete candidatePriceHistories[key];
+      }
+    }
   }
 }
 
