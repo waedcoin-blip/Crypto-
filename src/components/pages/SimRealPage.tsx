@@ -531,40 +531,46 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
           }
         }
 
-        // ── FETCH FRESH QUOTE FOR VERIFICATION ──
+        // ── FETCH FRESH QUOTE FOR VERIFICATION WITH FAST TIMEOUT ──
         let freshPriceUsd = triggerPriceUsd;
         let freshLiquidityUsd = signal.liquidityUsd;
 
         try {
-          const res = await fetch(`/api/dex/tokens/${tokenAddress}`);
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 1200);
+          const res = await fetch(`/api/dex/tokens/${tokenAddress}`, { signal: controller.signal });
+          clearTimeout(timeoutId);
           if (res.ok) {
             const data = await res.json();
             const pair = data?.pairs?.[0];
             if (pair) {
-              freshPriceUsd = parseFloat(pair.priceUsd || '0');
-              freshLiquidityUsd = parseFloat(pair.liquidity?.usd || '0');
+              freshPriceUsd = parseFloat(pair.priceUsd || '0') || freshPriceUsd;
+              freshLiquidityUsd = parseFloat(pair.liquidity?.usd || '0') || freshLiquidityUsd;
             }
           }
         } catch (err) {
           console.warn('[Pipeline] Failed to fetch fresh quote, using signal data');
         }
 
-        // Gate 1: Check minimum liquidity (e.g. $10,000)
-        if (freshLiquidityUsd < 10_000) {
-          markRejected(signal.id, `Liquidity collapsed to $${freshLiquidityUsd.toFixed(0)} < $10,000`);
+        // Gate 1: Check minimum liquidity (allow if effective liquidity >= $1,000)
+        const effectiveLiquidity = Math.max(freshLiquidityUsd, signal.liquidityUsd || 0);
+        if (effectiveLiquidity < 1_000) {
+          markRejected(signal.id, `Liquidity too low ($${effectiveLiquidity.toFixed(0)} < $1,000)`);
           processingLock.current = false;
           return;
         }
 
         // Gate 2: Deviation check (Pump guard: Max 15% above trigger price)
-        const priceIncreasePercent = ((freshPriceUsd - triggerPriceUsd) / triggerPriceUsd) * 100;
-        if (priceIncreasePercent > 15) {
-          markRejected(
-            signal.id,
-            `Price pumped too high after trigger: +${priceIncreasePercent.toFixed(2)}% > +15%`
-          );
-          processingLock.current = false;
-          return;
+        if (triggerPriceUsd > 0 && freshPriceUsd > 0) {
+          const priceIncreasePercent = ((freshPriceUsd - triggerPriceUsd) / triggerPriceUsd) * 100;
+          if (priceIncreasePercent > 15) {
+            markRejected(
+              signal.id,
+              `Price pumped too high after trigger: +${priceIncreasePercent.toFixed(2)}% > +15%`
+            );
+            processingLock.current = false;
+            return;
+          }
         }
 
         // 4. All checks passed — execute real/sim trade

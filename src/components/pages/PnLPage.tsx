@@ -69,23 +69,33 @@ const fetchMintDecimals = async (mint: string, rpcUrl?: string): Promise<number>
 };
 
 const resolveDecimals = async (mint: string, rpcUrl: string | undefined, outAmountRaw: number, exactMathFallback: number): Promise<number> => {
-  const metricDecimals = await fetchMintDecimals(mint, rpcUrl);
+  const cleanMint = mint.trim();
+  if (decimalsCache[cleanMint] !== undefined) {
+    return decimalsCache[cleanMint];
+  }
+  const metricDecimals = await fetchMintDecimals(cleanMint, rpcUrl);
   if (metricDecimals >= 0 && metricDecimals <= 18) {
+    decimalsCache[cleanMint] = metricDecimals;
     return metricDecimals;
   }
   
+  const defaultDec = cleanMint.toLowerCase().endsWith('pump') ? 6 : 9;
   if (!outAmountRaw || !exactMathFallback || exactMathFallback <= 0) {
-    return mint.toLowerCase().endsWith('pump') ? 6 : 9;
+    decimalsCache[cleanMint] = defaultDec;
+    return defaultDec;
   }
 
-  const estimated = Math.max(0, Math.round(Math.log10(outAmountRaw / exactMathFallback)));
-  if (!isFinite(estimated) || isNaN(estimated) || estimated > 18) {
-    return mint.toLowerCase().endsWith('pump') ? 6 : 9;
+  // Only estimate if outAmountRaw is significantly larger than exactMathFallback (atomic units vs human units)
+  if (outAmountRaw > exactMathFallback * 100) {
+    const estimated = Math.max(0, Math.round(Math.log10(outAmountRaw / exactMathFallback)));
+    if (isFinite(estimated) && !isNaN(estimated) && estimated >= 5 && estimated <= 18) {
+      decimalsCache[cleanMint] = estimated;
+      return estimated;
+    }
   }
-  
-  // Cache the heuristically determined decimals to avoid recalculating
-  decimalsCache[mint.trim()] = estimated;
-  return estimated;
+
+  decimalsCache[cleanMint] = defaultDec;
+  return defaultDec;
 };
 
 const getDynamicOperationalFeeSol = (isRecovery: boolean = false, tradeAmountSol: number = 0.05): number => {
@@ -120,6 +130,10 @@ interface Position {
   simRealBoughtTime?: number;
   simRealIsVirtualFallback?: boolean;
   signalEmitted?: boolean;
+  entryPriceUsd?: number;
+  currentPriceUsd?: number;
+  liquidityUsd?: number;
+  volume24h?: number;
 }
 
 interface LogEvent {
@@ -3009,15 +3023,16 @@ export const PnLPage = ({
             };
           });
 
+          const solPriceUsdRate = 180;
           emitBuySignal({
             tokenAddress: mint,
             symbol: pos.symbol,
             name: pos.symbol,
-            entryPriceUsd: entryPriceSol,
-            triggerPriceUsd: currentPriceSol,
+            entryPriceUsd: pos.entryPriceUsd || (entryPriceSol * solPriceUsdRate),
+            triggerPriceUsd: pos.currentPriceUsd || (currentPriceSol * solPriceUsdRate),
             profitPercent,
-            liquidityUsd: 50000,
-            volume24h: 100000,
+            liquidityUsd: pos.liquidityUsd || 50000,
+            volume24h: pos.volume24h || 100000,
             dexId: mint.toLowerCase().endsWith('pump') ? 'pumpfun' : 'raydium',
             pairAddress: mint,
             simAmountSol: pos.solSpent || 0.1,
@@ -5838,19 +5853,27 @@ const checkTokenCriteria = (mint: string): {
     let symbol = 'UNKNOWN';
     let currentPrice = 0;
 
-    // Check if we have tokenMetrics
+    // Check if we have tokenMetrics, active positions, or simPositions
     const existingMetric = storeState.tokenMetrics[cleanMint];
     if (existingMetric) {
       symbol = existingMetric.symbol || 'UNKNOWN';
       currentPrice = existingMetric.priceNative || 0;
     } else {
       const activePos = positionsRef.current[cleanMint] || positions[cleanMint];
+      const simPos = useSimulationStore.getState().positions[cleanMint];
       if (activePos && activePos.symbol && activePos.symbol !== 'Unknown' && activePos.symbol !== 'UNKNOWN') {
         symbol = activePos.symbol;
+        currentPrice = activePos.currentPrice || currentPrice;
+      } else if (simPos && simPos.symbol && simPos.symbol !== 'Unknown' && simPos.symbol !== 'UNKNOWN') {
+        symbol = simPos.symbol;
+        currentPrice = simPos.currentPriceUsd ? (simPos.currentPriceUsd / 180) : currentPrice;
       } else {
-        // Fetch details via DexScreener proxy
+        // Fetch details via DexScreener proxy with fast 1.2s timeout
         try {
-          const res = await fetch(`/api/dex/tokens/${cleanMint}`);
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 1200);
+          const res = await fetch(`/api/dex/tokens/${cleanMint}`, { signal: controller.signal });
+          clearTimeout(timeoutId);
           if (res.ok) {
             const data = await res.json();
             if (data && data.pairs && data.pairs.length > 0) {

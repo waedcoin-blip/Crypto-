@@ -641,7 +641,14 @@ export const getJupiterQuote = async (
     const headers: Record<string, string> = {};
     if (customApiKey && !customApiKey.startsWith('http')) headers['x-api-key'] = customApiKey;
 
-    const quoteRes = await fetch(`/api/jup/quote?${queryParams.toString()}`, { headers });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 2500);
+    let quoteRes;
+    try {
+      quoteRes = await fetch(`/api/jup/quote?${queryParams.toString()}`, { headers, signal: controller.signal });
+    } finally {
+      clearTimeout(timeoutId);
+    }
     if (!quoteRes.ok) throw new Error(`Proxy error ${quoteRes.status}`);
 
     const quote = await quoteRes.json() as QuoteResponse;

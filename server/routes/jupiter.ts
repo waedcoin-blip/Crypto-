@@ -162,8 +162,10 @@ router.get('/quote', asyncHandler(async (req, res) => {
     if (resolvedKey) (fetchOpts.headers as Record<string, string>)['x-api-key'] = resolvedKey;
 
     // Fallback URLs
+    const v6FallbackUrl = `https://quote-api.jup.ag/v6/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amount}&slippageBps=${slippageBps}`;
     const fallbacks = [
       jupUrl,
+      ...(jupUrl !== v6FallbackUrl ? [v6FallbackUrl] : []),
     ];
 
     let lastResult: { status: number; text: string } | null = null;
