@@ -119,6 +119,7 @@ interface Position {
   simRealSolSpent?: number;
   simRealBoughtTime?: number;
   simRealIsVirtualFallback?: boolean;
+  signalEmitted?: boolean;
 }
 
 interface LogEvent {
@@ -2941,13 +2942,14 @@ export const PnLPage = ({
   }, [hasSimPosition, updateSimPrice]);
 
   // ── SIGNAL EMISSION EFFECT ──
-  // Monitors all simulation positions.
+  // Monitors all simulation positions AND active PnL positions.
   // When any position hits +1%, emits a buy signal to SimRealPage.
   useEffect(() => {
     const checkProfitTargets = () => {
-      const positionsArray = Object.values(simPositions);
+      // 1. Check simulation positions (from useSimulationStore)
+      const simPositionsArray = Object.values(simPositions);
 
-      for (const pos of positionsArray) {
+      for (const pos of simPositionsArray) {
         // Skip if signal already emitted for this position
         if (pos.signalEmitted) continue;
 
@@ -2958,7 +2960,8 @@ export const PnLPage = ({
         const profitPercent =
           ((pos.currentPriceUsd - pos.entryPriceUsd) / pos.entryPriceUsd) * 100;
 
-        if (profitPercent >= DEFAULT_CRITERIA.signalProfitThreshold) {
+        const signalMinProfit = Math.max(1.0, DEFAULT_CRITERIA.signalProfitThreshold || 1.0);
+        if (profitPercent >= signalMinProfit) {
           if (!pos.symbol || pos.symbol.trim() === '' || pos.symbol.toUpperCase() === 'UNKNOWN') continue;
           // ── +1% HIT — EMIT BUY SIGNAL ──
           markSimSignaled(pos.tokenAddress);
@@ -2981,11 +2984,54 @@ export const PnLPage = ({
           addLog(`[Signal] ${pos.symbol} +${profitPercent.toFixed(2)}% → SimRealPage`, 'success');
         }
       }
+
+      // 2. Check active PnL positions (from positions state)
+      const activePositionsEntries = Object.entries(positions);
+      for (const [mint, pos] of activePositionsEntries) {
+        if (pos.signalEmitted) continue;
+
+        const entryPriceSol = pos.buyPrice || pos.simRealBoughtPriceSol || 0;
+        const currentPriceSol = pos.currentPrice || 0;
+        if (entryPriceSol <= 0 || currentPriceSol <= 0) continue;
+
+        const profitPercent = ((currentPriceSol - entryPriceSol) / entryPriceSol) * 100;
+        const signalMinProfit = Math.max(1.0, DEFAULT_CRITERIA.signalProfitThreshold || 1.0);
+
+        if (profitPercent >= signalMinProfit) {
+          if (!pos.symbol || pos.symbol.trim() === '' || pos.symbol.toUpperCase() === 'UNKNOWN') continue;
+
+          // Mark signalEmitted = true on the active position
+          setPositions(prev => {
+            if (!prev[mint] || prev[mint].signalEmitted) return prev;
+            return {
+              ...prev,
+              [mint]: { ...prev[mint], signalEmitted: true }
+            };
+          });
+
+          emitBuySignal({
+            tokenAddress: mint,
+            symbol: pos.symbol,
+            name: pos.symbol,
+            entryPriceUsd: entryPriceSol,
+            triggerPriceUsd: currentPriceSol,
+            profitPercent,
+            liquidityUsd: 50000,
+            volume24h: 100000,
+            dexId: mint.toLowerCase().endsWith('pump') ? 'pumpfun' : 'raydium',
+            pairAddress: mint,
+            simAmountSol: pos.solSpent || 0.1,
+            simEntryTime: pos.entryTime || Date.now(),
+          });
+
+          addLog(`[Active Position Signal] ${pos.symbol} +${profitPercent.toFixed(2)}% → SimRealPage`, 'success');
+        }
+      }
     };
 
     const interval = setInterval(checkProfitTargets, 1000);
     return () => clearInterval(interval);
-  }, [simPositions, emitBuySignal, markSimSignaled, addLog]);
+  }, [simPositions, positions, emitBuySignal, markSimSignaled, addLog]);
 
   // ── AUTO-CLOSE STALE POSITIONS ──
   useEffect(() => {
@@ -6005,19 +6051,26 @@ const checkTokenCriteria = (mint: string): {
     
     // Clear Cross-Page Buy Signals Pipeline
     useBuySignalStore.getState().clearSignals();
+
+    // Clear simRealBoughtPending tracking ref
+    simRealBoughtPending.current.clear();
+
+    // Clear simulation store positions so old signals aren't re-triggered
+    useSimulationStore.setState({ positions: {}, closedPositions: [] });
     
-    // Also remove the simRealBought status from any active positions
+    // Also remove the simRealBought status from any active positions and mark signalEmitted so they don't re-trigger after reset
     setPositions(prev => {
       const next = { ...prev };
       let changed = false;
       for (const mint of Object.keys(next)) {
-        if (next[mint]?.simRealBought) {
+        if (next[mint]) {
           next[mint] = {
             ...next[mint],
             simRealBought: false,
             simRealBoughtPriceSol: undefined,
             simRealAmountTokens: undefined,
-            simRealSolSpent: undefined
+            simRealSolSpent: undefined,
+            signalEmitted: true,
           };
           changed = true;
         }

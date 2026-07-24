@@ -20,6 +20,7 @@ import { TokenMetric, SniperTrade } from '../../types';
 import { cn, detectTokenStage } from '../../lib/utils';
 import { useAppStore } from '../../store/appStore';
 import { useBuySignalStore } from '../../store/buySignalStore';
+import { useSimulationStore } from '../../store/simulationStore';
 import { simRealTradingEngine } from '../../engines/simRealTradingEngine';
 
 // Local helper matching the rest of the application
@@ -450,6 +451,13 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
           return;
         }
 
+        // Gate 0.1: Profit validation check — reject any signal with emit profit below +1.0%
+        if (typeof profitPercent === 'number' && profitPercent < 1.0) {
+          markRejected(signal.id, `Emit profit (+${profitPercent.toFixed(2)}%) is below required +1.0% target`);
+          processingLock.current = false;
+          return;
+        }
+
         // Mark as actively executing
         markExecuting(signal.id);
 
@@ -750,9 +758,10 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
             onClick={() => {
               resetSimRealWallet();
               clearSignals();
+              useSimulationStore.setState({ positions: {}, closedPositions: [] });
             }}
             className="bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-lg border border-emerald-500/20 transition-all active:scale-95 flex items-center gap-1.5"
-            title="Reset wallet balance, trades, and clear Buy Signals Pipeline"
+            title="Reset wallet balance, trades, simulation positions, and clear Buy Signals Pipeline"
           >
             <RefreshCw className="w-3 h-3" />
             Reset

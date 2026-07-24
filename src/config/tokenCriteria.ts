@@ -47,6 +47,6 @@ export const DEFAULT_CRITERIA: TokenCriteria = {
   maxPriceChange5m: 9999,
   simulationBuyAmountSol: 0.1,
   realBuyAmountSol: 0.05,
-  signalProfitThreshold: -100,
+  signalProfitThreshold: 1.0,
   slippageBps: 500,
 };
