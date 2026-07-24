@@ -148,10 +148,13 @@ router.get('/stream', (req, res) => {
   }
 
   res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
+
+  // Send padding for some strict proxies (e.g. Render)
+  res.write(': ' + Array(2049).join(' ') + '\n\n');
 
   const clientId = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
   const client: SseClient = {

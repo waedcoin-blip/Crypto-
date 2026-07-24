@@ -1105,11 +1105,11 @@ export const PnLPage = ({
   };
 
   // Cloud FTP Hosting State Variables
-  const [ftpHost, setFtpHost] = useState(() => localStorage.getItem('ftp_host') || 'ftpupload.net');
-  const [ftpUser, setFtpUser] = useState(() => localStorage.getItem('ftp_user') || 'if0_42190985');
-  const [ftpPass, setFtpPass] = useState(() => localStorage.getItem('ftp_pass') || 'Waedsalem');
+  const [ftpHost, setFtpHost] = useState(() => localStorage.getItem('ftp_host') || '');
+  const [ftpUser, setFtpUser] = useState(() => localStorage.getItem('ftp_user') || '');
+  const [ftpPass, setFtpPass] = useState(() => localStorage.getItem('ftp_pass') || '');
   const [ftpDir, setFtpDir] = useState(() => localStorage.getItem('ftp_dir') || '/htdocs');
-  const [ftpWebUrl, setFtpWebUrl] = useState(() => localStorage.getItem('ftp_web_url') || 'http://arinas.freehosting.dev');
+  const [ftpWebUrl, setFtpWebUrl] = useState(() => localStorage.getItem('ftp_web_url') || '');
   const [ftpSecure, setFtpSecure] = useState(() => localStorage.getItem('ftp_secure') === 'true');
   const [showFtpPass, setShowFtpPass] = useState(false);
 
@@ -2449,13 +2449,17 @@ export const PnLPage = ({
   }, [privateKey, rpcUrl, customWsUrl]);
 
   // Live Price Polling for Wallet Tokens
+  // Depend on the actual mint set, not just walletTokens.length - if the wallet's
+  // token list changes composition (e.g. tokens swapped out) while the count stays
+  // the same, this effect must re-run or the interval keeps polling stale mints.
+  const walletTokenMintsKey = walletTokens.map(t => t.mint).join(',');
   useEffect(() => {
     if (walletTokens.length === 0 || !isRunning) return;
     const interval = setInterval(() => {
       updateWalletTokenPrices(walletTokens.map(t => t.mint));
     }, 5000); // 5 sec live sync caching mechanism
     return () => clearInterval(interval);
-  }, [walletTokens.length, isRunning, updateWalletTokenPrices]);
+  }, [walletTokenMintsKey, isRunning, updateWalletTokenPrices]);
 
   // Independent Live Price Polling for Active Positions
   useEffect(() => {
@@ -2573,7 +2577,11 @@ export const PnLPage = ({
                       simRealAmountTokens: exactTokenAmount,
                       simRealSolSpent: buyAmt,
                       simRealBoughtTime: quoteRequestTime,
-                      amountLamports: result.quoteOutAmountRaw || Math.floor(exactTokenAmount * 1_000_000),
+                      // If quoteOutAmountRaw is missing, exactTokenAmount is still the raw
+                      // atomic amount from Jupiter (decimals were only applied when
+                      // quoteOutAmountRaw was present above), so it must NOT be re-scaled
+                      // by an assumed decimals factor here - that would double-scale it.
+                      amountLamports: result.quoteOutAmountRaw || Math.floor(exactTokenAmount),
                       txid: result.txid
                     };
                     positionsRef.current = {
@@ -3951,8 +3959,11 @@ const checkTokenCriteria = (mint: string): {
            }
            // Math fallback
            tokenAmount = solAmount / parsedPrice;
-           // Assume 6 decimals for token, but price precision can be small
-           outAmountRaw = Math.floor(tokenAmount * 1_000_000);
+           // Resolve the real on-chain decimals instead of assuming 6 - this
+           // amountLamports value can later be reused directly as a sell input,
+           // so an assumed decimals count here silently corrupts real sells.
+           const fallbackDecimals = await resolveDecimals(mint, rpcUrl, 0, tokenAmount);
+           outAmountRaw = Math.floor(tokenAmount * Math.pow(10, fallbackDecimals));
         } else {
            // Exact token amount derived from Jupiter's routing
            outAmountRaw = Number(quote.outAmount);
@@ -4136,7 +4147,15 @@ const checkTokenCriteria = (mint: string): {
     if (shouldSellSimReal && privateKey && !pos.simRealIsVirtualFallback) {
       addLog(`🚨 [SIMREAL REAL SWAP SELL] Initiating real on-chain sell for ${pos.symbol} via Jupiter...`, 'warn');
       try {
-        const lamportsToSell = pos.amountLamports || Math.floor((pos.simRealAmountTokens || 0) * 1_000_000);
+        // pos.amountLamports should already hold the raw atomic amount from the
+        // buy; only fall back to re-deriving it here, and use the token's real
+        // decimals rather than assuming 6 - a wrong assumption sends Jupiter a
+        // real-money sell amount that's off by orders of magnitude.
+        let lamportsToSell = pos.amountLamports;
+        if (!lamportsToSell) {
+          const sellDecimals = await resolveDecimals(mint, jupRpcUrlToUse, 0, pos.simRealAmountTokens || 0);
+          lamportsToSell = Math.floor((pos.simRealAmountTokens || 0) * Math.pow(10, sellDecimals));
+        }
         if (lamportsToSell > 0) {
           const simRealGross = currentPrice * (pos.simRealAmountTokens || 0);
           const simRealGrossPnLPercent = ((simRealGross - (pos.simRealSolSpent || 0.1)) / (pos.simRealSolSpent || 0.1)) * 100;
@@ -5643,7 +5662,11 @@ const checkTokenCriteria = (mint: string): {
         : (pos.amount && pos.amount > 0)
         ? pos.amount
         : (spentSol / boughtPrice);
-      const lamportsToSell = pos.amountLamports || Math.floor(tokensQty * 1_000_000);
+      let lamportsToSell = pos.amountLamports;
+      if (!lamportsToSell) {
+        const sellDecimals = await resolveDecimals(mint, jupRpcUrlToUse, 0, tokensQty);
+        lamportsToSell = Math.floor(tokensQty * Math.pow(10, sellDecimals));
+      }
 
       try {
         if (lamportsToSell > 0) {
@@ -5828,12 +5851,6 @@ const checkTokenCriteria = (mint: string): {
       }
     }
 
-    const activePnLPos = positionsRef.current[cleanMint] || positions[cleanMint];
-    if (!activePnLPos || !activePnLPos.symbol || activePnLPos.symbol.trim() === '' || activePnLPos.symbol.toUpperCase() === 'UNKNOWN') {
-      addLog(`❌ [SIMREAL BUY BLOCKED] Skipped buy for ${cleanMint.slice(0, 8)}... Token symbol is Unknown or was not transferred from PnLPage active positions.`, 'warn');
-      return;
-    }
-
     const quoteRequestTime = Date.now();
     const isFallbackSim = !!(privateKey && jupiterBalance === 0);
 
@@ -5866,7 +5883,10 @@ const checkTokenCriteria = (mint: string): {
           };
           storeState.setSimRealTrades(prev => [newRealTrade, ...prev]);
           
-          const rawAmtLamp = result.quoteOutAmountRaw || Math.floor(exactTokenAmount * 1_000_000);
+          // exactTokenAmount is only decimal-adjusted when quoteOutAmountRaw was
+          // present above; otherwise it's still raw atomic units and must not be
+          // re-scaled here, or the stored lamports get inflated by 10^decimals.
+          const rawAmtLamp = result.quoteOutAmountRaw || Math.floor(exactTokenAmount);
 
           setPositions(prev => {
             const existing = prev[cleanMint] || {
@@ -7147,7 +7167,7 @@ const checkTokenCriteria = (mint: string): {
               )}
             </div>
             <div className="flex-1 space-y-3">
-              {Object.values(positions || {}).filter(pos => pos && pos.symbol && pos.symbol.trim() !== '' && pos.symbol !== 'Unknown' && typeof pos.buyPrice === 'number' && !isNaN(pos.buyPrice) && typeof pos.amount === 'number' && !isNaN(pos.amount) && typeof pos.solSpent === 'number' && !isNaN(pos.solSpent)).length === 0 ? (
+              {Object.values(positions || {}).filter(pos => pos && !pos.simRealBought && pos.symbol && pos.symbol.trim() !== '' && pos.symbol !== 'Unknown' && typeof pos.buyPrice === 'number' && !isNaN(pos.buyPrice) && typeof pos.amount === 'number' && !isNaN(pos.amount) && typeof pos.solSpent === 'number' && !isNaN(pos.solSpent)).length === 0 ? (
                 <div className="bg-[#10111a]/40 border border-[#1f212e] border-dashed rounded-2xl p-8 flex flex-col items-center justify-center text-center text-[#64748b]">
                   <div className="w-12 h-12 rounded-full bg-[#1a1b26] border border-[#2d2e3d] flex items-center justify-center mb-3">
                     <Search className="w-5 h-5 text-[#94a3b8] opacity-50" />
@@ -7161,6 +7181,7 @@ const checkTokenCriteria = (mint: string): {
                     // 🛡️ Robust validation filter to prevent displaying visually buggy/corrupt positions
                     if (
                       !pos ||
+                      pos.simRealBought ||
                       typeof pos.symbol !== 'string' ||
                       pos.symbol.trim() === '' ||
                       pos.symbol === 'Unknown' ||
@@ -7724,7 +7745,7 @@ const checkTokenCriteria = (mint: string): {
                               setFtpUser(e.target.value);
                               localStorage.setItem('ftp_user', e.target.value);
                             }}
-                            placeholder="if0_42190985"
+                            placeholder="your_ftp_username"
                             className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-2.5 py-1.5 text-white font-mono focus:outline-none focus:border-[#c7f284]" 
                           />
                         </div>
@@ -7738,7 +7759,7 @@ const checkTokenCriteria = (mint: string): {
                                 setFtpPass(e.target.value);
                                 localStorage.setItem('ftp_pass', e.target.value);
                               }}
-                              placeholder="Waedsalem"
+                              placeholder="••••••••"
                               className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg pl-2.5 pr-8 py-1.5 text-white font-mono focus:outline-none focus:border-[#c7f284]" 
                             />
                             <button 

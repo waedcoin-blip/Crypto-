@@ -91,7 +91,7 @@ export const useBuySignalStore = create<BuySignalStore>((set, get) => ({
     updated[idx] = { ...updated[idx], status: 'picked_up' };
     set({ signals: updated });
 
-    return state.signals[idx];
+    return updated[idx];
   },
 
   claimNextSignal: () => {
@@ -143,7 +143,7 @@ export const useBuySignalStore = create<BuySignalStore>((set, get) => ({
     const cutoff = Date.now() - maxAgeMs;
     set(state => ({
       signals: state.signals.filter(
-        s => s.timestamp > cutoff || s.status === 'executing'
+        s => s.timestamp > cutoff || s.status === 'executing' || s.status === 'picked_up'
       ),
     }));
   },

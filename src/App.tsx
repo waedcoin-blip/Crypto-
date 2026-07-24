@@ -420,6 +420,13 @@ export default function App() {
   const [autoSniperEnabled, setAutoSniperEnabled] = useState(false);
   const [isLiveTrading, setIsLiveTrading] = useState(false); // Live via Jupiter V6
   const [buyAmountSol, setBuyAmountSol] = useState(() => Number(localStorage.getItem('app_buyAmountSol')) || 0.1);
+  // buyAmountSol also lives in useAppStore (read directly via storeState.buyAmountSol
+  // by PnLPage's and SimRealPage's automated buy pipelines), but the store's copy was
+  // never updated after initial load - so changing the buy amount in the UI here had
+  // no effect on live/automated trades until a full page reload. Keep them in sync.
+  useEffect(() => {
+    useAppStore.setState({ buyAmountSol });
+  }, [buyAmountSol]);
   const [minTakeProfit, setMinTakeProfit] = useState(() => Number(localStorage.getItem('app_minTakeProfit')) || 15);
   const [maxTakeProfit, setMaxTakeProfit] = useState(() => Number(localStorage.getItem('app_maxTakeProfit')) || 50);
   const [bondingCurveTakeProfit, setBondingCurveTakeProfit] = useState(() => Number(localStorage.getItem('app_bondingCurveTakeProfit')) || 25);

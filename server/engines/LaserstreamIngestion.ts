@@ -190,15 +190,19 @@ async function getFastestRegionalHub(
   const results = await Promise.all(
     availableHubs.map(async (url) => {
       const start = Date.now();
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), HUB_PROBE_TIMEOUT);
       try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), HUB_PROBE_TIMEOUT);
-        await fetch(url, { method: 'OPTIONS', signal: controller.signal })
-          .catch(() => null)
-          .finally(() => clearTimeout(timeoutId));
+        // Only fetch failures/timeouts inside this try block count as failed -
+        // a rejected fetch (DNS failure, connection refused, abort) must NOT
+        // be reported with a normal elapsed-time latency, since fast network
+        // failures would otherwise look like the fastest, healthiest hub.
+        await fetch(url, { method: 'OPTIONS', signal: controller.signal });
         return { url, latency: Date.now() - start };
       } catch {
-        return { url, latency: 9999 };
+        return { url, latency: Infinity };
+      } finally {
+        clearTimeout(timeoutId);
       }
     })
   );
@@ -207,7 +211,7 @@ async function getFastestRegionalHub(
     curr.latency < prev.latency ? curr : prev
   );
 
-  if (fastest.latency < 9999) {
+  if (Number.isFinite(fastest.latency)) {
     laserLogger.info({ hub: fastest.url, latency: fastest.latency }, 'Selected regional hub');
     return fastest.url;
   }
@@ -234,6 +238,11 @@ function startHealthWatchdog(
         'Stream silence detected, restarting fallback'
       );
 
+      // The gRPC worker process may still be alive but silently stalled - it
+      // must be killed here, or it keeps running as an orphan alongside the
+      // new WebSocket fallback, causing duplicate ON_CHAIN_TX events (and
+      // therefore duplicate buy signals) for every subsequent transaction.
+      stopWorkerProcess();
       stopFallbackWebSocket();
       setTimeout(() => {
         startFallbackWebSocket(programs, eventBusCallback, apiKey, customWsUrl);

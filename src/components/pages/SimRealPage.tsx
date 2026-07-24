@@ -238,6 +238,13 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
       setBuyStatus({ type: 'error', text: `Insufficient SimReal Balance (${simRealBalance.toFixed(4)} SOL).` });
       return;
     }
+    if (privateKey && jupiterBalance !== null) {
+      const opFeeBuffer = getDynamicOperationalFeeSol(false, amount);
+      if (jupiterBalance < amount + opFeeBuffer) {
+        setBuyStatus({ type: 'error', text: `Insufficient on-chain wallet balance (${jupiterBalance.toFixed(4)} SOL available).` });
+        return;
+      }
+    }
 
     try {
       setIsBuying(true);
@@ -410,8 +417,13 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
       if (processingLock.current || !workerActive) return;
 
       // ── SERVER HEALTH CHECK GATE ──
-      if (serverHealth === 'degraded') {
-        console.warn('[SimReal] Server health is degraded, proceeding with caution...');
+      // Previously this only logged a warning and let execution continue
+      // regardless of health status. For real-money trades, a degraded
+      // server (e.g. RPC or Jupiter integration down) should actually block
+      // execution rather than proceed blind. Simulation-only trading is
+      // allowed to continue since no real funds are at risk.
+      if (serverHealth === 'degraded' && privateKey) {
+        return;
       }
 
       processingLock.current = true;
@@ -458,6 +470,16 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
           return;
         }
 
+        // Check we haven't hit the configured max concurrent positions limit.
+        // This was previously only shown in the UI (X/maxPositions) but never
+        // actually enforced, allowing unlimited concurrent capital exposure.
+        const activePositionsCount = Object.values(positions || {}).filter(p => p && p.simRealBought).length;
+        if (maxPositions && activePositionsCount >= maxPositions) {
+          markRejected(signal.id, `Max concurrent positions reached (${activePositionsCount}/${maxPositions})`);
+          processingLock.current = false;
+          return;
+        }
+
         // Check rebuy limits (maxRebuyTimes)
         const completedSimRealCount = storeState.simRealTrades.filter(
           t => t.address === tokenAddress && t.type === 'BUY'
@@ -482,6 +504,22 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
           );
           processingLock.current = false;
           return;
+        }
+
+        // When real trading is active, the SimReal balance is only a virtual
+        // ledger - it does not reflect what's actually in the connected wallet.
+        // Without this check, a real buy could be attempted for more SOL than
+        // actually exists on-chain, and would only fail after gas is spent.
+        if (privateKey && jupiterBalance !== null) {
+          const opFeeBuffer = getDynamicOperationalFeeSol(false, buyAmt);
+          if (jupiterBalance < buyAmt + opFeeBuffer) {
+            markRejected(
+              signal.id,
+              `Insufficient on-chain wallet balance (${jupiterBalance.toFixed(4)} SOL < ${(buyAmt + opFeeBuffer).toFixed(4)} SOL needed)`
+            );
+            processingLock.current = false;
+            return;
+          }
         }
 
         // ── FETCH FRESH QUOTE FOR VERIFICATION ──
@@ -552,7 +590,10 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
   }, [
     positions,
     maxRebuyTimes,
+    maxPositions,
     privateKey,
+    jupiterBalance,
+    serverHealth,
     apiKey,
     jupiterRpcUrl,
     rpcUrl,
