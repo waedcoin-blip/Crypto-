@@ -69,7 +69,7 @@ import {
   ActivePosition, 
   PositionStage 
 } from './services/jupiterService';
-import { recordCandidatePrice, checkTokenInProfitLast2Seconds } from './services/priceTracker';
+import { recordCandidatePrice, checkTokenInProfitLast2Seconds, clearPriceHistories } from './services/priceTracker';
 import { Keypair } from '@solana/web3.js';
 import bs58 from 'bs58';
 
@@ -1415,20 +1415,30 @@ export default function App() {
         }
       }
 
-      // Record candidate prices for the last 2 seconds profit check (runs at 500ms high frequency)
+      // Candidate price tracking & entry loop
       const tokensForTracking = Object.values(state.tokenMetrics) as TokenMetric[];
-      for (const t of tokensForTracking) {
-        if (t && t.address) {
-          recordCandidatePrice(t.address, t.priceNative || t.priceUsd || 0);
+      const maxPosLimitReached = state.maxPositions > 0 && activePositionEntries.length >= state.maxPositions;
+
+      if (!state.autoSniperEnabled || maxPosLimitReached) {
+        clearPriceHistories();
+      } else {
+        for (const t of tokensForTracking) {
+          if (t && t.address) {
+            recordCandidatePrice(t.address, t.priceNative || t.priceUsd || 0);
+          }
         }
       }
 
       // MONITORING LOOP 2: ENTRIES (Hardened Scanner Engine)
       if (state.autoSniperEnabled) {
-        const tokens = tokensForTracking;
         let currentActiveCount = activePositionEntries.length;
+        if (maxPosLimitReached) {
+          // Max positions limit reached: stop searching new tokens and clear candidate buffer
+          clearPriceHistories();
+        } else {
+          const tokens = tokensForTracking;
 
-        for (const token of tokens) {
+          for (const token of tokens) {
           if (state.activePositions[token.address] || pendingTrades.current.has(token.address)) continue;
           
           const now = Date.now();
@@ -1512,6 +1522,7 @@ export default function App() {
             fns.current.executeAutoTrade(token.address, token.symbol);
             currentActiveCount++;
           }
+        }
         }
       }
       

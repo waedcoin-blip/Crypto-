@@ -2487,6 +2487,7 @@ export const PnLPage = ({
         const currentPnLPct = pnlFraction * 100;
 
         if (currentPnLPct >= 1.0 && !pos.simRealBought && !simRealBoughtPending.current.has(mint)) {
+          if (!pos.symbol || pos.symbol.trim() === '' || pos.symbol.toUpperCase() === 'UNKNOWN') continue;
           const simPos = simPositions[mint];
           if (!simPos) continue; // Must be tracked in simPositions to emit a full signal
           emitBuySignal({
@@ -2950,6 +2951,7 @@ export const PnLPage = ({
           ((pos.currentPriceUsd - pos.entryPriceUsd) / pos.entryPriceUsd) * 100;
 
         if (profitPercent >= DEFAULT_CRITERIA.signalProfitThreshold) {
+          if (!pos.symbol || pos.symbol.trim() === '' || pos.symbol.toUpperCase() === 'UNKNOWN') continue;
           // ── +1% HIT — EMIT BUY SIGNAL ──
           markSimSignaled(pos.tokenAddress);
 
@@ -3164,6 +3166,12 @@ export const PnLPage = ({
 
     if (changes.length > 0) {
       addLog(`[SYSTEM CONFIG] Criteria updated: ${changes.join(' | ')}`, 'info');
+      if (prev.maxPositions !== currentValues.maxPositions) {
+        const currentActiveCount = Object.keys(positionsRef.current).filter(k => isValidPosition(positionsRef.current[k])).length;
+        if (currentValues.maxPositions > 0 && currentActiveCount >= currentValues.maxPositions) {
+          addLog(`⏸️ [MAX POSITIONS REACHED] Limit set to ${currentValues.maxPositions} (Active: ${currentActiveCount}). Stopped searching new tokens.`, 'warn');
+        }
+      }
       lastLoggedCriteria.current = currentValues;
     }
   }, [
@@ -4614,7 +4622,12 @@ const checkTokenCriteria = (mint: string): {
       if (nowMs - lastHeartbeatRef.current > 15000) {
          lastHeartbeatRef.current = nowMs;
          const matchRate = configRef.current.hardenedMatchRequirement !== undefined ? configRef.current.hardenedMatchRequirement : 100;
-         addLog(`📡 [SCANNER HEARTBEAT] Monitoring ${Object.keys(tokenMetricsRef.current).length} active tokens | Positions: ${activeMints.length}/${maxPositions} | Required Match: ${matchRate}%`, 'info');
+         if (maxPositions > 0 && activeMints.length >= maxPositions) {
+            clearPriceHistories();
+            addLog(`⏸️ [MAX POSITIONS REACHED] Positions: ${activeMints.length}/${maxPositions} — Stopped searching new tokens.`, 'warn');
+         } else {
+            addLog(`📡 [SCANNER HEARTBEAT] Monitoring ${Object.keys(tokenMetricsRef.current).length} active tokens | Positions: ${activeMints.length}/${maxPositions} | Required Match: ${matchRate}%`, 'info');
+         }
       }
 
       // 1. Try to open new positions
@@ -4688,20 +4701,19 @@ const checkTokenCriteria = (mint: string): {
          let currentActiveCountLoop = activeMints.length;
          for (const [mint, metric] of scannerTokens.slice(0, 3) as [string, any][]) {
             if (maxPositions > 0 && currentActiveCountLoop >= maxPositions) break;
+            if (!metric.symbol || metric.symbol.trim() === '' || metric.symbol.toUpperCase() === 'UNKNOWN') continue;
             const progress = metric.bondingCurveProgress || 0;
             const isGraduated = !mint.toLowerCase().endsWith('pump');
-            addLog(`🟢 [BUY TRIGGER] Matches all configured constraints for ${metric.symbol || 'Unknown'} (${isGraduated ? 'Raydium' : 'Pump.fun'}) with curve progress at ${progress.toFixed(1)}%. Placing swift-swap entry...`, 'buy');
-            // ENFORCE 2 SECONDS PROFIT CHECK BEFORE TRADING START (DEACTIVATED)
-            /*
-             const currentPrice = metric.priceNative || metric.priceUsd || 0;
-             const profitCheck = checkTokenInProfitLast2Seconds(mint, currentPrice);
-             if (!profitCheck.inProfit) {
-               addLog(`⚠️ [BUY SKIPPED] ${metric.symbol || 'Unknown'} failed last 2s profit check: ${profitCheck.reason}`, 'info');
-               continue;
-             }
-            */
-             await executeBuy(mint, metric.symbol || 'Unknown', metric.priceNative || metric.priceUsd, tradeAmount);
-             currentActiveCountLoop++;
+            addLog(`🟢 [BUY TRIGGER] Matches all configured constraints for ${metric.symbol} (${isGraduated ? 'Raydium' : 'Pump.fun'}) with curve progress at ${progress.toFixed(1)}%. Placing swift-swap entry...`, 'buy');
+            await executeBuy(mint, metric.symbol, metric.priceNative || metric.priceUsd, tradeAmount);
+            currentActiveCountLoop++;
+         }
+      } else {
+         clearPriceHistories();
+         const now = Date.now();
+         if (now - lastDiagnosticsRef.current > 15000) {
+            lastDiagnosticsRef.current = now;
+            addLog(`🛑 [MAX POSITIONS LIMIT] Active slots filled (${activeMints.length}/${maxPositions}). Stopped searching new tokens.`, 'warn');
          }
       }
 
@@ -5759,56 +5771,67 @@ const checkTokenCriteria = (mint: string): {
       symbol = existingMetric.symbol || 'UNKNOWN';
       currentPrice = existingMetric.priceNative || 0;
     } else {
-      // Fetch details via DexScreener proxy
-      try {
-        const res = await fetch(`/api/dex/tokens/${cleanMint}`);
-        if (res.ok) {
-          const data = await res.json();
-          if (data && data.pairs && data.pairs.length > 0) {
-            const solPairs = data.pairs.filter((p: any) => 
-              (p.quoteToken?.address === SOL_MINT || p.quoteToken?.symbol === 'SOL') &&
-              (p.chainKb === 'solana' || p.chainId === 'solana' || p.dexId)
-            );
-            const targetPairs = solPairs.length > 0 ? solPairs : data.pairs;
-            const sortedPairs = [...targetPairs].sort((a, b) => parseFloat(b.liquidity?.usd || '0') - parseFloat(a.liquidity?.usd || '0'));
-            const bestPair = sortedPairs[0];
-            if (bestPair) {
-              symbol = bestPair.baseToken?.symbol || 'UNKNOWN';
-              currentPrice = parseFloat(bestPair.priceNative || '0');
-              
-              const formattedMetric: TokenMetric = {
-                address: cleanMint,
-                symbol,
-                priceUsd: parseFloat(bestPair.priceUsd || '0'),
-                priceNative: currentPrice,
-                marketCap: bestPair.fdv || 0,
-                liquidity: bestPair.liquidity?.usd || 0,
-                volume24h: bestPair.volume?.h24 || 0,
-                discoveredAt: Date.now(),
-                lastUpdated: Date.now(),
-                buyCount: bestPair.txns?.h24?.buys || 0,
-                sellCount: bestPair.txns?.h24?.sells || 0,
-                buyVolume: bestPair.volume?.h24 || 0,
-                sellVolume: 0,
-                percentageIncrease: bestPair.priceChange?.h24 || 0,
-                recentBuysTimeline: [],
-                category: cleanMint.toLowerCase().endsWith('pump') ? 'PUMP_FUN' : 'RAYDIUM',
-                isRugSafe: true,
-                mintAuthorityRevoked: true,
-                freezeAuthorityRevoked: true,
-                liquidityBurned: true,
-                top10Percentage: 8.5
-              };
-              storeState.setTokenMetrics(prev => ({
-                ...prev,
-                [cleanMint]: formattedMetric
-              }));
+      const activePos = positionsRef.current[cleanMint] || positions[cleanMint];
+      if (activePos && activePos.symbol && activePos.symbol !== 'Unknown' && activePos.symbol !== 'UNKNOWN') {
+        symbol = activePos.symbol;
+      } else {
+        // Fetch details via DexScreener proxy
+        try {
+          const res = await fetch(`/api/dex/tokens/${cleanMint}`);
+          if (res.ok) {
+            const data = await res.json();
+            if (data && data.pairs && data.pairs.length > 0) {
+              const solPairs = data.pairs.filter((p: any) => 
+                (p.quoteToken?.address === SOL_MINT || p.quoteToken?.symbol === 'SOL') &&
+                (p.chainKb === 'solana' || p.chainId === 'solana' || p.dexId)
+              );
+              const targetPairs = solPairs.length > 0 ? solPairs : data.pairs;
+              const sortedPairs = [...targetPairs].sort((a, b) => parseFloat(b.liquidity?.usd || '0') - parseFloat(a.liquidity?.usd || '0'));
+              const bestPair = sortedPairs[0];
+              if (bestPair) {
+                symbol = bestPair.baseToken?.symbol || 'UNKNOWN';
+                currentPrice = parseFloat(bestPair.priceNative || '0');
+                
+                const formattedMetric: TokenMetric = {
+                  address: cleanMint,
+                  symbol,
+                  priceUsd: parseFloat(bestPair.priceUsd || '0'),
+                  priceNative: currentPrice,
+                  marketCap: bestPair.fdv || 0,
+                  liquidity: bestPair.liquidity?.usd || 0,
+                  volume24h: bestPair.volume?.h24 || 0,
+                  discoveredAt: Date.now(),
+                  lastUpdated: Date.now(),
+                  buyCount: bestPair.txns?.h24?.buys || 0,
+                  sellCount: bestPair.txns?.h24?.sells || 0,
+                  buyVolume: bestPair.volume?.h24 || 0,
+                  sellVolume: 0,
+                  percentageIncrease: bestPair.priceChange?.h24 || 0,
+                  recentBuysTimeline: [],
+                  category: cleanMint.toLowerCase().endsWith('pump') ? 'PUMP_FUN' : 'RAYDIUM',
+                  isRugSafe: true,
+                  mintAuthorityRevoked: true,
+                  freezeAuthorityRevoked: true,
+                  liquidityBurned: true,
+                  top10Percentage: 8.5
+                };
+                storeState.setTokenMetrics(prev => ({
+                  ...prev,
+                  [cleanMint]: formattedMetric
+                }));
+              }
             }
           }
+        } catch (err: any) {
+          addLog(`⚠️ [SIMREAL BUY] DexScreener fetch warning: ${err.message}. Proceeding with Jupiter lookup.`, 'warn');
         }
-      } catch (err: any) {
-        addLog(`⚠️ [SIMREAL BUY] DexScreener fetch warning: ${err.message}. Proceeding with Jupiter lookup.`, 'warn');
       }
+    }
+
+    const activePnLPos = positionsRef.current[cleanMint] || positions[cleanMint];
+    if (!activePnLPos || !activePnLPos.symbol || activePnLPos.symbol.trim() === '' || activePnLPos.symbol.toUpperCase() === 'UNKNOWN') {
+      addLog(`❌ [SIMREAL BUY BLOCKED] Skipped buy for ${cleanMint.slice(0, 8)}... Token symbol is Unknown or was not transferred from PnLPage active positions.`, 'warn');
+      return;
     }
 
     const quoteRequestTime = Date.now();
