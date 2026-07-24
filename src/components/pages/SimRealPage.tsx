@@ -205,6 +205,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
   const markFailed = useBuySignalStore(state => state.markFailed);
   const markRejected = useBuySignalStore(state => state.markRejected);
   const pruneOld = useBuySignalStore(state => state.pruneOld);
+  const clearSignals = useBuySignalStore(state => state.clearSignals);
 
   // Lock to prevent concurrent processing of different signals
   const processingLock = useRef(false);
@@ -559,7 +560,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
         }
 
         // 4. All checks passed — execute real/sim trade
-        console.log(`[Pipeline] Executing Jupiter copy-buy of ${symbol}...`);
+        console.log(`[Pipeline] 🟢 [BUY TRIGGER] All required gates & buy limits passed for ${symbol} (${tokenAddress.slice(0, 8)}...) | Pos Limit: ${activePositionsCount + 1}/${maxPositions || '∞'}, Rebuy Limit: ${completedSimRealCount + 1}/${activeMaxRebuyTimes}, Amount: ${buyAmt} SOL. Executing copy-buy...`);
         await executeSimRealBuy(tokenAddress, buyAmt);
         markExecuted(signal.id, `tx-copy-${Date.now()}`);
 
@@ -746,8 +747,12 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
             </span>
           </div>
           <button 
-            onClick={resetSimRealWallet}
+            onClick={() => {
+              resetSimRealWallet();
+              clearSignals();
+            }}
             className="bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-lg border border-emerald-500/20 transition-all active:scale-95 flex items-center gap-1.5"
+            title="Reset wallet balance, trades, and clear Buy Signals Pipeline"
           >
             <RefreshCw className="w-3 h-3" />
             Reset
@@ -1320,9 +1325,20 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                 </h2>
                 <span className="text-[9px] text-slate-500 uppercase font-mono mt-0.5">Zustand Real-Time Signal Bridge (PnLPage → SimRealPage)</span>
               </div>
-              <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2.5 py-0.5 rounded border border-emerald-500/20 font-bold">
-                {signals.length} Signals Captured
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2.5 py-0.5 rounded border border-emerald-500/20 font-bold">
+                  {signals.length} Signals Captured
+                </span>
+                {signals.length > 0 && (
+                  <button
+                    onClick={clearSignals}
+                    className="text-[9px] font-mono text-rose-400 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 px-2 py-0.5 rounded uppercase font-bold transition-all active:scale-95"
+                    title="Erase all captured buy signals from pipeline"
+                  >
+                    Erase Pipeline
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* Signal Stats Grid */}

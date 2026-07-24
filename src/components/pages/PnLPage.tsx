@@ -3921,6 +3921,8 @@ const checkTokenCriteria = (mint: string): {
 
       pendingBuysRef.current++;
       try {
+        const isGraduated = !mint.toLowerCase().endsWith('pump');
+        addLog(`🟢 [BUY TRIGGER] All required criteria & buy limits verified for ${symbol} (${isGraduated ? 'Raydium' : 'Pump.fun'}) | Pos Limit: ${activePositionsCount + 1}/${maxPositions || '∞'}, Rebuy Limit: ${totalTradedCount + 1}/${activeMaxRebuyTimes}, Bal: ${solAmount} SOL. Executing swift-swap entry...`, 'buy');
         addLog(`[SIM] Quoting ${symbol} for ${solAmount} SOL via Jupiter...`, 'info');
         const lamports = Math.floor(solAmount * 1_000_000_000);
         let quote = null;
@@ -4013,6 +4015,8 @@ const checkTokenCriteria = (mint: string): {
     pendingBuysRef.current++;
     
     try {
+      const isGraduated = !mint.toLowerCase().endsWith('pump');
+      addLog(`🟢 [BUY TRIGGER] All required criteria & buy limits verified for ${symbol} (${isGraduated ? 'Raydium' : 'Pump.fun'}) | Pos Limit: ${activePositionsCount + 1}/${maxPositions || '∞'}, Rebuy Limit: ${totalTradedCount + 1}/${activeMaxRebuyTimes}, Amount: ${solAmount} SOL. Placing real on-chain order...`, 'buy');
       addLog(`Ordering ${solAmount} SOL → ${symbol}...`, 'buy');
       const amountLamports = Math.floor(solAmount * 1_000_000_000);
       const result = await executeJupiterSwap(SOL_MINT, mint, amountLamports);
@@ -4723,7 +4727,7 @@ const checkTokenCriteria = (mint: string): {
             if (!metric.symbol || metric.symbol.trim() === '' || metric.symbol.toUpperCase() === 'UNKNOWN') continue;
             const progress = metric.bondingCurveProgress || 0;
             const isGraduated = !mint.toLowerCase().endsWith('pump');
-            addLog(`🟢 [BUY TRIGGER] Matches all configured constraints for ${metric.symbol} (${isGraduated ? 'Raydium' : 'Pump.fun'}) with curve progress at ${progress.toFixed(1)}%. Placing swift-swap entry...`, 'buy');
+            // Buy trigger is logged inside executeBuy in final stage after all required checks and buy limits pass
             await executeBuy(mint, metric.symbol, metric.priceNative || metric.priceUsd, tradeAmount);
             currentActiveCountLoop++;
          }
@@ -5854,6 +5858,8 @@ const checkTokenCriteria = (mint: string): {
     const quoteRequestTime = Date.now();
     const isFallbackSim = !!(privateKey && jupiterBalance === 0);
 
+    addLog(`🟢 [BUY TRIGGER] All required criteria & buy limits verified for SimReal buy of ${symbol} (${cleanMint.slice(0, 8)}...) | Amount: ${buyAmt} SOL, Wallet Bal: ${storeState.simRealBalance.toFixed(4)} SOL. Executing trade entry...`, 'buy');
+
     if (privateKey && !isFallbackSim) {
       addLog(`[SIMREAL REAL SWAP] Initiating real buy for ${symbol} via Jupiter...`, 'buy');
       try {
@@ -5997,6 +6003,9 @@ const checkTokenCriteria = (mint: string): {
     storeState.setSimRealBalance(() => 10.0);
     storeState.setSimRealTrades(() => []);
     
+    // Clear Cross-Page Buy Signals Pipeline
+    useBuySignalStore.getState().clearSignals();
+    
     // Also remove the simRealBought status from any active positions
     setPositions(prev => {
       const next = { ...prev };
@@ -6016,7 +6025,7 @@ const checkTokenCriteria = (mint: string): {
       return changed ? next : prev;
     });
     
-    addLog('♻️ Simreal Wallet Reset: Balance set to 10.0 SOL, trades cleared', 'info');
+    addLog('♻️ Simreal Wallet Reset: Balance set to 10.0 SOL, trades cleared, Buy Signals Pipeline erased', 'info');
   };
 
   const getCompletedSimRealTrades = () => {

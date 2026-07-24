@@ -9,7 +9,7 @@
  * - Regional hub auto-selection
  * - Structured logging (no console monkey-patching)
  */
-import { subscribe, type LaserstreamConfig, type SubscribeRequest, shutdownAllStreams } from 'helius-laserstream';
+import { subscribe, CommitmentLevel, type LaserstreamConfig, type SubscribeRequest, shutdownAllStreams } from 'helius-laserstream';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { fork } from 'child_process';
 import type { ChildProcess } from 'child_process';
@@ -32,6 +32,7 @@ const REGIONAL_HUBS = [
 const DEFAULT_PROGRAMS = [
   '6EF87t756LkSg6GptZTEAtgX9v7R24C4FtsZbXm9o6RA', // Pump.fun
   '675k1q2AYp74sk2Wym6L6nd56N7Y5D7T6jhpxS22bbe', // Raydium AMM
+  'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4', // Jupiter v6
 ] as const;
 
 const HEALTH_CHECK_INTERVAL = 45_000;  // 45s
@@ -298,6 +299,7 @@ export async function runLaserstreamWorker(): Promise<void> {
   };
 
   const subscriptionRequest: SubscribeRequest = {
+    commitment: CommitmentLevel.CONFIRMED,
     transactions: {
       'pump-fun-monitor': {
         accountInclude: programs,

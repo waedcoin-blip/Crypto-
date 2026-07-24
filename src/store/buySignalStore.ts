@@ -51,6 +51,8 @@ interface BuySignalStore {
   
   pruneOld: (maxAgeMs?: number) => void;
   pruneOldSignals: (maxAgeMs?: number) => void;
+  clearSignals: () => void;
+  resetSignals: () => void;
   
   getPendingCount: () => number;
 }
@@ -150,6 +152,17 @@ export const useBuySignalStore = create<BuySignalStore>((set, get) => ({
 
   pruneOldSignals: (maxAgeMs = 10 * 60 * 1000) => {
     get().pruneOld(maxAgeMs);
+  },
+
+  clearSignals: () => {
+    set({
+      signals: [],
+      stats: { totalEmitted: 0, totalExecuted: 0, totalRejected: 0, totalFailed: 0 },
+    });
+  },
+
+  resetSignals: () => {
+    get().clearSignals();
   },
 
   getPendingCount: () => {
