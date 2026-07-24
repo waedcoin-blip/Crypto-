@@ -33,11 +33,9 @@ const quoteCache = new SwrCache<{ status: number; text: string }>({
 function normalizeJupiterBase(base: string): string {
   let normalized = base.endsWith('/') ? base.slice(0, -1) : base;
 
-  // Replace any jup.ag subdomain with api.jup.ag
-  if (normalized.includes('jup.ag')) {
-    normalized = normalized.replace(/^(https?:\/\/)?([a-zA-Z0-9-.]+\.)?jup\.ag/, (match, proto) => {
-      return (proto || 'https://') + 'api.jup.ag';
-    });
+  // Only replace quote-api with api.jup.ag
+  if (normalized.includes('quote-api.jup.ag')) {
+    normalized = normalized.replace('quote-api.jup.ag', 'api.jup.ag');
   }
 
   return normalized;
@@ -166,8 +164,6 @@ router.get('/quote', asyncHandler(async (req, res) => {
     // Fallback URLs
     const fallbacks = [
       jupUrl,
-      jupUrl.replace('api.jup.ag/swap/v1', 'quote-api.jup.ag/v6'),
-      jupUrl.replace('api.jup.ag/swap/v1', 'api.jup.ag/v6'),
     ];
 
     let lastResult: { status: number; text: string } | null = null;

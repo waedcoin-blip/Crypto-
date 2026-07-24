@@ -60,7 +60,7 @@ class RpcPool {
 export const rpcPool = new RpcPool();
 
 const getJupiterApiClient = () => {
-  const customApiKey = localStorage.getItem('juipter_auto_apiKey') || '';
+  const customApiKey = localStorage.getItem('jupiter_auto_apiKey') || localStorage.getItem('juipter_auto_apiKey') || '';
   if (customApiKey) {
     if (customApiKey.startsWith('http')) {
       return createJupiterApiClient({ basePath: customApiKey });
@@ -72,7 +72,7 @@ const getJupiterApiClient = () => {
 };
 
 export const pingJupiterApi = async (): Promise<{ healthy: boolean; pingMs: number; error?: string; isCustom: boolean }> => {
-  const customApiKey = localStorage.getItem('juipter_auto_apiKey') || '';
+  const customApiKey = localStorage.getItem('jupiter_auto_apiKey') || localStorage.getItem('juipter_auto_apiKey') || '';
   const isCustom = !!customApiKey;
   const start = performance.now();
   try {
@@ -625,7 +625,7 @@ export const getJupiterQuote = async (
   try {
     const startTime = Date.now();
 
-    const customApiKey = localStorage.getItem('juipter_auto_apiKey') || '';
+    const customApiKey = localStorage.getItem('jupiter_auto_apiKey') || localStorage.getItem('juipter_auto_apiKey') || '';
     let baseUrlParam = '';
     if (customApiKey && customApiKey.startsWith('http')) baseUrlParam = customApiKey;
 

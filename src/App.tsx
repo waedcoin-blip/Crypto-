@@ -438,14 +438,14 @@ export default function App() {
   const [simRealStopLossPumpSwap, setSimRealStopLossPumpSwap] = useState(() => Number(localStorage.getItem('app_simRealStopLossPumpSwap')) || -15);
   const [simRealStopLossUnknown, setSimRealStopLossUnknown] = useState(() => Number(localStorage.getItem('app_simRealStopLossUnknown')) || -20);
   const [slippage, setSlippage] = useState(1.0); 
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem('juipter_auto_apiKey') || '');
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem('jupiter_auto_apiKey') || localStorage.getItem('juipter_auto_apiKey') || '');
   const [jupiterRpcUrl, setJupiterRpcUrl] = useState(() => localStorage.getItem('juipter_auto_jupiterRpcUrl') || '');
   const [privateKey, setPrivateKey] = useState('');
   const [telegramBotToken, setTelegramBotToken] = useState(() => localStorage.getItem('tg_bot_token') || '');
   const [telegramChatId, setTelegramChatId] = useState(() => localStorage.getItem('tg_chat_id') || '');
 
   useEffect(() => {
-    localStorage.setItem('juipter_auto_apiKey', apiKey);
+    localStorage.setItem('jupiter_auto_apiKey', apiKey);
   }, [apiKey]);
   useEffect(() => {
     localStorage.setItem('juipter_auto_jupiterRpcUrl', jupiterRpcUrl);
@@ -1437,7 +1437,7 @@ export default function App() {
           clearPriceHistories();
           
           // Actually purge candidates from the tokenMetrics buffer to free up memory
-          state.setTokenMetrics(prev => {
+          useAppStore.getState().setTokenMetrics(prev => {
              const next = { ...prev };
              let changed = false;
              Object.keys(next).forEach(mint => {
@@ -2530,7 +2530,7 @@ export default function App() {
          if (!res.ok) return;
          const data = await res.json();
          if (data && data.pairs) {
-            state.setTokenMetrics(prev => {
+            useAppStore.getState().setTokenMetrics(prev => {
                const next = { ...prev };
                data.pairs.forEach((p: any) => {
                   const addr = p.baseToken?.address;

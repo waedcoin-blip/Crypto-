@@ -239,12 +239,6 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
       return;
     }
 
-    const activePnLPos = positions?.[mint];
-    if (!activePnLPos || !activePnLPos.symbol || activePnLPos.symbol === 'Unknown' || activePnLPos.symbol === 'UNKNOWN') {
-      setBuyStatus({ type: 'error', text: 'Trading blocked: Token symbol is Unknown or token was not transferred from PnLPage active positions.' });
-      return;
-    }
-
     try {
       setIsBuying(true);
       setBuyStatus({ type: 'info', text: 'Initiating trade swap on-chain/simulation...' });
@@ -439,13 +433,6 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
         // Gate 0: Block Unknown tokens or tokens not transferred from PnLPage
         if (!symbol || symbol.trim() === '' || symbol.toUpperCase() === 'UNKNOWN') {
           markRejected(signal.id, 'Token symbol is Unknown or missing');
-          processingLock.current = false;
-          return;
-        }
-
-        const activePnLPos = positions?.[tokenAddress];
-        if (!activePnLPos || !activePnLPos.symbol || activePnLPos.symbol === 'Unknown' || activePnLPos.symbol === 'UNKNOWN') {
-          markRejected(signal.id, `Token ${symbol} was not transferred from PnLPage active positions`);
           processingLock.current = false;
           return;
         }
