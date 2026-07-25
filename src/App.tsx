@@ -1324,12 +1324,24 @@ export default function App() {
           });
 
           let baseSL = typeof state.stopLoss === 'number' ? state.stopLoss : -30;
-          if (stage.platform === 'PUMP_FUN' || stage.isBonding) {
-            baseSL = typeof state.bondingCurveStopLoss === 'number' ? state.bondingCurveStopLoss : -15;
-          } else if (stage.platform === 'PUMPSWAP') {
-            baseSL = typeof state.pumpSwapStopLoss === 'number' ? state.pumpSwapStopLoss : -15;
-          } else if (stage.platform === 'UNKNOWN' || stage.stage === 'UNKNOWN') {
-            baseSL = typeof state.unknownStopLoss === 'number' ? state.unknownStopLoss : -20;
+          if (position.simRealBought) {
+            if (stage.platform === 'RAYDIUM' || stage.isMigrated) {
+              baseSL = simRealStopLossRaydium !== undefined ? simRealStopLossRaydium : -15;
+            } else if (stage.platform === 'PUMP_FUN' && stage.stage === 'BONDING') {
+              baseSL = simRealStopLossBonding !== undefined ? simRealStopLossBonding : -20;
+            } else if (stage.platform === 'PUMPSWAP') {
+              baseSL = simRealStopLossPumpSwap !== undefined ? simRealStopLossPumpSwap : -15;
+            } else {
+              baseSL = simRealStopLossUnknown !== undefined ? simRealStopLossUnknown : -20;
+            }
+          } else {
+            if (stage.platform === 'PUMP_FUN' || stage.isBonding) {
+              baseSL = typeof state.bondingCurveStopLoss === 'number' ? state.bondingCurveStopLoss : -15;
+            } else if (stage.platform === 'PUMPSWAP') {
+              baseSL = typeof state.pumpSwapStopLoss === 'number' ? state.pumpSwapStopLoss : -15;
+            } else if (stage.platform === 'UNKNOWN' || stage.stage === 'UNKNOWN') {
+              baseSL = typeof state.unknownStopLoss === 'number' ? state.unknownStopLoss : -20;
+            }
           }
 
           // ── TRAILING STOP LOSS: lock in gains as price rises ────────────────
@@ -1395,13 +1407,26 @@ export default function App() {
           }
           const peakPnL = position.peakPnLPct || 0;
           
-          // Trailing stop: only activates after >20% gain, trails 15% below peak
+          // Trailing stop: for simReal positions, strictly stick to configured baseSL (e.g. -100%)
           const trailingSL = peakPnL > 20 ? peakPnL - 15 : baseSL;
-          const effectiveSL = Math.max(baseSL, trailingSL); // never looser than base SL
+          const effectiveSL = position.simRealBought ? baseSL : Math.max(baseSL, trailingSL); // never looser than base SL
 
-          const activeTakeProfit = stage.isBonding 
-            ? (typeof state.bondingCurveTakeProfit === 'number' ? state.bondingCurveTakeProfit : 25) 
-            : (state.moonbagStrategy ? (position.soldPartial ? state.maxTakeProfit : state.minTakeProfit) : state.minTakeProfit);
+          let activeTakeProfit = state.minTakeProfit;
+          if (position.simRealBought) {
+            if (stage.platform === 'RAYDIUM' || stage.isMigrated) {
+              activeTakeProfit = simRealTakeProfitRaydium !== undefined ? simRealTakeProfitRaydium : 50;
+            } else if (stage.platform === 'PUMP_FUN' && stage.stage === 'BONDING') {
+              activeTakeProfit = simRealTakeProfitBonding !== undefined ? simRealTakeProfitBonding : 100;
+            } else if (stage.platform === 'PUMPSWAP') {
+              activeTakeProfit = simRealTakeProfitPumpSwap !== undefined ? simRealTakeProfitPumpSwap : 50;
+            } else {
+              activeTakeProfit = simRealTakeProfitUnknown !== undefined ? simRealTakeProfitUnknown : 50;
+            }
+          } else {
+            activeTakeProfit = stage.isBonding 
+              ? (typeof state.bondingCurveTakeProfit === 'number' ? state.bondingCurveTakeProfit : 25) 
+              : (state.moonbagStrategy ? (position.soldPartial ? state.maxTakeProfit : state.minTakeProfit) : state.minTakeProfit);
+          }
             
           const trackingVerdict = await processActiveTrackingFrame(
             connection,

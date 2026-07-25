@@ -955,7 +955,7 @@ export const processActiveTrackingFrame = async (
     const flashCrashThreshold = Math.min(-37.5, defaultSL - 7.5);
 
     const isFlashCrash = netPnL <= flashCrashThreshold;
-    const isHardStop = netPnL <= -85.0 || netPnL <= defaultSL;
+    const isHardStop = netPnL <= defaultSL;
     const isTakeProfit = netPnL >= defaultTP;
 
     if (position.isManualSellTriggered || isFlashCrash || isHardStop || isTakeProfit) {

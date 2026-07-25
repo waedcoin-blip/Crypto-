@@ -4924,16 +4924,37 @@ const checkTokenCriteria = (mint: string): {
             isRaydiumListed: metric?.isRaydiumListed
           });
           let currentSLPct = stopLossPct;
-          if (stage.platform === 'PUMP_FUN' || stage.isBonding) {
-            currentSLPct = bondingCurveStopLossPct;
-          } else if (stage.platform === 'PUMPSWAP') {
-            currentSLPct = pumpSwapStopLossPct;
-          } else if (stage.platform === 'UNKNOWN' || stage.stage === 'UNKNOWN') {
-            currentSLPct = unknownStopLossPct;
+          let currentTakeProfit = minTakeProfit;
+
+          if (pos.simRealBought) {
+            if (stage.platform === 'RAYDIUM' || stage.isMigrated) {
+              currentSLPct = Math.abs(configRef.current.simRealStopLossRaydium !== undefined ? configRef.current.simRealStopLossRaydium : 15);
+              currentTakeProfit = Math.abs(configRef.current.simRealTakeProfitRaydium !== undefined ? configRef.current.simRealTakeProfitRaydium : 50);
+            } else if (stage.platform === 'PUMP_FUN' || stage.isBonding) {
+              currentSLPct = Math.abs(configRef.current.simRealStopLossBonding !== undefined ? configRef.current.simRealStopLossBonding : 20);
+              currentTakeProfit = Math.abs(configRef.current.simRealTakeProfitBonding !== undefined ? configRef.current.simRealTakeProfitBonding : 100);
+            } else if (stage.platform === 'PUMPSWAP') {
+              currentSLPct = Math.abs(configRef.current.simRealStopLossPumpSwap !== undefined ? configRef.current.simRealStopLossPumpSwap : 15);
+              currentTakeProfit = Math.abs(configRef.current.simRealTakeProfitPumpSwap !== undefined ? configRef.current.simRealTakeProfitPumpSwap : 50);
+            } else {
+              currentSLPct = Math.abs(configRef.current.simRealStopLossUnknown !== undefined ? configRef.current.simRealStopLossUnknown : 20);
+              currentTakeProfit = Math.abs(configRef.current.simRealTakeProfitUnknown !== undefined ? configRef.current.simRealTakeProfitUnknown : 50);
+            }
           } else {
-            currentSLPct = stopLossPct;
+            if (stage.platform === 'PUMP_FUN' || stage.isBonding) {
+              currentSLPct = bondingCurveStopLossPct;
+              currentTakeProfit = bondingCurveTakeProfit;
+            } else if (stage.platform === 'PUMPSWAP') {
+              currentSLPct = pumpSwapStopLossPct;
+              currentTakeProfit = minTakeProfit;
+            } else if (stage.platform === 'UNKNOWN' || stage.stage === 'UNKNOWN') {
+              currentSLPct = unknownStopLossPct;
+              currentTakeProfit = minTakeProfit;
+            } else {
+              currentSLPct = stopLossPct;
+              currentTakeProfit = minTakeProfit;
+            }
           }
-          const currentTakeProfit = stage.isBonding ? bondingCurveTakeProfit : minTakeProfit;
 
           const isFlashCrash = (roughNetPnL <= -(currentSLPct * 1.5) / 100);
           // Set to false to disable minimum hold time delay so stop loss/take profit execute instantly
@@ -5019,30 +5040,31 @@ const checkTokenCriteria = (mint: string): {
             // General Position Strategy (only if main position is active)
             const isMainActive = typeof pos.amount === 'number' && pos.amount > 0;
             if (isMainActive) {
-              if (netPnlPct >= currentTakeProfit / 100) {
+              const activePnL = pos.simRealBought ? simRealNetPnlPct : netPnlPct;
+              if (activePnL >= currentTakeProfit / 100) {
                 if (pos.simRealBought && pos.simRealSolSpent && simRealNetPnlPct <= 0) {
                    if (Math.random() < 0.05) {
                       addLog(`[SIMREAL PROFIT HOLD] Main position hit Take Profit (+${(netPnlPct * 100).toFixed(1)}%), but SimReal is still in loss/thin margin (${(simRealNetPnlPct * 100).toFixed(2)}%). Delaying sell.`, 'info');
                    }
                 } else {
-                   executeReason = `TAKE PROFIT: ${pos.symbol} +${(netPnlPct * 100).toFixed(1)}% (NET)`;
+                   executeReason = `TAKE PROFIT: ${pos.symbol} +${(activePnL * 100).toFixed(1)}% (NET)`;
                    safeToExecute = true;
                 }
-              } else if (inRecoveryMode && netPnlPct >= 0) {
+              } else if (inRecoveryMode && activePnL >= 0) {
                 if (pos.simRealBought && pos.simRealSolSpent && simRealNetPnlPct < 0) {
                    // Wait
                 } else {
                    executeReason = `RECOVERY BREAKEVEN: ${pos.symbol} returned capital`;
                    safeToExecute = true;
                 }
-              } else if (inRecoveryMode && netPnlPct <= -0.85) {
+              } else if (inRecoveryMode && activePnL <= -0.85) {
                 executeReason = `RECOVERY FAILED: ${pos.symbol} hard stop at -85%`;
                 safeToExecute = true;
-              } else if (netPnlPct <= -currentSLPct / 100) {
+              } else if (activePnL <= -currentSLPct / 100) {
                 if (isHoldProtected) {
                    if (Math.random() < 0.1) addLog(`[HOLD BUFFER]: ${pos.symbol} at Stop Loss limit but under 25s hold time. Waiting.`, 'info');
                 } else {
-                   executeReason = `STOP LOSS: ${pos.symbol} ${(netPnlPct * 100).toFixed(1)}% (NET)`;
+                   executeReason = `STOP LOSS: ${pos.symbol} ${(activePnL * 100).toFixed(1)}% (NET)`;
                    safeToExecute = true;
                 }
               }
@@ -5118,30 +5140,31 @@ const checkTokenCriteria = (mint: string): {
             // General Position Strategy (only if main position is active)
             const isMainActive = typeof pos.amount === 'number' && pos.amount > 0;
             if (isMainActive) {
-              if (inRecoveryMode && pnlPct >= 0) {
+              const activePnL = pos.simRealBought ? simRealNetPnlPct : pnlPct;
+              if (inRecoveryMode && activePnL >= 0) {
                 if (pos.simRealBought && pos.simRealSolSpent && simRealNetPnlPct < 0) {
                   // Wait
                 } else {
                   executeReason = `RECOVERY BREAKEVEN: ${pos.symbol} returned capital`;
                   safeToExecute = true;
                 }
-              } else if (inRecoveryMode && pnlPct <= -0.85) {
+              } else if (inRecoveryMode && activePnL <= -0.85) {
                 executeReason = `RECOVERY FAILED: ${pos.symbol} hard stop at -85%`;
                 safeToExecute = true;
-              } else if (pnlPct >= currentTakeProfit / 100) {
+              } else if (activePnL >= currentTakeProfit / 100) {
                 if (pos.simRealBought && pos.simRealSolSpent && simRealNetPnlPct <= 0) {
                    if (Math.random() < 0.05) {
-                      addLog(`[SIMREAL PROFIT GUARD fallback] Main position hit Take Profit (+${(pnlPct * 100).toFixed(1)}%), but SimReal is still in loss/thin margin (${(simRealNetPnlPct * 100).toFixed(2)}%). Delaying sell.`, 'info');
+                      addLog(`[SIMREAL PROFIT GUARD fallback] Main position hit Take Profit (+${(activePnL * 100).toFixed(1)}%), but SimReal is still in loss/thin margin (${(simRealNetPnlPct * 100).toFixed(2)}%). Delaying sell.`, 'info');
                    }
                 } else {
-                   executeReason = `TAKE PROFIT: ${pos.symbol} +${(pnlPct * 100).toFixed(1)}%`;
+                   executeReason = `TAKE PROFIT: ${pos.symbol} +${(activePnL * 100).toFixed(1)}%`;
                    safeToExecute = true;
                 }
-              } else if (pnlPct <= -currentSLPct / 100) {
+              } else if (activePnL <= -currentSLPct / 100) {
                 if (isHoldProtected) {
                   if (Math.random() < 0.1) addLog(`[HOLD BUFFER]: ${pos.symbol} hitting Stop Loss. Waiting for 25s limit.`, 'info');
                 } else {
-                  executeReason = `STOP LOSS: ${pos.symbol} ${(pnlPct * 100).toFixed(1)}%`;
+                  executeReason = `STOP LOSS: ${pos.symbol} ${(activePnL * 100).toFixed(1)}%`;
                   safeToExecute = true;
                 }
               }
