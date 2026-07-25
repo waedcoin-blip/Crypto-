@@ -2961,18 +2961,20 @@ export const PnLPage = ({
   // Updates simulation positions.
   useEffect(() => {
     const updatePrices = async () => {
-      const tokens = Array.from(monitoredTokensRef.current.values());
-      if (tokens.length === 0) return;
+      const tokensList = Array.from(monitoredTokensRef.current.values());
+      if (tokensList.length === 0) return;
 
-      // Batch fetch prices
-      for (let i = 0; i < tokens.length; i += 5) { 
-        const batch = tokens.slice(i, i + 5); 
+      // Batch fetch prices with snapshot array to avoid race condition desynchronization
+      for (let i = 0; i < tokensList.length; i += 5) { 
+        const batch = tokensList.slice(i, i + 5); 
         await Promise.all(batch.map(async (token) => {
           try {
             const response = await fetch(`/api/dex/tokens/${token.address}`);
             if (!response.ok) return;
             const data = await response.json();
-            const pair = data?.pairs?.[0];
+            const pair = data?.pairs && Array.isArray(data.pairs) && data.pairs.length > 0
+              ? [...data.pairs].sort((a: any, b: any) => (parseFloat(b.liquidity?.usd || '0') - parseFloat(a.liquidity?.usd || '0')))[0]
+              : null;
             if (!pair) return;
             const currentPrice = parseFloat(pair.priceUsd || '0');
             if (currentPrice <= 0) return;

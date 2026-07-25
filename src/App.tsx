@@ -1259,7 +1259,7 @@ export default function App() {
                if (text && !text.trim().startsWith('<')) {
                  const data = JSON.parse(text);
                  if (data.pairs && data.pairs.length > 0) {
-                   const pair = data.pairs[0];
+                   const pair = [...data.pairs].sort((a: any, b: any) => (parseFloat(b.liquidity?.usd || '0') - parseFloat(a.liquidity?.usd || '0')))[0];
                    token = {
                       address: tokenAddress,
                       symbol: pair.baseToken.symbol,

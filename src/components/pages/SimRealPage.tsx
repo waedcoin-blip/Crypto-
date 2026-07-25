@@ -451,6 +451,13 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
           return;
         }
 
+        // Gate 0.0: Signal Freshness Gate - reject stale/re-hydrated signals (> 120s old)
+        if (signal.timestamp && (Date.now() - signal.timestamp > 120000)) {
+          markRejected(signal.id, `Signal timestamp (${new Date(signal.timestamp).toLocaleTimeString()}) expired (> 120s old)`);
+          processingLock.current = false;
+          return;
+        }
+
         // Gate 0.1: Profit validation check — reject any signal with emit profit below +1.0%
         if (typeof profitPercent === 'number' && profitPercent < 1.0) {
           markRejected(signal.id, `Emit profit (+${profitPercent.toFixed(2)}%) is below required +1.0% target`);
@@ -542,7 +549,9 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
           clearTimeout(timeoutId);
           if (res.ok) {
             const data = await res.json();
-            const pair = data?.pairs?.[0];
+            const pair = data?.pairs && Array.isArray(data.pairs) && data.pairs.length > 0
+              ? [...data.pairs].sort((a: any, b: any) => (parseFloat(b.liquidity?.usd || '0') - parseFloat(a.liquidity?.usd || '0')))[0]
+              : null;
             if (pair) {
               freshPriceUsd = parseFloat(pair.priceUsd || '0') || freshPriceUsd;
               freshLiquidityUsd = parseFloat(pair.liquidity?.usd || '0') || freshLiquidityUsd;
