@@ -62,6 +62,10 @@ interface SimRealPageProps {
   simRealBalance: number;
   simRealTrades: SniperTrade[];
   maxPositions: number;
+  tradePumpFun?: boolean;
+  tradeRaydium?: boolean;
+  tradeBonding?: boolean;
+  tradeUnknown?: boolean;
   simRealTakeProfitRaydium: number;
   setSimRealTakeProfitRaydium: (v: number) => void;
   simRealTakeProfitBonding: number;
@@ -106,6 +110,10 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
   simRealBalance,
   simRealTrades,
   maxPositions,
+  tradePumpFun = true,
+  tradeRaydium = true,
+  tradeBonding = true,
+  tradeUnknown = true,
   simRealTakeProfitRaydium,
   setSimRealTakeProfitRaydium,
   simRealTakeProfitBonding,
@@ -246,6 +254,36 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
         setBuyStatus({ type: 'error', text: `Insufficient on-chain wallet balance (${jupiterBalance.toFixed(4)} SOL available).` });
         return;
       }
+    }
+
+    // DEX Platform Sources validation (PnLPage synced)
+    const manualMetric = tokenMetrics[mint];
+    const manualStage = detectTokenStage({
+      address: mint,
+      dexId: manualMetric?.dexId,
+      bondingCurveProgress: manualMetric?.bondingCurveProgress,
+      isRaydiumListed: manualMetric?.isRaydiumListed
+    });
+
+    if (manualStage.isBonding && !tradeBonding) {
+      setBuyStatus({ type: 'error', text: 'Cannot trade: Bonding stage tokens are unselected in DEX Platform Sources on PnLPage.' });
+      return;
+    }
+    if (manualStage.platform === 'PUMP_FUN' && !tradePumpFun) {
+      setBuyStatus({ type: 'error', text: 'Cannot trade: Pump.fun tokens are unselected in DEX Platform Sources on PnLPage.' });
+      return;
+    }
+    if (manualStage.platform === 'RAYDIUM' && !tradeRaydium) {
+      setBuyStatus({ type: 'error', text: 'Cannot trade: Raydium tokens are unselected in DEX Platform Sources on PnLPage.' });
+      return;
+    }
+    if (manualStage.platform === 'PUMPSWAP' && !tradeRaydium) {
+      setBuyStatus({ type: 'error', text: 'Cannot trade: PumpSwap tokens are unselected in DEX Platform Sources on PnLPage.' });
+      return;
+    }
+    if (manualStage.platform === 'UNKNOWN' && !tradeUnknown) {
+      setBuyStatus({ type: 'error', text: 'Cannot trade: Unknown tokens are unselected in DEX Platform Sources on PnLPage.' });
+      return;
     }
 
     try {
@@ -456,6 +494,36 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
           return;
         }
 
+        // Gate 0.05: DEX Platform Sources Filter (PnLPage synced)
+        const signalTokenMetric = tokenMetrics[tokenAddress];
+        const signalStageInfo = detectTokenStage({
+          address: tokenAddress,
+          dexId: signal.dexId || signalTokenMetric?.dexId,
+          bondingCurveProgress: signalTokenMetric?.bondingCurveProgress,
+          isRaydiumListed: signalTokenMetric?.isRaydiumListed
+        });
+
+        if (signalStageInfo.isBonding && !tradeBonding) {
+          markRejected(signal.id, `DEX source (Bonding stage) is unselected in DEX Platform Sources on PnLPage`);
+          return;
+        }
+        if (signalStageInfo.platform === 'PUMP_FUN' && !tradePumpFun) {
+          markRejected(signal.id, `DEX source (Pump.fun) is unselected in DEX Platform Sources on PnLPage`);
+          return;
+        }
+        if (signalStageInfo.platform === 'RAYDIUM' && !tradeRaydium) {
+          markRejected(signal.id, `DEX source (Raydium) is unselected in DEX Platform Sources on PnLPage`);
+          return;
+        }
+        if (signalStageInfo.platform === 'PUMPSWAP' && !tradeRaydium) {
+          markRejected(signal.id, `DEX source (PumpSwap) is unselected in DEX Platform Sources on PnLPage`);
+          return;
+        }
+        if (signalStageInfo.platform === 'UNKNOWN' && !tradeUnknown) {
+          markRejected(signal.id, `DEX source (Unknown token) is unselected in DEX Platform Sources on PnLPage`);
+          return;
+        }
+
         // Gate 0.1: Profit validation check — reject position signals with emit profit below +1.0% unless it's a fresh sniper entry signal
         const isFreshSniperSignal = !signal.dexId || ['pumpfun', 'pump-fun', 'raydium', 'pumpswap', 'dexscreener'].includes(signal.dexId.toLowerCase());
         if (typeof profitPercent === 'number' && profitPercent < 1.0 && !isFreshSniperSignal) {
@@ -599,6 +667,10 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
     positions,
     maxRebuyTimes,
     maxPositions,
+    tradePumpFun,
+    tradeRaydium,
+    tradeBonding,
+    tradeUnknown,
     privateKey,
     jupiterBalance,
     serverHealth,
@@ -840,6 +912,31 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                       onChange={(e) => setMaxRebuyTimes(Number(e.target.value))}
                       className="bg-[#07080e] border border-[#1f212e] rounded-lg px-3 py-1.5 text-xs text-[#e2e8f0] focus:outline-none focus:border-emerald-500/50 font-mono w-full"
                    />
+                </div>
+
+                {/* Active DEX Platform Sources Indicator (Synced from PnLPage) */}
+                <div className="flex flex-col gap-1.5 p-2.5 bg-[#07080e] border border-[#1f212e] rounded-xl">
+                   <div className="flex justify-between items-center text-[10px] font-mono uppercase text-slate-400">
+                      <span>DEX Platform Sources (PnLPage Synced)</span>
+                   </div>
+                   <div className="grid grid-cols-2 gap-1.5 text-[9px] font-mono">
+                      <div className={`px-2 py-1 rounded border flex items-center justify-between ${tradePumpFun ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-slate-800/50 text-slate-500 border-slate-700/50'}`}>
+                         <span>PUMP.FUN</span>
+                         <span className="font-bold">{tradePumpFun ? 'ACTIVE' : 'OFF'}</span>
+                      </div>
+                      <div className={`px-2 py-1 rounded border flex items-center justify-between ${tradeRaydium ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-slate-800/50 text-slate-500 border-slate-700/50'}`}>
+                         <span>RAYDIUM</span>
+                         <span className="font-bold">{tradeRaydium ? 'ACTIVE' : 'OFF'}</span>
+                      </div>
+                      <div className={`px-2 py-1 rounded border flex items-center justify-between ${tradeBonding ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-slate-800/50 text-slate-500 border-slate-700/50'}`}>
+                         <span>BONDING</span>
+                         <span className="font-bold">{tradeBonding ? 'ACTIVE' : 'OFF'}</span>
+                      </div>
+                      <div className={`px-2 py-1 rounded border flex items-center justify-between ${tradeUnknown ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-slate-800/50 text-slate-500 border-slate-700/50'}`}>
+                         <span>UNKNOWN</span>
+                         <span className="font-bold">{tradeUnknown ? 'ACTIVE' : 'OFF'}</span>
+                      </div>
+                   </div>
                 </div>
                 {privateKey ? (
                    <div className="p-3 bg-emerald-500/5 border border-emerald-500/20 rounded-xl space-y-2">

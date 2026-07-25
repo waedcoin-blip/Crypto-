@@ -6086,6 +6086,10 @@ export default function App() {
         simRealBalance={simRealBalance}
         simRealTrades={simRealTrades}
         maxPositions={maxPositions}
+        tradePumpFun={tradePumpFun}
+        tradeRaydium={tradeRaydium}
+        tradeBonding={tradeBonding}
+        tradeUnknown={tradeUnknown}
         simRealTakeProfitRaydium={simRealTakeProfitRaydium}
         setSimRealTakeProfitRaydium={setSimRealTakeProfitRaydium}
         simRealTakeProfitBonding={simRealTakeProfitBonding}
