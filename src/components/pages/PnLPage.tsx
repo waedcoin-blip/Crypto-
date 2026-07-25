@@ -931,6 +931,10 @@ export const PnLPage = ({
     setSimRealTakeProfitRaydium?: (v: number) => void;
     simRealTakeProfitBonding?: number;
     setSimRealTakeProfitBonding?: (v: number) => void;
+    simRealTakeProfitPumpSwap?: number;
+    setSimRealTakeProfitPumpSwap?: (v: number) => void;
+    simRealTakeProfitUnknown?: number;
+    setSimRealTakeProfitUnknown?: (v: number) => void;
     simRealStopLossRaydium?: number;
     setSimRealStopLossRaydium?: (v: number) => void;
     simRealStopLossBonding?: number;
@@ -1044,6 +1048,8 @@ export const PnLPage = ({
     maxPositions, setMaxPositions,
     simRealTakeProfitRaydium = 50, setSimRealTakeProfitRaydium = () => {},
     simRealTakeProfitBonding = 100, setSimRealTakeProfitBonding = () => {},
+    simRealTakeProfitPumpSwap = 50, setSimRealTakeProfitPumpSwap = () => {},
+    simRealTakeProfitUnknown = 50, setSimRealTakeProfitUnknown = () => {},
     simRealStopLossRaydium = -15, setSimRealStopLossRaydium = () => {},
     simRealStopLossBonding = -20, setSimRealStopLossBonding = () => {},
     simRealStopLossPumpSwap = -15, setSimRealStopLossPumpSwap = () => {},
@@ -1649,7 +1655,7 @@ export const PnLPage = ({
   }, [blacklistedMints]);
 
   const configRef = useRef({
-    takeProfitPct, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct, slippage, privateKey, tradeAmount, maxPositions, simRealTakeProfitRaydium, simRealTakeProfitBonding, simRealStopLossRaydium, simRealStopLossBonding, simRealStopLossPumpSwap, simRealStopLossUnknown,
+    takeProfitPct, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct, slippage, privateKey, tradeAmount, maxPositions, simRealTakeProfitRaydium, simRealTakeProfitBonding, simRealTakeProfitPumpSwap, simRealTakeProfitUnknown, simRealStopLossRaydium, simRealStopLossBonding, simRealStopLossPumpSwap, simRealStopLossUnknown,
     hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax,
     hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore,
     hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s,
@@ -1661,7 +1667,7 @@ export const PnLPage = ({
   });
 
   configRef.current = {
-    takeProfitPct, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct, slippage, privateKey, tradeAmount, maxPositions, simRealTakeProfitRaydium, simRealTakeProfitBonding, simRealStopLossRaydium, simRealStopLossBonding, simRealStopLossPumpSwap, simRealStopLossUnknown,
+    takeProfitPct, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct, slippage, privateKey, tradeAmount, maxPositions, simRealTakeProfitRaydium, simRealTakeProfitBonding, simRealTakeProfitPumpSwap, simRealTakeProfitUnknown, simRealStopLossRaydium, simRealStopLossBonding, simRealStopLossPumpSwap, simRealStopLossUnknown,
     hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax,
     hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore,
     hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s,
@@ -4930,7 +4936,7 @@ const checkTokenCriteria = (mint: string): {
             if (stage.platform === 'RAYDIUM' || stage.isMigrated) {
               currentSLPct = Math.abs(configRef.current.simRealStopLossRaydium !== undefined ? configRef.current.simRealStopLossRaydium : 15);
               currentTakeProfit = Math.abs(configRef.current.simRealTakeProfitRaydium !== undefined ? configRef.current.simRealTakeProfitRaydium : 50);
-            } else if (stage.platform === 'PUMP_FUN' || stage.isBonding) {
+            } else if (stage.platform === 'PUMP_FUN' || stage.isBonding || mint.toLowerCase().endsWith('pump')) {
               currentSLPct = Math.abs(configRef.current.simRealStopLossBonding !== undefined ? configRef.current.simRealStopLossBonding : 20);
               currentTakeProfit = Math.abs(configRef.current.simRealTakeProfitBonding !== undefined ? configRef.current.simRealTakeProfitBonding : 100);
             } else if (stage.platform === 'PUMPSWAP') {

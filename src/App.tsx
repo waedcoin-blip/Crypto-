@@ -1327,13 +1327,14 @@ export default function App() {
           if (position.simRealBought) {
             if (stage.platform === 'RAYDIUM' || stage.isMigrated) {
               baseSL = simRealStopLossRaydium !== undefined ? simRealStopLossRaydium : -15;
-            } else if (stage.platform === 'PUMP_FUN' && stage.stage === 'BONDING') {
+            } else if (stage.platform === 'PUMP_FUN' || stage.isBonding || tokenAddress.toLowerCase().endsWith('pump')) {
               baseSL = simRealStopLossBonding !== undefined ? simRealStopLossBonding : -20;
             } else if (stage.platform === 'PUMPSWAP') {
               baseSL = simRealStopLossPumpSwap !== undefined ? simRealStopLossPumpSwap : -15;
             } else {
               baseSL = simRealStopLossUnknown !== undefined ? simRealStopLossUnknown : -20;
             }
+            baseSL = -Math.abs(baseSL);
           } else {
             if (stage.platform === 'PUMP_FUN' || stage.isBonding) {
               baseSL = typeof state.bondingCurveStopLoss === 'number' ? state.bondingCurveStopLoss : -15;
@@ -1415,7 +1416,7 @@ export default function App() {
           if (position.simRealBought) {
             if (stage.platform === 'RAYDIUM' || stage.isMigrated) {
               activeTakeProfit = simRealTakeProfitRaydium !== undefined ? simRealTakeProfitRaydium : 50;
-            } else if (stage.platform === 'PUMP_FUN' && stage.stage === 'BONDING') {
+            } else if (stage.platform === 'PUMP_FUN' || stage.isBonding || tokenAddress.toLowerCase().endsWith('pump')) {
               activeTakeProfit = simRealTakeProfitBonding !== undefined ? simRealTakeProfitBonding : 100;
             } else if (stage.platform === 'PUMPSWAP') {
               activeTakeProfit = simRealTakeProfitPumpSwap !== undefined ? simRealTakeProfitPumpSwap : 50;

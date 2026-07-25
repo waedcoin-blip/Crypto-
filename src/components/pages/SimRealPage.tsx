@@ -647,7 +647,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
          if (stageInfo.platform === 'RAYDIUM' || stageInfo.isMigrated) {
              tpLimit = Math.abs(simRealTakeProfitRaydium !== undefined ? simRealTakeProfitRaydium : 50) / 100;
              slLimit = -Math.abs(simRealStopLossRaydium !== undefined ? simRealStopLossRaydium : 15) / 100;
-         } else if (stageInfo.platform === 'PUMP_FUN' && stageInfo.stage === 'BONDING') {
+         } else if (stageInfo.platform === 'PUMP_FUN' || stageInfo.isBonding || mint.toLowerCase().endsWith('pump')) {
              tpLimit = Math.abs(simRealTakeProfitBonding !== undefined ? simRealTakeProfitBonding : 100) / 100;
              slLimit = -Math.abs(simRealStopLossBonding !== undefined ? simRealStopLossBonding : 20) / 100;
          } else if (stageInfo.platform === 'PUMPSWAP') {
@@ -1156,7 +1156,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                       if (stage.platform === 'RAYDIUM' || stage.isMigrated) {
                         activeTP = simRealTakeProfitRaydium;
                         activeSL = simRealStopLossRaydium;
-                      } else if (stage.platform === 'PUMP_FUN' && stage.stage === 'BONDING') {
+                      } else if (stage.platform === 'PUMP_FUN' || stage.isBonding || mint.toLowerCase().endsWith('pump')) {
                         activeTP = simRealTakeProfitBonding;
                         activeSL = simRealStopLossBonding;
                       } else if (stage.platform === 'PUMPSWAP') {
