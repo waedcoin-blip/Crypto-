@@ -828,6 +828,8 @@ export interface AdvancedTokenMetrics {
   totalBuys: number;
   totalSells: number;
   priceChange1m: number;
+  priceChange5m?: number;
+  percentageIncrease?: number;
   ageMinutes?: number;
   volume24h?: number;
   dexId?: string;
@@ -912,7 +914,8 @@ export const verifyHardenedScannerCriteria = (
   if (buySellRatio < minBuySellRatio || buySellRatio > maxBuySellRatio) return false;
 
   if (metrics.priceChange1m > maxPriceChange1m) return false;
-  if (metrics.priceChange1m < hardenedMinProfit5m) return false;
+  const profit5m = metrics.priceChange5m ?? metrics.percentageIncrease ?? metrics.priceChange1m ?? 0;
+  if (profit5m < hardenedMinProfit5m) return false;
 
   const volume = metrics.volume24h ?? 0;
   if (volume <= metrics.marketCapUsd) return false;

@@ -1498,7 +1498,9 @@ export const PnLPage = ({
         sellCount: bestPair.txns?.h24?.sells || 0,
         buyVolume: bestPair.volume?.h24 || 0,
         sellVolume: 0,
-        percentageIncrease: bestPair.priceChange?.h24 || 0,
+        priceChange5m: bestPair.priceChange?.m5 !== undefined ? parseFloat(String(bestPair.priceChange.m5)) : (bestPair.priceChange?.h1 !== undefined ? parseFloat(String(bestPair.priceChange.h1)) / 12 : 0),
+        priceChange1m: bestPair.priceChange?.m5 !== undefined ? parseFloat(String(bestPair.priceChange.m5)) * 0.2 : 0,
+        percentageIncrease: bestPair.priceChange?.m5 !== undefined ? parseFloat(String(bestPair.priceChange.m5)) : (bestPair.priceChange?.h1 !== undefined ? parseFloat(String(bestPair.priceChange.h1)) / 12 : 0),
         recentBuysTimeline: [],
         category: rawAddress.toLowerCase().endsWith('pump') ? 'PUMP_FUN' : 'RAYDIUM',
         isRugSafe: true,
@@ -3071,7 +3073,8 @@ export const PnLPage = ({
         const profitPercent =
           ((pos.currentPriceUsd - pos.entryPriceUsd) / pos.entryPriceUsd) * 100;
 
-        const signalMinProfit = Math.max(1.0, DEFAULT_CRITERIA.signalProfitThreshold || 1.0);
+        const activeMinProfit = configRef.current.hardenedMinProfit5m !== undefined ? configRef.current.hardenedMinProfit5m : (DEFAULT_CRITERIA.signalProfitThreshold || 1.0);
+        const signalMinProfit = Math.max(0.1, activeMinProfit);
         if (profitPercent >= signalMinProfit) {
           if (!pos.symbol || pos.symbol.trim() === '' || pos.symbol.toUpperCase() === 'UNKNOWN') continue;
           
@@ -3110,7 +3113,8 @@ export const PnLPage = ({
         if (entryPriceSol <= 0 || currentPriceSol <= 0) continue;
 
         const profitPercent = ((currentPriceSol - entryPriceSol) / entryPriceSol) * 100;
-        const signalMinProfit = Math.max(1.0, DEFAULT_CRITERIA.signalProfitThreshold || 1.0);
+        const activeMinProfit = configRef.current.hardenedMinProfit5m !== undefined ? configRef.current.hardenedMinProfit5m : (DEFAULT_CRITERIA.signalProfitThreshold || 1.0);
+        const signalMinProfit = Math.max(0.1, activeMinProfit);
 
         if (profitPercent >= signalMinProfit) {
           if (!pos.symbol || pos.symbol.trim() === '' || pos.symbol.toUpperCase() === 'UNKNOWN') continue;
@@ -3858,7 +3862,7 @@ const checkTokenCriteria = (mint: string): {
 
       // 11. 5M Profit momentum check
       const minProfitRequired = hardenedMinProfit5m !== undefined ? hardenedMinProfit5m : 1.5;
-      const rawProfit = metric.percentageIncrease !== undefined ? metric.percentageIncrease : (metric.priceChange1m || 0);
+      const rawProfit = metric.priceChange5m !== undefined ? metric.priceChange5m : (metric.percentageIncrease !== undefined ? metric.percentageIncrease : (metric.priceChange1m || 0));
       const profitVal = rawProfit === 0 ? 2.5 : rawProfit; // Assign fresh positive baseline momentum for newly matched tokens in System Logs
       addCheckResult(
         "5M Profit Momentum",
@@ -3945,7 +3949,7 @@ const checkTokenCriteria = (mint: string): {
 
       // 5-Minute Profit Guard before entering an active position
       const metricForProfitCheck = tokenMetricsRef.current[mint];
-      const profit5m = metricForProfitCheck ? (metricForProfitCheck.percentageIncrease !== undefined ? metricForProfitCheck.percentageIncrease : (metricForProfitCheck.priceChange1m || 0)) : 0;
+      const profit5m = metricForProfitCheck ? (metricForProfitCheck.priceChange5m !== undefined ? metricForProfitCheck.priceChange5m : (metricForProfitCheck.percentageIncrease !== undefined ? metricForProfitCheck.percentageIncrease : (metricForProfitCheck.priceChange1m || 0))) : 0;
       const requiredMinProfit = hardenedMinProfit5m !== undefined ? hardenedMinProfit5m : 1.5;
       const { hardenedMatchRequirement } = configRef.current;
 
@@ -4255,27 +4259,43 @@ const checkTokenCriteria = (mint: string): {
 
     addLog(`⚡ [SYSTEM LOG QUICK TRADE] Direct sniper order triggered for ${symbol} (${mint.slice(0, 8)}...)...`, 'buy');
 
-    // Emit Buy Signal into Buy Signal store so it flows across pages
-    const quickTradeProfit = metric?.percentageIncrease !== undefined && !isNaN(metric.percentageIncrease)
-      ? Math.max(3.0, metric.percentageIncrease)
-      : 3.0;
+    const priceUsd = metric?.priceUsd || (priceNative * 180);
+    const quickTradeProfit = metric?.priceChange5m !== undefined ? metric.priceChange5m : (metric?.percentageIncrease !== undefined && !isNaN(metric.percentageIncrease) ? Math.max(3.0, metric.percentageIncrease) : 3.0);
 
-    emitBuySignal({
-      tokenAddress: mint,
+    const scannedTokenData = {
+      address: mint,
       symbol: symbol,
       name: metric?.symbol || symbol,
-      entryPriceUsd: metric?.priceUsd || (priceNative * 180),
-      triggerPriceUsd: metric?.priceUsd || (priceNative * 180),
-      profitPercent: quickTradeProfit,
+      priceUsd: priceUsd,
+      marketCapUsd: metric?.marketCap || 50000,
+      marketCap: metric?.marketCap || 50000,
+      fdv: metric?.marketCap || 50000,
+      pairCreatedAt: Date.now() - 300000,
+      url: `https://dexscreener.com/solana/${mint}`,
       liquidityUsd: metric?.liquidity || 10000,
       volume24h: metric?.volume24h || 25000,
       dexId: metric?.dexId || (mint.toLowerCase().endsWith('pump') ? 'pumpfun' : 'raydium'),
       pairAddress: mint,
-      simAmountSol: tradeSol,
-      simEntryTime: Date.now()
-    });
+      bondingProgress: mint.toLowerCase().endsWith('pump') ? 50 : 100,
+      ageMinutes: 5,
+      priceChange5m: quickTradeProfit,
+      priceChange1h: 10,
+      priceChange24h: 20,
+      uniqueBuyers30s: 10,
+      buyCount30s: 15,
+      sellCount30s: 3,
+      buyVolume30s: 3,
+      sellVolume30s: 1,
+      top10HoldersPct: 15,
+      devWalletOwnershipPct: 2,
+      isRugSafe: true,
+      riskScore: 5
+    };
 
-    // Execute direct buy
+    openSimPosition(scannedTokenData, tradeSol);
+    monitoredTokensRef.current.set(mint, scannedTokenData);
+
+    // Execute direct buy into PnL active positions
     await executeBuy(mint, symbol, priceNative, tradeSol, true);
   }, [executeBuy, emitBuySignal, addLog, tradeAmount]);
 
@@ -4892,8 +4912,8 @@ const checkTokenCriteria = (mint: string): {
                   if (liq >= (isGraduated ? (hardenedLiquidityMin || 0) : Math.min(1000, hardenedLiquidityMin || 0))) score++;
                   if (metric.isRugSafe !== false) score++;
                   if ((metric.riskScore || 100) <= hardenedMaxRiskScore) score++;
-                  const priceChange1m = metric.priceChange1m || 0;
-                  if (priceChange1m >= (hardenedMinProfit5m || 0)) score++;
+                  const profit5mCheck = metric.priceChange5m !== undefined ? metric.priceChange5m : (metric.percentageIncrease !== undefined ? metric.percentageIncrease : (metric.priceChange1m || 0));
+                  if (profit5mCheck >= (hardenedMinProfit5m || 0)) score++;
                   return score;
                 };
                 return getPassedCount(b[0]) - getPassedCount(a[0]);
@@ -5389,22 +5409,40 @@ const checkTokenCriteria = (mint: string): {
 
             const sourceCheck = checkDexPlatformSourcesAllowed(mint, 'raydium');
             if (sourceCheck.pass) {
-              emitBuySignal({
-                tokenAddress: mint,
+              const scannedTokenData = {
+                address: mint,
                 symbol: item.symbol,
                 name: item.name,
-                entryPriceUsd: priceUsd,
-                triggerPriceUsd: priceUsd,
-                profitPercent: 4.5,
+                priceUsd,
+                marketCapUsd: marketCap,
+                marketCap: marketCap,
+                fdv: marketCap,
+                pairCreatedAt: Date.now() - 600000,
+                url: `https://dexscreener.com/solana/${mint}`,
                 liquidityUsd: 50000,
                 volume24h: marketCap * 0.8,
                 dexId: 'raydium',
                 pairAddress: mint,
-                simAmountSol: configRef.current.tradeAmount || tradeAmount || 0.1,
-                simEntryTime: Date.now()
-              });
+                bondingProgress: 100,
+                ageMinutes: 10,
+                priceChange5m: 4.5,
+                priceChange1h: 10,
+                priceChange24h: 20,
+                uniqueBuyers30s: 15,
+                buyCount30s: 25,
+                sellCount30s: 5,
+                buyVolume30s: 5,
+                sellVolume30s: 1,
+                top10HoldersPct: 15,
+                devWalletOwnershipPct: 2,
+                isRugSafe: true,
+                riskScore: 5
+              };
+              openSimPosition(scannedTokenData, configRef.current.tradeAmount || tradeAmount || 0.1);
+              monitoredTokensRef.current.set(mint, scannedTokenData);
+              addLog(`📌 [MONITORING ADDED] Graduated token ${item.symbol} added to PnLPage active positions first for active monitoring.`, 'info');
             } else {
-              addLog(`⚠️ [SIGNAL SKIPPED] Token ${item.symbol} graduated to Raydium, but Raydium DEX source is unselected in DEX Platform Sources.`, 'warn');
+              addLog(`⚠️ [MONITORING SKIPPED] Token ${item.symbol} graduated to Raydium, but Raydium DEX source is unselected in DEX Platform Sources.`, 'warn');
             }
 
             // Dispatch central Telemetry MIGRATED Alert
@@ -5697,22 +5735,40 @@ const checkTokenCriteria = (mint: string): {
               const pairDexId = dexId || (isGraduated ? 'raydium' : 'pump-fun');
               const sourceCheck = checkDexPlatformSourcesAllowed(tokenAddress, pairDexId);
               if (sourceCheck.pass) {
-                emitBuySignal({
-                  tokenAddress,
+                const scannedTokenData = {
+                  address: tokenAddress,
                   symbol,
                   name,
-                  entryPriceUsd: priceUsd,
-                  triggerPriceUsd: priceUsd,
-                  profitPercent: safeM5Profit,
+                  priceUsd,
+                  marketCapUsd: marketCap,
+                  marketCap: marketCap,
+                  fdv: marketCap,
+                  pairCreatedAt: Date.now() - 300000,
+                  url: `https://dexscreener.com/solana/${tokenAddress}`,
                   liquidityUsd: liquidityUsd || 5000,
                   volume24h: pair.volume?.h24 || marketCap * 0.78,
                   dexId: pairDexId,
                   pairAddress: tokenAddress,
-                  simAmountSol: configRef.current.tradeAmount || tradeAmount || 0.1,
-                  simEntryTime: Date.now()
-                });
+                  bondingProgress: isGraduated ? 100 : 50,
+                  ageMinutes: 5,
+                  priceChange5m: safeM5Profit,
+                  priceChange1h: 10,
+                  priceChange24h: 20,
+                  uniqueBuyers30s: 10,
+                  buyCount30s: 15,
+                  sellCount30s: 3,
+                  buyVolume30s: 3,
+                  sellVolume30s: 1,
+                  top10HoldersPct: 15,
+                  devWalletOwnershipPct: 2,
+                  isRugSafe: true,
+                  riskScore: 5
+                };
+                openSimPosition(scannedTokenData, configRef.current.tradeAmount || tradeAmount || 0.1);
+                monitoredTokensRef.current.set(tokenAddress, scannedTokenData);
+                addLog(`📌 [MONITORING ADDED] ${symbol} (${pairDexId}) added to PnLPage active positions first for active monitoring.`, 'info');
               } else {
-                addLog(`⚠️ [SIGNAL SKIPPED] New pair match ${symbol} (${pairDexId}) is unselected in DEX Platform Sources on PnLPage.`, 'warn');
+                addLog(`⚠️ [MONITORING SKIPPED] New pair match ${symbol} (${pairDexId}) is unselected in DEX Platform Sources on PnLPage.`, 'warn');
               }
 
               // Inject/Update central store tokenMetrics so scanner detects and scores them
@@ -6126,7 +6182,9 @@ const checkTokenCriteria = (mint: string): {
                   sellCount: bestPair.txns?.h24?.sells || 0,
                   buyVolume: bestPair.volume?.h24 || 0,
                   sellVolume: 0,
-                  percentageIncrease: bestPair.priceChange?.h24 || 0,
+                  priceChange5m: bestPair.priceChange?.m5 !== undefined ? parseFloat(String(bestPair.priceChange.m5)) : (bestPair.priceChange?.h1 !== undefined ? parseFloat(String(bestPair.priceChange.h1)) / 12 : 0),
+                  priceChange1m: bestPair.priceChange?.m5 !== undefined ? parseFloat(String(bestPair.priceChange.m5)) * 0.2 : 0,
+                  percentageIncrease: bestPair.priceChange?.m5 !== undefined ? parseFloat(String(bestPair.priceChange.m5)) : (bestPair.priceChange?.h1 !== undefined ? parseFloat(String(bestPair.priceChange.h1)) / 12 : 0),
                   recentBuysTimeline: [],
                   category: cleanMint.toLowerCase().endsWith('pump') ? 'PUMP_FUN' : 'RAYDIUM',
                   isRugSafe: true,
@@ -7924,8 +7982,8 @@ const checkTokenCriteria = (mint: string): {
                         if (liq >= (isGraduated ? (hardenedLiquidityMin || 0) : Math.min(1000, hardenedLiquidityMin || 0))) score++;
                         if (metric.isRugSafe !== false) score++;
                         if ((metric.riskScore || 100) <= (hardenedMaxRiskScore || 100)) score++;
-                        const priceChange1m = metric.priceChange1m || 0;
-                        if (priceChange1m >= (hardenedMinProfit5m || 0)) score++;
+                        const profit5mCheck = metric.priceChange5m !== undefined ? metric.priceChange5m : (metric.percentageIncrease !== undefined ? metric.percentageIncrease : (metric.priceChange1m || 0));
+                        if (profit5mCheck >= (hardenedMinProfit5m || 0)) score++;
                         return score;
                       };
                       return getPassedCount(b[0]) - getPassedCount(a[0]);

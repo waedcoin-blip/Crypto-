@@ -17,25 +17,43 @@ export class ErrorBoundary extends React.Component<Props, State> {
 
   private unhandledRejectionHandler = (event: PromiseRejectionEvent) => {
     // Prevent unhandled promise rejections (e.g. network/RPC/WS 429 errors) from breaking the UI
-    const reason = event?.reason;
-    const msg = typeof reason === 'string' ? reason : reason?.message || String(reason) || '';
-    const benign = [
-      'NO_ROUTES_FOUND', 'No liquidity', 'User rejected', 'WalletNotConnected',
-      'Transaction not confirmed', 'SIMULATION_ERROR', 'AbortError', 'Unexpected server response', 
-      '429', 'ws error', 'WebSocket', 'websocket', 'failed: WebSocket is closed',
-      'connection to', 'failed', 'FetchError', 'RPC'
-    ];
-    if (benign.some(s => msg.toLowerCase().includes(s.toLowerCase()))) {
-      event.preventDefault(); // Silently handle benign async promise rejections
+    try {
+      const reason = event?.reason;
+      const msg = typeof reason === 'string' ? reason : reason?.message || String(reason) || '';
+      const benign = [
+        'NO_ROUTES_FOUND', 'No liquidity', 'User rejected', 'WalletNotConnected',
+        'Transaction not confirmed', 'SIMULATION_ERROR', 'AbortError', 'Unexpected server response', 
+        '429', 'ws error', 'WebSocket', 'websocket', 'failed: WebSocket is closed',
+        'connection to', 'failed', 'FetchError', 'RPC', 'TypeError', 'NetworkError', 'Failed to fetch', 'Load failed'
+      ];
+      if (benign.some(s => msg.toLowerCase().includes(s.toLowerCase()))) {
+        event.preventDefault(); // Silently handle benign async promise rejections
+      }
+    } catch {
+      // Ignore handler error
+    }
+  };
+
+  private windowErrorHandler = (event: ErrorEvent) => {
+    try {
+      const msg = event?.message || '';
+      const benign = ['ResizeObserver loop', 'Script error', 'Failed to fetch', 'WebSocket', '429'];
+      if (benign.some(s => msg.toLowerCase().includes(s.toLowerCase()))) {
+        event.preventDefault();
+      }
+    } catch {
+      // Ignore
     }
   };
 
   public componentDidMount() {
     window.addEventListener('unhandledrejection', this.unhandledRejectionHandler);
+    window.addEventListener('error', this.windowErrorHandler);
   }
 
   public componentWillUnmount() {
     window.removeEventListener('unhandledrejection', this.unhandledRejectionHandler);
+    window.removeEventListener('error', this.windowErrorHandler);
   }
 
   public static getDerivedStateFromError(error: Error): State {

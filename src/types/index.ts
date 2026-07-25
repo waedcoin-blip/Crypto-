@@ -33,6 +33,7 @@ export interface TokenMetric {
   uniqueWallets?: Set<string>;
   uniqueWalletsCount?: number;
   priceChange1m?: number;
+  priceChange5m?: number;
   category?: string; // 'AI' | 'RWA' | 'MEME' | 'DEPIN' | 'GAMEFI' | 'DEFI' | 'POLITIFI' | 'AI_MEME'
   pairCreatedAt?: number;
 
