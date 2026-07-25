@@ -2601,24 +2601,25 @@ export const PnLPage = ({
         if (currentPnLPct >= 1.0 && !pos.simRealBought && !simRealBoughtPending.current.has(mint)) {
           if (!pos.symbol || pos.symbol.trim() === '' || pos.symbol.toUpperCase() === 'UNKNOWN') continue;
           const simPos = simPositions[mint];
-          if (!simPos) continue; // Must be tracked in simPositions to emit a full signal
+          const metric = tokenMetricsRef.current[mint];
+          const activeDexId = simPos?.dexId || metric?.dexId || (mint.toLowerCase().endsWith('pump') ? 'pumpfun' : 'raydium');
 
-          const sourceCheck = checkDexPlatformSourcesAllowed(mint, simPos.dexId);
+          const sourceCheck = checkDexPlatformSourcesAllowed(mint, activeDexId);
           if (!sourceCheck.pass) continue;
 
           emitBuySignal({
             tokenAddress: mint,
             symbol: pos.symbol,
-            name: pos.symbol, // or simPos.name
-            entryPriceUsd: pos.buyPrice,
-            triggerPriceUsd: newPrice,
+            name: simPos?.name || metric?.symbol || pos.symbol,
+            entryPriceUsd: pos.entryPriceUsd || (pos.buyPrice * 180),
+            triggerPriceUsd: pos.currentPriceUsd || (newPrice * 180),
             profitPercent: currentPnLPct,
-            liquidityUsd: simPos.liquidityUsd,
-            volume24h: simPos.volume24h,
-            dexId: simPos.dexId,
-            pairAddress: simPos.pairAddress,
-            simAmountSol: simPos.amountSol,
-            simEntryTime: simPos.entryTime
+            liquidityUsd: simPos?.liquidityUsd || metric?.liquidity || 50000,
+            volume24h: simPos?.volume24h || metric?.volume24h || 100000,
+            dexId: activeDexId,
+            pairAddress: simPos?.pairAddress || mint,
+            simAmountSol: simPos?.amountSol || pos.solSpent || 0.1,
+            simEntryTime: simPos?.entryTime || pos.entryTime || Date.now()
           });
           if (privateKey && (mint.toLowerCase().startsWith('sim') || (pos.symbol && pos.symbol.toLowerCase().startsWith('sim')))) {
             if (!simRealBoughtPending.current.has(mint)) {
@@ -3073,8 +3074,7 @@ export const PnLPage = ({
         const profitPercent =
           ((pos.currentPriceUsd - pos.entryPriceUsd) / pos.entryPriceUsd) * 100;
 
-        const activeMinProfit = configRef.current.hardenedMinProfit5m !== undefined ? configRef.current.hardenedMinProfit5m : (DEFAULT_CRITERIA.signalProfitThreshold || 1.0);
-        const signalMinProfit = Math.max(0.1, activeMinProfit);
+        const signalMinProfit = 1.0;
         if (profitPercent >= signalMinProfit) {
           if (!pos.symbol || pos.symbol.trim() === '' || pos.symbol.toUpperCase() === 'UNKNOWN') continue;
           
@@ -3113,8 +3113,7 @@ export const PnLPage = ({
         if (entryPriceSol <= 0 || currentPriceSol <= 0) continue;
 
         const profitPercent = ((currentPriceSol - entryPriceSol) / entryPriceSol) * 100;
-        const activeMinProfit = configRef.current.hardenedMinProfit5m !== undefined ? configRef.current.hardenedMinProfit5m : (DEFAULT_CRITERIA.signalProfitThreshold || 1.0);
-        const signalMinProfit = Math.max(0.1, activeMinProfit);
+        const signalMinProfit = 1.0;
 
         if (profitPercent >= signalMinProfit) {
           if (!pos.symbol || pos.symbol.trim() === '' || pos.symbol.toUpperCase() === 'UNKNOWN') continue;
