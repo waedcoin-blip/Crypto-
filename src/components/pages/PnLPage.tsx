@@ -827,23 +827,38 @@ const TerminalConsole: React.FC<TerminalConsoleProps> = ({ logs, setLogs, retent
                       <span className="text-[8px] font-black uppercase tracking-wide text-indigo-400 flex items-center gap-1">
                         <Database className="w-2.5 h-2.5" /> Telemetry Payload Log #{log.id.slice(0, 5)}
                       </span>
-                      <button
-                        onClick={(e) => handleCopyMetadata(log.metadata, log.id, e)}
-                        className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[9px] font-bold flex items-center gap-1 transition-colors cursor-pointer"
-                        title="Copy state payload to clipboard"
-                      >
-                        {copiedId === log.id ? (
-                          <>
-                            <Check className="w-2.5 h-2.5 text-[#c7f284]" />
-                            <span className="text-[#c7f284]">Copied!</span>
-                          </>
-                        ) : (
-                          <>
-                            <Copy className="w-2.5 h-2.5" />
-                            <span>Copy JSON</span>
-                          </>
+                      <div className="flex items-center gap-1.5">
+                        {tokenInfo && onQuickTrade && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onQuickTrade(tokenInfo.mint, tokenInfo.symbol);
+                            }}
+                            className="px-1.5 py-0.5 bg-emerald-500/20 hover:bg-emerald-500/35 text-emerald-300 rounded text-[9px] font-bold flex items-center gap-1 transition-colors cursor-pointer border border-emerald-500/30"
+                            title="Send JSON payload token signal to SimReal"
+                          >
+                            <Zap className="w-2.5 h-2.5 text-emerald-400" />
+                            <span>Send Signal to SimReal</span>
+                          </button>
                         )}
-                      </button>
+                        <button
+                          onClick={(e) => handleCopyMetadata(log.metadata, log.id, e)}
+                          className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[9px] font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                          title="Copy state payload to clipboard"
+                        >
+                          {copiedId === log.id ? (
+                            <>
+                              <Check className="w-2.5 h-2.5 text-[#c7f284]" />
+                              <span className="text-[#c7f284]">Copied!</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-2.5 h-2.5" />
+                              <span>Copy JSON</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
                     </div>
                     <pre className="overflow-x-auto whitespace-pre-wrap font-mono relative max-h-[180px] text-[#a5b4fc]">
                       {JSON.stringify(log.metadata, null, 2)}
@@ -1677,6 +1692,36 @@ export const PnLPage = ({
     hardenedMinLatency, hardenedMaxLatency, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown,
     hardenedMinProfit5m, enableLatencyGuard, rpcLatency, hardenedMatchRequirement, maxRebuyTimes
   };
+
+  const checkDexPlatformSourcesAllowed = useCallback((mint: string, dexId?: string) => {
+    const metric = tokenMetricsRef.current[mint];
+    const stage = detectTokenStage({
+      address: mint,
+      dexId: dexId || metric?.dexId,
+      bondingCurveProgress: metric?.bondingCurveProgress,
+      isRaydiumListed: metric?.isRaydiumListed
+    });
+
+    const { tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown } = configRef.current;
+
+    if (stage.isBonding && !tradeBonding) {
+      return { pass: false, reason: "Bonding stage tokens are unselected in DEX Platform Sources" };
+    }
+    if (stage.platform === 'PUMP_FUN' && !tradePumpFun) {
+      return { pass: false, reason: "Pump.fun tokens are unselected in DEX Platform Sources" };
+    }
+    if (stage.platform === 'RAYDIUM' && !tradeRaydium) {
+      return { pass: false, reason: "Raydium tokens are unselected in DEX Platform Sources" };
+    }
+    if (stage.platform === 'PUMPSWAP' && !tradeRaydium) {
+      return { pass: false, reason: "PumpSwap tokens are unselected in DEX Platform Sources" };
+    }
+    if (stage.platform === 'UNKNOWN' && !tradeUnknown) {
+      return { pass: false, reason: "Unknown tokens are unselected in DEX Platform Sources" };
+    }
+
+    return { pass: true, reason: "" };
+  }, []);
 
   const [walletTokens, setWalletTokens] = useState<{mint: string, amount: number, symbol?: string, price?: number, pnl?: number, costBasis?: number}[]>([]);
   const [isFetchingTokens, setIsFetchingTokens] = useState(false);
@@ -2555,6 +2600,10 @@ export const PnLPage = ({
           if (!pos.symbol || pos.symbol.trim() === '' || pos.symbol.toUpperCase() === 'UNKNOWN') continue;
           const simPos = simPositions[mint];
           if (!simPos) continue; // Must be tracked in simPositions to emit a full signal
+
+          const sourceCheck = checkDexPlatformSourcesAllowed(mint, simPos.dexId);
+          if (!sourceCheck.pass) continue;
+
           emitBuySignal({
             tokenAddress: mint,
             symbol: pos.symbol,
@@ -3025,6 +3074,10 @@ export const PnLPage = ({
         const signalMinProfit = Math.max(1.0, DEFAULT_CRITERIA.signalProfitThreshold || 1.0);
         if (profitPercent >= signalMinProfit) {
           if (!pos.symbol || pos.symbol.trim() === '' || pos.symbol.toUpperCase() === 'UNKNOWN') continue;
+          
+          const sourceCheck = checkDexPlatformSourcesAllowed(pos.tokenAddress, pos.dexId);
+          if (!sourceCheck.pass) continue;
+
           // ── +1% HIT — EMIT BUY SIGNAL ──
           markSimSignaled(pos.tokenAddress);
 
@@ -3061,6 +3114,10 @@ export const PnLPage = ({
 
         if (profitPercent >= signalMinProfit) {
           if (!pos.symbol || pos.symbol.trim() === '' || pos.symbol.toUpperCase() === 'UNKNOWN') continue;
+
+          const activeDexId = mint.toLowerCase().endsWith('pump') ? 'pumpfun' : 'raydium';
+          const sourceCheck = checkDexPlatformSourcesAllowed(mint, activeDexId);
+          if (!sourceCheck.pass) continue;
 
           // Mark signalEmitted = true on the active position
           setPositions(prev => {
@@ -4185,6 +4242,14 @@ const checkTokenCriteria = (mint: string): {
   const handleQuickTradeFromLogs = useCallback(async (mint: string, symbol = 'TOKEN') => {
     if (!mint) return;
     const metric = tokenMetricsRef.current[mint];
+    const dexId = metric?.dexId || (mint.toLowerCase().endsWith('pump') ? 'pumpfun' : 'raydium');
+
+    const sourceCheck = checkDexPlatformSourcesAllowed(mint, dexId);
+    if (!sourceCheck.pass) {
+      addLog(`⚠️ [SYSTEM LOG TRADE SKIPPED] Token ${symbol} (${mint.slice(0, 8)}...) is unselected in DEX Platform Sources settings on PnLPage (${sourceCheck.reason}).`, 'warn');
+      return;
+    }
+
     const priceNative = metric?.priceNative || (metric?.priceUsd ? metric.priceUsd / 180 : 0.0001);
     const tradeSol = configRef.current.tradeAmount || tradeAmount || 0.1;
 
@@ -5322,20 +5387,25 @@ const checkTokenCriteria = (mint: string): {
             addLog(`🚀 [BONDING COMPLETE] Token ${item.symbol} reached 100% progress! IMMINENT AMM MIGRATION INITIALIZING!`, 'warn', 'scanner', { tokenAddress: mint, symbol: item.symbol, dexId: 'pump-fun', priceUsd, marketCap });
             addLog(`🟢 [MIGRATION SUCCESS] Token ${item.symbol} successfully graduated! Raydium AMM pools populated: $50,000 LP. Open standard swap.`, 'success', 'scanner', { tokenAddress: mint, symbol: item.symbol, dexId: 'raydium', priceUsd, marketCap });
 
-            emitBuySignal({
-              tokenAddress: mint,
-              symbol: item.symbol,
-              name: item.name,
-              entryPriceUsd: priceUsd,
-              triggerPriceUsd: priceUsd,
-              profitPercent: 4.5,
-              liquidityUsd: 50000,
-              volume24h: marketCap * 0.8,
-              dexId: 'raydium',
-              pairAddress: mint,
-              simAmountSol: configRef.current.tradeAmount || tradeAmount || 0.1,
-              simEntryTime: Date.now()
-            });
+            const sourceCheck = checkDexPlatformSourcesAllowed(mint, 'raydium');
+            if (sourceCheck.pass) {
+              emitBuySignal({
+                tokenAddress: mint,
+                symbol: item.symbol,
+                name: item.name,
+                entryPriceUsd: priceUsd,
+                triggerPriceUsd: priceUsd,
+                profitPercent: 4.5,
+                liquidityUsd: 50000,
+                volume24h: marketCap * 0.8,
+                dexId: 'raydium',
+                pairAddress: mint,
+                simAmountSol: configRef.current.tradeAmount || tradeAmount || 0.1,
+                simEntryTime: Date.now()
+              });
+            } else {
+              addLog(`⚠️ [SIGNAL SKIPPED] Token ${item.symbol} graduated to Raydium, but Raydium DEX source is unselected in DEX Platform Sources.`, 'warn');
+            }
 
             // Dispatch central Telemetry MIGRATED Alert
             const alertId = `sim-mig-alert-${mint}-${Date.now()}`;
@@ -5624,20 +5694,26 @@ const checkTokenCriteria = (mint: string): {
               const rawM5 = pair.priceChange?.m5 !== undefined ? parseFloat(pair.priceChange.m5) : 3.5;
               const safeM5Profit = isNaN(rawM5) ? 3.5 : Math.max(2.5, rawM5);
 
-              emitBuySignal({
-                tokenAddress,
-                symbol,
-                name,
-                entryPriceUsd: priceUsd,
-                triggerPriceUsd: priceUsd,
-                profitPercent: safeM5Profit,
-                liquidityUsd: liquidityUsd || 5000,
-                volume24h: pair.volume?.h24 || marketCap * 0.78,
-                dexId: dexId || (isGraduated ? 'raydium' : 'pump-fun'),
-                pairAddress: tokenAddress,
-                simAmountSol: configRef.current.tradeAmount || tradeAmount || 0.1,
-                simEntryTime: Date.now()
-              });
+              const pairDexId = dexId || (isGraduated ? 'raydium' : 'pump-fun');
+              const sourceCheck = checkDexPlatformSourcesAllowed(tokenAddress, pairDexId);
+              if (sourceCheck.pass) {
+                emitBuySignal({
+                  tokenAddress,
+                  symbol,
+                  name,
+                  entryPriceUsd: priceUsd,
+                  triggerPriceUsd: priceUsd,
+                  profitPercent: safeM5Profit,
+                  liquidityUsd: liquidityUsd || 5000,
+                  volume24h: pair.volume?.h24 || marketCap * 0.78,
+                  dexId: pairDexId,
+                  pairAddress: tokenAddress,
+                  simAmountSol: configRef.current.tradeAmount || tradeAmount || 0.1,
+                  simEntryTime: Date.now()
+                });
+              } else {
+                addLog(`⚠️ [SIGNAL SKIPPED] New pair match ${symbol} (${pairDexId}) is unselected in DEX Platform Sources on PnLPage.`, 'warn');
+              }
 
               // Inject/Update central store tokenMetrics so scanner detects and scores them
               useAppStore.getState().setTokenMetrics(prev => {
@@ -5981,6 +6057,12 @@ const checkTokenCriteria = (mint: string): {
 
     if (privateKey && isSimToken) {
       addLog(`❌ [SIM BLOCK] Trading for tokens starting with 'sim' is strictly blocked for real-money trading: ${cleanMint}`, 'warn');
+      return;
+    }
+
+    const sourceCheck = checkDexPlatformSourcesAllowed(cleanMint);
+    if (!sourceCheck.pass) {
+      addLog(`❌ [SIMREAL BUY BLOCKED] ${sourceCheck.reason}.`, 'warn');
       return;
     }
 
