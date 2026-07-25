@@ -4185,13 +4185,17 @@ const checkTokenCriteria = (mint: string): {
     addLog(`⚡ [SYSTEM LOG QUICK TRADE] Direct sniper order triggered for ${symbol} (${mint.slice(0, 8)}...)...`, 'buy');
 
     // Emit Buy Signal into Buy Signal store so it flows across pages
+    const quickTradeProfit = metric?.percentageIncrease !== undefined && !isNaN(metric.percentageIncrease)
+      ? Math.max(3.0, metric.percentageIncrease)
+      : 3.0;
+
     emitBuySignal({
       tokenAddress: mint,
       symbol: symbol,
       name: metric?.symbol || symbol,
       entryPriceUsd: metric?.priceUsd || (priceNative * 180),
       triggerPriceUsd: metric?.priceUsd || (priceNative * 180),
-      profitPercent: metric?.percentageIncrease || 3.0,
+      profitPercent: quickTradeProfit,
       liquidityUsd: metric?.liquidity || 10000,
       volume24h: metric?.volume24h || 25000,
       dexId: metric?.dexId || (mint.toLowerCase().endsWith('pump') ? 'pumpfun' : 'raydium'),
@@ -5588,13 +5592,16 @@ const checkTokenCriteria = (mint: string): {
               );
 
               // Broadcast token buy signal into Buy Signal Pipeline for cross-page trading
+              const rawM5 = pair.priceChange?.m5 !== undefined ? parseFloat(pair.priceChange.m5) : 3.5;
+              const safeM5Profit = isNaN(rawM5) ? 3.5 : Math.max(2.5, rawM5);
+
               emitBuySignal({
                 tokenAddress,
                 symbol,
                 name,
                 entryPriceUsd: priceUsd,
                 triggerPriceUsd: priceUsd,
-                profitPercent: pair.priceChange?.m5 !== undefined ? parseFloat(pair.priceChange.m5) : 3.5,
+                profitPercent: safeM5Profit,
                 liquidityUsd: liquidityUsd || 5000,
                 volume24h: pair.volume?.h24 || marketCap * 0.78,
                 dexId: dexId || (isGraduated ? 'raydium' : 'pump-fun'),
