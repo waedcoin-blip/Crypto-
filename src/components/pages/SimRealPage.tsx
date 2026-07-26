@@ -760,6 +760,8 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
     tokenMetricsRef.current = tokenMetrics;
   }, [positions, tokenMetrics]);
 
+  const sellingMints = useRef<Set<string>>(new Set());
+
   // ── BACKGROUND WORKER: SimReal Active Positions TP/SL Monitor ──
   useEffect(() => {
     let active = true;
@@ -772,6 +774,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
       
       for (const [mint, pos] of Object.entries(currentPositions || {})) {
          if (!pos || !pos.simRealBought) continue;
+         if (sellingMints.current.has(mint)) continue;
          
          const tokenMetric = currentTokenMetrics[mint];
          const stageInfo = tokenMetric ? detectTokenStage(tokenMetric) : { stage: 'UNKNOWN', platform: 'UNKNOWN', isBonding: false, isMigrated: false, isNewListing: false, isNearMigration: false, bondingProgress: 0 } as const;
@@ -795,7 +798,15 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
 
          const spentSol = pos.simRealSolSpent || pos.solSpent || 0.1;
          const boughtPrice = pos.simRealBoughtPriceSol || pos.buyPrice || pos.currentPrice || 0.000001;
-         const currPrice = pos.currentPrice || pos.buyPrice || boughtPrice;
+         
+         let metricPriceSol = 0;
+         if (tokenMetric?.priceNative && tokenMetric.priceNative > 0) {
+           metricPriceSol = parseFloat(String(tokenMetric.priceNative));
+         } else if (tokenMetric?.priceUsd && tokenMetric.priceUsd > 0) {
+           metricPriceSol = parseFloat(String(tokenMetric.priceUsd)) / 180;
+         }
+
+         const currPrice = Math.max(pos.currentPrice || 0, pos.buyPrice || 0, boughtPrice, metricPriceSol);
          const tokensQty = (pos.simRealAmountTokens && pos.simRealAmountTokens > 0)
            ? pos.simRealAmountTokens
            : (pos.amount && pos.amount > 0)
@@ -812,27 +823,36 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
          }
 
          const simRealNetPnlPct = (netSimRealIfSold - spentSol) / spentSol;
+         const simRealGrossPnlPct = (currPrice - boughtPrice) / boughtPrice;
 
-         if (simRealNetPnlPct >= tpLimit || simRealNetPnlPct <= slLimit) {
-            console.log(`[SimReal TP/SL] Triggered sell for ${pos.symbol} at ${(simRealNetPnlPct * 100).toFixed(2)}% PnL`);
+         // Immediate sell trigger when token PnL profit goes higher or reaches take-profit target / stop loss
+         if (simRealNetPnlPct >= tpLimit || simRealGrossPnlPct >= tpLimit || simRealNetPnlPct <= slLimit) {
+            console.log(`[SimReal TP/SL] Immediate sell triggered for ${pos.symbol || mint} at gross ${(simRealGrossPnlPct * 100).toFixed(2)}% / net ${(simRealNetPnlPct * 100).toFixed(2)}% PnL (TP limit: ${(tpLimit * 100).toFixed(1)}%)`);
             
-            // Fixes Concurrent Automated Sells Caused by Unhandled Promises inside for Loop
+            sellingMints.current.add(mint);
             try {
                await executeSimRealSell(mint);
             } catch (e) {
                console.error(`Failed to auto-sell SimReal position for ${mint}:`, e);
+            } finally {
+               sellingMints.current.delete(mint);
             }
-            // Removed `break;` so a single failure doesn't prevent evaluating subsequent positions
          }
       }
     };
 
-    const interval = setInterval(monitorPositions, 2000);
+    // Run monitor check immediately on every positions or tokenMetrics update
+    monitorPositions();
+
+    // High frequency 300ms polling for instant profit exit
+    const interval = setInterval(monitorPositions, 300);
     return () => {
       active = false;
       clearInterval(interval);
     };
   }, [
+    positions,
+    tokenMetrics,
     simRealTakeProfitRaydium, 
     simRealTakeProfitBonding, 
     simRealTakeProfitPumpSwap,
@@ -1284,7 +1304,14 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                   {Object.entries(positions || {})
                     .filter(([_, pos]) => pos && pos.simRealBought)
                     .map(([mint, pos]) => {
-                      const currentPrice = pos.currentPrice || pos.buyPrice || 0;
+                      const token = tokenMetrics[mint];
+                      let metricPriceSol = 0;
+                      if (token?.priceNative && token.priceNative > 0) {
+                        metricPriceSol = parseFloat(String(token.priceNative));
+                      } else if (token?.priceUsd && token.priceUsd > 0) {
+                        metricPriceSol = parseFloat(String(token.priceUsd)) / 180;
+                      }
+                      const currentPrice = Math.max(pos.currentPrice || 0, pos.buyPrice || 0, metricPriceSol);
                       const entryPrice = pos.simRealBoughtPriceSol || pos.buyPrice || 0.000001;
                       const tokensQty = pos.simRealAmountTokens || 0;
                       const spentSol = pos.simRealSolSpent || 0.1;
@@ -1302,7 +1329,6 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                       const isPos = pnlPct >= 0;
                       const profitSol = netSimRealIfSold - spentSol;
 
-                      const token = tokenMetrics[mint];
                       const stage = detectTokenStage({
                         address: mint,
                         dexId: token?.dexId,
