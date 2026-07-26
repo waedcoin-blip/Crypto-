@@ -608,23 +608,59 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
         let freshPriceUsd = triggerPriceUsd;
         let freshLiquidityUsd = signal.liquidityUsd;
 
-        try {
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 1200);
-          const res = await fetch(`/api/dex/tokens/${tokenAddress}`, { signal: controller.signal });
-          clearTimeout(timeoutId);
-          if (res.ok) {
-            const data = await res.json();
-            const pair = data?.pairs && Array.isArray(data.pairs) && data.pairs.length > 0
-              ? [...data.pairs].sort((a: any, b: any) => (parseFloat(b.liquidity?.usd || '0') - parseFloat(a.liquidity?.usd || '0')))[0]
-              : null;
-            if (pair) {
-              freshPriceUsd = parseFloat(pair.priceUsd || '0') || freshPriceUsd;
-              freshLiquidityUsd = parseFloat(pair.liquidity?.usd || '0') || freshLiquidityUsd;
+        // Immediately seed tokenMetrics so executeSimRealBuy has instant access without extra HTTP request
+        if (!storeState.tokenMetrics[tokenAddress]) {
+          const formattedMetric: TokenMetric = {
+            address: tokenAddress,
+            symbol: symbol || 'UNKNOWN',
+            priceUsd: triggerPriceUsd || 0,
+            priceNative: triggerPriceUsd ? (triggerPriceUsd / 180) : 0.000001,
+            marketCap: 0,
+            liquidity: signal.liquidityUsd || 50000,
+            volume24h: signal.volume24h || 100000,
+            discoveredAt: Date.now(),
+            lastUpdated: Date.now(),
+            buyCount: 0,
+            sellCount: 0,
+            buyVolume: 0,
+            sellVolume: 0,
+            priceChange5m: profitPercent || 0,
+            priceChange1m: 0,
+            percentageIncrease: profitPercent || 0,
+            recentBuysTimeline: [],
+            category: tokenAddress.toLowerCase().endsWith('pump') ? 'PUMP_FUN' : 'RAYDIUM',
+            isRugSafe: true,
+            mintAuthorityRevoked: true,
+            freezeAuthorityRevoked: true,
+            liquidityBurned: true,
+            top10Percentage: 8.5
+          };
+          storeState.setTokenMetrics(prev => ({
+            ...prev,
+            [tokenAddress]: formattedMetric
+          }));
+        }
+
+        // Only perform external HTTP check if liquidity or price is completely missing
+        if (!freshLiquidityUsd || freshLiquidityUsd === 0 || !freshPriceUsd || freshPriceUsd === 0) {
+          try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 800);
+            const res = await fetch(`/api/dex/tokens/${tokenAddress}`, { signal: controller.signal });
+            clearTimeout(timeoutId);
+            if (res.ok) {
+              const data = await res.json();
+              const pair = data?.pairs && Array.isArray(data.pairs) && data.pairs.length > 0
+                ? [...data.pairs].sort((a: any, b: any) => (parseFloat(b.liquidity?.usd || '0') - parseFloat(a.liquidity?.usd || '0')))[0]
+                : null;
+              if (pair) {
+                freshPriceUsd = parseFloat(pair.priceUsd || '0') || freshPriceUsd;
+                freshLiquidityUsd = parseFloat(pair.liquidity?.usd || '0') || freshLiquidityUsd;
+              }
             }
+          } catch (err) {
+            console.warn('[Pipeline] Fast quote check fallback to signal metadata');
           }
-        } catch (err) {
-          console.warn('[Pipeline] Failed to fetch fresh quote, using signal data');
         }
 
         // Gate 1: Check minimum liquidity (allow if effective liquidity >= $1,000)
@@ -661,11 +697,24 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
           simRealBoughtPending.current.delete(currentTokenAddress.toLowerCase().trim());
         }
         processingLock.current = false;
+        // Drain pending signal queue immediately without waiting for interval timer
+        const remainingPending = useBuySignalStore.getState().signals.filter(s => s.status === 'pending');
+        if (remainingPending.length > 0) {
+          setTimeout(processSignalQueue, 10);
+        }
       }
     };
 
-    // Run queue check every 1.5 seconds
-    const intervalId = setInterval(processSignalQueue, 1500);
+    // Run immediate check when pending signals exist or on fast interval
+    if (signals.some(s => s.status === 'pending') && !processingLock.current) {
+      processSignalQueue();
+    }
+
+    const intervalId = setInterval(() => {
+      if (useBuySignalStore.getState().signals.some(s => s.status === 'pending') && !processingLock.current) {
+        processSignalQueue();
+      }
+    }, 500);
 
     // Prune old signals every 30 seconds
     const pruneId = setInterval(() => {

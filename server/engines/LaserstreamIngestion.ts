@@ -78,6 +78,7 @@ interface StreamState {
   simulationTimer: ReturnType<typeof setInterval> | null;
   lastEventTime: number;
   consecutiveSilentPeriods: number;
+  fallbackBackoffMs: number;
 }
 
 const state: StreamState = {
@@ -95,6 +96,7 @@ const state: StreamState = {
   simulationTimer: null,
   lastEventTime: 0,
   consecutiveSilentPeriods: 0,
+  fallbackBackoffMs: 3_000,
 };
 
 // ─── Getters ───
@@ -594,6 +596,8 @@ export async function startFallbackWebSocket(
       ws.on('open', () => {
         laserLogger.info('Raw WebSocket connected to Helius endpoint');
         state.lastEventTime = Date.now();
+        state.fallbackBackoffMs = 3_000; // Reset backoff on successful connection
+        stopSimulationStream(); // Stop simulation stream if active
 
         // Send ping keepalive every 15 seconds to keep connection active
         if (state.fallbackPingInterval) clearInterval(state.fallbackPingInterval);
@@ -655,64 +659,33 @@ export async function startFallbackWebSocket(
       });
 
       ws.on('error', (wsErr) => {
-        laserLogger.warn({ error: wsErr?.message || String(wsErr) }, 'Raw WebSocket encountered error');
+        const errMsg = wsErr?.message || String(wsErr);
+        if (errMsg.includes('429') || errMsg.includes('Too Many Requests')) {
+          laserLogger.warn({ error: errMsg }, 'Helius endpoint rate limited (429), backing off & engaging simulation fallback');
+          startSimulationStream(eventBusCallback);
+        } else {
+          laserLogger.warn({ error: errMsg }, 'Raw WebSocket encountered error');
+        }
       });
 
       ws.on('close', () => {
-        laserLogger.info('Raw WebSocket closed, scheduling immediate reconnect');
         if (state.fallbackPingInterval) {
           clearInterval(state.fallbackPingInterval);
           state.fallbackPingInterval = null;
         }
         if (state.isUsingFallback && !state.isSimulated) {
+          const backoff = state.fallbackBackoffMs;
+          state.fallbackBackoffMs = Math.min(60_000, backoff * 2);
+          laserLogger.info(`Raw WebSocket closed, backing off reconnect for ${Math.round(backoff / 1000)}s`);
+
           if (state.fallbackReconnectTimer) clearTimeout(state.fallbackReconnectTimer);
           state.fallbackReconnectTimer = setTimeout(() => {
             startFallbackWebSocket(programs, eventBusCallback, apiKey, customWsUrl);
-          }, 1_500);
+          }, backoff);
         }
       });
     } catch (rawWsErr) {
       laserLogger.warn({ error: rawWsErr instanceof Error ? rawWsErr.message : String(rawWsErr) }, 'Failed creating raw WebSocket');
-    }
-
-    // Also attach web3 Connection listeners as secondary backup
-    try {
-      state.fallbackConnection = new Connection(rpcUrl, {
-        commitment: 'confirmed',
-        wsEndpoint: wsUrl,
-        disableRetryOnRateLimit: false,
-      });
-
-      for (const prog of programs) {
-        try {
-          const pubKey = new PublicKey(prog);
-          const subId = state.fallbackConnection.onLogs(
-            pubKey,
-            (logs, context) => {
-              const event: SseEvent = {
-                type: 'ON_CHAIN_TX',
-                slot: context.slot,
-                signature: logs.signature,
-                rawPayload: {
-                  slot: context.slot,
-                  signature: logs.signature,
-                  transaction: { transaction: { signatures: [logs.signature] } },
-                },
-                isFallback: true,
-                isSimulated: false,
-                endpoint: state.activeEndpoint,
-              };
-              wrappedCallback(event);
-            },
-            'confirmed'
-          );
-          state.fallbackSubIds.push(subId);
-        } catch {
-          // Ignore invalid pubkeys
-        }
-      }
-    } catch (connErr) {
-      // Ignore
     }
 
     state.lastEventTime = Date.now();

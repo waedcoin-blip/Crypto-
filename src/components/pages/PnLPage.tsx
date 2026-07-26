@@ -5021,12 +5021,22 @@ const checkTokenCriteria = (mint: string): {
                   symbol: pos.symbol || 'Unknown',
                   buyPrice: pos.buyPrice || (pos.simRealBoughtPriceSol || currentPrice),
                   currentPrice: currentPrice,
-                  solSpent: pos.solSpent || (pos.simRealSolSpent || 0.1),
-                  amount: pos.amount || (pos.simRealAmountTokens || 0),
+                  solSpent: pos.solSpent || 0,
+                  amount: pos.amount || 0,
                   entryTime: pos.entryTime || Date.now(),
                   txid: pos.txid || 'simulation-copy'
                 };
-                return { ...cPos, [mint]: { ...existing, ...pos, currentPrice, recoveryMode: inRecoveryMode, isStale: !!batchedPrices[mint]?.isStale, realNetPnl: netPnlPct, realNetSol: netPnlPct * (existing.solSpent || 1) } };
+                const updated = { ...existing, ...pos, currentPrice, recoveryMode: inRecoveryMode, isStale: !!batchedPrices[mint]?.isStale, realNetPnl: netPnlPct, realNetSol: netPnlPct * (existing.solSpent || 1) };
+                if (existing.simRealBought) {
+                  updated.simRealBought = existing.simRealBought;
+                  updated.simRealBoughtPriceSol = existing.simRealBoughtPriceSol ?? updated.simRealBoughtPriceSol;
+                  updated.simRealAmountTokens = existing.simRealAmountTokens ?? updated.simRealAmountTokens;
+                  updated.simRealSolSpent = existing.simRealSolSpent ?? updated.simRealSolSpent;
+                  updated.simRealBoughtTime = existing.simRealBoughtTime ?? updated.simRealBoughtTime;
+                }
+                const res = { ...cPos, [mint]: updated };
+                positionsRef.current = res;
+                return res;
               });
             }
           } else {
@@ -5121,12 +5131,22 @@ const checkTokenCriteria = (mint: string): {
                   symbol: pos.symbol || 'Unknown',
                   buyPrice: pos.buyPrice || (pos.simRealBoughtPriceSol || currentPrice),
                   currentPrice: currentPrice,
-                  solSpent: pos.solSpent || (pos.simRealSolSpent || 0.1),
-                  amount: pos.amount || (pos.simRealAmountTokens || 0),
+                  solSpent: pos.solSpent || 0,
+                  amount: pos.amount || 0,
                   entryTime: pos.entryTime || Date.now(),
                   txid: pos.txid || 'simulation-copy'
                 };
-                return { ...cPos, [mint]: { ...existing, ...pos, currentPrice, recoveryMode: inRecoveryMode, isStale: !!batchedPrices[mint]?.isStale, realNetPnl: pnlPct, realNetSol: netSolIfSold - (existing.solSpent || 0) } };
+                const updated = { ...existing, ...pos, currentPrice, recoveryMode: inRecoveryMode, isStale: !!batchedPrices[mint]?.isStale, realNetPnl: pnlPct, realNetSol: netSolIfSold - (existing.solSpent || 0) };
+                if (existing.simRealBought) {
+                  updated.simRealBought = existing.simRealBought;
+                  updated.simRealBoughtPriceSol = existing.simRealBoughtPriceSol ?? updated.simRealBoughtPriceSol;
+                  updated.simRealAmountTokens = existing.simRealAmountTokens ?? updated.simRealAmountTokens;
+                  updated.simRealSolSpent = existing.simRealSolSpent ?? updated.simRealSolSpent;
+                  updated.simRealBoughtTime = existing.simRealBoughtTime ?? updated.simRealBoughtTime;
+                }
+                const res = { ...cPos, [mint]: updated };
+                positionsRef.current = res;
+                return res;
               });
             }
           }
@@ -6111,30 +6131,29 @@ const checkTokenCriteria = (mint: string): {
           const rawAmtLamp = result.quoteOutAmountRaw || Math.floor(exactTokenAmount);
 
           setPositions(prev => {
-            const existing = prev[cleanMint] || {
-              symbol: symbol,
-              buyPrice: boughtPriceSol,
-              currentPrice: currentPrice || boughtPriceSol,
-              solSpent: buyAmt,
-              amount: exactTokenAmount,
-              entryTime: quoteRequestTime,
-              txid: result.txid
-            };
+            const prevPos = prev[cleanMint];
             const updated = {
-              ...existing,
+              symbol: prevPos?.symbol || symbol,
+              buyPrice: prevPos?.buyPrice || boughtPriceSol,
+              currentPrice: prevPos?.currentPrice || currentPrice || boughtPriceSol,
+              solSpent: prevPos?.solSpent || 0,
+              amount: prevPos?.amount || 0,
+              entryTime: prevPos?.entryTime || quoteRequestTime,
+              txid: prevPos?.txid || result.txid,
+              ...prevPos,
               simRealBought: true,
               simRealBoughtPriceSol: boughtPriceSol,
               simRealAmountTokens: exactTokenAmount,
               simRealSolSpent: buyAmt,
               simRealBoughtTime: quoteRequestTime,
-              amountLamports: rawAmtLamp,
-              txid: result.txid
+              amountLamports: prevPos?.amountLamports || rawAmtLamp,
             };
-            positionsRef.current = {
+            const next = {
               ...prev,
               [cleanMint]: updated
             };
-            return positionsRef.current;
+            positionsRef.current = next;
+            return next;
           });
           
           addLog(`✅ [SIMREAL REAL SWAP] Bought ${symbol} @ ${boughtPriceSol.toFixed(8)} SOL | tx: ${result.txid.slice(0, 12)}...`, 'buy');
@@ -6181,17 +6200,16 @@ const checkTokenCriteria = (mint: string): {
       storeState.setSimRealTrades(prev => [newSimTrade, ...prev]);
 
       setPositions(prev => {
-        const existing = prev[cleanMint] || {
-          symbol: symbol,
-          buyPrice: boughtPriceSol,
-          currentPrice: currentPrice || boughtPriceSol,
-          solSpent: buyAmt,
-          amount: tokensQty,
-          entryTime: quoteRequestTime,
-          txid: 'simulation-copy'
-        };
+        const prevPos = prev[cleanMint];
         const updated = {
-          ...existing,
+          symbol: prevPos?.symbol || symbol,
+          buyPrice: prevPos?.buyPrice || boughtPriceSol,
+          currentPrice: prevPos?.currentPrice || currentPrice || boughtPriceSol,
+          solSpent: prevPos?.solSpent || 0,
+          amount: prevPos?.amount || 0,
+          entryTime: prevPos?.entryTime || quoteRequestTime,
+          txid: prevPos?.txid || 'simulation-copy',
+          ...prevPos,
           simRealBought: true,
           simRealBoughtPriceSol: boughtPriceSol,
           simRealAmountTokens: tokensQty,
@@ -6199,11 +6217,12 @@ const checkTokenCriteria = (mint: string): {
           simRealBoughtTime: quoteRequestTime,
           simRealIsVirtualFallback: isFallbackSim ? true : undefined
         };
-        positionsRef.current = {
+        const next = {
           ...prev,
           [cleanMint]: updated
         };
-        return positionsRef.current;
+        positionsRef.current = next;
+        return next;
       });
       
       if (isFallbackSim) {
