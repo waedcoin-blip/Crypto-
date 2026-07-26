@@ -19,7 +19,8 @@ export class ErrorBoundary extends React.Component<Props, State> {
     // Prevent unhandled promise rejections (e.g. network/RPC/WS 429 errors) from breaking the UI
     try {
       const reason = event?.reason;
-      const msg = typeof reason === 'string' ? reason : reason?.message || String(reason) || '';
+      let msg = typeof reason === 'string' ? reason : reason?.message || String(reason) || '';
+      if (reason && typeof reason === 'object') { try { msg += ' ' + JSON.stringify(reason); } catch (e) {} }
       const benign = [
         'NO_ROUTES_FOUND', 'No liquidity', 'User rejected', 'WalletNotConnected',
         'Transaction not confirmed', 'SIMULATION_ERROR', 'AbortError', 'Unexpected server response', 
@@ -37,7 +38,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
   private windowErrorHandler = (event: ErrorEvent) => {
     try {
       const msg = event?.message || '';
-      const benign = ['ResizeObserver loop', 'Script error', 'Failed to fetch', 'WebSocket', '429'];
+      const benign = ['ResizeObserver loop', 'Script error', 'Failed to fetch', 'WebSocket', '429', 'Unexpected server response'];
       if (benign.some(s => msg.toLowerCase().includes(s.toLowerCase()))) {
         event.preventDefault();
       }

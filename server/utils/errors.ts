@@ -70,7 +70,19 @@ const BENIGN_PATTERNS = [
 ];
 
 export function isBenignError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
+  let message = '';
+  if (error instanceof Error) {
+    message = error.message;
+  } else if (error && typeof error === 'object') {
+    try {
+      message = (error as any).message || (error as any).error || JSON.stringify(error);
+    } catch {
+      message = String(error);
+    }
+  } else {
+    message = String(error);
+  }
+
   return BENIGN_PATTERNS.some((pattern) => 
     message.includes(pattern) || message.toLowerCase().includes(pattern.toLowerCase())
   );

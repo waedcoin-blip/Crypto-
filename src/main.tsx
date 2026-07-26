@@ -49,7 +49,8 @@ console.warn = function (...args) {
 // ─── 24H STABILITY: Global error handlers to prevent silent crashes ────────
 window.addEventListener('unhandledrejection', (event) => {
   const reason = event.reason;
-  const msg = reason?.message || String(reason) || '';
+  let msg = reason?.message || String(reason) || '';
+  if (reason && typeof reason === 'object') { try { msg += ' ' + JSON.stringify(reason); } catch (e) {} }
   
   // Suppress known non-critical errors from crashing the app
   const benign = [

@@ -6016,76 +6016,82 @@ const checkTokenCriteria = (mint: string): {
     let symbol = 'UNKNOWN';
     let currentPrice = 0;
 
+    const isSimRealRebuy = totalSimRealTradedCount > 0 || !!positionsRef.current[cleanMint]?.simRealBought;
+
     // Check if we have tokenMetrics, active positions, or simPositions
     const existingMetric = storeState.tokenMetrics[cleanMint];
-    if (existingMetric) {
+    if (existingMetric && !isSimRealRebuy) {
       symbol = existingMetric.symbol || 'UNKNOWN';
       currentPrice = existingMetric.priceNative || 0;
     } else {
+      if (isSimRealRebuy) {
+        addLog(`🔄 [REBUY QUOTE REFRESH] Rebuy token detected (${cleanMint.slice(0, 8)}... | Trade #${totalSimRealTradedCount + 1}). Requesting fresh quote from exchange...`, 'info');
+      }
       const activePos = positionsRef.current[cleanMint] || positions[cleanMint];
       const simPos = useSimulationStore.getState().positions[cleanMint];
       if (activePos && activePos.symbol && activePos.symbol !== 'Unknown' && activePos.symbol !== 'UNKNOWN') {
         symbol = activePos.symbol;
-        currentPrice = activePos.currentPrice || currentPrice;
       } else if (simPos && simPos.symbol && simPos.symbol !== 'Unknown' && simPos.symbol !== 'UNKNOWN') {
         symbol = simPos.symbol;
-        currentPrice = simPos.currentPriceUsd ? (simPos.currentPriceUsd / 180) : currentPrice;
-      } else {
-        // Fetch details via DexScreener proxy with fast 1.2s timeout
-        try {
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 1200);
-          const res = await fetch(`/api/dex/tokens/${cleanMint}`, { signal: controller.signal });
-          clearTimeout(timeoutId);
-          if (res.ok) {
-            const data = await res.json();
-            if (data && data.pairs && data.pairs.length > 0) {
-              const solPairs = data.pairs.filter((p: any) => 
-                (p.quoteToken?.address === SOL_MINT || p.quoteToken?.symbol === 'SOL') &&
-                (p.chainKb === 'solana' || p.chainId === 'solana' || p.dexId)
-              );
-              const targetPairs = solPairs.length > 0 ? solPairs : data.pairs;
-              const sortedPairs = [...targetPairs].sort((a, b) => parseFloat(b.liquidity?.usd || '0') - parseFloat(a.liquidity?.usd || '0'));
-              const bestPair = sortedPairs[0];
-              if (bestPair) {
-                symbol = bestPair.baseToken?.symbol || 'UNKNOWN';
-                currentPrice = parseFloat(bestPair.priceNative || '0');
-                
-                const formattedMetric: TokenMetric = {
-                  address: cleanMint,
-                  symbol,
-                  priceUsd: parseFloat(bestPair.priceUsd || '0'),
-                  priceNative: currentPrice,
-                  marketCap: bestPair.fdv || 0,
-                  liquidity: bestPair.liquidity?.usd || 0,
-                  volume24h: bestPair.volume?.h24 || 0,
-                  discoveredAt: Date.now(),
-                  lastUpdated: Date.now(),
-                  buyCount: bestPair.txns?.h24?.buys || 0,
-                  sellCount: bestPair.txns?.h24?.sells || 0,
-                  buyVolume: bestPair.volume?.h24 || 0,
-                  sellVolume: 0,
-                  priceChange5m: bestPair.priceChange?.m5 !== undefined ? parseFloat(String(bestPair.priceChange.m5)) : (bestPair.priceChange?.h1 !== undefined ? parseFloat(String(bestPair.priceChange.h1)) / 12 : 0),
-                  priceChange1m: bestPair.priceChange?.m5 !== undefined ? parseFloat(String(bestPair.priceChange.m5)) * 0.2 : 0,
-                  percentageIncrease: bestPair.priceChange?.m5 !== undefined ? parseFloat(String(bestPair.priceChange.m5)) : (bestPair.priceChange?.h1 !== undefined ? parseFloat(String(bestPair.priceChange.h1)) / 12 : 0),
-                  recentBuysTimeline: [],
-                  category: cleanMint.toLowerCase().endsWith('pump') ? 'PUMP_FUN' : 'RAYDIUM',
-                  isRugSafe: true,
-                  mintAuthorityRevoked: true,
-                  freezeAuthorityRevoked: true,
-                  liquidityBurned: true,
-                  top10Percentage: 8.5
-                };
-                storeState.setTokenMetrics(prev => ({
-                  ...prev,
-                  [cleanMint]: formattedMetric
-                }));
+      }
+
+      // Fetch fresh details via DexScreener proxy with fast 1.2s timeout for updated exchange rate
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 1200);
+        const res = await fetch(`/api/dex/tokens/${cleanMint}`, { signal: controller.signal });
+        clearTimeout(timeoutId);
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.pairs && data.pairs.length > 0) {
+            const solPairs = data.pairs.filter((p: any) => 
+              (p.quoteToken?.address === SOL_MINT || p.quoteToken?.symbol === 'SOL') &&
+              (p.chainKb === 'solana' || p.chainId === 'solana' || p.dexId)
+            );
+            const targetPairs = solPairs.length > 0 ? solPairs : data.pairs;
+            const sortedPairs = [...targetPairs].sort((a, b) => parseFloat(b.liquidity?.usd || '0') - parseFloat(a.liquidity?.usd || '0'));
+            const bestPair = sortedPairs[0];
+            if (bestPair) {
+              symbol = bestPair.baseToken?.symbol || symbol || 'UNKNOWN';
+              currentPrice = parseFloat(bestPair.priceNative || '0');
+              
+              const formattedMetric: TokenMetric = {
+                address: cleanMint,
+                symbol,
+                priceUsd: parseFloat(bestPair.priceUsd || '0'),
+                priceNative: currentPrice,
+                marketCap: bestPair.fdv || 0,
+                liquidity: bestPair.liquidity?.usd || 0,
+                volume24h: bestPair.volume?.h24 || 0,
+                discoveredAt: Date.now(),
+                lastUpdated: Date.now(),
+                buyCount: bestPair.txns?.h24?.buys || 0,
+                sellCount: bestPair.txns?.h24?.sells || 0,
+                buyVolume: bestPair.volume?.h24 || 0,
+                sellVolume: 0,
+                priceChange5m: bestPair.priceChange?.m5 !== undefined ? parseFloat(String(bestPair.priceChange.m5)) : (bestPair.priceChange?.h1 !== undefined ? parseFloat(String(bestPair.priceChange.h1)) / 12 : 0),
+                priceChange1m: bestPair.priceChange?.m5 !== undefined ? parseFloat(String(bestPair.priceChange.m5)) * 0.2 : 0,
+                percentageIncrease: bestPair.priceChange?.m5 !== undefined ? parseFloat(String(bestPair.priceChange.m5)) : (bestPair.priceChange?.h1 !== undefined ? parseFloat(String(bestPair.priceChange.h1)) / 12 : 0),
+                recentBuysTimeline: [],
+                category: cleanMint.toLowerCase().endsWith('pump') ? 'PUMP_FUN' : 'RAYDIUM',
+                isRugSafe: true,
+                mintAuthorityRevoked: true,
+                freezeAuthorityRevoked: true,
+                liquidityBurned: true,
+                top10Percentage: 8.5
+              };
+              storeState.setTokenMetrics(prev => ({
+                ...prev,
+                [cleanMint]: formattedMetric
+              }));
+              if (isSimRealRebuy) {
+                addLog(`🔄 [REBUY RATE REFRESHED] Updated market price for ${symbol}: ${currentPrice.toFixed(8)} SOL`, 'info');
               }
             }
           }
-        } catch (err: any) {
-          addLog(`⚠️ [SIMREAL BUY] DexScreener fetch warning: ${err.message}. Proceeding with Jupiter lookup.`, 'warn');
         }
+      } catch (err: any) {
+        addLog(`⚠️ [SIMREAL BUY] DexScreener fetch warning: ${err.message}. Proceeding with Jupiter lookup.`, 'warn');
       }
     }
 
@@ -6136,20 +6142,20 @@ const checkTokenCriteria = (mint: string): {
           setPositions(prev => {
             const prevPos = prev[cleanMint];
             const updated = {
-              symbol: prevPos?.symbol || symbol,
-              buyPrice: prevPos?.buyPrice || boughtPriceSol,
-              currentPrice: prevPos?.currentPrice || currentPrice || boughtPriceSol,
-              solSpent: prevPos?.solSpent || 0,
-              amount: prevPos?.amount || 0,
-              entryTime: prevPos?.entryTime || quoteRequestTime,
-              txid: prevPos?.txid || result.txid,
               ...prevPos,
+              symbol: symbol || prevPos?.symbol || 'UNKNOWN',
+              buyPrice: boughtPriceSol,
+              currentPrice: currentPrice || boughtPriceSol,
+              solSpent: buyAmt,
+              amount: exactTokenAmount,
+              entryTime: quoteRequestTime,
+              txid: result.txid || prevPos?.txid || 'simulation-copy',
               simRealBought: true,
               simRealBoughtPriceSol: boughtPriceSol,
               simRealAmountTokens: exactTokenAmount,
               simRealSolSpent: buyAmt,
               simRealBoughtTime: quoteRequestTime,
-              amountLamports: prevPos?.amountLamports || rawAmtLamp,
+              amountLamports: rawAmtLamp,
             };
             const next = {
               ...prev,
@@ -6205,14 +6211,14 @@ const checkTokenCriteria = (mint: string): {
       setPositions(prev => {
         const prevPos = prev[cleanMint];
         const updated = {
-          symbol: prevPos?.symbol || symbol,
-          buyPrice: prevPos?.buyPrice || boughtPriceSol,
-          currentPrice: prevPos?.currentPrice || currentPrice || boughtPriceSol,
-          solSpent: prevPos?.solSpent || 0,
-          amount: prevPos?.amount || 0,
-          entryTime: prevPos?.entryTime || quoteRequestTime,
-          txid: prevPos?.txid || 'simulation-copy',
           ...prevPos,
+          symbol: symbol || prevPos?.symbol || 'UNKNOWN',
+          buyPrice: boughtPriceSol,
+          currentPrice: currentPrice || boughtPriceSol,
+          solSpent: buyAmt,
+          amount: tokensQty,
+          entryTime: quoteRequestTime,
+          txid: prevPos?.txid || 'simulation-copy',
           simRealBought: true,
           simRealBoughtPriceSol: boughtPriceSol,
           simRealAmountTokens: tokensQty,

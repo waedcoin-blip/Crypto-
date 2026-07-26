@@ -58,7 +58,10 @@ import laserstreamRouter from "./server/routes/laserstream.js";
 
 // Process level crash guard for benign connection glitches
 process.on("uncaughtException", (err) => {
-  const msg = err?.message || String(err);
+  let msg = err?.message || String(err);
+  if (err && typeof err === 'object') {
+    try { msg += ' ' + JSON.stringify(err); } catch {}
+  }
   const benign = [
     "ECONNRESET", "ENOTFOUND", "socket hang up", "read ECONNRESET", "write ECONNRESET",
     "Ping timeout", "Unexpected server response", "429", "ws error", "WebSocket", "websocket"
@@ -70,7 +73,10 @@ process.on("uncaughtException", (err) => {
 });
 
 process.on("unhandledRejection", (reason: any) => {
-  const msg = reason?.message || String(reason) || "";
+  let msg = reason?.message || String(reason) || "";
+  if (reason && typeof reason === 'object') {
+    try { msg += ' ' + JSON.stringify(reason); } catch {}
+  }
   const benign = [
     "NO_ROUTES_FOUND", "No liquidity", "ECONNRESET", "socket hang up", "AbortError",
     "fetch failed", "Unexpected server response", "429", "ws error", "WebSocket", "websocket"
