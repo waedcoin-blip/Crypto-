@@ -424,8 +424,8 @@ export async function startLaserStream(
     try {
       await startFallbackWebSocket(programs, eventBusCallback, apiKey, options.customWsUrl);
       return null;
-    } catch {
-      startSimulationStream(eventBusCallback);
+    } catch (e: any) {
+      laserLogger.warn({ error: e?.message }, 'WebSocket fallback start failed, will retry on reconnection timer');
       return null;
     }
   }
@@ -660,9 +660,9 @@ export async function startFallbackWebSocket(
 
       ws.on('error', (wsErr) => {
         const errMsg = wsErr?.message || String(wsErr);
-        if (errMsg.includes('429') || errMsg.includes('Too Many Requests')) {
-          laserLogger.warn({ error: errMsg }, 'Helius endpoint rate limited (429), backing off & engaging simulation fallback');
-          startSimulationStream(eventBusCallback);
+        if (errMsg.includes('429') || errMsg.includes('Too Many Requests') || errMsg.includes('Unexpected server response')) {
+          laserLogger.warn({ error: errMsg }, 'Helius endpoint rate limited (429), backing off reconnect...');
+          state.fallbackBackoffMs = Math.max(state.fallbackBackoffMs, 15_000);
         } else {
           laserLogger.warn({ error: errMsg }, 'Raw WebSocket encountered error');
         }
@@ -692,13 +692,14 @@ export async function startFallbackWebSocket(
   } catch (err: unknown) {
     laserLogger.error({ error: err instanceof Error ? err.message : String(err) }, 'WebSocket connection failed');
 
-    startSimulationStream(eventBusCallback);
+    const backoff = state.fallbackBackoffMs;
+    state.fallbackBackoffMs = Math.min(60_000, backoff * 2);
 
     if (state.fallbackReconnectTimer) clearTimeout(state.fallbackReconnectTimer);
     state.fallbackReconnectTimer = setTimeout(() => {
-      laserLogger.info('Retrying WebSocket connection');
+      laserLogger.info(`Retrying WebSocket connection after ${Math.round(backoff / 1000)}s backoff`);
       startFallbackWebSocket(programs, eventBusCallback, apiKey, customWsUrl);
-    }, FALLBACK_RETRY_DELAY);
+    }, backoff);
   }
 }
 

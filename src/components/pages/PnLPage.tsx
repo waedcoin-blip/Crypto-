@@ -4264,7 +4264,8 @@ const checkTokenCriteria = (mint: string): {
            addLog(`❌ [SIMREAL REAL SWAP ABORTED] ${err.message} Keeping position open.`, 'warn');
            return;
         }
-        addLog(`❌ [SIMREAL REAL SWAP FAILED] Real sell swap failed: ${err.message}. Performing simulated emergency exit fallback.`, 'err');
+        addLog(`❌ [SIMREAL REAL SWAP FAILED] Real sell swap failed: ${err.message}. Keeping position open to retry.`, 'err');
+        return;
       }
     }
 
@@ -5904,11 +5905,8 @@ const checkTokenCriteria = (mint: string): {
           throw new Error("No tokens/lamports found to sell on-chain");
         }
       } catch (err: any) {
-        addLog(`❌ [SIMREAL REAL SWAP FAILED] Real manual sell failed: ${err.message}. Proceeding with simulation fallback.`, 'err');
-        const currentGrossSimReal = currPrice * tokensQty;
-        const slippageFee = currentGrossSimReal * (slippage / 100);
-        const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, spentSol);
-        sellAmtSol = Math.max(0, currentGrossSimReal - slippageFee - opFees);
+        addLog(`❌ [SIMREAL REAL SWAP FAILED] Real sell failed for ${pos.symbol}: ${err.message}. Keeping position active for retry.`, 'err');
+        return;
       }
     } else {
       const spentSol = pos.simRealSolSpent || pos.solSpent || 0.1;
@@ -6089,6 +6087,11 @@ const checkTokenCriteria = (mint: string): {
           addLog(`⚠️ [SIMREAL BUY] DexScreener fetch warning: ${err.message}. Proceeding with Jupiter lookup.`, 'warn');
         }
       }
+    }
+
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      addLog(`⚠️ [SIMREAL BUY ABORTED] Internet is offline (${symbol}). Skipped trade entry.`, 'warn');
+      return;
     }
 
     const quoteRequestTime = Date.now();

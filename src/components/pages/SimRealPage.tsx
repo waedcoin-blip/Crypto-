@@ -206,6 +206,21 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
     };
   }, []);
 
+  const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
   // ── ZUSTAND BUY SIGNALS PIPELINE STORE CONNECTION ──
   const signals = useBuySignalStore(state => state.signals);
   const stats = useBuySignalStore(state => state.stats);
@@ -457,6 +472,12 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
     const processSignalQueue = async () => {
       // 1. Check lock
       if (processingLock.current || !workerActive) return;
+
+      // ── INTERNET DISCONNECT GUARD ──
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        console.warn('[Pipeline] Internet offline. Pausing signal processing queue.');
+        return;
+      }
 
       // ── SERVER HEALTH CHECK GATE ──
       // Previously this only logged a warning and let execution continue
@@ -768,6 +789,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
 
     const monitorPositions = async () => {
       if (!active) return;
+      if (typeof navigator !== 'undefined' && !navigator.onLine) return;
       
       const currentPositions = positionsRef.current;
       const currentTokenMetrics = tokenMetricsRef.current;
@@ -922,6 +944,16 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
           </button>
         </div>
       </header>
+
+      {!isOnline && (
+        <div id="simreal-offline-banner" className="bg-red-500/15 border border-red-500/40 rounded-xl p-4 text-red-400 text-xs font-mono flex items-center gap-3">
+          <AlertTriangle className="w-5 h-5 shrink-0 text-red-400" />
+          <div>
+            <span className="font-bold uppercase tracking-wider block">Internet Connection Offline</span>
+            <span>Trading pipeline, signal processing, and auto-entry/exit are safely paused to prevent executing simulation tokens while disconnected.</span>
+          </div>
+        </div>
+      )}
 
       <section className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Left Column: Active Positions */}
