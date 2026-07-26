@@ -28,6 +28,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { cn, detectTokenStage } from './lib/utils';
+import { getSimRealTradeCount } from './config/rebuyGuard';
 import { DEFAULT_HELIUS_RPC, HELIUS_API_KEY } from './constants/solana';
 import { encryptPrivateKey, decryptPrivateKey } from './lib/crypto';
 import { auth, db, signInWithGoogle, signInWithEmailAndPassword, createUserWithEmailAndPassword } from './lib/firebase';
@@ -1362,50 +1363,6 @@ export default function App() {
             }));
           }
 
-          // ── SIMREAL WALLET DYNAMIC BUY ON 1% PROFIT ────────────────────────
-          if (currentPnLPct >= 1.0 && !position.simRealBought && !simRealBoughtPending.current.has(tokenAddress)) {
-            simRealBoughtPending.current.add(tokenAddress);
-            const buyAmt = state.buyAmountSol || 0.1;
-            if (state.simRealBalance >= buyAmt) {
-              const quoteRequestTime = Date.now();
-              const boughtPriceSol = currentPriceSol || 0.000001;
-              const tokensQty = buyAmt / boughtPriceSol;
-              
-              setSimRealBalance(prev => prev - buyAmt);
-              
-              const newSimTrade: SniperTrade = {
-                id: `simreal-buy-${Date.now()}`,
-                type: 'BUY',
-                token: symbol,
-                address: tokenAddress,
-                amount: buyAmt,
-                timestamp: quoteRequestTime,
-                signature: 'SIMREAL_BN_' + Math.random().toString(36).substring(7),
-                tokenAmount: tokensQty
-              };
-              setSimRealTrades(prev => [newSimTrade, ...prev]);
-              
-              setActivePositions(prev => {
-                if (!prev[tokenAddress]) return prev;
-                return {
-                  ...prev,
-                  [tokenAddress]: {
-                    ...prev[tokenAddress],
-                    simRealBought: true,
-                    simRealBoughtPriceSol: boughtPriceSol,
-                    simRealAmountTokens: tokensQty,
-                    simRealSolSpent: buyAmt,
-                    simRealBoughtTime: quoteRequestTime
-                  }
-                };
-              });
-
-              addNotification(`SIMREAL BOUGHT: ${symbol} for ${buyAmt.toFixed(4)} SOL (Active position in profit >= 1%)`, symbol, tokenAddress);
-              console.log(`[SIMREAL BUY] Bought ${symbol} at ${boughtPriceSol} SOL. Amount: ${buyAmt} SOL.`);
-            } else {
-              console.log(`[SIMREAL BUY SKIP] Insufficient simreal wallet balance: ${state.simRealBalance.toFixed(4)} SOL`);
-            }
-          }
           const peakPnL = position.peakPnLPct || 0;
           
           // Trailing stop: for simReal positions, strictly stick to configured baseSL (e.g. -100%)
@@ -1792,9 +1749,13 @@ export default function App() {
     optimisticPositions.current.add(tokenAddress);
 
     // Trade frequency guard: Max trade frequency check
-    const completedTradesCount = mySniperTrades.filter(t => t.address === tokenAddress && t.type === 'SELL').length;
-    const activePositionsCount = activePositions[tokenAddress] ? 1 : 0;
-    const totalTradedCount = completedTradesCount + activePositionsCount;
+    const totalTradedCount = getSimRealTradeCount(
+      tokenAddress,
+      symbol,
+      simRealTrades,
+      activePositions,
+      simRealBoughtPending.current
+    );
 
     if (totalTradedCount >= maxRebuyTimes) {
       addNotification(`Trade Limit: Skipped buy of ${symbol} (Already traded ${totalTradedCount} times, max limit is ${maxRebuyTimes}).`);

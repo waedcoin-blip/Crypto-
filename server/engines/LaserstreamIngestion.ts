@@ -15,6 +15,9 @@ import { fork } from 'child_process';
 import type { ChildProcess } from 'child_process';
 import path from 'path';
 import fs from 'fs';
+import tls from 'tls';
+import { URL } from 'url';
+import WebSocket from 'ws';
 import { logger, laserLogger } from '../utils/logger.js';
 import { config } from '../config/index.js';
 import { isBenignError } from '../utils/errors.js';
@@ -23,10 +26,12 @@ import type { LaserStreamOptions, SseEvent } from '../types/index.js';
 
 // ─── Constants ───
 const REGIONAL_HUBS = [
-  'https://laserstream-mainnet-ewr.helius-rpc.com', // East US
-  'https://laserstream-mainnet-sjc.helius-rpc.com', // West US
-  'https://laserstream-mainnet-ams.helius-rpc.com', // Europe AMS
-  'https://laserstream-mainnet-fra.helius-rpc.com', // Europe FRA
+  'https://laserstream-mainnet-ams.helius-rpc.com', // Europe AMS (Amsterdam)
+  'https://laserstream-mainnet-fra.helius-rpc.com', // Europe FRA (Frankfurt)
+  'https://laserstream-mainnet-lon.helius-rpc.com', // Europe LON (London)
+  'https://laserstream-mainnet-ewr.helius-rpc.com', // East US EWR (Newark)
+  'https://laserstream-mainnet-tyo.helius-rpc.com', // Asia TYO (Tokyo)
+  'https://laserstream-mainnet-sgp.helius-rpc.com', // Asia SGP (Singapore)
 ] as const;
 
 const DEFAULT_PROGRAMS = [
@@ -35,11 +40,11 @@ const DEFAULT_PROGRAMS = [
   'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4', // Jupiter v6
 ] as const;
 
-const HEALTH_CHECK_INTERVAL = 45_000;  // 45s
-const SILENCE_THRESHOLD = 90_000;      // 90s
-const FALLBACK_RETRY_DELAY = 15_000;   // 15s
+const HEALTH_CHECK_INTERVAL = 15_000;  // 15s
+const SILENCE_THRESHOLD = 30_000;      // 30s
+const FALLBACK_RETRY_DELAY = 5_000;    // 5s
 const SIMULATION_INTERVAL = 2_000;     // 2s
-const HUB_PROBE_TIMEOUT = 2_000;       // 2s
+const HUB_PROBE_TIMEOUT = 2_500;       // 2.5s
 const MAX_RECONNECT_ATTEMPTS = 3;
 
 const SUPPRESSED_LOG_PATTERNS = [
@@ -63,6 +68,8 @@ interface StreamState {
   childProcess: ChildProcess | null;
   fallbackSubIds: number[];
   fallbackConnection: Connection | null;
+  fallbackRawWs: WebSocket | null;
+  fallbackPingInterval: ReturnType<typeof setInterval> | null;
   isUsingFallback: boolean;
   isSimulated: boolean;
   activeEndpoint: string | null;
@@ -78,6 +85,8 @@ const state: StreamState = {
   childProcess: null,
   fallbackSubIds: [],
   fallbackConnection: null,
+  fallbackRawWs: null,
+  fallbackPingInterval: null,
   isUsingFallback: false,
   isSimulated: false,
   activeEndpoint: null,
@@ -179,45 +188,63 @@ function stopSimulationStream(): void {
 }
 
 // ─── Regional Hub Selection ───
+async function probeHubLatency(hubUrl: string, timeoutMs = HUB_PROBE_TIMEOUT): Promise<number> {
+  return new Promise((resolve) => {
+    try {
+      const parsedUrl = new URL(hubUrl);
+      const host = parsedUrl.hostname;
+      const port = parsedUrl.port ? parseInt(parsedUrl.port, 10) : 443;
+      const start = Date.now();
+
+      const socket = tls.connect(port, host, { servername: host, timeout: timeoutMs }, () => {
+        const latency = Date.now() - start;
+        socket.destroy();
+        resolve(latency);
+      });
+
+      socket.on('error', () => {
+        socket.destroy();
+        resolve(Infinity);
+      });
+
+      socket.on('timeout', () => {
+        socket.destroy();
+        resolve(Infinity);
+      });
+    } catch {
+      resolve(Infinity);
+    }
+  });
+}
+
 async function getFastestRegionalHub(
   apiKey: string,
   excludeHubs: Set<string> = new Set()
 ): Promise<string | null> {
-  laserLogger.info('Auto-detecting fastest regional hub');
+  laserLogger.info('Auto-detecting fastest regional hub via TLS latency probe');
 
   const availableHubs = REGIONAL_HUBS.filter((h) => !excludeHubs.has(h));
   if (availableHubs.length === 0) return null;
 
   const results = await Promise.all(
     availableHubs.map(async (url) => {
-      const start = Date.now();
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), HUB_PROBE_TIMEOUT);
-      try {
-        // Only fetch failures/timeouts inside this try block count as failed -
-        // a rejected fetch (DNS failure, connection refused, abort) must NOT
-        // be reported with a normal elapsed-time latency, since fast network
-        // failures would otherwise look like the fastest, healthiest hub.
-        await fetch(url, { method: 'OPTIONS', signal: controller.signal });
-        return { url, latency: Date.now() - start };
-      } catch {
-        return { url, latency: Infinity };
-      } finally {
-        clearTimeout(timeoutId);
-      }
+      const latency = await probeHubLatency(url);
+      laserLogger.debug({ hub: url, latency }, 'Hub TLS probe result');
+      return { url, latency };
     })
   );
 
-  const fastest = results.reduce((prev, curr) =>
-    curr.latency < prev.latency ? curr : prev
-  );
-
-  if (Number.isFinite(fastest.latency)) {
-    laserLogger.info({ hub: fastest.url, latency: fastest.latency }, 'Selected regional hub');
-    return fastest.url;
+  const validResults = results.filter((r) => Number.isFinite(r.latency));
+  if (validResults.length === 0) {
+    laserLogger.warn('All hub TLS probes failed, defaulting to first available hub');
+    return availableHubs[0];
   }
 
-  return availableHubs[0];
+  validResults.sort((a, b) => a.latency - b.latency);
+  const fastest = validResults[0];
+
+  laserLogger.info({ hub: fastest.url, latency: fastest.latency }, 'Selected fastest regional hub');
+  return fastest.url;
 }
 
 // ─── Health Watchdog ───
@@ -554,60 +581,146 @@ export async function startFallbackWebSocket(
     laserLogger.info({ url: maskApiKey(wsUrl) }, 'WebSocket endpoint');
     state.activeEndpoint = wsUrl;
 
-    state.fallbackConnection = new Connection(rpcUrl, {
-      commitment: 'confirmed',
-      wsEndpoint: wsUrl,
-      disableRetryOnRateLimit: false,
-    });
-
     const wrappedCallback = (event: SseEvent) => {
       state.lastEventTime = Date.now();
       eventBusCallback(event);
     };
 
-    for (const prog of programs) {
-      try {
-        const pubKey = new PublicKey(prog);
-        laserLogger.info({ program: prog }, 'Subscribing to logs');
+    // Direct WebSocket connection with instant auto-reconnect and ping keepalive
+    try {
+      const ws = new WebSocket(wsUrl);
+      state.fallbackRawWs = ws;
 
-        const subId = state.fallbackConnection.onLogs(
-          pubKey,
-          (logs, context) => {
-            const event: SseEvent = {
-              type: 'ON_CHAIN_TX',
-              slot: context.slot,
-              signature: logs.signature,
-              rawPayload: {
-                slot: context.slot,
-                signature: logs.signature,
-                transaction: { transaction: { signatures: [logs.signature] } },
-              },
-              isFallback: true,
-              isSimulated: false,
-              endpoint: state.activeEndpoint,
-            };
-            wrappedCallback(event);
-          },
-          'confirmed'
-        );
-        state.fallbackSubIds.push(subId);
-      } catch (addrErr) {
-        laserLogger.warn({ program: prog }, 'Invalid program pubkey');
-      }
+      ws.on('open', () => {
+        laserLogger.info('Raw WebSocket connected to Helius endpoint');
+        state.lastEventTime = Date.now();
+
+        // Send ping keepalive every 15 seconds to keep connection active
+        if (state.fallbackPingInterval) clearInterval(state.fallbackPingInterval);
+        state.fallbackPingInterval = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            try {
+              ws.ping();
+            } catch {
+              // Ignore
+            }
+          }
+        }, 15_000);
+
+        // Subscribe to logs for each program
+        programs.forEach((prog, index) => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(
+              JSON.stringify({
+                jsonrpc: '2.0',
+                id: index + 1,
+                method: 'logsSubscribe',
+                params: [{ mentions: [prog] }, { commitment: 'confirmed' }],
+              })
+            );
+          }
+        });
+      });
+
+      ws.on('message', (data: WebSocket.Data) => {
+        state.lastEventTime = Date.now();
+        try {
+          const parsed = JSON.parse(data.toString());
+          if (parsed.method === 'logsNotification' && parsed.params?.result?.value) {
+            const val = parsed.params.result.value;
+            const ctx = parsed.params.result.context || {};
+            const signature = val.signature;
+            const slot = ctx.slot || 0;
+
+            if (signature) {
+              const event: SseEvent = {
+                type: 'ON_CHAIN_TX',
+                slot,
+                signature,
+                rawPayload: {
+                  slot,
+                  signature,
+                  transaction: { transaction: { signatures: [signature] } },
+                },
+                isFallback: true,
+                isSimulated: false,
+                endpoint: state.activeEndpoint,
+              };
+              wrappedCallback(event);
+            }
+          }
+        } catch {
+          // Ignore parse errors
+        }
+      });
+
+      ws.on('error', (wsErr) => {
+        laserLogger.warn({ error: wsErr?.message || String(wsErr) }, 'Raw WebSocket encountered error');
+      });
+
+      ws.on('close', () => {
+        laserLogger.info('Raw WebSocket closed, scheduling immediate reconnect');
+        if (state.fallbackPingInterval) {
+          clearInterval(state.fallbackPingInterval);
+          state.fallbackPingInterval = null;
+        }
+        if (state.isUsingFallback && !state.isSimulated) {
+          if (state.fallbackReconnectTimer) clearTimeout(state.fallbackReconnectTimer);
+          state.fallbackReconnectTimer = setTimeout(() => {
+            startFallbackWebSocket(programs, eventBusCallback, apiKey, customWsUrl);
+          }, 1_500);
+        }
+      });
+    } catch (rawWsErr) {
+      laserLogger.warn({ error: rawWsErr instanceof Error ? rawWsErr.message : String(rawWsErr) }, 'Failed creating raw WebSocket');
     }
 
-    laserLogger.info(
-      { subscribed: state.fallbackSubIds.length, total: programs.length },
-      'WebSocket subscriptions active'
-    );
+    // Also attach web3 Connection listeners as secondary backup
+    try {
+      state.fallbackConnection = new Connection(rpcUrl, {
+        commitment: 'confirmed',
+        wsEndpoint: wsUrl,
+        disableRetryOnRateLimit: false,
+      });
+
+      for (const prog of programs) {
+        try {
+          const pubKey = new PublicKey(prog);
+          const subId = state.fallbackConnection.onLogs(
+            pubKey,
+            (logs, context) => {
+              const event: SseEvent = {
+                type: 'ON_CHAIN_TX',
+                slot: context.slot,
+                signature: logs.signature,
+                rawPayload: {
+                  slot: context.slot,
+                  signature: logs.signature,
+                  transaction: { transaction: { signatures: [logs.signature] } },
+                },
+                isFallback: true,
+                isSimulated: false,
+                endpoint: state.activeEndpoint,
+              };
+              wrappedCallback(event);
+            },
+            'confirmed'
+          );
+          state.fallbackSubIds.push(subId);
+        } catch {
+          // Ignore invalid pubkeys
+        }
+      }
+    } catch (connErr) {
+      // Ignore
+    }
+
     state.lastEventTime = Date.now();
   } catch (err: unknown) {
     laserLogger.error({ error: err instanceof Error ? err.message : String(err) }, 'WebSocket connection failed');
 
-    // Fallback to simulation stream while reconnecting so data flow remains uninterrupted
     startSimulationStream(eventBusCallback);
 
-    // Schedule retry
     if (state.fallbackReconnectTimer) clearTimeout(state.fallbackReconnectTimer);
     state.fallbackReconnectTimer = setTimeout(() => {
       laserLogger.info('Retrying WebSocket connection');
@@ -620,6 +733,21 @@ export function stopFallbackWebSocket(): void {
   if (state.fallbackReconnectTimer) {
     clearTimeout(state.fallbackReconnectTimer);
     state.fallbackReconnectTimer = null;
+  }
+
+  if (state.fallbackPingInterval) {
+    clearInterval(state.fallbackPingInterval);
+    state.fallbackPingInterval = null;
+  }
+
+  if (state.fallbackRawWs) {
+    try {
+      state.fallbackRawWs.removeAllListeners();
+      state.fallbackRawWs.close();
+    } catch {
+      // Ignore
+    }
+    state.fallbackRawWs = null;
   }
 
   stopSimulationStream();

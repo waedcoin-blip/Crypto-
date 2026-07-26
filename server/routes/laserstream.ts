@@ -38,6 +38,9 @@ const heartbeatInterval = setInterval(() => {
   clients.forEach((client) => {
     try {
       client.res.write(`data: ${ping}\n\n`);
+      if (typeof (client.res as any).flush === 'function') {
+        (client.res as any).flush();
+      }
     } catch {
       deadClients.push(client.id);
     }
@@ -52,7 +55,7 @@ const heartbeatInterval = setInterval(() => {
     }
     laserLogger.debug({ removed: deadClients.length, remaining: clients.length }, 'Cleaned dead SSE clients');
   }
-}, 15000);
+}, 10000);
 
 // ─── Broadcast helper ───
 export function broadcastToClients(event: SseEvent): void {
@@ -60,6 +63,9 @@ export function broadcastToClients(event: SseEvent): void {
   clients.forEach((client) => {
     try {
       client.res.write(`data: ${dataString}\n\n`);
+      if (typeof (client.res as any).flush === 'function') {
+        (client.res as any).flush();
+      }
     } catch {
       // Client disconnected
     }
@@ -151,6 +157,7 @@ router.get('/stream', (req, res) => {
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
+  res.setHeader('X-No-Compression', '1');
   res.flushHeaders();
 
   // Send padding for some strict proxies (e.g. Render)
@@ -177,6 +184,9 @@ router.get('/stream', (req, res) => {
       activeEndpoint: getActiveLaserStreamEndpoint(),
     })}\n\n`
   );
+  if (typeof (res as any).flush === 'function') {
+    (res as any).flush();
+  }
 
   const cleanup = () => {
     const idx = clients.findIndex((c) => c.id === clientId);

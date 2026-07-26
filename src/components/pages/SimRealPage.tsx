@@ -22,6 +22,7 @@ import { useAppStore } from '../../store/appStore';
 import { useBuySignalStore } from '../../store/buySignalStore';
 import { useSimulationStore } from '../../store/simulationStore';
 import { simRealTradingEngine } from '../../engines/simRealTradingEngine';
+import { getSimRealTradeCount } from '../../config/rebuyGuard';
 
 // Local helper matching the rest of the application
 const getDynamicOperationalFeeSol = (isRecovery: boolean = false, tradeAmountSol: number = 0.05): number => {
@@ -218,6 +219,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
 
   // Lock to prevent concurrent processing of different signals
   const processingLock = useRef(false);
+  const simRealBoughtPending = useRef<Set<string>>(new Set());
 
   // Manual independent trading states
   const [manualMint, setManualMint] = useState('');
@@ -468,6 +470,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
 
       processingLock.current = true;
       let executingSignalId: string | null = null;
+      let currentTokenAddress = '';
 
       try {
         // 2. Claim next pending signal
@@ -479,6 +482,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
         executingSignalId = signal.id;
 
         const { tokenAddress, symbol, triggerPriceUsd, profitPercent } = signal;
+        currentTokenAddress = tokenAddress;
         const safeProfit = typeof profitPercent === 'number' && !isNaN(profitPercent) ? profitPercent : 3.5;
         console.log(`[Pipeline] Processing signal for ${symbol} (${safeProfit >= 0 ? '+' : ''}${safeProfit.toFixed(2)}%)`);
 
@@ -558,18 +562,25 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
         }
 
         // Check rebuy limits (maxRebuyTimes)
-        const completedSimRealCount = storeState.simRealTrades.filter(
-          t => t.address === tokenAddress && t.type === 'BUY'
-        ).length;
-        const activeMaxRebuyTimes = maxRebuyTimes !== undefined ? maxRebuyTimes : 3;
+        const activeMaxRebuyTimes = maxRebuyTimes !== undefined ? maxRebuyTimes : 1;
+        const totalSimRealTradedCount = getSimRealTradeCount(
+          tokenAddress,
+          symbol,
+          storeState.simRealTrades,
+          positions || {},
+          simRealBoughtPending.current
+        );
 
-        if (completedSimRealCount >= activeMaxRebuyTimes) {
+        if (totalSimRealTradedCount >= activeMaxRebuyTimes) {
           markRejected(
             signal.id,
-            `Exceeded rebuy limit of ${activeMaxRebuyTimes} (Already traded ${completedSimRealCount} times)`
+            `Exceeded rebuy limit of ${activeMaxRebuyTimes} (Already traded ${totalSimRealTradedCount} times)`
           );
           return;
         }
+
+        // Lock this token address while processing buy
+        simRealBoughtPending.current.add(tokenAddress.toLowerCase().trim());
 
         // Check wallet balance
         const buyAmt = storeState.buyAmountSol || 0.1;
@@ -636,7 +647,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
         }
 
         // 4. All checks passed — execute real/sim trade
-        console.log(`[Pipeline] 🟢 [BUY TRIGGER] All required gates & buy limits passed for ${symbol} (${tokenAddress.slice(0, 8)}...) | Pos Limit: ${activePositionsCount + 1}/${maxPositions || '∞'}, Rebuy Limit: ${completedSimRealCount + 1}/${activeMaxRebuyTimes}, Amount: ${buyAmt} SOL. Executing copy-buy...`);
+        console.log(`[Pipeline] 🟢 [BUY TRIGGER] All required gates & buy limits passed for ${symbol} (${tokenAddress.slice(0, 8)}...) | Pos Limit: ${activePositionsCount + 1}/${maxPositions || '∞'}, Rebuy Limit: ${totalSimRealTradedCount + 1}/${activeMaxRebuyTimes}, Amount: ${buyAmt} SOL. Executing copy-buy...`);
         await executeSimRealBuy(tokenAddress, buyAmt);
         markExecuted(signal.id, `tx-copy-${Date.now()}`);
 
@@ -646,6 +657,9 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
           markFailed(executingSignalId, err?.message || 'Transaction execution failed');
         }
       } finally {
+        if (currentTokenAddress) {
+          simRealBoughtPending.current.delete(currentTokenAddress.toLowerCase().trim());
+        }
         processingLock.current = false;
       }
     };
