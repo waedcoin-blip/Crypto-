@@ -8,7 +8,7 @@ import { useAppStore } from '../../store/appStore';
 import { useBuySignalStore } from '../../store/buySignalStore';
 import { TokenScanner, ScannedToken } from '../../services/tokenScanner';
 import { DEFAULT_CRITERIA } from '../../config/tokenCriteria';
-import { getSimRealTradeCount } from '../../config/rebuyGuard';
+import { getSimRealTradeCount, getTradeCount } from '../../config/rebuyGuard';
 import { useSimulationStore } from '../../store/simulationStore';
 import { getJupiterQuote, executeTxWithRPCFallback, getTokenBalanceRaw, getLatestBlockhashWithFallback, clearSimPriceCache, pingJupiterApi } from '../../services/jupiterService';
 import { db } from '../../lib/firebase';
@@ -3768,12 +3768,12 @@ const checkTokenCriteria = (mint: string): {
     // Trade frequency guard: Max trades per token check
     const storeStateForBuy = useAppStore.getState();
     const activeMaxRebuyTimes = configRef.current.maxRebuyTimes !== undefined ? configRef.current.maxRebuyTimes : maxRebuyTimes;
-    const totalTradedCount = getSimRealTradeCount(
+    const totalTradedCount = getTradeCount(
       mint,
       symbol,
-      storeStateForBuy.simRealTrades,
+      storeStateForBuy.mySniperTrades,
       positionsRef.current,
-      simRealBoughtPending.current
+      pendingBuyMintsRef.current
     );
 
     if (totalTradedCount >= activeMaxRebuyTimes) {

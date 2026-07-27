@@ -2,14 +2,16 @@ import { executeJupiterSwap } from '../services/jupiterSwapService';
 import { TokenMetric, SniperTrade } from '../types';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
+const SOL_DECIMALS = 9;
 
 export interface SimRealPosition {
   symbol: string;
   buyPrice: number;
   currentPrice: number;
   solSpent: number;
-  amount: number;
-  amountLamports?: number;
+  amount: number;           // Human-readable token amount
+  amountLamports: number;   // Raw base units (for on-chain swaps)
+  decimals: number;         // Token decimals (critical for correct sell amounts)
   entryTime: number;
   txid: string;
   simRealBought: boolean;
@@ -20,9 +22,16 @@ export interface SimRealPosition {
   simRealIsVirtualFallback?: boolean;
 }
 
+export interface SimRealLog {
+  id: string;
+  timestamp: number;
+  type: 'INFO' | 'SUCCESS' | 'ERROR' | 'WARNING';
+  message: string;
+}
+
 export class SimRealTradingEngine {
   private static instance: SimRealTradingEngine;
-  private logs: Array<{ id: string; timestamp: number; type: string; message: string }> = [];
+  private logs: SimRealLog[] = [];
 
   public static getInstance(): SimRealTradingEngine {
     if (!SimRealTradingEngine.instance) {
@@ -31,19 +40,53 @@ export class SimRealTradingEngine {
     return SimRealTradingEngine.instance;
   }
 
-  public getLogs() {
+  public getLogs(): readonly SimRealLog[] {
     return this.logs;
   }
 
-  private addLog(message: string, type: 'INFO' | 'SUCCESS' | 'ERROR' | 'WARNING') {
-    const log = {
-      id: `engine-log-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+  private addLog(message: string, type: SimRealLog['type']) {
+    const log: SimRealLog = {
+      id: `engine-log-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`,
       timestamp: Date.now(),
       type,
       message
     };
     this.logs.unshift(log);
     console.log(`[SimRealTradingEngine] [${type}] ${message}`);
+  }
+
+  private generateId(prefix: string): string {
+    return `${prefix}-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
+  }
+
+  private validateBuyInputs(mint: string, amountSol: number, rpcUrl: string, slippage: number): void {
+    if (!mint || mint.trim().length === 0) {
+      throw new Error("Token address is empty.");
+    }
+    if (amountSol <= 0 || !Number.isFinite(amountSol)) {
+      throw new Error("Amount must be a positive number greater than 0.");
+    }
+    if (!rpcUrl || rpcUrl.trim().length === 0) {
+      throw new Error("RPC URL is required.");
+    }
+    if (slippage < 0 || slippage > 10000) {
+      throw new Error("Slippage must be between 0 and 10000 basis points.");
+    }
+  }
+
+  private validateSellInputs(mint: string, position: SimRealPosition | null | undefined, rpcUrl: string, slippage: number): void {
+    if (!mint || mint.trim().length === 0) {
+      throw new Error("Token address is empty.");
+    }
+    if (!position) {
+      throw new Error("No open position found for this token.");
+    }
+    if (!rpcUrl || rpcUrl.trim().length === 0) {
+      throw new Error("RPC URL is required.");
+    }
+    if (slippage < 0 || slippage > 10000) {
+      throw new Error("Slippage must be between 0 and 10000 basis points.");
+    }
   }
 
   /**
@@ -73,17 +116,20 @@ export class SimRealTradingEngine {
     }) => void;
   }): Promise<void> {
     const cleanMint = mint.trim();
-    if (!cleanMint) throw new Error("Token address is empty.");
+    this.validateBuyInputs(cleanMint, amountSol, rpcUrl, slippage);
 
     this.addLog(`Initiating manual SimReal BUY for ${cleanMint.slice(0, 8)}...`, 'INFO');
 
     let symbol = 'UNKNOWN';
     let currentPrice = 0;
-    const existingMetric = tokenMetrics[cleanMint];
+    let decimals = 9; // Default to 9 (common for Solana tokens)
 
+    const existingMetric = tokenMetrics[cleanMint];
     if (existingMetric) {
       symbol = existingMetric.symbol || 'UNKNOWN';
       currentPrice = existingMetric.priceNative || 0;
+      // Attempt to read decimals from metric metadata; fallback to 9
+      decimals = (existingMetric as any).decimals ?? 9;
     }
 
     const quoteRequestTime = Date.now();
@@ -92,7 +138,7 @@ export class SimRealTradingEngine {
     if (isRealMoney) {
       this.addLog(`[REAL SWAP] Executing direct buy via Jupiter on-chain...`, 'INFO');
       try {
-        const amountLamports = Math.floor(amountSol * 1_000_000_000);
+        const amountLamports = Math.floor(amountSol * 10 ** SOL_DECIMALS);
         const result = await executeJupiterSwap({
           inputMint: SOL_MINT,
           outputMint: cleanMint,
@@ -103,47 +149,50 @@ export class SimRealTradingEngine {
           slippage
         });
 
-        if (result.txid) {
-          const exactTokenAmount = result.outputAmount;
-          const boughtPriceSol = amountSol / (exactTokenAmount || 0.000001);
-
-          const newTrade: SniperTrade = {
-            id: `simreal-buy-${Date.now()}`,
-            type: 'BUY',
-            token: symbol,
-            address: cleanMint,
-            amount: amountSol,
-            timestamp: quoteRequestTime,
-            signature: result.txid,
-            tokenAmount: exactTokenAmount
-          };
-
-          const newPosition: SimRealPosition = {
-            symbol,
-            buyPrice: boughtPriceSol,
-            currentPrice: currentPrice || boughtPriceSol,
-            solSpent: amountSol,
-            amount: exactTokenAmount,
-            entryTime: quoteRequestTime,
-            txid: result.txid,
-            simRealBought: true,
-            simRealBoughtPriceSol: boughtPriceSol,
-            simRealAmountTokens: exactTokenAmount,
-            simRealSolSpent: amountSol,
-            simRealBoughtTime: quoteRequestTime,
-            amountLamports: result.quoteOutAmountRaw
-          };
-
-          updateState({
-            balanceOffset: -amountSol,
-            newTrade,
-            newPosition
-          });
-
-          this.addLog(`Successfully executed real buy for ${symbol}: ${result.txid.slice(0, 10)}...`, 'SUCCESS');
-        } else {
+        if (!result.txid) {
           throw new Error("Jupiter swap transaction ID was not returned.");
         }
+
+        // Jupiter returns outputAmount in raw base units by default
+        const exactTokenAmountRaw = result.outputAmount;
+        const exactTokenAmountHuman = exactTokenAmountRaw / (10 ** decimals);
+        const boughtPriceSol = amountSol / (exactTokenAmountHuman || 0.000001);
+
+        const newTrade: SniperTrade = {
+          id: this.generateId('simreal-buy'),
+          type: 'BUY',
+          token: symbol,
+          address: cleanMint,
+          amount: amountSol,
+          timestamp: quoteRequestTime,
+          signature: result.txid,
+          tokenAmount: exactTokenAmountHuman
+        };
+
+        const newPosition: SimRealPosition = {
+          symbol,
+          buyPrice: boughtPriceSol,
+          currentPrice: currentPrice || boughtPriceSol,
+          solSpent: amountSol,
+          amount: exactTokenAmountHuman,
+          amountLamports: result.quoteOutAmountRaw ?? exactTokenAmountRaw,
+          decimals,
+          entryTime: quoteRequestTime,
+          txid: result.txid,
+          simRealBought: true,
+          simRealBoughtPriceSol: boughtPriceSol,
+          simRealAmountTokens: exactTokenAmountHuman,
+          simRealSolSpent: amountSol,
+          simRealBoughtTime: quoteRequestTime,
+        };
+
+        updateState({
+          balanceOffset: -amountSol,
+          newTrade,
+          newPosition
+        });
+
+        this.addLog(`Successfully executed real buy for ${symbol}: ${result.txid.slice(0, 10)}...`, 'SUCCESS');
       } catch (err: any) {
         this.addLog(`Real swap failed: ${err.message}`, 'ERROR');
         throw err;
@@ -152,13 +201,13 @@ export class SimRealTradingEngine {
       // Simulation mode
       const tokensQty = amountSol / (currentPrice || 0.000001);
       const newTrade: SniperTrade = {
-        id: `simreal-buy-${Date.now()}`,
+        id: this.generateId('simreal-buy'),
         type: 'BUY',
         token: symbol,
         address: cleanMint,
         amount: amountSol,
         timestamp: quoteRequestTime,
-        signature: 'SIMREAL_BN_' + Math.random().toString(36).substring(7),
+        signature: 'SIMREAL_BN_' + Math.random().toString(36).substring(2, 11),
         tokenAmount: tokensQty
       };
 
@@ -168,6 +217,8 @@ export class SimRealTradingEngine {
         currentPrice: currentPrice || 0.000001,
         solSpent: amountSol,
         amount: tokensQty,
+        amountLamports: Math.floor(tokensQty * 10 ** decimals),
+        decimals,
         entryTime: quoteRequestTime,
         txid: 'simulation-copy',
         simRealBought: true,
@@ -202,7 +253,7 @@ export class SimRealTradingEngine {
     updateState
   }: {
     mint: string;
-    position: any;
+    position: SimRealPosition;
     privateKey: string;
     apiKey?: string;
     rpcUrl: string;
@@ -211,10 +262,11 @@ export class SimRealTradingEngine {
     updateState: (update: {
       balanceOffset: number;
       newTrade: SniperTrade;
+      closedPositionId?: string;
     }) => void;
   }): Promise<void> {
     const cleanMint = mint.trim();
-    if (!position) throw new Error("No open position found for this token.");
+    this.validateSellInputs(cleanMint, position, rpcUrl, slippage);
 
     this.addLog(`Initiating manual SimReal SELL for ${position.symbol}...`, 'INFO');
 
@@ -224,44 +276,48 @@ export class SimRealTradingEngine {
     let sellPriceSol = position.currentPrice;
     const existingMetric = tokenMetrics[cleanMint];
     if (existingMetric) {
-      sellPriceSol = existingMetric.priceNative || sellPriceSol;
+      sellPriceSol = existingMetric.priceNative ?? sellPriceSol;
     }
 
     if (isRealMoney) {
       this.addLog(`[REAL SWAP] Executing direct sell via Jupiter on-chain...`, 'INFO');
       try {
+        // Use stored decimals to compute correct raw amount; fallback only if amountLamports is missing
+        const sellAmountLamports = position.amountLamports ?? Math.floor(position.amount * 10 ** (position.decimals ?? 9));
+
         const result = await executeJupiterSwap({
           inputMint: cleanMint,
           outputMint: SOL_MINT,
-          amount: position.amountLamports || Math.floor(position.amount * 1_000_000),
+          amount: sellAmountLamports,
           privateKey,
           apiKey,
           jupRpcUrl: rpcUrl,
           slippage
         });
 
-        if (result.txid) {
-          const exactSolOutput = result.outputAmount / 1_000_000_000;
-          const newTrade: SniperTrade = {
-            id: `simreal-sell-${Date.now()}`,
-            type: 'SELL',
-            token: position.symbol,
-            address: cleanMint,
-            amount: exactSolOutput,
-            timestamp: quoteRequestTime,
-            signature: result.txid,
-            tokenAmount: position.amount
-          };
-
-          updateState({
-            balanceOffset: exactSolOutput,
-            newTrade
-          });
-
-          this.addLog(`Successfully executed real sell for ${position.symbol}: ${result.txid.slice(0, 10)}...`, 'SUCCESS');
-        } else {
+        if (!result.txid) {
           throw new Error("Jupiter swap transaction ID was not returned.");
         }
+
+        const exactSolOutput = result.outputAmount / 10 ** SOL_DECIMALS;
+        const newTrade: SniperTrade = {
+          id: this.generateId('simreal-sell'),
+          type: 'SELL',
+          token: position.symbol,
+          address: cleanMint,
+          amount: exactSolOutput,
+          timestamp: quoteRequestTime,
+          signature: result.txid,
+          tokenAmount: position.amount
+        };
+
+        updateState({
+          balanceOffset: exactSolOutput,
+          newTrade,
+          closedPositionId: position.txid // Signal to caller that this position is closed
+        });
+
+        this.addLog(`Successfully executed real sell for ${position.symbol}: ${result.txid.slice(0, 10)}...`, 'SUCCESS');
       } catch (err: any) {
         this.addLog(`Real swap failed: ${err.message}`, 'ERROR');
         throw err;
@@ -270,19 +326,20 @@ export class SimRealTradingEngine {
       // Simulation mode
       const simulatedPayout = position.amount * sellPriceSol;
       const newTrade: SniperTrade = {
-        id: `simreal-sell-${Date.now()}`,
+        id: this.generateId('simreal-sell'),
         type: 'SELL',
         token: position.symbol,
         address: cleanMint,
         amount: simulatedPayout,
         timestamp: quoteRequestTime,
-        signature: 'SIMREAL_SL_' + Math.random().toString(36).substring(7),
+        signature: 'SIMREAL_SL_' + Math.random().toString(36).substring(2, 11),
         tokenAmount: position.amount
       };
 
       updateState({
         balanceOffset: simulatedPayout,
-        newTrade
+        newTrade,
+        closedPositionId: position.txid // Signal to caller that this position is closed
       });
 
       this.addLog(`Simulated sell completed for ${position.symbol} @ ${sellPriceSol} SOL`, 'SUCCESS');

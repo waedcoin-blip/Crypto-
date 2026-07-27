@@ -4,49 +4,49 @@
  */
 export interface TokenCriteria {
   // Minimum liquidity in USD (filters out dead pools)
-  minLiquidityUsd: number;
+  readonly minLiquidityUsd: number;
 
   // Minimum 24h volume in USD
-  minVolume24hUsd: number;
+  readonly minVolume24hUsd: number;
 
   // Maximum token age in milliseconds (skip old tokens)
-  maxTokenAgeMs: number;
+  readonly maxTokenAgeMs: number;
 
   // Minimum number of unique buyers in recent window
-  minBuyers: number;
+  readonly minBuyers: number;
 
-  // Must NOT be in these categories (stablecoins, wrapped assets)
-  excludedMints: Set<string>;
+  // Set of specific mint addresses to exclude (e.g., stablecoins, wrapped assets)
+  readonly excludedMints: ReadonlySet<string>;
 
   // Minimum price change in last 5 minutes (momentum filter)
-  minPriceChange5m: number;
+  readonly minPriceChange5m: number;
 
   // Maximum price change in last 5 minutes (avoid already-pumped tokens)
-  maxPriceChange5m: number;
+  readonly maxPriceChange5m: number;
 
   // Simulation buy amount in SOL
-  simulationBuyAmountSol: number;
+  readonly simulationBuyAmountSol: number;
 
   // Real buy amount in SOL (used by SimRealPage)
-  realBuyAmountSol: number;
+  readonly realBuyAmountSol: number;
 
-  // Profit threshold to trigger signal (percent)
-  signalProfitThreshold: number;
+  // Profit threshold to trigger signal in percentage points (e.g. 1.0 = +1.0% profit required)
+  readonly signalProfitThreshold: number;
 
-  // Slippage in basis points
-  slippageBps: number;
+  // Slippage in basis points (e.g. 100 bps = 1.0% slippage tolerance)
+  readonly slippageBps: number;
 }
 
-export const DEFAULT_CRITERIA: TokenCriteria = {
-  minLiquidityUsd: 0,
-  minVolume24hUsd: 0,
-  maxTokenAgeMs: 99999999999,
-  minBuyers: 0,
-  excludedMints: new Set(),
-  minPriceChange5m: -9999,
-  maxPriceChange5m: 9999,
+export const DEFAULT_CRITERIA: Readonly<TokenCriteria> = Object.freeze({
+  minLiquidityUsd: 1000,
+  minVolume24hUsd: 500,
+  maxTokenAgeMs: 24 * 60 * 60 * 1000, // 24 hours in ms
+  minBuyers: 5,
+  excludedMints: Object.freeze(new Set<string>()),
+  minPriceChange5m: -50,
+  maxPriceChange5m: 500,
   simulationBuyAmountSol: 0.1,
   realBuyAmountSol: 0.05,
-  signalProfitThreshold: 1.0,
-  slippageBps: 500,
-};
+  signalProfitThreshold: 1.0, // 1.0 = 1.0% profit threshold
+  slippageBps: 100, // 100 bps = 1.0%
+});
