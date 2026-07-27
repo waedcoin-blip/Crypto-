@@ -604,8 +604,11 @@ export default function App() {
   });
   const [maxRebuyTimes, setMaxRebuyTimes] = useState<number>(() => {
     const saved = localStorage.getItem('hd_max_rebuy_times');
-    const parsed = saved !== null ? Number(saved) : 3;
-    return parsed === 2 ? 3 : parsed;
+    if (saved !== null) {
+      const parsed = Number(saved);
+      if (!isNaN(parsed) && parsed > 0) return parsed;
+    }
+    return 1;
   });
 
   useEffect(() => {

@@ -10,7 +10,7 @@ import { TokenScanner, ScannedToken } from '../../services/tokenScanner';
 import { DEFAULT_CRITERIA } from '../../config/tokenCriteria';
 import { getSimRealTradeCount, getTradeCount } from '../../config/rebuyGuard';
 import { useSimulationStore } from '../../store/simulationStore';
-import { getJupiterQuote, executeTxWithRPCFallback, getTokenBalanceRaw, getLatestBlockhashWithFallback, clearSimPriceCache, pingJupiterApi } from '../../services/jupiterService';
+import { getJupiterQuote, executeTxWithRPCFallback, getTokenBalanceRaw, getLatestBlockhashWithFallback, clearSimPriceCache, resetSimPrice, pingJupiterApi } from '../../services/jupiterService';
 import { db } from '../../lib/firebase';
 import { detectTokenStage } from '../../lib/utils';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
@@ -3816,17 +3816,18 @@ const checkTokenCriteria = (mint: string): {
     // causing an immediate artificial 100% loss.
     let parsedPrice = typeof price === 'number' ? price : parseFloat(String(price || '0'));
     
-    if (isRebuy && !isManualDirectBuy) {
-      addLog(`Rebuy candidate ${symbol} detected. Refreshing exchange rate with a new query to the exchange...`, 'info');
+    if (isRebuy) {
+      addLog(`🔄 [REBUY QUOTE REFRESH] Rebuy token ${symbol} detected. Querying exchange for fresh new quote price...`, 'info');
       try {
         const freshPrice = await fetchJupiterPriceFallback(mint);
         if (freshPrice && freshPrice > 0) {
           parsedPrice = freshPrice;
           price = freshPrice;
+          resetSimPrice(mint, freshPrice);
           addLog(`🔄 [REBUY RATE REFRESHED] Rebuy token ${symbol} exchange rate successfully updated to ${freshPrice.toFixed(8)} SOL`, 'info');
           if (tokenMetricsRef.current[mint]) {
             tokenMetricsRef.current[mint].priceNative = freshPrice;
-            tokenMetricsRef.current[mint].priceUsd = freshPrice * 150;
+            tokenMetricsRef.current[mint].priceUsd = freshPrice * 180;
           }
         } else {
           const lamportsForQuote = Math.floor(solAmount * 1_000_000_000);
@@ -3840,6 +3841,7 @@ const checkTokenCriteria = (mint: string): {
               const freshPriceFromQuote = solAmount / normalizedOut;
               parsedPrice = freshPriceFromQuote;
               price = freshPriceFromQuote;
+              resetSimPrice(mint, freshPriceFromQuote);
               addLog(`🔄 [REBUY RATE REFRESHED] Rebuy token ${symbol} exchange rate calculated from fresh exchange quote: ${freshPriceFromQuote.toFixed(8)} SOL`, 'info');
               if (tokenMetricsRef.current[mint]) {
                 tokenMetricsRef.current[mint].priceNative = freshPriceFromQuote;
@@ -5993,9 +5995,10 @@ const checkTokenCriteria = (mint: string): {
     const storeState = useAppStore.getState();
 
     const activeMaxRebuyTimes = configRef.current.maxRebuyTimes !== undefined ? configRef.current.maxRebuyTimes : maxRebuyTimes;
+    const existingSym = positionsRef.current[cleanMint]?.symbol || storeState.tokenMetrics[cleanMint]?.symbol;
     const totalSimRealTradedCount = getSimRealTradeCount(
       cleanMint,
-      undefined,
+      existingSym,
       storeState.simRealTrades,
       positionsRef.current,
       simRealBoughtPending.current
@@ -6019,30 +6022,36 @@ const checkTokenCriteria = (mint: string): {
     let symbol = 'UNKNOWN';
     let currentPrice = 0;
 
-    const isSimRealRebuy = totalSimRealTradedCount > 0 || !!positionsRef.current[cleanMint]?.simRealBought;
+    const isSimRealRebuy = totalSimRealTradedCount > 0 || !!positionsRef.current[cleanMint]?.simRealBought || !!positions[cleanMint];
 
-    // Check if we have tokenMetrics, active positions, or simPositions
-    const existingMetric = storeState.tokenMetrics[cleanMint];
-    if (existingMetric && !isSimRealRebuy) {
-      symbol = existingMetric.symbol || 'UNKNOWN';
-      currentPrice = existingMetric.priceNative || 0;
-    } else {
-      if (isSimRealRebuy) {
-        addLog(`🔄 [REBUY QUOTE REFRESH] Rebuy token detected (${cleanMint.slice(0, 8)}... | Trade #${totalSimRealTradedCount + 1}). Requesting fresh quote from exchange...`, 'info');
-      }
-      const activePos = positionsRef.current[cleanMint] || positions[cleanMint];
-      const simPos = useSimulationStore.getState().positions[cleanMint];
-      if (activePos && activePos.symbol && activePos.symbol !== 'Unknown' && activePos.symbol !== 'UNKNOWN') {
-        symbol = activePos.symbol;
-      } else if (simPos && simPos.symbol && simPos.symbol !== 'Unknown' && simPos.symbol !== 'UNKNOWN') {
-        symbol = simPos.symbol;
-      }
+    const activePos = positionsRef.current[cleanMint] || positions[cleanMint];
+    const simPos = useSimulationStore.getState().positions[cleanMint];
+    if (activePos && activePos.symbol && activePos.symbol !== 'Unknown' && activePos.symbol !== 'UNKNOWN') {
+      symbol = activePos.symbol;
+    } else if (simPos && simPos.symbol && simPos.symbol !== 'Unknown' && simPos.symbol !== 'UNKNOWN') {
+      symbol = simPos.symbol;
+    } else if (storeState.tokenMetrics[cleanMint]?.symbol) {
+      symbol = storeState.tokenMetrics[cleanMint].symbol;
+    }
 
-      // Fetch fresh details via DexScreener proxy with fast 1.2s timeout for updated exchange rate
+    addLog(`🔄 [REBUY QUOTE REFRESH] Fetching fresh exchange quote price for ${cleanMint.slice(0, 8)}... (${symbol})`, 'info');
+
+    // 1. First attempt direct Jupiter price v2 lookup
+    try {
+      const freshJupPrice = await fetchJupiterPriceFallback(cleanMint);
+      if (freshJupPrice && freshJupPrice > 0) {
+        currentPrice = freshJupPrice;
+        resetSimPrice(cleanMint, freshJupPrice);
+        addLog(`🔄 [REBUY RATE REFRESHED] Updated Jupiter exchange price quote for ${symbol}: ${currentPrice.toFixed(8)} SOL`, 'info');
+      }
+    } catch (e) {}
+
+    // 2. If Jupiter v2 price unavailable, fetch DexScreener with cache-buster
+    if (!currentPrice || currentPrice <= 0) {
       try {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 1200);
-        const res = await fetch(`/api/dex/tokens/${cleanMint}`, { signal: controller.signal });
+        const res = await fetch(`/api/dex/tokens/${cleanMint}?t=${Date.now()}`, { signal: controller.signal });
         clearTimeout(timeoutId);
         if (res.ok) {
           const data = await res.json();
@@ -6057,45 +6066,48 @@ const checkTokenCriteria = (mint: string): {
             if (bestPair) {
               symbol = bestPair.baseToken?.symbol || symbol || 'UNKNOWN';
               currentPrice = parseFloat(bestPair.priceNative || '0');
-              
-              const formattedMetric: TokenMetric = {
-                address: cleanMint,
-                symbol,
-                priceUsd: parseFloat(bestPair.priceUsd || '0'),
-                priceNative: currentPrice,
-                marketCap: bestPair.fdv || 0,
-                liquidity: bestPair.liquidity?.usd || 0,
-                volume24h: bestPair.volume?.h24 || 0,
-                discoveredAt: Date.now(),
-                lastUpdated: Date.now(),
-                buyCount: bestPair.txns?.h24?.buys || 0,
-                sellCount: bestPair.txns?.h24?.sells || 0,
-                buyVolume: bestPair.volume?.h24 || 0,
-                sellVolume: 0,
-                priceChange5m: bestPair.priceChange?.m5 !== undefined ? parseFloat(String(bestPair.priceChange.m5)) : (bestPair.priceChange?.h1 !== undefined ? parseFloat(String(bestPair.priceChange.h1)) / 12 : 0),
-                priceChange1m: bestPair.priceChange?.m5 !== undefined ? parseFloat(String(bestPair.priceChange.m5)) * 0.2 : 0,
-                percentageIncrease: bestPair.priceChange?.m5 !== undefined ? parseFloat(String(bestPair.priceChange.m5)) : (bestPair.priceChange?.h1 !== undefined ? parseFloat(String(bestPair.priceChange.h1)) / 12 : 0),
-                recentBuysTimeline: [],
-                category: cleanMint.toLowerCase().endsWith('pump') ? 'PUMP_FUN' : 'RAYDIUM',
-                isRugSafe: true,
-                mintAuthorityRevoked: true,
-                freezeAuthorityRevoked: true,
-                liquidityBurned: true,
-                top10Percentage: 8.5
-              };
-              storeState.setTokenMetrics(prev => ({
-                ...prev,
-                [cleanMint]: formattedMetric
-              }));
-              if (isSimRealRebuy) {
-                addLog(`🔄 [REBUY RATE REFRESHED] Updated market price for ${symbol}: ${currentPrice.toFixed(8)} SOL`, 'info');
+              if (currentPrice > 0) {
+                resetSimPrice(cleanMint, currentPrice);
+                addLog(`🔄 [REBUY RATE REFRESHED] Updated DexScreener market price quote for ${symbol}: ${currentPrice.toFixed(8)} SOL`, 'info');
               }
             }
           }
         }
       } catch (err: any) {
-        addLog(`⚠️ [SIMREAL BUY] DexScreener fetch warning: ${err.message}. Proceeding with Jupiter lookup.`, 'warn');
+        addLog(`⚠️ [SIMREAL BUY] DexScreener fetch warning: ${err.message}. Proceeding with Jupiter quote lookup.`, 'warn');
       }
+    }
+
+    if (currentPrice > 0) {
+      const formattedMetric: TokenMetric = {
+        address: cleanMint,
+        symbol: symbol || 'UNKNOWN',
+        priceUsd: currentPrice * 180,
+        priceNative: currentPrice,
+        marketCap: storeState.tokenMetrics[cleanMint]?.marketCap || 0,
+        liquidity: storeState.tokenMetrics[cleanMint]?.liquidity || 50000,
+        volume24h: storeState.tokenMetrics[cleanMint]?.volume24h || 100000,
+        discoveredAt: Date.now(),
+        lastUpdated: Date.now(),
+        buyCount: storeState.tokenMetrics[cleanMint]?.buyCount || 0,
+        sellCount: storeState.tokenMetrics[cleanMint]?.sellCount || 0,
+        buyVolume: storeState.tokenMetrics[cleanMint]?.buyVolume || 0,
+        sellVolume: 0,
+        priceChange5m: storeState.tokenMetrics[cleanMint]?.priceChange5m || 0,
+        priceChange1m: 0,
+        percentageIncrease: storeState.tokenMetrics[cleanMint]?.percentageIncrease || 0,
+        recentBuysTimeline: [],
+        category: cleanMint.toLowerCase().endsWith('pump') ? 'PUMP_FUN' : 'RAYDIUM',
+        isRugSafe: true,
+        mintAuthorityRevoked: true,
+        freezeAuthorityRevoked: true,
+        liquidityBurned: true,
+        top10Percentage: 8.5
+      };
+      storeState.setTokenMetrics(prev => ({
+        ...prev,
+        [cleanMint]: formattedMetric
+      }));
     }
 
     if (typeof navigator !== 'undefined' && !navigator.onLine) {

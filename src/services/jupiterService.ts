@@ -528,6 +528,20 @@ export function updateSimPrice(simMint: string, priceNative: number) {
   }
 }
 
+export function resetSimPrice(simMint: string, freshPriceNative: number) {
+  if (!simMint || freshPriceNative <= 0) return;
+  const now = Date.now();
+  const seed = simMint.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
+  simPriceCache.set(simMint, {
+    basePrice: freshPriceNative,
+    lastPrice: freshPriceNative,
+    lastTick: now,
+    volatility: 0.015 + (seed % 30) * 0.001,
+    trend: 0.1,
+    trendExpiry: now + 10000
+  });
+}
+
 // ─── JUPITER QUOTE: Unified real + simulation path ────────────────────────
 export const getJupiterQuote = async (
   inputMint: string,
