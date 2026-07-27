@@ -2900,7 +2900,7 @@ export const PnLPage = ({
 
   // ── SIGNAL EMISSION EFFECT ──
   // Monitors all simulation positions AND active PnL positions.
-  // When any position hits +1%, emits a buy signal to SimRealPage.
+  // When any position hits +1%, emits a buy signal to BuySignalStore / SimRealPage.
   useEffect(() => {
     const checkProfitTargets = () => {
       // 1. Check simulation positions (from useSimulationStore)
@@ -2997,27 +2997,18 @@ export const PnLPage = ({
 
     const interval = setInterval(checkProfitTargets, 1000);
     return () => clearInterval(interval);
-  }, [simPositions, positions, emitBuySignal, markSimSignaled, addLog]);
+  }, [simPositions, positions, emitBuySignal, markSimSignaled, addLog, setPositions, checkDexPlatformSourcesAllowed]);
 
-  // ── AUTO-CLOSE STALE POSITIONS ──
+  // ── AUTO-CLOSE STALE POSITIONS (DISABLED) ──
+  // Max Hold Duration expiry is disabled per user settings.
   useEffect(() => {
     const interval = setInterval(() => {
-      const now = Date.now();
-      const MAX_AGE = 30 * 60 * 1000; // 30 minutes
-
-      for (const pos of Object.values(simPositions)) {
-        if (now - pos.entryTime > MAX_AGE) {
-          closeSimPosition(pos.tokenAddress, 'timeout');
-          monitoredTokensRef.current.delete(pos.tokenAddress);
-        }
-      }
-
       // Also prune old signals
       useBuySignalStore.getState().pruneOld(10 * 60 * 1000);
     }, 60_000);
 
     return () => clearInterval(interval);
-  }, [simPositions, closeSimPosition]);
+  }, []);
 
   useEffect(() => {
     if (!privateKey) {
