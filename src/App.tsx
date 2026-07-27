@@ -416,6 +416,7 @@ export default function App() {
   const { connection } = useConnection();
   
   const [simrealPositions, setSimrealPositions] = useState<Record<string, any>>({});
+  const simrealControlRef = useRef<any>(null);
   
   const [autoSniperEnabled, setAutoSniperEnabled] = useState(false);
   const [isLiveTrading, setIsLiveTrading] = useState(false); // Live via Jupiter V6
@@ -6035,7 +6036,8 @@ export default function App() {
           setJupiterRpcUrl,
           privateKey,
           setPrivateKey,
-          onPositionsChange: setSimrealPositions
+          onPositionsChange: setSimrealPositions,
+          simrealControlRef: simrealControlRef
         }}
 
       />
@@ -6081,6 +6083,21 @@ export default function App() {
         bondingCurveStopLoss={bondingCurveStopLoss}
         pumpSwapStopLoss={pumpSwapStopLoss}
         unknownStopLoss={unknownStopLoss}
+        executeSimRealSell={async (mint) => {
+          if (simrealControlRef.current?.executeSimRealSell) {
+            await simrealControlRef.current.executeSimRealSell(mint);
+          }
+        }}
+        executeSimRealBuy={async (mint, amount) => {
+          if (simrealControlRef.current?.executeSimRealBuy) {
+            await simrealControlRef.current.executeSimRealBuy(mint, amount);
+          }
+        }}
+        resetSimRealWallet={() => {
+          if (simrealControlRef.current?.resetSimRealWallet) {
+            simrealControlRef.current.resetSimRealWallet();
+          }
+        }}
         maxRebuyTimes={maxRebuyTimes}
         setMaxRebuyTimes={setMaxRebuyTimes}
         jupiterLogs={jupiterLogs}

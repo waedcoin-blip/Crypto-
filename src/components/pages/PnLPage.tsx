@@ -5,6 +5,7 @@ import bs58 from 'bs58';
 import { Buffer } from 'buffer';
 import { TokenMetric, TelemetryAlert, Trade, SniperTrade } from '../../types';
 import { useAppStore } from '../../store/appStore';
+import { useBuySignalStore } from '../../store/buySignalStore';
 import { TokenScanner, ScannedToken } from '../../services/tokenScanner';
 import { DEFAULT_CRITERIA } from '../../config/tokenCriteria';
 import { getSimRealTradeCount, getTradeCount } from '../../config/rebuyGuard';
@@ -1048,6 +1049,7 @@ export const PnLPage = ({
     privateKey?: string;
     setPrivateKey?: (v: string) => void;
     onPositionsChange?: (v: Record<string, any>) => void;
+    simrealControlRef?: React.MutableRefObject<any>;
   }
 }) => {
   const {
@@ -1119,12 +1121,14 @@ export const PnLPage = ({
     setJupiterRpcUrl = () => {},
     privateKey = '',
     setPrivateKey = () => {},
-    onPositionsChange
+    onPositionsChange,
+    simrealControlRef
   } = externalSettings;
   
   const jupRpcUrlToUse = jupiterRpcUrl && jupiterRpcUrl.trim() !== "" ? jupiterRpcUrl.trim() : rpcUrl;
   
   const { simRealTrades, simRealBalance } = useAppStore();
+  const emitBuySignal = useBuySignalStore(state => state.emitSignal);
   const signaledPositions = useRef<Set<string>>(new Set());
   const latestPricesRef = useRef<Record<string, number>>({});
 
@@ -2867,6 +2871,105 @@ export const PnLPage = ({
 
   // ── SIGNAL EMISSION EFFECT ──
   // Monitors all simulation positions AND active PnL positions.
+  // When any position hits +1%, emits a buy signal to BuySignalStore / SimRealPage.
+  useEffect(() => {
+    const checkProfitTargets = () => {
+      // 1. Check simulation positions (from useSimulationStore)
+      const simPositionsArray = Object.values(simPositions);
+
+      for (const pos of simPositionsArray) {
+        // Skip if signal already emitted for this position
+        if (pos.signalEmitted) continue;
+
+        // Skip if no valid pricing
+        if (!pos.entryPriceUsd || pos.entryPriceUsd <= 0) continue;
+        if (!pos.currentPriceUsd || pos.currentPriceUsd <= 0) continue;
+
+        const profitPercent =
+          ((pos.currentPriceUsd - pos.entryPriceUsd) / pos.entryPriceUsd) * 100;
+
+        const signalMinProfit = 1.0;
+        if (profitPercent >= signalMinProfit) {
+          if (!pos.symbol || pos.symbol.trim() === '' || pos.symbol.toUpperCase() === 'UNKNOWN') continue;
+          
+          const sourceCheck = checkDexPlatformSourcesAllowed(pos.tokenAddress, pos.dexId);
+          if (!sourceCheck.pass) continue;
+
+          // ── +1% HIT — EMIT BUY SIGNAL ──
+          markSimSignaled(pos.tokenAddress);
+
+          emitBuySignal({
+            tokenAddress: pos.tokenAddress,
+            symbol: pos.symbol,
+            name: pos.name,
+            entryPriceUsd: pos.entryPriceUsd,
+            triggerPriceUsd: pos.currentPriceUsd,
+            profitPercent,
+            liquidityUsd: pos.liquidityUsd,
+            volume24h: pos.volume24h,
+            dexId: pos.dexId,
+            pairAddress: pos.pairAddress,
+            simAmountSol: pos.amountSol,
+            simEntryTime: pos.entryTime,
+          });
+
+          addLog(`[Signal] ${pos.symbol} +${profitPercent.toFixed(2)}% → SimRealPage`, 'success');
+        }
+      }
+
+      // 2. Check active PnL positions (from positions state)
+      const activePositionsEntries = Object.entries(positions);
+      for (const [mint, pos] of activePositionsEntries) {
+        if (pos.signalEmitted) continue;
+
+        const entryPriceSol = pos.buyPrice || pos.simRealBoughtPriceSol || 0;
+        const currentPriceSol = pos.currentPrice || 0;
+        if (entryPriceSol <= 0 || currentPriceSol <= 0) continue;
+
+        const profitPercent = ((currentPriceSol - entryPriceSol) / entryPriceSol) * 100;
+        const signalMinProfit = 1.0;
+
+        if (profitPercent >= signalMinProfit) {
+          if (!pos.symbol || pos.symbol.trim() === '' || pos.symbol.toUpperCase() === 'UNKNOWN') continue;
+
+          const activeDexId = mint.toLowerCase().endsWith('pump') ? 'pumpfun' : 'raydium';
+          const sourceCheck = checkDexPlatformSourcesAllowed(mint, activeDexId);
+          if (!sourceCheck.pass) continue;
+
+          // Mark signalEmitted = true on the active position
+          setPositions(prev => {
+            if (!prev[mint] || prev[mint].signalEmitted) return prev;
+            return {
+              ...prev,
+              [mint]: { ...prev[mint], signalEmitted: true }
+            };
+          });
+
+          const solPriceUsdRate = 180;
+          emitBuySignal({
+            tokenAddress: mint,
+            symbol: pos.symbol,
+            name: pos.symbol,
+            entryPriceUsd: pos.entryPriceUsd || (entryPriceSol * solPriceUsdRate),
+            triggerPriceUsd: pos.currentPriceUsd || (currentPriceSol * solPriceUsdRate),
+            profitPercent,
+            liquidityUsd: pos.liquidityUsd || 50000,
+            volume24h: pos.volume24h || 100000,
+            dexId: mint.toLowerCase().endsWith('pump') ? 'pumpfun' : 'raydium',
+            pairAddress: mint,
+            simAmountSol: pos.solSpent || 0.1,
+            simEntryTime: pos.entryTime || Date.now(),
+          });
+
+          addLog(`[Active Position Signal] ${pos.symbol} +${profitPercent.toFixed(2)}% → SimRealPage`, 'success');
+        }
+      }
+    };
+
+    const interval = setInterval(checkProfitTargets, 1000);
+    return () => clearInterval(interval);
+  }, [simPositions, positions, emitBuySignal, markSimSignaled, addLog, setPositions, checkDexPlatformSourcesAllowed]);
+
   useEffect(() => {
     if (!privateKey) {
       if (lastLoggedKeyRef.current) {
@@ -6116,6 +6219,9 @@ const checkTokenCriteria = (mint: string): {
     storeState.setSimRealBalance(() => 10.0);
     storeState.setSimRealTrades(() => []);
     
+    // Clear Cross-Page Buy Signals Pipeline
+    useBuySignalStore.getState().clearSignals();
+
     // Clear simRealBoughtPending tracking ref
     simRealBoughtPending.current.clear();
 
@@ -6205,6 +6311,15 @@ const checkTokenCriteria = (mint: string): {
     const s = uptime % 60;
     return `${h}h ${m}m ${s}s`;
   };
+
+  if (simrealControlRef) {
+    simrealControlRef.current = {
+      executeSimRealSell,
+      resetSimRealWallet,
+      executeSimRealBuy,
+      privateKey
+    };
+  }
 
   return (
     <div className="flex-1 text-[#e2e8f0] font-sans flex flex-col h-full lg:rounded-2xl overflow-hidden min-h-0" style={{ backgroundImage: 'radial-gradient(circle at top right, #13141f, #050509)' }}>
