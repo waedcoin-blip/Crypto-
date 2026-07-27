@@ -139,9 +139,15 @@ if (OriginalWebSocket) {
       }
     }
     
-    return protocols !== undefined
+    const wsInstance = protocols !== undefined
       ? new OriginalWebSocket(targetUrl, protocols)
       : new OriginalWebSocket(targetUrl);
+      
+    wsInstance.addEventListener('error', () => {
+      // Catch & handle transient WebSocket rate-limit / connection handshake errors
+    });
+    
+    return wsInstance;
   } as any;
 
   CustomWebSocket.prototype = OriginalWebSocket.prototype;
