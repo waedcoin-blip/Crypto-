@@ -119,8 +119,8 @@ router.get('/search', asyncHandler(async (req, res) => {
 
     res.json(data);
   } catch (error: any) {
-    dexLogger.warn({ query: q, error: error.message }, 'DEX search failed');
-    res.status(500).json({ error: error.message, pairs: [] });
+    dexLogger.warn({ query: q, errDetails: error.message }, 'DEX search failed');
+    res.status(500).json({ errDetails: error.message, pairs: [] });
   }
 }));
 
@@ -150,7 +150,7 @@ router.get('/tokens/trending', asyncHandler(async (req, res) => {
 
     res.json(data);
   } catch (e: any) {
-    dexLogger.warn({ error: e.message }, 'Trending fetch failed, using simulation');
+    dexLogger.warn({ errDetails: e.message }, 'Trending fetch failed, using simulation');
     const pairs = TRENDING_MINTS.map((m) => generateSimulatedPair(m));
     res.json({ pairs });
   }
@@ -216,7 +216,7 @@ router.get('/tokens/:mint', asyncHandler(async (req, res) => {
           }
         }
       } catch (chunkErr: any) {
-        dexLogger.warn({ chunk: ids, error: chunkErr.message }, 'Chunk fetch failed, using simulation');
+        dexLogger.warn({ chunk: ids, errDetails: chunkErr.message }, 'Chunk fetch failed, using simulation');
         for (const m of chunk) {
           const fallback = generateSimulatedPair(m);
           pairs.push(fallback);
@@ -283,7 +283,7 @@ router.get('/token-profiles', asyncHandler(async (req, res) => {
           allItems.push(...items);
           await new Promise((resolve) => setTimeout(resolve, 1000)); // Rate limit delay
         } catch (err: any) {
-          dexLogger.error({ url, error: err.message }, 'Profile endpoint error');
+          dexLogger.error({ url, errDetails: err.message }, 'Profile endpoint error');
         }
       }
 
@@ -320,7 +320,7 @@ router.get('/token-profiles', asyncHandler(async (req, res) => {
 
     res.json(profiles);
   } catch (error: any) {
-    dexLogger.warn({ error: error.message }, 'Profiles fetch failed');
+    dexLogger.warn({ errDetails: error.message }, 'Profiles fetch failed');
 
     const cached = profilesCache.get('global-token-profiles');
     if (cached) return res.json(cached.data);
@@ -367,7 +367,7 @@ router.get('/token-pairs/:mint', asyncHandler(async (req, res) => {
 
     res.json(data);
   } catch (error: any) {
-    dexLogger.warn({ mint, error: error.message }, 'Pairs fetch failed');
+    dexLogger.warn({ mint, errDetails: error.message }, 'Pairs fetch failed');
 
     const cached = pairsCache.get(mint);
     if (cached) return res.json(cached.data);

@@ -67,7 +67,7 @@ export async function fetchWithRetry(
       lastError = error instanceof Error ? error : new Error(String(error));
 
       if (!isBenignError(lastError)) {
-        logger.error({ url, attempt: i + 1, error: lastError.message }, 'Fetch attempt failed');
+        logger.error({ url, attempt: i + 1, errDetails: lastError.message }, 'Fetch attempt failed');
       }
 
       if (i < retries - 1) {

@@ -114,7 +114,7 @@ export class SwrCache<T> {
       this.set(key, result as T);
       return result as T;
     } catch (error) {
-      logger.warn({ cache: this.name, key, error: (error as Error).message }, 'Background revalidation failed');
+      logger.warn({ cache: this.name, key, errDetails: (error as Error).message }, 'Background revalidation failed');
       throw error;
     } finally {
       this.inFlight.delete(key);
@@ -140,7 +140,7 @@ export class SwrCache<T> {
         this.set(key, result as T);
       })
       .catch((err) => {
-        logger.warn({ cache: this.name, key, error: err.message }, 'Background revalidation failed');
+        logger.warn({ cache: this.name, key, errDetails: err.message }, 'Background revalidation failed');
       })
       .finally(() => {
         this.inFlight.delete(key);

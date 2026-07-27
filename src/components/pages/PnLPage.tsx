@@ -5801,6 +5801,18 @@ const checkTokenCriteria = (mint: string): {
     store.setSimRealTrades(() => []);
     store.setTelemetryBits([false, false, false, false, false, false]);
     
+    // Clear buy signals store so that SimRealPage doesn't process leftover pending signals
+    useBuySignalStore.getState().clearSignals();
+    
+    // Clear simulation store and scanner monitored tokens
+    useSimulationStore.getState().clearPositions();
+    monitoredTokensRef.current.clear();
+    simRealBoughtPending.current.clear();
+    signaledPositions.current.clear();
+    pendingBuyMintsRef.current.clear();
+    pendingSellMintsRef.current.clear();
+    processedAlerts.current.clear();
+    
     // Completely clear all cache and reset balances to exactly 10.0 SOL
     localStorage.setItem('app_simulationBalance_v4', '10.0');
     localStorage.setItem('juipter_auto_simWalletBalance', '10.0');
@@ -6254,7 +6266,8 @@ const checkTokenCriteria = (mint: string): {
     simRealBoughtPending.current.clear();
 
     // Clear simulation store positions so old signals aren't re-triggered
-    useSimulationStore.setState({ positions: {}, closedPositions: [] });
+    useSimulationStore.getState().clearPositions();
+    monitoredTokensRef.current.clear();
     
     // Also remove the simRealBought status from any active positions and mark signalEmitted so they don't re-trigger after reset
     setPositions(prev => {

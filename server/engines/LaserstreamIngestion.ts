@@ -373,7 +373,7 @@ export async function runLaserstreamWorker(): Promise<void> {
       (error: unknown) => {
         const errorMsg = error instanceof Error ? error.message : String(error);
         if (process.send) {
-          process.send({ type: 'ERROR', error: errorMsg });
+          process.send({ type: 'ERROR', errDetails: errorMsg });
         }
       }
     );
@@ -399,7 +399,7 @@ export async function runLaserstreamWorker(): Promise<void> {
   } catch (error: unknown) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     if (process.send) {
-      process.send({ type: 'ERROR', error: errorMsg });
+      process.send({ type: 'ERROR', errDetails: errorMsg });
     }
     process.exit(1);
   }
@@ -425,7 +425,7 @@ export async function startLaserStream(
       await startFallbackWebSocket(programs, eventBusCallback, apiKey, options.customWsUrl);
       return null;
     } catch (e: any) {
-      laserLogger.warn({ error: e?.message }, 'WebSocket fallback start failed, will retry on reconnection timer');
+      laserLogger.warn({ errDetails: e?.message }, 'WebSocket fallback start failed, will retry on reconnection timer');
       return null;
     }
   }
@@ -551,7 +551,7 @@ export async function startLaserStream(
     return state.activeSubscription;
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);
-    laserLogger.error({ error: msg }, 'gRPC spawning failed, switching to WebSocket');
+    laserLogger.error({ errDetails: msg }, 'gRPC spawning failed, switching to WebSocket');
     handleFallback(msg);
     startHealthWatchdog(programs, eventBusCallback, apiKey, options.customWsUrl);
     return null;
@@ -661,10 +661,10 @@ export async function startFallbackWebSocket(
       ws.on('error', (wsErr) => {
         const errMsg = wsErr?.message || String(wsErr);
         if (errMsg.includes('429') || errMsg.includes('Too Many Requests') || errMsg.includes('Unexpected server response')) {
-          laserLogger.warn({ error: errMsg }, 'Helius endpoint rate limited (429), backing off reconnect...');
+          laserLogger.warn({ errDetails: errMsg }, 'Helius endpoint rate limited (429), backing off reconnect...');
           state.fallbackBackoffMs = Math.max(state.fallbackBackoffMs, 15_000);
         } else {
-          laserLogger.warn({ error: errMsg }, 'Raw WebSocket encountered error');
+          laserLogger.warn({ errDetails: errMsg }, 'Raw WebSocket encountered error');
         }
       });
 
@@ -685,12 +685,12 @@ export async function startFallbackWebSocket(
         }
       });
     } catch (rawWsErr) {
-      laserLogger.warn({ error: rawWsErr instanceof Error ? rawWsErr.message : String(rawWsErr) }, 'Failed creating raw WebSocket');
+      laserLogger.warn({ errDetails: rawWsErr instanceof Error ? rawWsErr.message : String(rawWsErr) }, 'Failed creating raw WebSocket');
     }
 
     state.lastEventTime = Date.now();
   } catch (err: unknown) {
-    laserLogger.error({ error: err instanceof Error ? err.message : String(err) }, 'WebSocket connection failed');
+    laserLogger.error({ errDetails: err instanceof Error ? err.message : String(err) }, 'WebSocket connection failed');
 
     const backoff = state.fallbackBackoffMs;
     state.fallbackBackoffMs = Math.min(60_000, backoff * 2);

@@ -105,7 +105,7 @@ router.get('/price', asyncHandler(async (req, res) => {
           const parsed = JSON.parse(text);
           Object.assign(result, parsed);
         } catch (e: any) {
-          jupiterLogger.error({ error: e.message }, 'Jupiter Price Parse Error');
+          jupiterLogger.error({ errDetails: e.message }, 'Jupiter Price Parse Error');
         }
       }
     }
@@ -133,14 +133,14 @@ router.get('/quote', asyncHandler(async (req, res) => {
   const baseUrl = (req.query.baseUrl as string) || 'https://api.jup.ag';
 
   if (inputMint === outputMint) {
-    return res.status(400).json({ error: 'Input and output mints cannot be the same' });
+    return res.status(400).json({ errDetails: 'Input and output mints cannot be the same' });
   }
 
   // Handle simulated tokens
   const isSimulated = inputMint.startsWith('sim') || outputMint.startsWith('sim');
   if (isSimulated) {
     if (!config.ENABLE_SIMULATED_TOKENS) {
-      return res.status(400).json({ error: 'Simulated tokens are disabled' });
+      return res.status(400).json({ errDetails: 'Simulated tokens are disabled' });
     }
     const mockQuote = generateSimulatedQuote(inputMint, outputMint, amount, slippageBps);
     return res.json(mockQuote);
@@ -179,7 +179,7 @@ router.get('/quote', asyncHandler(async (req, res) => {
           break;
         }
       } catch (e) {
-        jupiterLogger.warn({ url: urlToTry, error: (e as Error).message }, 'Fallback fetch failed');
+        jupiterLogger.warn({ url: urlToTry, errDetails: (e as Error).message }, 'Fallback fetch failed');
       }
     }
 

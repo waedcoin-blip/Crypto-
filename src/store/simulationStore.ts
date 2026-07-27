@@ -39,6 +39,9 @@ interface SimulationStore {
 
   // Get all active positions as array
   getActivePositions: () => SimPosition[];
+
+  // Clear all positions
+  clearPositions: () => void;
 }
 
 export const useSimulationStore = create<SimulationStore>((set, get) => ({
@@ -135,5 +138,9 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
 
   getActivePositions: () => {
     return Object.values(get().positions);
+  },
+
+  clearPositions: () => {
+    set({ positions: {}, closedPositions: [] });
   },
 }));

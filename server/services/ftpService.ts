@@ -99,7 +99,7 @@ export async function testFtpConnection(
       await ensureRemoteDir(client, targetDir);
     } catch (dirErr: unknown) {
       const msg = dirErr instanceof Error ? dirErr.message : String(dirErr);
-      ftpLogger.warn({ dir: targetDir, error: msg }, 'Directory not accessible');
+      ftpLogger.warn({ dir: targetDir, errDetails: msg }, 'Directory not accessible');
       return {
         success: true,
         message: `Connected to ${targetHost}, but directory '${targetDir}' is not accessible: ${msg}`,
@@ -124,7 +124,7 @@ export async function testFtpConnection(
     };
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);
-    ftpLogger.error({ host: targetHost, error: msg }, 'FTP connection failed');
+    ftpLogger.error({ host: targetHost, errDetails: msg }, 'FTP connection failed');
     return {
       success: false,
       message: `Connection failed: ${msg}`,
@@ -200,7 +200,7 @@ export async function backupFtpData(
     };
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);
-    ftpLogger.error({ host: targetHost, error: msg }, 'Backup failed');
+    ftpLogger.error({ host: targetHost, errDetails: msg }, 'Backup failed');
     return {
       success: false,
       message: `Backup failed: ${msg}`,
@@ -214,7 +214,7 @@ export async function backupFtpData(
       ftpLogger.debug({ tempDir }, 'Cleaned up temp files');
     } catch (cleanupErr: unknown) {
       ftpLogger.warn(
-        { tempDir, error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr) },
+        { tempDir, errDetails: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr) },
         'Failed to clean up temp files'
       );
     }
@@ -275,7 +275,7 @@ export async function deployFtpDist(
     };
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);
-    ftpLogger.error({ host: targetHost, error: msg }, 'Deployment failed');
+    ftpLogger.error({ host: targetHost, errDetails: msg }, 'Deployment failed');
     return {
       success: false,
       message: `Deployment failed: ${msg}`,

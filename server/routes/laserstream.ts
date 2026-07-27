@@ -149,7 +149,7 @@ const MAX_SSE_CLIENTS = 100;
 // GET /api/laserstream/stream (SSE)
 router.get('/stream', (req, res) => {
   if (clients.length >= MAX_SSE_CLIENTS) {
-    res.status(503).json({ error: 'SSE server capacity reached' });
+    res.status(503).json({ errDetails: 'SSE server capacity reached' });
     return;
   }
 
