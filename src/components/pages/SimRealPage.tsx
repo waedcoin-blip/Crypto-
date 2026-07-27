@@ -19,7 +19,6 @@ import {
 import { TokenMetric, SniperTrade } from '../../types';
 import { cn, detectTokenStage } from '../../lib/utils';
 import { useAppStore } from '../../store/appStore';
-import { useBuySignalStore } from '../../store/buySignalStore';
 import { useSimulationStore } from '../../store/simulationStore';
 import { simRealTradingEngine } from '../../engines/simRealTradingEngine';
 import { getSimRealTradeCount } from '../../config/rebuyGuard';
@@ -96,9 +95,9 @@ interface SimRealPageProps {
   bondingCurveStopLoss: number;
   pumpSwapStopLoss: number;
   unknownStopLoss: number;
-  executeSimRealSell: (mint: string) => Promise<void>;
-  executeSimRealBuy: (mint: string, amount: number) => Promise<void>;
-  resetSimRealWallet: () => void;
+  executeSimRealSell?: (mint: string) => Promise<void>;
+  executeSimRealBuy?: (mint: string, amount: number) => Promise<void>;
+  resetSimRealWallet?: () => void;
   maxRebuyTimes: number;
   setMaxRebuyTimes: (v: number) => void;
   jupiterLogs: { id: string; timestamp: number; type: 'QUOTE' | 'SWAP' | 'ERROR' | 'INFO'; message: string; details?: any }[];
@@ -221,17 +220,6 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
     };
   }, []);
 
-  // ── ZUSTAND BUY SIGNALS PIPELINE STORE CONNECTION ──
-  const signals = useBuySignalStore(state => state.signals);
-  const stats = useBuySignalStore(state => state.stats);
-  const claimNextPending = useBuySignalStore(state => state.claimNextPending);
-  const markExecuting = useBuySignalStore(state => state.markExecuting);
-  const markExecuted = useBuySignalStore(state => state.markExecuted);
-  const markFailed = useBuySignalStore(state => state.markFailed);
-  const markRejected = useBuySignalStore(state => state.markRejected);
-  const pruneOld = useBuySignalStore(state => state.pruneOld);
-  const clearSignals = useBuySignalStore(state => state.clearSignals);
-
   // Lock to prevent concurrent processing of different signals
   const processingLock = useRef(false);
   const simRealBoughtPending = useRef<Set<string>>(new Set());
@@ -307,8 +295,21 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
       setIsBuying(true);
       setBuyStatus({ type: 'info', text: 'Initiating trade swap on-chain/simulation...' });
       
-      await executeSimRealBuy(mint, amount);
-      
+      if (executeSimRealBuy) {
+        await executeSimRealBuy(mint, amount);
+      } else {
+        await simRealTradingEngine.executeBuy({
+          mint,
+          amountSol: amount,
+          privateKey,
+          apiKey,
+          rpcUrl: rpcUrl || 'https://api.mainnet-beta.solana.com',
+          slippage: slippage || 100,
+          tokenMetrics,
+          updateState: () => {}
+        });
+      }
+
       setBuyStatus({ type: 'success', text: `Successfully executed independent swap for ${mint.slice(0, 8)}!` });
       setManualMint(''); // clear input on success
     } catch (err: any) {
@@ -323,7 +324,20 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
     if (!pos) return;
 
     try {
-      await executeSimRealSell(mint);
+      if (executeSimRealSell) {
+        await executeSimRealSell(mint);
+      } else {
+        await simRealTradingEngine.executeSell({
+          mint,
+          position: pos as any,
+          privateKey,
+          apiKey,
+          rpcUrl: rpcUrl || 'https://api.mainnet-beta.solana.com',
+          slippage: slippage || 100,
+          tokenMetrics,
+          updateState: () => {}
+        });
+      }
     } catch (err: any) {
       console.error("Independent sell failed:", err);
     }
@@ -465,312 +479,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
     return completed.reverse();
   };
 
-  // ── BACKGROUND WORKER: Buy Signal Pipeline ──
-  useEffect(() => {
-    let workerActive = true;
-
-    const processSignalQueue = async () => {
-      // 1. Check lock
-      if (processingLock.current || !workerActive) return;
-
-      // ── INTERNET DISCONNECT GUARD ──
-      if (typeof navigator !== 'undefined' && !navigator.onLine) {
-        console.warn('[Pipeline] Internet offline. Pausing signal processing queue.');
-        return;
-      }
-
-      // ── SERVER HEALTH CHECK GATE ──
-      // Previously this only logged a warning and let execution continue
-      // regardless of health status. For real-money trades, a degraded
-      // server (e.g. RPC or Jupiter integration down) should actually block
-      // execution rather than proceed blind. Simulation-only trading is
-      // allowed to continue since no real funds are at risk.
-      if (serverHealth === 'degraded' && privateKey) {
-        return;
-      }
-
-      processingLock.current = true;
-      let executingSignalId: string | null = null;
-      let currentTokenAddress = '';
-
-      try {
-        // 2. Claim next pending signal
-        const signal = claimNextPending();
-        if (!signal) {
-          return;
-        }
-        
-        executingSignalId = signal.id;
-
-        const { tokenAddress, symbol, triggerPriceUsd, profitPercent } = signal;
-        currentTokenAddress = tokenAddress;
-        const safeProfit = typeof profitPercent === 'number' && !isNaN(profitPercent) ? profitPercent : 3.5;
-        console.log(`[Pipeline] Processing signal for ${symbol} (${safeProfit >= 0 ? '+' : ''}${safeProfit.toFixed(2)}%)`);
-
-        // Gate 0: Block Unknown tokens or tokens not transferred from PnLPage
-        if (!symbol || symbol.trim() === '' || symbol.toUpperCase() === 'UNKNOWN') {
-          markRejected(signal.id, 'Token symbol is Unknown or missing');
-          return;
-        }
-
-        // Gate 0.0: Signal Freshness Gate - reject stale/re-hydrated signals (> 120s old)
-        if (signal.timestamp && (Date.now() - signal.timestamp > 120000)) {
-          markRejected(signal.id, `Signal timestamp (${new Date(signal.timestamp).toLocaleTimeString()}) expired (> 120s old)`);
-          return;
-        }
-
-        // Gate 0.05: DEX Platform Sources Filter (PnLPage synced)
-        const signalTokenMetric = tokenMetrics[tokenAddress];
-        const signalStageInfo = detectTokenStage({
-          address: tokenAddress,
-          dexId: signal.dexId || signalTokenMetric?.dexId,
-          bondingCurveProgress: signalTokenMetric?.bondingCurveProgress,
-          isRaydiumListed: signalTokenMetric?.isRaydiumListed
-        });
-
-        if (signalStageInfo.isBonding && !tradeBonding) {
-          markRejected(signal.id, `DEX source (Bonding stage) is unselected in DEX Platform Sources on PnLPage`);
-          return;
-        }
-        if (signalStageInfo.platform === 'PUMP_FUN' && !tradePumpFun) {
-          markRejected(signal.id, `DEX source (Pump.fun) is unselected in DEX Platform Sources on PnLPage`);
-          return;
-        }
-        if (signalStageInfo.platform === 'RAYDIUM' && !tradeRaydium) {
-          markRejected(signal.id, `DEX source (Raydium) is unselected in DEX Platform Sources on PnLPage`);
-          return;
-        }
-        if (signalStageInfo.platform === 'PUMPSWAP' && !tradeRaydium) {
-          markRejected(signal.id, `DEX source (PumpSwap) is unselected in DEX Platform Sources on PnLPage`);
-          return;
-        }
-        if (signalStageInfo.platform === 'UNKNOWN' && !tradeUnknown) {
-          markRejected(signal.id, `DEX source (Unknown token) is unselected in DEX Platform Sources on PnLPage`);
-          return;
-        }
-
-        // Gate 0.1: Profit validation check — reject position signals with emit profit below +1.0% unless it's a fresh sniper entry signal
-        const isFreshSniperSignal = !signal.dexId || ['pumpfun', 'pump-fun', 'raydium', 'pumpswap', 'dexscreener'].includes(signal.dexId.toLowerCase());
-        if (typeof profitPercent === 'number' && profitPercent < 1.0 && !isFreshSniperSignal) {
-          markRejected(signal.id, `Emit profit (${profitPercent >= 0 ? '+' : ''}${profitPercent.toFixed(2)}%) is below required +1.0% target`);
-          return;
-        }
-
-        // Mark as actively executing
-        markExecuting(signal.id);
-
-        // 3. Execution Gates & Fresh Quote Check
-        const storeState = useAppStore.getState();
-
-        // Check if token address starts with 'sim' (blocked for real-money, allowed in simulation)
-        if (privateKey && (tokenAddress.toLowerCase().startsWith('sim') || symbol.toLowerCase().startsWith('sim'))) {
-          markRejected(signal.id, 'Tokens starting with sim are strictly blocked for real-money trading.');
-          return;
-        }
-
-        // Check if we already have an active SimReal position for this token
-        const hasActivePosition = positions && positions[tokenAddress]?.simRealBought;
-        if (hasActivePosition) {
-          markRejected(signal.id, `Already holding active SimReal position for ${symbol}`);
-          return;
-        }
-
-        // Check we haven't hit the configured max concurrent positions limit.
-        const activePositionsCount = Object.values(positions || {}).filter(p => p && p.simRealBought).length;
-        if (maxPositions && activePositionsCount >= maxPositions) {
-          markRejected(signal.id, `Max concurrent positions reached (${activePositionsCount}/${maxPositions})`);
-          return;
-        }
-
-        // Check rebuy limits (maxRebuyTimes)
-        const activeMaxRebuyTimes = maxRebuyTimes !== undefined ? maxRebuyTimes : 1;
-        const totalSimRealTradedCount = getSimRealTradeCount(
-          tokenAddress,
-          symbol,
-          storeState.simRealTrades,
-          positions || {},
-          simRealBoughtPending.current
-        );
-
-        if (totalSimRealTradedCount >= activeMaxRebuyTimes) {
-          markRejected(
-            signal.id,
-            `Exceeded rebuy limit of ${activeMaxRebuyTimes} (Already traded ${totalSimRealTradedCount} times)`
-          );
-          return;
-        }
-
-        // Lock this token address while processing buy
-        simRealBoughtPending.current.add(tokenAddress.toLowerCase().trim());
-
-        // Check wallet balance
-        const buyAmt = storeState.buyAmountSol || 0.1;
-        if (storeState.simRealBalance < buyAmt) {
-          markRejected(
-            signal.id,
-            `Insufficient SimReal Balance (${storeState.simRealBalance.toFixed(4)} SOL < ${buyAmt} SOL)`
-          );
-          return;
-        }
-
-        // When real trading is active, check on-chain wallet balance
-        if (privateKey && jupiterBalance !== null) {
-          const opFeeBuffer = getDynamicOperationalFeeSol(false, buyAmt);
-          if (jupiterBalance < buyAmt + opFeeBuffer) {
-            markRejected(
-              signal.id,
-              `Insufficient on-chain wallet balance (${jupiterBalance.toFixed(4)} SOL < ${(buyAmt + opFeeBuffer).toFixed(4)} SOL needed)`
-            );
-            return;
-          }
-        }
-
-        // ── FETCH FRESH QUOTE FOR VERIFICATION WITH FAST TIMEOUT ──
-        let freshPriceUsd = triggerPriceUsd;
-        let freshLiquidityUsd = signal.liquidityUsd;
-
-        // Immediately seed tokenMetrics so executeSimRealBuy has instant access without extra HTTP request
-        if (!storeState.tokenMetrics[tokenAddress]) {
-          const formattedMetric: TokenMetric = {
-            address: tokenAddress,
-            symbol: symbol || 'UNKNOWN',
-            priceUsd: triggerPriceUsd || 0,
-            priceNative: triggerPriceUsd ? (triggerPriceUsd / 180) : 0.000001,
-            marketCap: 0,
-            liquidity: signal.liquidityUsd || 50000,
-            volume24h: signal.volume24h || 100000,
-            discoveredAt: Date.now(),
-            lastUpdated: Date.now(),
-            buyCount: 0,
-            sellCount: 0,
-            buyVolume: 0,
-            sellVolume: 0,
-            priceChange5m: profitPercent || 0,
-            priceChange1m: 0,
-            percentageIncrease: profitPercent || 0,
-            recentBuysTimeline: [],
-            category: tokenAddress.toLowerCase().endsWith('pump') ? 'PUMP_FUN' : 'RAYDIUM',
-            isRugSafe: true,
-            mintAuthorityRevoked: true,
-            freezeAuthorityRevoked: true,
-            liquidityBurned: true,
-            top10Percentage: 8.5
-          };
-          storeState.setTokenMetrics(prev => ({
-            ...prev,
-            [tokenAddress]: formattedMetric
-          }));
-        }
-
-        // Only perform external HTTP check if liquidity or price is completely missing
-        if (!freshLiquidityUsd || freshLiquidityUsd === 0 || !freshPriceUsd || freshPriceUsd === 0) {
-          try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 800);
-            const res = await fetch(`/api/dex/tokens/${tokenAddress}`, { signal: controller.signal });
-            clearTimeout(timeoutId);
-            if (res.ok) {
-              const data = await res.json();
-              const pair = data?.pairs && Array.isArray(data.pairs) && data.pairs.length > 0
-                ? [...data.pairs].sort((a: any, b: any) => (parseFloat(b.liquidity?.usd || '0') - parseFloat(a.liquidity?.usd || '0')))[0]
-                : null;
-              if (pair) {
-                freshPriceUsd = parseFloat(pair.priceUsd || '0') || freshPriceUsd;
-                freshLiquidityUsd = parseFloat(pair.liquidity?.usd || '0') || freshLiquidityUsd;
-              }
-            }
-          } catch (err) {
-            console.warn('[Pipeline] Fast quote check fallback to signal metadata');
-          }
-        }
-
-        // Gate 1: Check minimum liquidity (allow if effective liquidity >= $1,000)
-        const effectiveLiquidity = Math.max(freshLiquidityUsd, signal.liquidityUsd || 0);
-        if (effectiveLiquidity < 1_000) {
-          markRejected(signal.id, `Liquidity too low ($${effectiveLiquidity.toFixed(0)} < $1,000)`);
-          return;
-        }
-
-        // Gate 2: Deviation check (Pump guard: Max 15% above trigger price)
-        if (triggerPriceUsd > 0 && freshPriceUsd > 0) {
-          const priceIncreasePercent = ((freshPriceUsd - triggerPriceUsd) / triggerPriceUsd) * 100;
-          if (priceIncreasePercent > 15) {
-            markRejected(
-              signal.id,
-              `Price pumped too high after trigger: +${priceIncreasePercent.toFixed(2)}% > +15%`
-            );
-            return;
-          }
-        }
-
-        // 4. All checks passed — execute real/sim trade
-        console.log(`[Pipeline] 🟢 [BUY TRIGGER] All required gates & buy limits passed for ${symbol} (${tokenAddress.slice(0, 8)}...) | Pos Limit: ${activePositionsCount + 1}/${maxPositions || '∞'}, Rebuy Limit: ${totalSimRealTradedCount + 1}/${activeMaxRebuyTimes}, Amount: ${buyAmt} SOL. Executing copy-buy...`);
-        await executeSimRealBuy(tokenAddress, buyAmt);
-        markExecuted(signal.id, `tx-copy-${Date.now()}`);
-
-      } catch (err: any) {
-        console.error(`[Pipeline Error] Signal swap execution failed:`, err);
-        if (executingSignalId) {
-          markFailed(executingSignalId, err?.message || 'Transaction execution failed');
-        }
-      } finally {
-        if (currentTokenAddress) {
-          simRealBoughtPending.current.delete(currentTokenAddress.toLowerCase().trim());
-        }
-        processingLock.current = false;
-        // Drain pending signal queue immediately without waiting for interval timer
-        const remainingPending = useBuySignalStore.getState().signals.filter(s => s.status === 'pending');
-        if (remainingPending.length > 0) {
-          setTimeout(processSignalQueue, 10);
-        }
-      }
-    };
-
-    // Run immediate check when pending signals exist or on fast interval
-    if (signals.some(s => s.status === 'pending') && !processingLock.current) {
-      processSignalQueue();
-    }
-
-    const intervalId = setInterval(() => {
-      if (useBuySignalStore.getState().signals.some(s => s.status === 'pending') && !processingLock.current) {
-        processSignalQueue();
-      }
-    }, 500);
-
-    // Prune old signals every 30 seconds
-    const pruneId = setInterval(() => {
-      pruneOld(5 * 60 * 1000); // 5-minute deduplication window
-    }, 30000);
-
-    return () => {
-      workerActive = false;
-      clearInterval(intervalId);
-      clearInterval(pruneId);
-    };
-  }, [
-    positions,
-    maxRebuyTimes,
-    maxPositions,
-    tradePumpFun,
-    tradeRaydium,
-    tradeBonding,
-    tradeUnknown,
-    privateKey,
-    jupiterBalance,
-    serverHealth,
-    apiKey,
-    jupiterRpcUrl,
-    rpcUrl,
-    slippage,
-    tokenMetrics,
-    setPositions,
-    claimNextPending,
-    markExecuting,
-    markExecuted,
-    markFailed,
-    markRejected,
-    pruneOld,
-  ]);
+  // All tokens are traded directly in PnLPage
 
   // Fixes Incorrect Dependency Array for TP/SL Monitor Worker
   const positionsRef = useRef(positions);
@@ -932,8 +641,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
           </div>
           <button 
             onClick={() => {
-              resetSimRealWallet();
-              clearSignals();
+              if (resetSimRealWallet) resetSimRealWallet();
               useSimulationStore.setState({ positions: {}, closedPositions: [] });
             }}
             className="bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-lg border border-emerald-500/20 transition-all active:scale-95 flex items-center gap-1.5"
@@ -1563,122 +1271,6 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
 
         {/* Right Column: Wallet Trades history */}
         <div className="lg:col-span-7">
-          {/* Zustand Buy Signals Pipeline Dashboard */}
-          <div className="bg-[#10111a]/60 border border-[#1f212e] rounded-2xl flex flex-col p-4 mb-6">
-            <div className="pb-3 border-b border-[#1f212e] mb-4 flex justify-between items-center">
-              <div className="flex flex-col">
-                <h2 className="text-[12px] uppercase tracking-[1px] text-emerald-400 font-bold flex items-center gap-2">
-                  <Zap className="w-4 h-4 text-emerald-400" />
-                  Cross-Page Buy Signals Pipeline
-                </h2>
-                <span className="text-[9px] text-slate-500 uppercase font-mono mt-0.5">Zustand Real-Time Signal Bridge (PnLPage → SimRealPage)</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2.5 py-0.5 rounded border border-emerald-500/20 font-bold">
-                  {signals.length} Signals Captured
-                </span>
-                {signals.length > 0 && (
-                  <button
-                    onClick={clearSignals}
-                    className="text-[9px] font-mono text-rose-400 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 px-2 py-0.5 rounded uppercase font-bold transition-all active:scale-95"
-                    title="Erase all captured buy signals from pipeline"
-                  >
-                    Erase Pipeline
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* Signal Stats Grid */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
-              <div className="bg-[#0a0b14] border border-[#1f212e] rounded-xl p-3 flex flex-col">
-                <span className="text-[9px] text-slate-500 font-mono uppercase">Total Emitted</span>
-                <span className="text-lg font-mono font-black text-white">{stats.totalEmitted}</span>
-              </div>
-              <div className="bg-[#0a0b14] border border-[#1f212e] rounded-xl p-3 flex flex-col">
-                <span className="text-[9px] text-slate-500 font-mono uppercase">Total Executed</span>
-                <span className="text-lg font-mono font-black text-emerald-400">{stats.totalExecuted}</span>
-              </div>
-              <div className="bg-[#0a0b14] border border-[#1f212e] rounded-xl p-3 flex flex-col">
-                <span className="text-[9px] text-slate-500 font-mono uppercase">Total Failed</span>
-                <span className="text-lg font-mono font-black text-rose-400">{stats.totalFailed}</span>
-              </div>
-              <div className="bg-[#0a0b14] border border-[#1f212e] rounded-xl p-3 flex flex-col">
-                <span className="text-[9px] text-slate-500 font-mono uppercase">Total Rejected</span>
-                <span className="text-lg font-mono font-black text-amber-400">{stats.totalRejected}</span>
-              </div>
-            </div>
-
-            {/* Active Signals Queue / History */}
-            <div className="overflow-x-auto max-h-[250px] scrollbar-none">
-              {signals.length === 0 ? (
-                <div className="text-center text-[#64748b] py-8 text-[11px] font-mono">
-                  No signals received in this session yet. Waiting for any simulated position on the PnLPage to cross +1% profit...
-                </div>
-              ) : (
-                <table className="w-full text-left border-collapse text-[10px] font-mono whitespace-nowrap">
-                  <thead>
-                    <tr className="text-[#64748b] border-b border-[#1f212e]">
-                      <th className="pb-2 font-medium pr-4">Timestamp</th>
-                      <th className="pb-2 font-medium pr-4">Token</th>
-                      <th className="pb-2 font-medium pr-4">Emit Profit %</th>
-                      <th className="pb-2 font-medium pr-4">Status</th>
-                      <th className="pb-2 font-medium">Outcome / Reason</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {[...(signals || [])].reverse().slice(0, 15).map(sig => {
-                      const ageSec = Math.floor((Date.now() - sig.timestamp) / 1000);
-                      let ageString = `${ageSec}s ago`;
-                      if (ageSec >= 60) {
-                        ageString = `${Math.floor(ageSec / 60)}m ${ageSec % 60}s ago`;
-                      }
-
-                      return (
-                        <tr key={sig.id} className="border-b border-[#1f212e]/50 last:border-0 hover:bg-[#1f212e]/30 transition-colors">
-                          <td className="py-2 text-slate-400 pr-4">{ageString}</td>
-                          <td className="py-2 font-bold text-white pr-4">
-                            <span className="text-[#c7f284]">{sig.symbol}</span>
-                            <span className="text-[8px] text-slate-500 ml-1">({sig.tokenAddress.slice(0, 4)}...{sig.tokenAddress.slice(-4)})</span>
-                          </td>
-                          <td className="py-2 text-[#c7f284] pr-4 font-black">
-                            {sig.profitPercent !== undefined && !isNaN(sig.profitPercent)
-                              ? `${sig.profitPercent >= 0 ? '+' : ''}${sig.profitPercent.toFixed(2)}%`
-                              : '+3.50%'}
-                          </td>
-                          <td className="py-2 pr-4">
-                            <span className={cn(
-                              "px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider",
-                              sig.status === 'pending' ? "bg-blue-500/10 text-blue-400 border border-blue-500/20" :
-                              sig.status === 'picked_up' ? "bg-amber-500/10 text-amber-400 border border-amber-500/20 animate-pulse" :
-                              sig.status === 'executed' ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" :
-                              sig.status === 'rejected' ? "bg-slate-500/10 text-slate-400 border border-slate-500/20" :
-                              "bg-rose-500/10 text-rose-400 border border-rose-500/20"
-                            )}>
-                              {sig.status}
-                            </span>
-                          </td>
-                          <td className="py-2 text-slate-300 max-w-[200px] truncate">
-                            {sig.status === 'executed' && sig.txSignature && (
-                              <span className="text-emerald-400 font-semibold text-[9px] break-all">
-                                {sig.txSignature}
-                              </span>
-                            )}
-                            {(sig.status === 'rejected' || sig.status === 'failed') && sig.rejectionReason && (
-                              <span className="text-slate-400 text-[9px]">
-                                {sig.rejectionReason}
-                              </span>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          </div>
-
           <div className="bg-[#10111a]/60 border border-[#1f212e] rounded-2xl flex flex-col p-4">
             <div className="pb-3 border-b border-[#1f212e] mb-4 flex justify-between items-center">
               <div className="flex flex-col">
