@@ -68,7 +68,10 @@ window.addEventListener('unhandledrejection', (event) => {
 });
 
 window.addEventListener('error', (event) => {
-  const msg = event.message || event.error?.message || String(event.error) || '';
+  let msg = event.message || event.error?.message || String(event.error) || '';
+  if (event.error && typeof event.error === 'object') {
+    try { msg += ' ' + JSON.stringify(event.error); } catch (e) {}
+  }
   
   const benign = [
     'NO_ROUTES_FOUND', 'No liquidity', 'User rejected', 'WalletNotConnected',
