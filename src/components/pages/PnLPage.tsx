@@ -2341,7 +2341,16 @@ export const PnLPage = ({
         }
       }
       
-      // 3. Fallback to DexScreener dynamic token pricing
+      // 3. Fallback to Jupiter Swap Quote API for live token quote
+      try {
+        const quote = await getJupiterQuote(tokenMint, SOL_MINT, 1_000_000, 0).catch(() => null);
+        if (quote && quote.outAmount && Number(quote.outAmount) > 0) {
+          const solReceived = Number(quote.outAmount) / 1_000_000_000;
+          if (solReceived > 0) return solReceived;
+        }
+      } catch (e) {}
+
+      // 4. Fallback to DexScreener dynamic token pricing
       const dexRes = await fetch(`/api/dex/tokens/${tokenMint}?t=${Date.now()}`);
       if (dexRes.ok) {
         const dexJson = await dexRes.json();
@@ -2366,6 +2375,41 @@ export const PnLPage = ({
           }
         }
       }
+
+      // 5. Fallback to DexScreener Search API
+      try {
+        const searchRes = await fetch(`/api/dex/search?q=${tokenMint}&t=${Date.now()}`);
+        if (searchRes.ok) {
+          const searchJson = await searchRes.json();
+          if (searchJson.pairs && Array.isArray(searchJson.pairs) && searchJson.pairs.length > 0) {
+            const matchPair = searchJson.pairs.find((p: any) => p.baseToken?.address === tokenMint);
+            if (matchPair) {
+              const priceNative = parseFloat(matchPair.priceNative || '0');
+              if (priceNative > 0) return priceNative;
+              const priceUsd = parseFloat(matchPair.priceUsd || '0');
+              if (priceUsd > 0) return priceUsd / 180;
+            }
+          }
+        }
+      } catch (e) {}
+
+      // 6. Fallback to Token Metrics store
+      const metric = tokenMetricsRef.current[tokenMint] || useAppStore.getState().tokenMetrics[tokenMint];
+      if (metric) {
+        if (metric.priceNative && metric.priceNative > 0) return parseFloat(String(metric.priceNative));
+        if (metric.priceUsd && metric.priceUsd > 0) return parseFloat(String(metric.priceUsd)) / 180;
+        if (typeof metric.bondingCurveProgress === 'number' && metric.bondingCurveProgress >= 0) {
+          return 0.00000003 + (metric.bondingCurveProgress / 100) * 0.000002;
+        }
+      }
+
+      // 7. Fallback to Active Position Entry / Buy Price
+      const activePos = positionsRef.current[tokenMint] || positions[tokenMint];
+      if (activePos) {
+        const entryP = activePos.simRealBoughtPriceSol || activePos.buyPrice || activePos.currentPrice;
+        if (entryP && entryP > 0) return entryP;
+      }
+
       return null;
       } catch (err) {
       console.warn(`Failed to fetch Jupiter fallback price for ${tokenMint}`, err);
@@ -7472,6 +7516,8 @@ const checkTokenCriteria = (mint: string): {
                     const isPos = pnlPct >= 0;
 
                     const token = tokenMetrics[mint];
+                    const displayPrice = pos.currentPrice || pos.buyPrice || pos.simRealBoughtPriceSol || (token?.priceNative ? parseFloat(String(token.priceNative)) : 0);
+                    const isStalePos = !!pos.isStale && (!displayPrice || displayPrice === 0);
                     const stage = detectTokenStage({
                       address: mint,
                       dexId: token?.dexId,
@@ -7520,7 +7566,7 @@ const checkTokenCriteria = (mint: string): {
                             )}
                           </div>
                           <div className="ml-auto text-right font-mono">
-                            {pos.isStale ? (
+                            {isStalePos ? (
                               <div className="flex flex-col items-end">
                                 <span className="text-amber-500 font-bold text-[13px] animate-pulse">MIGRATING...</span>
                                 <span className="text-[10px] text-[#64748b]">On-Chain Price Processing</span>
@@ -7551,10 +7597,10 @@ const checkTokenCriteria = (mint: string): {
                           <div>
                             <div className="text-[#64748b] text-[11px] mb-1 uppercase font-medium">Current</div>
                             <div className="font-mono text-[14px] font-semibold text-[#e2e8f0]">
-                              {pos.isStale ? (
+                              {isStalePos ? (
                                 <span className="text-amber-500 font-bold animate-pulse text-[12px]">STALE (Gaping)</span>
                               ) : (
-                                `${pos.currentPrice?.toFixed(8) ?? '...'} SOL`
+                                `${displayPrice.toFixed(8)} SOL`
                               )}
                             </div>
                           </div>

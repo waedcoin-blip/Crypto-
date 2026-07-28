@@ -1380,10 +1380,11 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                       } else if (token?.priceUsd && token.priceUsd > 0) {
                         metricPriceSol = parseFloat(String(token.priceUsd)) / 180;
                       }
-                      const currentPrice = Math.max(pos.currentPrice || 0, pos.buyPrice || 0, metricPriceSol);
-                      const entryPrice = pos.simRealBoughtPriceSol || pos.buyPrice || 0.000001;
                       const tokensQty = pos.simRealAmountTokens || 0;
                       const spentSol = pos.simRealSolSpent || 0.1;
+                      const currentPrice = Math.max(pos.currentPrice || 0, pos.buyPrice || 0, pos.simRealBoughtPriceSol || 0, metricPriceSol);
+                      const isStalePos = !!pos.isStale && (!currentPrice || currentPrice === 0);
+                      const entryPrice = pos.simRealBoughtPriceSol || pos.buyPrice || (spentSol / (tokensQty || 1)) || 0.000001;
                       
                       const currentGrossSimReal = currentPrice * tokensQty;
                       let netSimRealIfSold = currentGrossSimReal;
@@ -1456,7 +1457,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                             </div>
                             
                             <div className="ml-auto text-right font-mono">
-                              {pos.isStale ? (
+                              {isStalePos ? (
                                 <div className="flex flex-col items-end">
                                   <span className="text-amber-500 font-bold text-[13px] animate-pulse">MIGRATING...</span>
                                   <span className="text-[10px] text-[#64748b]">On-Chain Processing</span>
@@ -1483,7 +1484,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                           <div>
                             <div className="text-[#64748b] text-[11px] mb-1 uppercase font-medium">Current Price</div>
                             <div className="font-mono text-[14px] font-semibold text-[#e2e8f0]">
-                              {pos.isStale ? (
+                              {isStalePos ? (
                                 <span className="text-amber-500 font-bold animate-pulse text-[12px]">STALE</span>
                               ) : (
                                 `${currentPrice.toFixed(8)} SOL`
