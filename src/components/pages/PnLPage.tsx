@@ -5713,6 +5713,8 @@ const checkTokenCriteria = (mint: string): {
     
     // Clear simulation store and scanner monitored tokens
     useSimulationStore.getState().clearPositions();
+    useSimulationStore.setState({ positions: {}, closedPositions: [] });
+    useBuySignalStore.getState().clearSignals();
     monitoredTokensRef.current.clear();
     simRealBoughtPending.current.clear();
     signaledPositions.current.clear();
@@ -5726,6 +5728,7 @@ const checkTokenCriteria = (mint: string): {
     localStorage.setItem('app_simRealBalance', '10.0');
     localStorage.setItem('app_simRealBalance_fallback', '10.0');
     localStorage.setItem('app_simRealTrades', JSON.stringify([]));
+    localStorage.setItem('app_mySniperTrades', JSON.stringify([]));
     localStorage.setItem('juipter_auto_isRunning', 'true'); // Auto-start trading on reset
     localStorage.setItem('app_activePositions', JSON.stringify({}));
     
@@ -5737,9 +5740,18 @@ const checkTokenCriteria = (mint: string): {
     localStorage.removeItem('juipter_auto_logs');
     localStorage.removeItem('app_mySniperTrades');
     
-    // Clear any token activity stored in localStorage
+    // Delete all token activity and token cache stored in localStorage
     Object.keys(localStorage).forEach(key => {
-      if (key.startsWith('app_token_activity_') || key.includes('token_cache')) {
+      if (
+        key.startsWith('app_token_') ||
+        key.startsWith('token_') ||
+        key.includes('token_cache') ||
+        key.includes('simreal_') ||
+        key.includes('activePositions') ||
+        key.includes('tradeHistory') ||
+        key.includes('simRealTrades') ||
+        key.includes('token_activity')
+      ) {
         localStorage.removeItem(key);
       }
     });
@@ -5752,13 +5764,16 @@ const checkTokenCriteria = (mint: string): {
         const docRef = doc(db, 'settings', user.uid);
         await setDoc(docRef, {
           simWalletBalance: 10.0,
+          simRealBalance: 10.0,
           blacklistedMints: JSON.stringify([]),
           positions: JSON.stringify({}),
+          tokenMetrics: JSON.stringify({}),
           stats: JSON.stringify({ trades: 0, wins: 0, losses: 0, pnl: 0, bestTrade: null }),
           tradeHistory: JSON.stringify([]),
+          simRealTrades: JSON.stringify([]),
           updatedAt: new Date().toISOString()
         }, { merge: true });
-        } catch (err) {
+      } catch (err) {
         console.error('Error resetting settings in Firestore:', err);
       }
     }
@@ -6171,42 +6186,74 @@ const checkTokenCriteria = (mint: string): {
     }
   };
 
-  const resetSimRealWallet = () => {
+  const resetSimRealWallet = async () => {
     const storeState = useAppStore.getState();
     storeState.setSimRealBalance(() => 10.0);
     storeState.setSimRealTrades(() => []);
+    storeState.setTokenMetrics(() => ({}));
+    storeState.updateActivePositions(() => ({}));
     
     // Clear Cross-Page Buy Signals Pipeline
     useBuySignalStore.getState().clearSignals();
 
-    // Clear simRealBoughtPending tracking ref
+    // Clear tracking refs
     simRealBoughtPending.current.clear();
+    monitoredTokensRef.current.clear();
+    signaledPositions.current.clear();
+    pendingBuyMintsRef.current.clear();
+    pendingSellMintsRef.current.clear();
+    processedAlerts.current.clear();
 
     // Clear simulation store positions so old signals aren't re-triggered
     useSimulationStore.getState().clearPositions();
-    monitoredTokensRef.current.clear();
+    useSimulationStore.setState({ positions: {}, closedPositions: [] });
     
-    // Also remove the simRealBought status from any active positions and mark signalEmitted so they don't re-trigger after reset
-    setPositions(prev => {
-      const next = { ...prev };
-      let changed = false;
-      for (const mint of Object.keys(next)) {
-        if (next[mint]) {
-          next[mint] = {
-            ...next[mint],
-            simRealBought: false,
-            simRealBoughtPriceSol: undefined,
-            simRealAmountTokens: undefined,
-            simRealSolSpent: undefined,
-            signalEmitted: true,
-          };
-          changed = true;
-        }
+    // Clear active positions
+    setPositions({});
+    
+    // Clear price caches
+    clearSimPriceCache();
+    clearPriceHistories();
+
+    // Clear LocalStorage cache
+    localStorage.setItem('app_simRealBalance', '10.0');
+    localStorage.setItem('app_simRealBalance_fallback', '10.0');
+    localStorage.setItem('app_simRealTrades', JSON.stringify([]));
+    localStorage.setItem('app_activePositions', JSON.stringify({}));
+    localStorage.removeItem('juipter_auto_positions');
+    localStorage.removeItem('juipter_auto_tradeHistory');
+
+    Object.keys(localStorage).forEach(key => {
+      if (
+        key.startsWith('app_token_') ||
+        key.startsWith('token_') ||
+        key.includes('token_cache') ||
+        key.includes('simreal_') ||
+        key.includes('activePositions') ||
+        key.includes('tradeHistory') ||
+        key.includes('simRealTrades') ||
+        key.includes('token_activity')
+      ) {
+        localStorage.removeItem(key);
       }
-      return changed ? next : prev;
     });
+
+    if (user) {
+      try {
+        const docRef = doc(db, 'settings', user.uid);
+        await setDoc(docRef, {
+          simRealBalance: 10.0,
+          simRealTrades: JSON.stringify([]),
+          positions: JSON.stringify({}),
+          tokenMetrics: JSON.stringify({}),
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+      } catch (err) {
+        console.error('Error resetting SimReal data in Firestore:', err);
+      }
+    }
     
-    addLog('♻️ Simreal Wallet Reset: Balance set to 10.0 SOL, trades cleared, Buy Signals Pipeline erased', 'info');
+    addLog('♻️ Simreal Reset: Deleted all tokens in cache and database. Balance set to 10.0 SOL.', 'info');
   };
 
   const getCompletedSimRealTrades = () => {

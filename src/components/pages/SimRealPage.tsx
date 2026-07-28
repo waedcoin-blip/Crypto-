@@ -967,12 +967,14 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
             </span>
           </div>
           <button 
-            onClick={() => {
-              if (resetSimRealWallet) resetSimRealWallet();
+            onClick={async () => {
+              if (resetSimRealWallet) await resetSimRealWallet();
               useSimulationStore.setState({ positions: {}, closedPositions: [] });
+              useBuySignalStore.getState().clearSignals();
+              useAppStore.getState().setTokenMetrics(() => ({}));
             }}
             className="bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-lg border border-emerald-500/20 transition-all active:scale-95 flex items-center gap-1.5"
-            title="Reset wallet balance, trades, simulation positions, and clear Buy Signals Pipeline"
+            title="Reset wallet balance, trades, simulation positions, and clear Buy Signals Pipeline & token caches"
           >
             <RefreshCw className="w-3 h-3" />
             Reset
