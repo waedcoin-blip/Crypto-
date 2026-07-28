@@ -743,9 +743,11 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
           return;
         }
 
-        // Gate 2: Deviation check (Pump guard: Max 15% above trigger price if trigger price was specified)
-        if (triggerPriceUsd > 0 && freshPriceUsd > 0) {
-          const priceIncreasePercent = ((freshPriceUsd - triggerPriceUsd) / triggerPriceUsd) * 100;
+        // Gate 2: Deviation check (Pump guard: Max 15% above trigger price in SOL if trigger price was specified)
+        const triggerPriceSol = triggerPriceUsd;
+        const freshPriceForGate = freshPriceNative > 0 ? freshPriceNative : (freshPriceUsd > 0 ? freshPriceUsd / 180 : 0);
+        if (triggerPriceSol > 0 && freshPriceForGate > 0) {
+          const priceIncreasePercent = ((freshPriceForGate - triggerPriceSol) / triggerPriceSol) * 100;
           if (priceIncreasePercent > 15) {
             markRejected(
               signal.id,
