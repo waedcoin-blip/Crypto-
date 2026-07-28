@@ -78,8 +78,8 @@ export const useBuySignalStore = create<BuySignalStore>((set, get) => ({
 
     console.log(
       `[Signal] Emitted: ${signal.symbol} ` +
-      `entry=$${signal.entryPriceUsd.toFixed(8)} ` +
-      `trigger=$${signal.triggerPriceUsd.toFixed(8)} ` +
+      `entry=${signal.entryPriceUsd.toFixed(8)} SOL ` +
+      `trigger=${signal.triggerPriceUsd.toFixed(8)} SOL ` +
       `profit=+${signal.profitPercent.toFixed(2)}%`
     );
   },

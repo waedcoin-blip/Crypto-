@@ -2886,32 +2886,47 @@ export const PnLPage = ({
       const tokensList = Array.from(monitoredTokensRef.current.values());
       if (tokensList.length === 0) return;
 
-      // Batch fetch prices with snapshot array to avoid race condition desynchronization
-      for (let i = 0; i < tokensList.length; i += 5) { 
-        const batch = tokensList.slice(i, i + 5); 
-        await Promise.all(batch.map(async (token) => {
-          try {
-            const response = await fetch(`/api/dex/tokens/${token.address}`);
-            if (!response.ok) return;
-            const data = await response.json();
-            const pair = data?.pairs && Array.isArray(data.pairs) && data.pairs.length > 0
-              ? [...data.pairs].sort((a: any, b: any) => (parseFloat(b.liquidity?.usd || '0') - parseFloat(a.liquidity?.usd || '0')))[0]
-              : null;
-            if (!pair) return;
-            const currentPrice = parseFloat(pair.priceUsd || '0');
-            if (currentPrice <= 0) return;
-
-            // Update price cache
-            latestPricesRef.current[token.address] = currentPrice;
-
-            // Update simulation position
-            if (hasSimPosition(token.address)) {
-              updateSimPrice(token.address, currentPrice);
+      // Batch fetch prices using comma-separated backend endpoint
+      for (let i = 0; i < tokensList.length; i += 30) { 
+        const batch = tokensList.slice(i, i + 30);
+        const ids = batch.map(t => t.address).join(',');
+        
+        try {
+          const response = await fetch(`/api/dex/tokens/${ids}`);
+          if (!response.ok) continue;
+          const data = await response.json();
+          
+          if (data?.pairs && Array.isArray(data.pairs)) {
+            // Group pairs by base token address
+            const pairsByMint: Record<string, any[]> = {};
+            for (const p of data.pairs) {
+              const baseAddr = p.baseToken?.address;
+              if (baseAddr) {
+                if (!pairsByMint[baseAddr]) pairsByMint[baseAddr] = [];
+                pairsByMint[baseAddr].push(p);
+              }
             }
-          } catch (err) {
-            // Silently skip
+            
+            for (const token of batch) {
+              const tokenPairs = pairsByMint[token.address];
+              const bestPair = tokenPairs && tokenPairs.length > 0
+                ? tokenPairs.sort((a: any, b: any) => (parseFloat(b.liquidity?.usd || '0') - parseFloat(a.liquidity?.usd || '0')))[0]
+                : null;
+                
+              if (bestPair) {
+                const currentPrice = parseFloat(bestPair.priceUsd || '0');
+                if (currentPrice > 0) {
+                  latestPricesRef.current[token.address] = currentPrice;
+                  if (hasSimPosition(token.address)) {
+                    updateSimPrice(token.address, currentPrice);
+                  }
+                }
+              }
+            }
           }
-        }));
+        } catch (err) {
+          // Silently skip
+        }
       }
     };
 
@@ -2952,13 +2967,13 @@ export const PnLPage = ({
             };
           });
 
-          // Transfer token address without price (entryPriceUsd: 0, triggerPriceUsd: 0)
+          // Transfer token address with SOL price mapped to the Usd fields for compatibility
           emitBuySignal({
             tokenAddress: mint,
             symbol: pos.symbol,
             name: pos.symbol,
-            entryPriceUsd: 0,
-            triggerPriceUsd: 0,
+            entryPriceUsd: entryPriceSol,
+            triggerPriceUsd: currentPriceSol,
             profitPercent,
             liquidityUsd: pos.liquidityUsd || 50000,
             volume24h: pos.volume24h || 100000,
@@ -3981,7 +3996,7 @@ const checkTokenCriteria = (mint: string): {
             }
           };
         });
-        addLog(`✅ [SIM] Bought ${symbol} @ $${parsedPrice.toFixed(6)} (${tokenAmount.toFixed(2)} tokens)`, 'buy');
+        addLog(`✅ [SIM] Bought ${symbol} @ ${parsedPrice.toFixed(8)} SOL (${tokenAmount.toFixed(2)} tokens)`, 'buy');
       } catch (e: any) {
          addLog(`[SIM] Failed: ${e.message}`, 'err');
          setSimWalletBalance(prev => prev + solAmount); // refund

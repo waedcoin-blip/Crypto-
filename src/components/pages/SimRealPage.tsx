@@ -324,7 +324,9 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
             if (setPositions) {
               setPositions((prev: any) => ({ ...prev, [mint]: newPos }));
             }
-            useAppStore.getState().updateActivePositions(prev => ({ ...prev, [mint]: newPos }));
+            if (privateKey) {
+              useAppStore.getState().updateActivePositions(prev => ({ ...prev, [mint]: newPos }));
+            }
           }
         });
       }
@@ -338,7 +340,9 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
           simRealBoughtTime: storeActiveManual.simRealBoughtTime || Date.now()
         };
         if (setPositions) setPositions((prev: any) => ({ ...prev, [mint]: confirmedPos }));
-        useAppStore.getState().updateActivePositions(prev => ({ ...prev, [mint]: confirmedPos }));
+        if (privateKey) {
+          useAppStore.getState().updateActivePositions(prev => ({ ...prev, [mint]: confirmedPos }));
+        }
       }
 
       setBuyStatus({ type: 'success', text: `Successfully executed independent swap for ${mint.slice(0, 8)}!` });
@@ -667,6 +671,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
 
         // ── REQUEST NEW FRESH PRICE QUOTE FOR TOKEN ADDRESS BEFORE TRADING ──
         let freshPriceUsd = 0;
+        let freshPriceNative = 0;
         let freshLiquidityUsd = signal.liquidityUsd || 0;
 
         try {
@@ -681,6 +686,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
               : null;
             if (pair) {
               freshPriceUsd = parseFloat(pair.priceUsd || '0') || 0;
+              freshPriceNative = parseFloat(pair.priceNative || '0') || 0;
               freshLiquidityUsd = parseFloat(pair.liquidity?.usd || '0') || freshLiquidityUsd;
             }
           }
@@ -692,14 +698,19 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
         if (!freshPriceUsd && storeState.tokenMetrics[tokenAddress]?.priceUsd) {
           freshPriceUsd = storeState.tokenMetrics[tokenAddress].priceUsd;
         }
+        if (!freshPriceNative && storeState.tokenMetrics[tokenAddress]?.priceNative) {
+          freshPriceNative = storeState.tokenMetrics[tokenAddress].priceNative;
+        }
 
         // Always seed/update storeState.tokenMetrics with the newly requested fresh price
-        const finalPrice = freshPriceUsd || 0.0001;
+        const finalPriceUsd = freshPriceUsd || 0.0001;
+        const finalPriceNative = freshPriceNative || (finalPriceUsd / 180);
+        
         const formattedMetric: TokenMetric = {
           address: tokenAddress,
           symbol: symbol || 'UNKNOWN',
-          priceUsd: finalPrice,
-          priceNative: finalPrice / 180,
+          priceUsd: finalPriceUsd,
+          priceNative: finalPriceNative,
           marketCap: 0,
           liquidity: freshLiquidityUsd || 50000,
           volume24h: signal.volume24h || 100000,
@@ -762,14 +773,16 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
               if (setPositions) {
                 setPositions((prev: any) => ({ ...prev, [tokenAddress]: newPos }));
               }
-              useAppStore.getState().updateActivePositions(prev => ({ ...prev, [tokenAddress]: newPos }));
+              if (privateKey) {
+                useAppStore.getState().updateActivePositions(prev => ({ ...prev, [tokenAddress]: newPos }));
+              }
             }
           });
         }
 
         // Post-execution sync check to guarantee the token shows up in Active Positions
         const storeActive = useAppStore.getState().activePositions[tokenAddress] || (positions && positions[tokenAddress]);
-        const calculatedPrice = storeActive?.simRealBoughtPriceSol || (freshPriceUsd ? freshPriceUsd / 180 : 0.000001);
+        const calculatedPrice = storeActive?.simRealBoughtPriceSol || (freshPriceNative ? freshPriceNative : (freshPriceUsd ? freshPriceUsd / 180 : 0.000001));
         const calculatedQty = storeActive?.simRealAmountTokens || (buyAmt / (calculatedPrice || 0.000001));
 
         const confirmedPos = {
@@ -793,10 +806,12 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
             [tokenAddress]: confirmedPos
           }));
         }
-        useAppStore.getState().updateActivePositions(prev => ({
-          ...prev,
-          [tokenAddress]: confirmedPos
-        }));
+        if (privateKey) {
+          useAppStore.getState().updateActivePositions(prev => ({
+            ...prev,
+            [tokenAddress]: confirmedPos
+          }));
+        }
 
         markExecuted(signal.id, `tx-copy-${Date.now()}`);
 
@@ -810,11 +825,6 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
           simRealBoughtPending.current.delete(currentTokenAddress.toLowerCase().trim());
         }
         processingLock.current = false;
-        // Drain pending signal queue immediately without waiting for interval timer
-        const remainingPending = useBuySignalStore.getState().signals.filter(s => s.status === 'pending');
-        if (remainingPending.length > 0) {
-          setTimeout(processSignalQueue, 10);
-        }
       }
     };
 
