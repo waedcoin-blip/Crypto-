@@ -90,7 +90,7 @@ export const useAppStore = create<AppState>((set) => ({
   minTakeProfit: Number(localStorage.getItem('app_minTakeProfit')) || 25,
   maxTakeProfit: Number(localStorage.getItem('app_maxTakeProfit')) || 45,
   bondingCurveTakeProfit: Number(localStorage.getItem('app_bondingCurveTakeProfit')) || 25,
-  moonbagStrategy: true,
+  moonbagStrategy: localStorage.getItem('app_moonbagStrategy') === 'true',
   stopLoss: Number(localStorage.getItem('app_stopLoss')) || -30,
   maxPositions: Number(localStorage.getItem('app_maxPositions')) || 5,
   slippage: 1.0,

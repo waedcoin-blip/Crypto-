@@ -252,8 +252,9 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
       setBuyStatus({ type: 'error', text: 'Token address is required.' });
       return;
     }
-    const isAddress = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mint);
-    if (!isAddress) {
+    try {
+      new PublicKey(mint);
+    } catch {
       setBuyStatus({ type: 'error', text: 'Invalid Solana address format.' });
       return;
     }
@@ -724,8 +725,8 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
           [tokenAddress]: formattedMetric
         }));
 
-        // Gate 1: Check minimum liquidity (allow if effective liquidity >= $1,000; default to 50k fallback for transferred tokens)
-        const effectiveLiquidity = Math.max(freshLiquidityUsd, signal.liquidityUsd || 0, 50000);
+        // Gate 1: Check minimum liquidity (allow if effective liquidity >= $1,000)
+        const effectiveLiquidity = freshLiquidityUsd || signal.liquidityUsd || 0;
         if (effectiveLiquidity < 1_000) {
           markRejected(signal.id, `Liquidity too low ($${effectiveLiquidity.toFixed(0)} < $1,000)`);
           return;
@@ -937,11 +938,11 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
             netSimRealIfSold = Math.max(0, currentGrossSimReal - slippageFee - opFees);
          }
 
-         const simRealNetPnlPct = (netSimRealIfSold - spentSol) / spentSol;
-         const simRealGrossPnlPct = (currPrice - boughtPrice) / boughtPrice;
+         const simRealNetPnlPct = spentSol > 0 ? (netSimRealIfSold - spentSol) / spentSol : 0;
+         const simRealGrossPnlPct = boughtPrice > 0 ? (currPrice - boughtPrice) / boughtPrice : 0;
 
          // Immediate sell trigger when token PnL profit goes higher or reaches take-profit target / stop loss
-         if (simRealNetPnlPct >= tpLimit || simRealGrossPnlPct >= tpLimit || simRealNetPnlPct <= slLimit) {
+         if (simRealNetPnlPct >= tpLimit || simRealNetPnlPct <= slLimit) {
             console.log(`[SimReal TP/SL] Immediate sell triggered for ${pos.symbol || mint} at gross ${(simRealGrossPnlPct * 100).toFixed(2)}% / net ${(simRealNetPnlPct * 100).toFixed(2)}% PnL (TP limit: ${(tpLimit * 100).toFixed(1)}%)`);
             
             sellingMints.current.add(mint);
@@ -956,14 +957,31 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
       }
     };
 
-    // Run monitor check immediately on every positions or tokenMetrics update
-    monitorPositions();
+    let monitoring = false;
+    let timerId: ReturnType<typeof setTimeout>;
 
-    // High frequency 300ms polling for instant profit exit
-    const interval = setInterval(monitorPositions, 300);
+    const monitorLoop = async () => {
+      if (!active) return;
+      if (monitoring) return;
+
+      monitoring = true;
+      try {
+        await monitorPositions();
+      } finally {
+        monitoring = false;
+      }
+      
+      if (active) {
+        timerId = setTimeout(monitorLoop, 300);
+      }
+    };
+
+    // Run monitor check immediately and start loop
+    monitorLoop();
+
     return () => {
       active = false;
-      clearInterval(interval);
+      clearTimeout(timerId);
     };
   }, [
     positions,

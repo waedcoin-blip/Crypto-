@@ -431,7 +431,7 @@ export default function App() {
   const [minTakeProfit, setMinTakeProfit] = useState(() => Number(localStorage.getItem('app_minTakeProfit')) || 15);
   const [maxTakeProfit, setMaxTakeProfit] = useState(() => Number(localStorage.getItem('app_maxTakeProfit')) || 50);
   const [bondingCurveTakeProfit, setBondingCurveTakeProfit] = useState(() => Number(localStorage.getItem('app_bondingCurveTakeProfit')) || 25);
-  const [moonbagStrategy, setMoonbagStrategy] = useState(true);
+  const [moonbagStrategy, setMoonbagStrategy] = useState(() => localStorage.getItem('app_moonbagStrategy') === 'true');
   const [stopLoss, setStopLoss] = useState(() => Number(localStorage.getItem('app_stopLoss')) || -15);
   const [bondingCurveStopLoss, setBondingCurveStopLoss] = useState(() => Number(localStorage.getItem('app_bondingCurveStopLoss')) || -15);
   const [pumpSwapStopLoss, setPumpSwapStopLoss] = useState(() => Number(localStorage.getItem('app_pumpSwapStopLoss')) || -15);
@@ -510,6 +510,7 @@ export default function App() {
     localStorage.setItem('app_minTakeProfit', minTakeProfit.toString());
     localStorage.setItem('app_maxTakeProfit', maxTakeProfit.toString());
     localStorage.setItem('app_bondingCurveTakeProfit', bondingCurveTakeProfit.toString());
+    localStorage.setItem('app_moonbagStrategy', moonbagStrategy.toString());
     localStorage.setItem('app_stopLoss', stopLoss.toString());
     localStorage.setItem('app_bondingCurveStopLoss', bondingCurveStopLoss.toString());
     localStorage.setItem('app_pumpSwapStopLoss', pumpSwapStopLoss.toString());
