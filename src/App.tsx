@@ -1321,10 +1321,11 @@ export default function App() {
 
           if (!amountLamports || amountLamports === 0) continue;
 
+          const realCostBasis = position.simRealSolSpent || position.solSpent || position.entryPriceSol || 0.1;
           const actPos = {
             tokenAddress: token.address,
             currentTokenBalance: BigInt(amountLamports),
-            entryCostSol: position.entryPriceSol || position.solSpent || 0.1,
+            entryCostSol: realCostBasis,
             initialMoonbagSize: BigInt(position.initialMoonbagSizeStr || '0'),
             currentStage: position.currentStage || PositionStage.RECOVER_CAPITAL,
             symbol: token.symbol,
@@ -1367,9 +1368,9 @@ export default function App() {
           // If price has rallied >20%, trail stop loss to protect profits
           // e.g. up 50% → stop at 35%; up 100% → stop at 75%
           const currentPriceSol = (token.priceNative || 0);
-          const entryPriceSol = (position.entryPriceSol || 0);
-          const currentPnLPct = entryPriceSol > 0 
-            ? (((currentPriceSol * (position.amount || 0)) - entryPriceSol) / entryPriceSol) * 100 
+          const posTokensQty = position.simRealAmountTokens || position.amount || 0;
+          const currentPnLPct = realCostBasis > 0 
+            ? (((currentPriceSol * posTokensQty) - realCostBasis) / realCostBasis) * 100 
             : 0;
 
           // Track peak PnL in position metadata
@@ -2076,7 +2077,7 @@ export default function App() {
       const guaranteedSolOut = guaranteedMinLamports / 1_000_000_000.0;
       const networkFeesSol = 0.0035; // Simulated / average Jito fee
       const realNetReturnSol = guaranteedSolOut - networkFeesSol;
-      const currentCostBasisSol = position.entryPriceSol || position.solSpent || 0.1;
+      const currentCostBasisSol = position.simRealSolSpent || position.solSpent || position.entryPriceSol || 0.1;
 
       // Unify Profit Guard for both LIVE and SIM
       if (curPnLPercent >= minTakeProfit && realNetReturnSol <= currentCostBasisSol) {
