@@ -893,21 +893,22 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
          const tokenMetric = currentTokenMetrics[mint];
          const stageInfo = tokenMetric ? detectTokenStage(tokenMetric) : { stage: 'UNKNOWN', platform: 'UNKNOWN', isBonding: false, isMigrated: false, isNewListing: false, isNearMigration: false, bondingProgress: 0 } as const;
          
+         const userSL = Math.abs(stopLoss !== undefined ? stopLoss : 15);
          let tpLimit = 0.50; // default 50%
-         let slLimit = -0.15; // default -15%
+         let slLimit = -userSL / 100; // default to user's stop loss
          
          if (stageInfo.platform === 'RAYDIUM' || stageInfo.isMigrated) {
              tpLimit = Math.abs(simRealTakeProfitRaydium !== undefined ? simRealTakeProfitRaydium : 50) / 100;
-             slLimit = -Math.abs(simRealStopLossRaydium !== undefined ? simRealStopLossRaydium : 15) / 100;
+             slLimit = -Math.abs(simRealStopLossRaydium !== undefined ? simRealStopLossRaydium : userSL) / 100;
          } else if (stageInfo.platform === 'PUMP_FUN' || stageInfo.isBonding || mint.toLowerCase().endsWith('pump')) {
              tpLimit = Math.abs(simRealTakeProfitBonding !== undefined ? simRealTakeProfitBonding : 100) / 100;
-             slLimit = -Math.abs(simRealStopLossBonding !== undefined ? simRealStopLossBonding : 20) / 100;
+             slLimit = -Math.abs(simRealStopLossBonding !== undefined ? simRealStopLossBonding : userSL) / 100;
          } else if (stageInfo.platform === 'PUMPSWAP') {
              tpLimit = Math.abs(simRealTakeProfitPumpSwap !== undefined ? simRealTakeProfitPumpSwap : (simRealTakeProfitRaydium !== undefined ? simRealTakeProfitRaydium : 50)) / 100;
-             slLimit = -Math.abs(simRealStopLossPumpSwap !== undefined ? simRealStopLossPumpSwap : 15) / 100;
+             slLimit = -Math.abs(simRealStopLossPumpSwap !== undefined ? simRealStopLossPumpSwap : userSL) / 100;
          } else {
              tpLimit = Math.abs(simRealTakeProfitUnknown !== undefined ? simRealTakeProfitUnknown : (simRealTakeProfitRaydium !== undefined ? simRealTakeProfitRaydium : 50)) / 100;
-             slLimit = -Math.abs(simRealStopLossUnknown !== undefined ? simRealStopLossUnknown : 20) / 100;
+             slLimit = -Math.abs(simRealStopLossUnknown !== undefined ? simRealStopLossUnknown : userSL) / 100;
          }
 
          const spentSol = pos.simRealSolSpent || 0.1;

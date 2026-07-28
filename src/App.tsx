@@ -445,6 +445,18 @@ export default function App() {
   const [simRealStopLossBonding, setSimRealStopLossBonding] = useState(() => Number(localStorage.getItem('app_simRealStopLossBonding')) || -20);
   const [simRealStopLossPumpSwap, setSimRealStopLossPumpSwap] = useState(() => Number(localStorage.getItem('app_simRealStopLossPumpSwap')) || -15);
   const [simRealStopLossUnknown, setSimRealStopLossUnknown] = useState(() => Number(localStorage.getItem('app_simRealStopLossUnknown')) || -20);
+  
+  const updateMasterStopLoss = (val: number) => {
+    const sl = -Math.abs(val);
+    setStopLoss(sl);
+    setBondingCurveStopLoss(sl);
+    setPumpSwapStopLoss(sl);
+    setUnknownStopLoss(sl);
+    setSimRealStopLossRaydium(sl);
+    setSimRealStopLossBonding(sl);
+    setSimRealStopLossPumpSwap(sl);
+    setSimRealStopLossUnknown(sl);
+  };
   const [slippage, setSlippage] = useState(1.0); 
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('jupiter_auto_apiKey') || localStorage.getItem('juipter_auto_apiKey') || '');
   const [jupiterRpcUrl, setJupiterRpcUrl] = useState(() => localStorage.getItem('juipter_auto_jupiterRpcUrl') || '');
@@ -1328,25 +1340,27 @@ export default function App() {
           });
 
           let baseSL = typeof state.stopLoss === 'number' ? state.stopLoss : -30;
+          const userGlobalSL = typeof state.stopLoss === 'number' ? state.stopLoss : -15;
           if (position.simRealBought) {
             if (stage.platform === 'RAYDIUM' || stage.isMigrated) {
-              baseSL = simRealStopLossRaydium !== undefined ? simRealStopLossRaydium : -15;
+              baseSL = simRealStopLossRaydium !== undefined ? simRealStopLossRaydium : userGlobalSL;
             } else if (stage.platform === 'PUMP_FUN' || stage.isBonding || tokenAddress.toLowerCase().endsWith('pump')) {
-              baseSL = simRealStopLossBonding !== undefined ? simRealStopLossBonding : -20;
+              baseSL = simRealStopLossBonding !== undefined ? simRealStopLossBonding : userGlobalSL;
             } else if (stage.platform === 'PUMPSWAP') {
-              baseSL = simRealStopLossPumpSwap !== undefined ? simRealStopLossPumpSwap : -15;
+              baseSL = simRealStopLossPumpSwap !== undefined ? simRealStopLossPumpSwap : userGlobalSL;
             } else {
-              baseSL = simRealStopLossUnknown !== undefined ? simRealStopLossUnknown : -20;
+              baseSL = simRealStopLossUnknown !== undefined ? simRealStopLossUnknown : userGlobalSL;
             }
             baseSL = -Math.abs(baseSL);
           } else {
             if (stage.platform === 'PUMP_FUN' || stage.isBonding) {
-              baseSL = typeof state.bondingCurveStopLoss === 'number' ? state.bondingCurveStopLoss : -15;
+              baseSL = typeof state.bondingCurveStopLoss === 'number' ? state.bondingCurveStopLoss : userGlobalSL;
             } else if (stage.platform === 'PUMPSWAP') {
-              baseSL = typeof state.pumpSwapStopLoss === 'number' ? state.pumpSwapStopLoss : -15;
+              baseSL = typeof state.pumpSwapStopLoss === 'number' ? state.pumpSwapStopLoss : userGlobalSL;
             } else if (stage.platform === 'UNKNOWN' || stage.stage === 'UNKNOWN') {
-              baseSL = typeof state.unknownStopLoss === 'number' ? state.unknownStopLoss : -20;
+              baseSL = typeof state.unknownStopLoss === 'number' ? state.unknownStopLoss : userGlobalSL;
             }
+            baseSL = -Math.abs(baseSL);
           }
 
           // ── TRAILING STOP LOSS: lock in gains as price rises ────────────────
@@ -4746,7 +4760,7 @@ export default function App() {
                     max="-1" 
                     step="1" 
                     value={stopLoss}
-                    onChange={(e) => setStopLoss(parseInt(e.target.value))}
+                    onChange={(e) => updateMasterStopLoss(parseInt(e.target.value))}
                     className="flex-1 h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-rose-500 shadow-[0_0_10px_rgba(244,63,94,0.1)]"
                   />
                   <input
@@ -4759,7 +4773,7 @@ export default function App() {
                       const v = parseInt(e.target.value);
                       if (!isNaN(v)) {
                         const bounded = Math.max(1, Math.min(99, v));
-                        setStopLoss(-bounded);
+                        updateMasterStopLoss(-bounded);
                       }
                     }}
                     className="w-16 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-rose-400 text-right focus:outline-none focus:border-rose-500"

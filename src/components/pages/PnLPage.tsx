@@ -4822,35 +4822,36 @@ const checkTokenCriteria = (mint: string): {
             bondingCurveProgress: metric?.bondingCurveProgress,
             isRaydiumListed: metric?.isRaydiumListed
           });
-          let currentSLPct = stopLossPct;
+          let userSL = Math.abs(stopLossPct !== undefined ? stopLossPct : 15);
+          let currentSLPct = userSL;
           let currentTakeProfit = minTakeProfit;
 
           if (pos.simRealBought) {
             if (stage.platform === 'RAYDIUM' || stage.isMigrated) {
-              currentSLPct = Math.abs(configRef.current.simRealStopLossRaydium !== undefined ? configRef.current.simRealStopLossRaydium : 15);
+              currentSLPct = Math.abs(configRef.current.simRealStopLossRaydium !== undefined ? configRef.current.simRealStopLossRaydium : userSL);
               currentTakeProfit = Math.abs(configRef.current.simRealTakeProfitRaydium !== undefined ? configRef.current.simRealTakeProfitRaydium : 50);
             } else if (stage.platform === 'PUMP_FUN' || stage.isBonding || mint.toLowerCase().endsWith('pump')) {
-              currentSLPct = Math.abs(configRef.current.simRealStopLossBonding !== undefined ? configRef.current.simRealStopLossBonding : 20);
+              currentSLPct = Math.abs(configRef.current.simRealStopLossBonding !== undefined ? configRef.current.simRealStopLossBonding : userSL);
               currentTakeProfit = Math.abs(configRef.current.simRealTakeProfitBonding !== undefined ? configRef.current.simRealTakeProfitBonding : 100);
             } else if (stage.platform === 'PUMPSWAP') {
-              currentSLPct = Math.abs(configRef.current.simRealStopLossPumpSwap !== undefined ? configRef.current.simRealStopLossPumpSwap : 15);
+              currentSLPct = Math.abs(configRef.current.simRealStopLossPumpSwap !== undefined ? configRef.current.simRealStopLossPumpSwap : userSL);
               currentTakeProfit = Math.abs(configRef.current.simRealTakeProfitPumpSwap !== undefined ? configRef.current.simRealTakeProfitPumpSwap : 50);
             } else {
-              currentSLPct = Math.abs(configRef.current.simRealStopLossUnknown !== undefined ? configRef.current.simRealStopLossUnknown : 20);
+              currentSLPct = Math.abs(configRef.current.simRealStopLossUnknown !== undefined ? configRef.current.simRealStopLossUnknown : userSL);
               currentTakeProfit = Math.abs(configRef.current.simRealTakeProfitUnknown !== undefined ? configRef.current.simRealTakeProfitUnknown : 50);
             }
           } else {
             if (stage.platform === 'PUMP_FUN' || stage.isBonding) {
-              currentSLPct = bondingCurveStopLossPct;
+              currentSLPct = bondingCurveStopLossPct !== undefined ? Math.abs(bondingCurveStopLossPct) : userSL;
               currentTakeProfit = bondingCurveTakeProfit;
             } else if (stage.platform === 'PUMPSWAP') {
-              currentSLPct = pumpSwapStopLossPct;
+              currentSLPct = pumpSwapStopLossPct !== undefined ? Math.abs(pumpSwapStopLossPct) : userSL;
               currentTakeProfit = minTakeProfit;
             } else if (stage.platform === 'UNKNOWN' || stage.stage === 'UNKNOWN') {
-              currentSLPct = unknownStopLossPct;
+              currentSLPct = unknownStopLossPct !== undefined ? Math.abs(unknownStopLossPct) : userSL;
               currentTakeProfit = minTakeProfit;
             } else {
-              currentSLPct = stopLossPct;
+              currentSLPct = userSL;
               currentTakeProfit = minTakeProfit;
             }
           }
@@ -6178,7 +6179,7 @@ const checkTokenCriteria = (mint: string): {
       }
     } else {
       const lamportsForQuote = Math.floor(buyAmt * 1_000_000_000);
-      let boughtPriceSol = currentPrice || 0.000001;
+      let boughtPriceSol = 0;
       try {
         const quote = await getJupiterQuote(SOL_MINT, cleanMint, lamportsForQuote, 0).catch(() => null);
         if (quote && Number(quote.outAmount) > 0) {
@@ -6190,11 +6191,30 @@ const checkTokenCriteria = (mint: string): {
             boughtPriceSol = buyAmt / normalizedOut;
             addLog(`[SIMREAL QUOTE REFRESH] Got fresh buy quote price for ${symbol}: ${boughtPriceSol.toFixed(8)} SOL`, 'info');
           }
-        } else {
-          addLog(`[SIMREAL QUOTE WARNING] Could not retrieve fresh quote for ${symbol}. Using price: ${boughtPriceSol.toFixed(8)} SOL`, 'warn');
         }
       } catch (e: any) {
         addLog(`[SIMREAL QUOTE ERROR] Error requesting quote for ${symbol}: ${e.message}`, 'warn');
+      }
+
+      if (!boughtPriceSol || boughtPriceSol <= 0) {
+        try {
+          const res = await fetch(`/api/dex/tokens/${cleanMint}`);
+          if (res.ok) {
+            const data = await res.json();
+            if (data && data.pairs && data.pairs.length > 0) {
+              const bestPair = [...data.pairs].sort((a: any, b: any) => parseFloat(b.liquidity?.usd || '0') - parseFloat(a.liquidity?.usd || '0'))[0];
+              if (bestPair && parseFloat(bestPair.priceNative || '0') > 0) {
+                boughtPriceSol = parseFloat(bestPair.priceNative);
+                addLog(`[SIMREAL DEX REFRESH] Got fresh DEX price for ${symbol}: ${boughtPriceSol.toFixed(8)} SOL`, 'info');
+              }
+            }
+          }
+        } catch (e) {}
+      }
+
+      if (!boughtPriceSol || boughtPriceSol <= 0) {
+        boughtPriceSol = currentPrice || 0.000001;
+        addLog(`[SIMREAL QUOTE FALLBACK] Using current market price for ${symbol}: ${boughtPriceSol.toFixed(8)} SOL`, 'warn');
       }
       
       const tokensQty = buyAmt / boughtPriceSol;
