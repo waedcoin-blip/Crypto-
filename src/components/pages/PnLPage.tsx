@@ -2870,54 +2870,11 @@ export const PnLPage = ({
   }, [hasSimPosition, updateSimPrice]);
 
   // ── SIGNAL EMISSION EFFECT ──
-  // Monitors all simulation positions AND active PnL positions.
-  // When any position hits +1%, emits a buy signal to BuySignalStore / SimRealPage.
+  // Monitors active PnL positions. All tokens pass through PnLPage active positions before transfer to simreal trading.
+  // Transfers token address without price as simreal trading requests a new price before trading.
   useEffect(() => {
     const checkProfitTargets = () => {
-      // 1. Check simulation positions (from useSimulationStore)
-      const simPositionsArray = Object.values(simPositions);
-
-      for (const pos of simPositionsArray) {
-        // Skip if signal already emitted for this position
-        if (pos.signalEmitted) continue;
-
-        // Skip if no valid pricing
-        if (!pos.entryPriceUsd || pos.entryPriceUsd <= 0) continue;
-        if (!pos.currentPriceUsd || pos.currentPriceUsd <= 0) continue;
-
-        const profitPercent =
-          ((pos.currentPriceUsd - pos.entryPriceUsd) / pos.entryPriceUsd) * 100;
-
-        const signalMinProfit = 1.0;
-        if (profitPercent >= signalMinProfit) {
-          if (!pos.symbol || pos.symbol.trim() === '' || pos.symbol.toUpperCase() === 'UNKNOWN') continue;
-          
-          const sourceCheck = checkDexPlatformSourcesAllowed(pos.tokenAddress, pos.dexId);
-          if (!sourceCheck.pass) continue;
-
-          // ── +1% HIT — EMIT BUY SIGNAL ──
-          markSimSignaled(pos.tokenAddress);
-
-          emitBuySignal({
-            tokenAddress: pos.tokenAddress,
-            symbol: pos.symbol,
-            name: pos.name,
-            entryPriceUsd: pos.entryPriceUsd,
-            triggerPriceUsd: pos.currentPriceUsd,
-            profitPercent,
-            liquidityUsd: pos.liquidityUsd,
-            volume24h: pos.volume24h,
-            dexId: pos.dexId,
-            pairAddress: pos.pairAddress,
-            simAmountSol: pos.amountSol,
-            simEntryTime: pos.entryTime,
-          });
-
-          addLog(`[Signal] ${pos.symbol} +${profitPercent.toFixed(2)}% → SimRealPage`, 'success');
-        }
-      }
-
-      // 2. Check active PnL positions (from positions state)
+      // Check active PnL positions (from positions state)
       const activePositionsEntries = Object.entries(positions);
       for (const [mint, pos] of activePositionsEntries) {
         if (pos.signalEmitted) continue;
@@ -2945,13 +2902,13 @@ export const PnLPage = ({
             };
           });
 
-          const solPriceUsdRate = 180;
+          // Transfer token address without price (entryPriceUsd: 0, triggerPriceUsd: 0)
           emitBuySignal({
             tokenAddress: mint,
             symbol: pos.symbol,
             name: pos.symbol,
-            entryPriceUsd: pos.entryPriceUsd || (entryPriceSol * solPriceUsdRate),
-            triggerPriceUsd: pos.currentPriceUsd || (currentPriceSol * solPriceUsdRate),
+            entryPriceUsd: 0,
+            triggerPriceUsd: 0,
             profitPercent,
             liquidityUsd: pos.liquidityUsd || 50000,
             volume24h: pos.volume24h || 100000,
@@ -2961,14 +2918,14 @@ export const PnLPage = ({
             simEntryTime: pos.entryTime || Date.now(),
           });
 
-          addLog(`[Active Position Signal] ${pos.symbol} +${profitPercent.toFixed(2)}% → SimRealPage`, 'success');
+          addLog(`[Active Position Signal] ${pos.symbol} (+${profitPercent.toFixed(2)}%) token transferred → SimRealPage (Requesting fresh price)`, 'success');
         }
       }
     };
 
     const interval = setInterval(checkProfitTargets, 1000);
     return () => clearInterval(interval);
-  }, [simPositions, positions, emitBuySignal, markSimSignaled, addLog, setPositions, checkDexPlatformSourcesAllowed]);
+  }, [positions, emitBuySignal, addLog, setPositions, checkDexPlatformSourcesAllowed]);
 
   useEffect(() => {
     if (!privateKey) {

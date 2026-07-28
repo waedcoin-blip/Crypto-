@@ -646,64 +646,65 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
           }
         }
 
-        // ── FETCH FRESH QUOTE FOR VERIFICATION WITH FAST TIMEOUT ──
-        let freshPriceUsd = triggerPriceUsd;
-        let freshLiquidityUsd = signal.liquidityUsd;
+        // ── REQUEST NEW FRESH PRICE QUOTE FOR TOKEN ADDRESS BEFORE TRADING ──
+        let freshPriceUsd = 0;
+        let freshLiquidityUsd = signal.liquidityUsd || 0;
 
-        // Immediately seed tokenMetrics so executeSimRealBuy has instant access without extra HTTP request
-        if (!storeState.tokenMetrics[tokenAddress]) {
-          const formattedMetric: TokenMetric = {
-            address: tokenAddress,
-            symbol: symbol || 'UNKNOWN',
-            priceUsd: triggerPriceUsd || 0,
-            priceNative: triggerPriceUsd ? (triggerPriceUsd / 180) : 0.000001,
-            marketCap: 0,
-            liquidity: signal.liquidityUsd || 50000,
-            volume24h: signal.volume24h || 100000,
-            discoveredAt: Date.now(),
-            lastUpdated: Date.now(),
-            buyCount: 0,
-            sellCount: 0,
-            buyVolume: 0,
-            sellVolume: 0,
-            priceChange5m: profitPercent || 0,
-            priceChange1m: 0,
-            percentageIncrease: profitPercent || 0,
-            recentBuysTimeline: [],
-            category: tokenAddress.toLowerCase().endsWith('pump') ? 'PUMP_FUN' : 'RAYDIUM',
-            isRugSafe: true,
-            mintAuthorityRevoked: true,
-            freezeAuthorityRevoked: true,
-            liquidityBurned: true,
-            top10Percentage: 8.5
-          };
-          storeState.setTokenMetrics(prev => ({
-            ...prev,
-            [tokenAddress]: formattedMetric
-          }));
-        }
-
-        // Only perform external HTTP check if liquidity or price is completely missing
-        if (!freshLiquidityUsd || freshLiquidityUsd === 0 || !freshPriceUsd || freshPriceUsd === 0) {
-          try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 800);
-            const res = await fetch(`/api/dex/tokens/${tokenAddress}`, { signal: controller.signal });
-            clearTimeout(timeoutId);
-            if (res.ok) {
-              const data = await res.json();
-              const pair = data?.pairs && Array.isArray(data.pairs) && data.pairs.length > 0
-                ? [...data.pairs].sort((a: any, b: any) => (parseFloat(b.liquidity?.usd || '0') - parseFloat(a.liquidity?.usd || '0')))[0]
-                : null;
-              if (pair) {
-                freshPriceUsd = parseFloat(pair.priceUsd || '0') || freshPriceUsd;
-                freshLiquidityUsd = parseFloat(pair.liquidity?.usd || '0') || freshLiquidityUsd;
-              }
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 1200);
+          const res = await fetch(`/api/dex/tokens/${tokenAddress}`, { signal: controller.signal });
+          clearTimeout(timeoutId);
+          if (res.ok) {
+            const data = await res.json();
+            const pair = data?.pairs && Array.isArray(data.pairs) && data.pairs.length > 0
+              ? [...data.pairs].sort((a: any, b: any) => (parseFloat(b.liquidity?.usd || '0') - parseFloat(a.liquidity?.usd || '0')))[0]
+              : null;
+            if (pair) {
+              freshPriceUsd = parseFloat(pair.priceUsd || '0') || 0;
+              freshLiquidityUsd = parseFloat(pair.liquidity?.usd || '0') || freshLiquidityUsd;
             }
-          } catch (err) {
-            console.warn('[Pipeline] Fast quote check fallback to signal metadata');
           }
+        } catch (err) {
+          console.warn('[Pipeline] Fast quote fetch warning:', err);
         }
+
+        // Fallback to tokenMetrics store if local price exists
+        if (!freshPriceUsd && storeState.tokenMetrics[tokenAddress]?.priceUsd) {
+          freshPriceUsd = storeState.tokenMetrics[tokenAddress].priceUsd;
+        }
+
+        // Always seed/update storeState.tokenMetrics with the newly requested fresh price
+        const finalPrice = freshPriceUsd || 0.0001;
+        const formattedMetric: TokenMetric = {
+          address: tokenAddress,
+          symbol: symbol || 'UNKNOWN',
+          priceUsd: finalPrice,
+          priceNative: finalPrice / 180,
+          marketCap: 0,
+          liquidity: freshLiquidityUsd || 50000,
+          volume24h: signal.volume24h || 100000,
+          discoveredAt: Date.now(),
+          lastUpdated: Date.now(),
+          buyCount: 0,
+          sellCount: 0,
+          buyVolume: 0,
+          sellVolume: 0,
+          priceChange5m: profitPercent || 0,
+          priceChange1m: 0,
+          percentageIncrease: profitPercent || 0,
+          recentBuysTimeline: [],
+          category: tokenAddress.toLowerCase().endsWith('pump') ? 'PUMP_FUN' : 'RAYDIUM',
+          isRugSafe: true,
+          mintAuthorityRevoked: true,
+          freezeAuthorityRevoked: true,
+          liquidityBurned: true,
+          top10Percentage: 8.5
+        };
+        storeState.setTokenMetrics(prev => ({
+          ...prev,
+          [tokenAddress]: formattedMetric
+        }));
 
         // Gate 1: Check minimum liquidity (allow if effective liquidity >= $1,000)
         const effectiveLiquidity = Math.max(freshLiquidityUsd, signal.liquidityUsd || 0);
@@ -712,7 +713,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
           return;
         }
 
-        // Gate 2: Deviation check (Pump guard: Max 15% above trigger price)
+        // Gate 2: Deviation check (Pump guard: Max 15% above trigger price if trigger price was specified)
         if (triggerPriceUsd > 0 && freshPriceUsd > 0) {
           const priceIncreasePercent = ((freshPriceUsd - triggerPriceUsd) / triggerPriceUsd) * 100;
           if (priceIncreasePercent > 15) {
