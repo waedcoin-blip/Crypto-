@@ -3,12 +3,15 @@ import { TokenMetric, TelemetryAlert, Trade, SniperTrade } from '../types';
 import { Keypair } from '@solana/web3.js';
 
 export interface ActivePositionData {
-    boughtAt: number; 
-    amount: number;
+    boughtAt?: number; 
+    amount?: number;
     tokenQuantityRaw?: string; 
-    symbol: string; 
+    symbol?: string; 
     entryPrice?: number; 
     entryPriceSol?: number;
+    buyPrice?: number;
+    currentPrice?: number;
+    entryTime?: number;
     solSpent?: number;
     peakPnLPct?: number;
     initialTokens?: number;
@@ -26,6 +29,7 @@ export interface ActivePositionData {
     simRealAmountTokens?: number;
     simRealSolSpent?: number;
     simRealBoughtTime?: number;
+    [key: string]: any;
 }
 
 interface AppState {

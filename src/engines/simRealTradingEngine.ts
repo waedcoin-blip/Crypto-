@@ -198,8 +198,25 @@ export class SimRealTradingEngine {
         throw err;
       }
     } else {
-      // Simulation mode
-      const tokensQty = amountSol / (currentPrice || 0.000001);
+      // Simulation mode - fetch fresh price quote
+      let freshPriceSol = currentPrice;
+      try {
+        const res = await fetch(`/api/dex/tokens/${cleanMint}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.pairs && data.pairs.length > 0) {
+            const bestPair = [...data.pairs].sort((a: any, b: any) => parseFloat(b.liquidity?.usd || '0') - parseFloat(a.liquidity?.usd || '0'))[0];
+            if (bestPair && parseFloat(bestPair.priceNative || '0') > 0) {
+              freshPriceSol = parseFloat(bestPair.priceNative);
+            }
+          }
+        }
+      } catch (e) {
+        // Fallback to currentPrice
+      }
+
+      const effectivePrice = freshPriceSol || currentPrice || 0.000001;
+      const tokensQty = amountSol / effectivePrice;
       const newTrade: SniperTrade = {
         id: this.generateId('simreal-buy'),
         type: 'BUY',
@@ -213,8 +230,8 @@ export class SimRealTradingEngine {
 
       const newPosition: SimRealPosition = {
         symbol,
-        buyPrice: currentPrice || 0.000001,
-        currentPrice: currentPrice || 0.000001,
+        buyPrice: effectivePrice,
+        currentPrice: effectivePrice,
         solSpent: amountSol,
         amount: tokensQty,
         amountLamports: Math.floor(tokensQty * 10 ** decimals),
@@ -222,7 +239,7 @@ export class SimRealTradingEngine {
         entryTime: quoteRequestTime,
         txid: 'simulation-copy',
         simRealBought: true,
-        simRealBoughtPriceSol: currentPrice || 0.000001,
+        simRealBoughtPriceSol: effectivePrice,
         simRealAmountTokens: tokensQty,
         simRealSolSpent: amountSol,
         simRealBoughtTime: quoteRequestTime,
@@ -235,7 +252,7 @@ export class SimRealTradingEngine {
         newPosition
       });
 
-      this.addLog(`Simulated buy completed for ${symbol} @ ${currentPrice} SOL`, 'SUCCESS');
+      this.addLog(`Simulated buy completed for ${symbol} @ ${effectivePrice} SOL`, 'SUCCESS');
     }
   }
 

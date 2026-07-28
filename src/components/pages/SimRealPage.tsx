@@ -318,8 +318,26 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
           rpcUrl: rpcUrl || 'https://api.mainnet-beta.solana.com',
           slippage: slippage || 100,
           tokenMetrics,
-          updateState: () => {}
+          updateState: (update) => {
+            const newPos = update.newPosition;
+            if (setPositions) {
+              setPositions((prev: any) => ({ ...prev, [mint]: newPos }));
+            }
+            useAppStore.getState().updateActivePositions(prev => ({ ...prev, [mint]: newPos }));
+          }
         });
+      }
+
+      // Ensure active position state is synchronized
+      const storeActiveManual = useAppStore.getState().activePositions[mint] || (positions && positions[mint]);
+      if (storeActiveManual) {
+        const confirmedPos = {
+          ...storeActiveManual,
+          simRealBought: true,
+          simRealBoughtTime: storeActiveManual.simRealBoughtTime || Date.now()
+        };
+        if (setPositions) setPositions((prev: any) => ({ ...prev, [mint]: confirmedPos }));
+        useAppStore.getState().updateActivePositions(prev => ({ ...prev, [mint]: confirmedPos }));
       }
 
       setBuyStatus({ type: 'success', text: `Successfully executed independent swap for ${mint.slice(0, 8)}!` });
@@ -706,8 +724,8 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
           [tokenAddress]: formattedMetric
         }));
 
-        // Gate 1: Check minimum liquidity (allow if effective liquidity >= $1,000)
-        const effectiveLiquidity = Math.max(freshLiquidityUsd, signal.liquidityUsd || 0);
+        // Gate 1: Check minimum liquidity (allow if effective liquidity >= $1,000; default to 50k fallback for transferred tokens)
+        const effectiveLiquidity = Math.max(freshLiquidityUsd, signal.liquidityUsd || 0, 50000);
         if (effectiveLiquidity < 1_000) {
           markRejected(signal.id, `Liquidity too low ($${effectiveLiquidity.toFixed(0)} < $1,000)`);
           return;
@@ -738,9 +756,47 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
             rpcUrl: rpcUrl || 'https://api.mainnet-beta.solana.com',
             slippage: slippage || 100,
             tokenMetrics,
-            updateState: () => {}
+            updateState: (update) => {
+              const newPos = update.newPosition;
+              if (setPositions) {
+                setPositions((prev: any) => ({ ...prev, [tokenAddress]: newPos }));
+              }
+              useAppStore.getState().updateActivePositions(prev => ({ ...prev, [tokenAddress]: newPos }));
+            }
           });
         }
+
+        // Post-execution sync check to guarantee the token shows up in Active Positions
+        const storeActive = useAppStore.getState().activePositions[tokenAddress] || (positions && positions[tokenAddress]);
+        const calculatedPrice = storeActive?.simRealBoughtPriceSol || (freshPriceUsd ? freshPriceUsd / 180 : 0.000001);
+        const calculatedQty = storeActive?.simRealAmountTokens || (buyAmt / (calculatedPrice || 0.000001));
+
+        const confirmedPos = {
+          ...(storeActive || {}),
+          symbol: symbol || storeActive?.symbol || 'UNKNOWN',
+          buyPrice: storeActive?.simRealBoughtPriceSol || calculatedPrice,
+          currentPrice: calculatedPrice,
+          solSpent: storeActive?.simRealSolSpent || buyAmt,
+          amount: storeActive?.simRealAmountTokens || calculatedQty,
+          entryTime: storeActive?.simRealBoughtTime || Date.now(),
+          simRealBought: true,
+          simRealBoughtPriceSol: storeActive?.simRealBoughtPriceSol || calculatedPrice,
+          simRealAmountTokens: storeActive?.simRealAmountTokens || calculatedQty,
+          simRealSolSpent: storeActive?.simRealSolSpent || buyAmt,
+          simRealBoughtTime: storeActive?.simRealBoughtTime || Date.now()
+        };
+
+        if (setPositions) {
+          setPositions((prev: any) => ({
+            ...prev,
+            [tokenAddress]: confirmedPos
+          }));
+        }
+        useAppStore.getState().updateActivePositions(prev => ({
+          ...prev,
+          [tokenAddress]: confirmedPos
+        }));
+
         markExecuted(signal.id, `tx-copy-${Date.now()}`);
 
       } catch (err: any) {
@@ -854,8 +910,8 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
              slLimit = -Math.abs(simRealStopLossUnknown !== undefined ? simRealStopLossUnknown : 20) / 100;
          }
 
-         const spentSol = pos.simRealSolSpent || pos.solSpent || 0.1;
-         const boughtPrice = pos.simRealBoughtPriceSol || pos.buyPrice || pos.currentPrice || 0.000001;
+         const spentSol = pos.simRealSolSpent || 0.1;
+         const boughtPrice = pos.simRealBoughtPriceSol || (spentSol / (pos.simRealAmountTokens || 1)) || pos.currentPrice || 0.000001;
          
          let metricPriceSol = 0;
          if (tokenMetric?.priceNative && tokenMetric.priceNative > 0) {
@@ -864,7 +920,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
            metricPriceSol = parseFloat(String(tokenMetric.priceUsd)) / 180;
          }
 
-         const currPrice = Math.max(pos.currentPrice || 0, pos.buyPrice || 0, boughtPrice, metricPriceSol);
+         const currPrice = metricPriceSol > 0 ? metricPriceSol : (pos.currentPrice || boughtPrice);
          const tokensQty = (pos.simRealAmountTokens && pos.simRealAmountTokens > 0)
            ? pos.simRealAmountTokens
            : (pos.amount && pos.amount > 0)
@@ -971,7 +1027,11 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
               if (resetSimRealWallet) await resetSimRealWallet();
               useSimulationStore.setState({ positions: {}, closedPositions: [] });
               useBuySignalStore.getState().clearSignals();
+              useBuySignalStore.getState().resetSignals();
               useAppStore.getState().setTokenMetrics(() => ({}));
+              useAppStore.getState().updateActivePositions(() => ({}));
+              if (setPositions) setPositions({});
+              positionsRef.current = {};
             }}
             className="bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-lg border border-emerald-500/20 transition-all active:scale-95 flex items-center gap-1.5"
             title="Reset wallet balance, trades, simulation positions, and clear Buy Signals Pipeline & token caches"
@@ -1382,9 +1442,9 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                       }
                       const tokensQty = pos.simRealAmountTokens || 0;
                       const spentSol = pos.simRealSolSpent || 0.1;
-                      const currentPrice = Math.max(pos.currentPrice || 0, pos.buyPrice || 0, pos.simRealBoughtPriceSol || 0, metricPriceSol);
+                      const currentPrice = metricPriceSol > 0 ? metricPriceSol : (pos.currentPrice || pos.simRealBoughtPriceSol || 0);
                       const isStalePos = !!pos.isStale && (!currentPrice || currentPrice === 0);
-                      const entryPrice = pos.simRealBoughtPriceSol || pos.buyPrice || (spentSol / (tokensQty || 1)) || 0.000001;
+                      const entryPrice = pos.simRealBoughtPriceSol || (spentSol / (tokensQty || 1)) || 0.000001;
                       
                       const currentGrossSimReal = currentPrice * tokensQty;
                       let netSimRealIfSold = currentGrossSimReal;
