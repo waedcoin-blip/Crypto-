@@ -75,7 +75,7 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
     }));
 
     console.log(
-      `[Sim] Opened: ${token.symbol} @ ${token.priceNative.toFixed(8)} SOL ` +
+      `[Sim] Opened: ${token.symbol} @ $${(token.priceUsd || 0).toFixed(8)} ` +
       `(${amountSol} SOL)`
     );
   },

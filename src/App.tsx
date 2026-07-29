@@ -28,6 +28,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { cn, detectTokenStage } from './lib/utils';
+import { setSolPriceUsd, getSolPriceUsd } from './utils/pnlCalculator';
 import { getSimRealTradeCount } from './config/rebuyGuard';
 import { DEFAULT_HELIUS_RPC, HELIUS_API_KEY } from './constants/solana';
 import { encryptPrivateKey, decryptPrivateKey } from './lib/crypto';
@@ -1264,7 +1265,7 @@ export default function App() {
       // MONITORING LOOP 1: EXITS (Hardened All-or-Nothing Exit)
       const activePositionEntries = Object.entries(state.activePositions) as [string, any][];
       for (const [tokenAddress, position] of activePositionEntries) {
-        if (position.triggersDisabled) continue;
+        if (position.simRealBought || position.triggersDisabled) continue;
         let token = state.tokenMetrics[tokenAddress];
         
         if (!token) {
@@ -1976,7 +1977,14 @@ export default function App() {
       } else {
         // Simulation Profit Guard for Partial
         const metric = tokenMetrics[tokenAddress];
-        const entryRatio = (position.entryPrice && position.entryPrice > 0 ? position.entryPrice : 0.0000001);
+        const entryRatio = position.entryPrice && position.entryPrice > 0 
+          ? position.entryPrice 
+          : (position.entryPriceSol ? position.entryPriceSol * getSolPriceUsd() : 0);
+        if (!entryRatio) {
+          console.warn(`[PartialSell Abort] Missing valid entry price for ${symbol}`);
+          setTradingStatus('Idle');
+          return;
+        }
         const currentRatio = (metric?.priceUsd && metric?.priceUsd > 0 ? metric.priceUsd : entryRatio);
         
         const simulatedGross = (position.amount * percent) * (currentRatio / entryRatio);
@@ -2038,9 +2046,26 @@ export default function App() {
       return;
     }
 
+    if (position.simRealBought) {
+      console.log(`[App.tsx executeAutoSell] SimReal position ${symbol} detected; delegating exit to SimReal engine.`);
+      if (simrealControlRef.current?.executeSimRealSell) {
+        simrealControlRef.current.executeSimRealSell(tokenAddress).catch(err => console.error("SimReal delegate sell error:", err));
+      }
+      pendingTrades.current.delete(tokenAddress);
+      return;
+    }
+
     // CALCULATE CENTRALIZED PNL FOR DYNAMIC SLIPPAGE
     const metric = tokenMetrics[tokenAddress];
-    const entryRatio = (position.entryPrice && position.entryPrice > 0 ? position.entryPrice : 0.0000001);
+    const entryRatio = position.entryPrice && position.entryPrice > 0 
+      ? position.entryPrice 
+      : (position.entryPriceSol ? position.entryPriceSol * getSolPriceUsd() : 0);
+    if (!entryRatio) {
+      console.warn(`[AutoSell Abort] Missing valid entry price for ${symbol}`);
+      pendingTrades.current.delete(tokenAddress);
+      setTradingStatus(null);
+      return;
+    }
     const currentRatio = (metric?.priceUsd && metric?.priceUsd > 0 ? metric.priceUsd : entryRatio);
     const curPnLPercent = ((currentRatio / entryRatio) - 1) * 100;
     
@@ -2170,7 +2195,7 @@ export default function App() {
           type: 'SELL',
           token: symbol,
           address: tokenAddress,
-          amount: solSpent,
+          amount: simRealReturnSol,
           timestamp: Date.now(),
           pnl: simRealPnL,
           signature: 'SIMREAL_SELL_' + Math.random().toString(36).substring(7),

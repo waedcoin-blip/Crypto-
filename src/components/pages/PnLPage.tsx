@@ -6401,7 +6401,7 @@ const checkTokenCriteria = (mint: string): {
             sellTime: trade.timestamp,
             buyAmountSol: buy.amount,
             sellAmountSol: trade.amount,
-            pnlPct: trade.pnl !== undefined ? trade.pnl : ((trade.amount - buy.amount) / buy.amount * 100)
+            pnlPct: buy.amount > 0 ? ((trade.amount - buy.amount) / buy.amount) * 100 : (trade.pnl ?? 0)
           });
         } else {
           // Fallback if buy was not found

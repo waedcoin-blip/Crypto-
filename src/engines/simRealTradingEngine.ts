@@ -122,14 +122,15 @@ export class SimRealTradingEngine {
 
     let symbol = 'UNKNOWN';
     let currentPrice = 0;
-    let decimals = 9; // Default to 9 (common for Solana tokens)
+    let decimals = cleanMint.toLowerCase().endsWith('pump') ? 6 : 9;
 
     const existingMetric = tokenMetrics[cleanMint];
     if (existingMetric) {
       symbol = existingMetric.symbol || 'UNKNOWN';
       currentPrice = existingMetric.priceNative || 0;
-      // Attempt to read decimals from metric metadata; fallback to 9
-      decimals = (existingMetric as any).decimals ?? 9;
+      if ((existingMetric as any).decimals !== undefined) {
+        decimals = (existingMetric as any).decimals;
+      }
     }
 
     const quoteRequestTime = Date.now();

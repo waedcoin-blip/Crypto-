@@ -23,16 +23,7 @@ import { useBuySignalStore } from '../../store/buySignalStore';
 import { useSimulationStore } from '../../store/simulationStore';
 import { simRealTradingEngine } from '../../engines/simRealTradingEngine';
 import { getSimRealTradeCount } from '../../config/rebuyGuard';
-
-// Local helper matching the rest of the application
-const getDynamicOperationalFeeSol = (isRecovery: boolean = false, tradeAmountSol: number = 0.05): number => {
-  const baseGasAndComputeSol = 0.00005;
-  let jitoTip = isRecovery ? 0.0025 : 0.0015;
-  if (tradeAmountSol < 0.05) {
-     jitoTip = isRecovery ? 0.0010 : 0.0003; 
-  }
-  return baseGasAndComputeSol + jitoTip;
-};
+import { getSolPriceUsd, getDynamicOperationalFeeSol, calculateSimRealPnl } from '../../utils/pnlCalculator';
 
 interface Position {
   symbol: string;
@@ -486,7 +477,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
             sellTime: trade.timestamp,
             buyAmountSol: buy.amount,
             sellAmountSol: trade.amount,
-            pnlPct: trade.pnl !== undefined ? trade.pnl : ((trade.amount - buy.amount) / buy.amount * 100),
+            pnlPct: buy.amount > 0 ? ((trade.amount - buy.amount) / buy.amount) * 100 : (trade.pnl ?? 0),
             tokenAmount: buy.tokenAmount || trade.tokenAmount
           });
         } else {
@@ -1469,7 +1460,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                       if (token?.priceNative && token.priceNative > 0) {
                         metricPriceSol = parseFloat(String(token.priceNative));
                       } else if (token?.priceUsd && token.priceUsd > 0) {
-                        metricPriceSol = parseFloat(String(token.priceUsd)) / 180;
+                        metricPriceSol = parseFloat(String(token.priceUsd)) / getSolPriceUsd();
                       }
                       const tokensQty = pos.simRealAmountTokens || 0;
                       const spentSol = pos.simRealSolSpent || 0.1;
