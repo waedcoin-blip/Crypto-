@@ -176,7 +176,7 @@ export class SimRealTradingEngine {
           currentPrice: currentPrice || boughtPriceSol,
           solSpent: amountSol,
           amount: exactTokenAmountHuman,
-          amountLamports: result.quoteOutAmountRaw ?? exactTokenAmountRaw,
+          amountLamports: result.actualOutputAmountRaw ?? result.quoteOutAmountRaw ?? exactTokenAmountRaw,
           decimals,
           entryTime: quoteRequestTime,
           txid: result.txid,
@@ -216,7 +216,11 @@ export class SimRealTradingEngine {
         // Fallback to currentPrice
       }
 
-      const effectivePrice = freshPriceSol || currentPrice || 0.000001;
+      const effectivePrice = freshPriceSol || currentPrice || 0;
+      if (effectivePrice <= 0) {
+         console.warn(`[SimReal Engine] Cannot execute virtual buy for ${symbol}, price is zero.`);
+         return;
+      }
       const tokensQty = amountSol / effectivePrice;
       const newTrade: SniperTrade = {
         id: this.generateId('simreal-buy'),

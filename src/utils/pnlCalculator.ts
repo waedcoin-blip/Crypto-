@@ -1,6 +1,6 @@
 // Unified PnL and Fee Calculation Utilities for SimReal & Live Trading Engine
 
-let cachedSolPriceUsd = 180;
+let cachedSolPriceUsd = 200; // Default fallback, but will be updated dynamically
 
 export const setSolPriceUsd = (priceUsd: number) => {
   if (priceUsd && priceUsd > 0) {

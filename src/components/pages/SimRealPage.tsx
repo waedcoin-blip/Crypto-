@@ -948,12 +948,12 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                 
                 if (lamportsToSell > 0) {
                    const quote = await getJupiterQuote(mint, SOL_MINT, lamportsToSell, tokenMetric?.liquidity || 0);
-                   if (quote && quote.otherAmountThreshold) {
-                      const guaranteedSolOut = Number(BigInt(quote.otherAmountThreshold)) / 1_000_000_000.0;
+                   if (quote && quote.outAmount) {
+                      const expectedSolOut = Number(quote.outAmount) / 1_000_000_000.0;
                       const operationalFeesSol = getDynamicOperationalFeeSol(pos.recoveryMode, spentSol);
-                      const netSolReturn = Math.max(0, guaranteedSolOut - operationalFeesSol);
+                      const netSolReturn = Math.max(0, expectedSolOut - operationalFeesSol);
                       simRealNetPnlPct = (netSolReturn - spentSol) / spentSol;
-                      simRealGrossPnlPct = (guaranteedSolOut - spentSol) / spentSol;
+                      simRealGrossPnlPct = (expectedSolOut - spentSol) / spentSol;
                    } else {
                       // Fallback to calculator if quote fails
                       const pnlRes = calculateSimRealPnl(spentSol, tokensQty, boughtPrice, currPrice, slippage, pos.recoveryMode, true);
@@ -1499,10 +1499,10 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                         metricPriceSol = parseFloat(String(token.priceUsd)) / getSolPriceUsd();
                       }
                       const tokensQty = pos.simRealAmountTokens || 0;
-                      const spentSol = pos.simRealSolSpent || 0.1;
+                      const spentSol = pos.simRealSolSpent || 0;
                       const currentPrice = metricPriceSol > 0 ? metricPriceSol : (pos.currentPrice || pos.simRealBoughtPriceSol || 0);
                       const isStalePos = !!pos.isStale && (!currentPrice || currentPrice === 0);
-                      const entryPrice = pos.simRealBoughtPriceSol || (spentSol / (tokensQty || 1)) || 0.000001;
+                      const entryPrice = pos.simRealBoughtPriceSol || (tokensQty > 0 && spentSol > 0 ? spentSol / tokensQty : 0);
                       
                       const currentGrossSimReal = currentPrice * tokensQty;
                       let netSimRealIfSold = currentGrossSimReal;
@@ -1512,7 +1512,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                          netSimRealIfSold = Math.max(0, currentGrossSimReal - slippageFee - opFees);
                       }
                       
-                      const pnlFraction = (netSimRealIfSold - spentSol) / spentSol;
+                      const pnlFraction = spentSol > 0 ? (netSimRealIfSold - spentSol) / spentSol : 0;
                       const pnlPct = pnlFraction;
                       const isPos = pnlPct >= 0;
                       const profitSol = netSimRealIfSold - spentSol;
