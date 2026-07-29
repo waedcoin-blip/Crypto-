@@ -371,9 +371,10 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
 
       console.log(`[SimReal] Trade successfully started for ${symbol} (${mint}) with amount ${buyAmt} SOL`);
     } catch (error) {
-      activeSimRealMintsRef.current.delete(mint);
       simRealBoughtPending.current.delete(mint.toLowerCase());
       console.error(`[SimReal] Failed to start trade for ${mint}`, error);
+    } finally {
+      activeSimRealMintsRef.current.delete(mint);
     }
   };
 
@@ -708,16 +709,19 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
         
         executingSignalId = signal.id;
 
-        const { tokenAddress, symbol, triggerPriceUsd, profitPercent } = signal;
+        const { tokenAddress } = signal;
         currentTokenAddress = tokenAddress;
-        const safeProfit = typeof profitPercent === 'number' && !isNaN(profitPercent) ? profitPercent : 3.5;
-        console.log(`[Pipeline] Processing signal for ${symbol} (${safeProfit >= 0 ? '+' : ''}${safeProfit.toFixed(2)}%)`);
 
-        // Gate 0: Block Unknown tokens or tokens not transferred from PnLPage
-        if (!symbol || symbol.trim() === '' || symbol.toUpperCase() === 'UNKNOWN') {
-          markRejected(signal.id, 'Token symbol is Unknown or missing');
+        if (!tokenAddress) {
+          markRejected(signal.id, 'No token address in signal');
           return;
         }
+
+        console.log(`[Pipeline] Processing signal address ONLY: ${tokenAddress}`);
+        markExecuting(signal.id);
+        await startNewSimRealTrade(tokenAddress);
+        markExecuted(signal.id, `tx-simreal-${Date.now()}`);
+        return;
 
         // Gate 0.0: Signal Freshness Gate - reject stale/re-hydrated signals (> 120s old)
         if (signal.timestamp && (Date.now() - signal.timestamp > 120000)) {

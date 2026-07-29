@@ -1115,6 +1115,7 @@ export const PnLPage = ({
   
   const { simRealTrades, simRealBalance } = useAppStore();
   const emitBuySignal = useBuySignalStore(state => state.emitSignal);
+  const emitSimRealToken = useBuySignalStore(state => state.emitSimRealToken);
   const signaledPositions = useRef<Set<string>>(new Set());
   const latestPricesRef = useRef<Record<string, number>>({});
 
@@ -2948,37 +2949,24 @@ export const PnLPage = ({
           const tokenAddress = mint.trim();
           if (!tokenAddress) continue;
 
-          if (simRealTriggeredMintsRef.current.has(tokenAddress)) {
-            continue;
-          }
-
-          simRealTriggeredMintsRef.current.add(tokenAddress);
-
           if (!pos.symbol || pos.symbol.trim() === '' || pos.symbol.toUpperCase() === 'UNKNOWN') continue;
 
           const activeDexId = mint.toLowerCase().endsWith('pump') ? 'pumpfun' : 'raydium';
           const sourceCheck = checkDexPlatformSourcesAllowed(mint, activeDexId);
           if (!sourceCheck.pass) continue;
 
+          if (simRealTriggeredMintsRef.current.has(tokenAddress)) {
+            continue;
+          }
+
+          simRealTriggeredMintsRef.current.add(tokenAddress);
+
           // ONLY pass the token address across the boundary
           if (simrealControlRef?.current?.receiveTokenAddress) {
             simrealControlRef.current.receiveTokenAddress(tokenAddress);
           } else {
-            // Backup signal emission sending ONLY tokenAddress
-            emitBuySignal({
-              tokenAddress,
-              symbol: pos.symbol,
-              name: pos.symbol,
-              entryPriceUsd: 0,
-              triggerPriceUsd: 0,
-              profitPercent: pnlPercent,
-              liquidityUsd: 0,
-              volume24h: 0,
-              dexId: activeDexId,
-              pairAddress: tokenAddress,
-              simAmountSol: 0,
-              simEntryTime: Date.now(),
-            });
+            // Backup address-only signal emission sending ONLY tokenAddress
+            emitSimRealToken(tokenAddress);
           }
 
           addLog(`[Active Position Signal] Token address ONLY (${tokenAddress.slice(0, 8)}..., +${pnlPercent.toFixed(2)}%) sent → SimRealPage`, 'success');
@@ -6264,6 +6252,7 @@ const checkTokenCriteria = (mint: string): {
 
   if (simrealControlRef) {
     simrealControlRef.current = {
+      ...(simrealControlRef.current || {}),
       executeSimRealSell,
       resetSimRealWallet,
       executeSimRealBuy,
