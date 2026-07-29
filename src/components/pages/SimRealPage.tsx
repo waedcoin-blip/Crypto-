@@ -93,6 +93,7 @@ interface SimRealPageProps {
   executeSimRealSell?: (mint: string) => Promise<void>;
   executeSimRealBuy?: (mint: string, amount: number) => Promise<void>;
   resetSimRealWallet?: () => void;
+  simrealControlRef?: React.MutableRefObject<any>;
   maxRebuyTimes: number;
   setMaxRebuyTimes: (v: number) => void;
   jupiterLogs: { id: string; timestamp: number; type: 'QUOTE' | 'SWAP' | 'ERROR' | 'INFO'; message: string; details?: any }[];
@@ -141,6 +142,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
   executeSimRealSell,
   executeSimRealBuy,
   resetSimRealWallet,
+  simrealControlRef,
   maxRebuyTimes,
   setMaxRebuyTimes,
   jupiterLogs,
@@ -229,6 +231,162 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
   // Lock to prevent concurrent processing of different signals
   const processingLock = useRef(false);
   const simRealBoughtPending = useRef<Set<string>>(new Set());
+  const activeSimRealMintsRef = useRef<Set<string>>(new Set());
+
+  // ── RECEIVE TOKEN ADDRESS ONLY & START SIMREAL TRADE ──
+  const startNewSimRealTrade = async (tokenAddress: string) => {
+    if (!tokenAddress) return;
+    const mint = tokenAddress.trim();
+    if (!mint) return;
+
+    // Prevent duplicate starts
+    if (activeSimRealMintsRef.current.has(mint)) {
+      return;
+    }
+    activeSimRealMintsRef.current.add(mint);
+
+    try {
+      // Check if already holding active SimReal position
+      if (positions && positions[mint]?.simRealBought) {
+        console.log(`[SimReal] Already holding active position for ${mint}`);
+        return;
+      }
+
+      const storeState = useAppStore.getState();
+      const buyAmt = storeState.buyAmountSol || 0.1;
+
+      // Check wallet balance
+      if (storeState.simRealBalance < buyAmt) {
+        console.warn(`[SimReal] Insufficient SimReal balance (${storeState.simRealBalance.toFixed(4)} SOL < ${buyAmt} SOL)`);
+        return;
+      }
+
+      // Check max concurrent positions
+      const activePositionsCount = Object.values(positions || {}).filter(p => p && p.simRealBought).length;
+      if (maxPositions && activePositionsCount >= maxPositions) {
+        console.warn(`[SimReal] Max concurrent positions reached (${activePositionsCount}/${maxPositions})`);
+        return;
+      }
+
+      // Check rebuy limit
+      const activeMaxRebuyTimes = maxRebuyTimes !== undefined ? maxRebuyTimes : 1;
+      const existingSym = positions?.[mint]?.symbol || storeState.tokenMetrics[mint]?.symbol || 'UNKNOWN';
+      const totalSimRealTradedCount = getSimRealTradeCount(
+        mint,
+        existingSym,
+        storeState.simRealTrades,
+        positions || {},
+        simRealBoughtPending.current
+      );
+      if (totalSimRealTradedCount >= activeMaxRebuyTimes) {
+        console.warn(`[SimReal] Rebuy limit reached for ${mint}`);
+        return;
+      }
+
+      simRealBoughtPending.current.add(mint.toLowerCase());
+
+      // Independently request current fresh token data and price quote
+      let freshPriceUsd = 0;
+      let freshPriceNative = 0;
+      let symbol = existingSym;
+      let freshLiquidityUsd = 50000;
+
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 1500);
+        const res = await fetch(`/api/dex/tokens/${mint}`, { signal: controller.signal });
+        clearTimeout(timeoutId);
+        if (res.ok) {
+          const data = await res.json();
+          const pair = data?.pairs && Array.isArray(data.pairs) && data.pairs.length > 0
+            ? [...data.pairs].sort((a: any, b: any) => (parseFloat(b.liquidity?.usd || '0') - parseFloat(a.liquidity?.usd || '0')))[0]
+            : null;
+          if (pair) {
+            freshPriceUsd = parseFloat(pair.priceUsd || '0') || 0;
+            freshPriceNative = parseFloat(pair.priceNative || '0') || 0;
+            symbol = pair.baseToken?.symbol || symbol;
+            freshLiquidityUsd = parseFloat(pair.liquidity?.usd || '0') || freshLiquidityUsd;
+          }
+        }
+      } catch (err) {
+        console.warn('[SimReal] Quote fetch error:', err);
+      }
+
+      if (!freshPriceNative && storeState.tokenMetrics[mint]?.priceNative) {
+        freshPriceNative = storeState.tokenMetrics[mint].priceNative;
+      }
+      const finalPriceSol = freshPriceNative > 0 ? freshPriceNative : (freshPriceUsd > 0 ? freshPriceUsd / getSolPriceUsd() : 0.000001);
+
+      // Seed storeState.tokenMetrics
+      const formattedMetric: TokenMetric = {
+        address: mint,
+        symbol: symbol || 'UNKNOWN',
+        priceUsd: freshPriceUsd || finalPriceSol * getSolPriceUsd(),
+        priceNative: finalPriceSol,
+        marketCap: 0,
+        liquidity: freshLiquidityUsd,
+        volume24h: 100000,
+        discoveredAt: Date.now(),
+        lastUpdated: Date.now(),
+        buyCount: 0,
+        sellCount: 0,
+        buyVolume: 0,
+        sellVolume: 0,
+        priceChange5m: 1.0,
+        priceChange1m: 0,
+        percentageIncrease: 1.0,
+        recentBuysTimeline: [],
+        category: mint.toLowerCase().endsWith('pump') ? 'PUMP_FUN' : 'RAYDIUM',
+        isRugSafe: true,
+        mintAuthorityRevoked: true,
+        freezeAuthorityRevoked: true,
+        liquidityBurned: true,
+        top10Percentage: 8.5
+      };
+      storeState.setTokenMetrics(prev => ({ ...prev, [mint]: formattedMetric }));
+
+      // Execute buy
+      if (executeSimRealBuy) {
+        await executeSimRealBuy(mint, buyAmt);
+      } else {
+        await simRealTradingEngine.executeBuy({
+          mint,
+          amountSol: buyAmt,
+          privateKey,
+          apiKey,
+          rpcUrl: rpcUrl || 'https://api.mainnet-beta.solana.com',
+          slippage: slippage || 100,
+          tokenMetrics: { ...tokenMetrics, [mint]: formattedMetric },
+          updateState: (update) => {
+            const newPos = update.newPosition;
+            if (setPositions) {
+              setPositions((prev: any) => ({ ...prev, [mint]: newPos }));
+            }
+            if (privateKey) {
+              useAppStore.getState().updateActivePositions(prev => ({ ...prev, [mint]: newPos }));
+            }
+          }
+        });
+      }
+
+      console.log(`[SimReal] Trade successfully started for ${symbol} (${mint}) with amount ${buyAmt} SOL`);
+    } catch (error) {
+      activeSimRealMintsRef.current.delete(mint);
+      simRealBoughtPending.current.delete(mint.toLowerCase());
+      console.error(`[SimReal] Failed to start trade for ${mint}`, error);
+    }
+  };
+
+  useEffect(() => {
+    if (simrealControlRef) {
+      simrealControlRef.current = {
+        ...(simrealControlRef.current || {}),
+        receiveTokenAddress: (tokenAddress: string) => {
+          startNewSimRealTrade(tokenAddress);
+        }
+      };
+    }
+  }, [simrealControlRef]);
 
   // Manual independent trading states
   const [manualMint, setManualMint] = useState('');
@@ -350,6 +508,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
 
   const handleForceSell = async (mint: string) => {
     const pos = positions[mint];
+    activeSimRealMintsRef.current.delete(mint);
     if (!pos) return;
 
     try {
@@ -463,14 +622,26 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
     
     // simRealTrades has newest first, so we reverse it to process chronologically
     const chronological = [...(simRealTrades || [])].reverse();
-    const openBuys: Record<string, Array<{ timestamp: number; amount: number; tokenAmount?: number }>> = {};
+    const openBuysByPosId: Record<string, { timestamp: number; amount: number; tokenAmount?: number; positionId?: string }> = {};
+    const openBuysByAddress: Record<string, Array<{ timestamp: number; amount: number; tokenAmount?: number; positionId?: string }>> = {};
     
     for (const trade of chronological) {
       if (trade.type === 'BUY') {
-        if (!openBuys[trade.address]) openBuys[trade.address] = [];
-        openBuys[trade.address].push({ timestamp: trade.timestamp, amount: trade.amount, tokenAmount: trade.tokenAmount });
+        const buyItem = { timestamp: trade.timestamp, amount: trade.amount, tokenAmount: trade.tokenAmount, positionId: trade.positionId };
+        if (trade.positionId) {
+          openBuysByPosId[trade.positionId] = buyItem;
+        }
+        if (!openBuysByAddress[trade.address]) openBuysByAddress[trade.address] = [];
+        openBuysByAddress[trade.address].push(buyItem);
       } else if (trade.type === 'SELL') {
-        const buy = openBuys[trade.address]?.shift();
+        let buy = trade.positionId ? openBuysByPosId[trade.positionId] : undefined;
+        if (!buy) {
+          buy = openBuysByAddress[trade.address]?.shift();
+        } else if (openBuysByAddress[trade.address]) {
+          const idx = openBuysByAddress[trade.address].findIndex(b => b.positionId === trade.positionId);
+          if (idx !== -1) openBuysByAddress[trade.address].splice(idx, 1);
+        }
+
         if (buy) {
           completed.push({
             id: trade.id,
@@ -484,14 +655,16 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
             tokenAmount: buy.tokenAmount || trade.tokenAmount
           });
         } else {
-          // If there is no matching BUY, we should not fabricate one.
+          const derivedBuySol = (trade.pnl !== undefined && trade.amount > 0 && trade.pnl > -100)
+            ? trade.amount / (1 + trade.pnl / 100)
+            : 0;
           completed.push({
             id: trade.id,
             mint: trade.address,
             token: trade.token,
             buyTime: 0, // 0 indicates UNMATCHED
             sellTime: trade.timestamp,
-            buyAmountSol: 0, // 0 indicates UNMATCHED
+            buyAmountSol: derivedBuySol,
             sellAmountSol: trade.amount,
             pnlPct: trade.pnl !== undefined ? trade.pnl : 0,
             tokenAmount: trade.tokenAmount
@@ -954,22 +1127,15 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                       const netSolReturn = Math.max(0, expectedSolOut - operationalFeesSol);
                       simRealNetPnlPct = (netSolReturn - spentSol) / spentSol;
                       simRealGrossPnlPct = (expectedSolOut - spentSol) / spentSol;
-                   } else {
-                      // Fallback to calculator if quote fails
-                      const pnlRes = calculateSimRealPnl(spentSol, tokensQty, boughtPrice, currPrice, slippage, pos.recoveryMode, true);
-                      if (pnlRes) {
-                        simRealNetPnlPct = pnlRes.netPnlPct / 100;
-                        simRealGrossPnlPct = pnlRes.grossPnlPct / 100;
-                      }
                    }
                 }
              } catch (e) {
-                // If quote fails, we use the calculator fallback
-                const pnlRes = calculateSimRealPnl(spentSol, tokensQty, boughtPrice, currPrice, slippage, pos.recoveryMode, true);
-                if (pnlRes) {
-                  simRealNetPnlPct = pnlRes.netPnlPct / 100;
-                  simRealGrossPnlPct = pnlRes.grossPnlPct / 100;
-                }
+                console.warn(`[SimReal TP/SL] Quote error for real position ${pos.symbol || mint}:`, e);
+             }
+
+             if (simRealNetPnlPct === 0 && simRealGrossPnlPct === 0) {
+                console.warn(`[SimReal TP/SL] Executable quote unavailable for real position ${pos.symbol || mint}. Holding position.`);
+                continue;
              }
          } else {
              // Simulation fallback
@@ -1500,22 +1666,29 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                       }
                       const tokensQty = pos.simRealAmountTokens || 0;
                       const spentSol = pos.simRealSolSpent || 0;
-                      const currentPrice = metricPriceSol > 0 ? metricPriceSol : (pos.currentPrice || pos.simRealBoughtPriceSol || 0);
-                      const isStalePos = !!pos.isStale && (!currentPrice || currentPrice === 0);
-                      const entryPrice = pos.simRealBoughtPriceSol || (tokensQty > 0 && spentSol > 0 ? spentSol / tokensQty : 0);
+                      const currentPrice = metricPriceSol > 0 ? metricPriceSol : (pos.currentPrice && pos.currentPrice > 0 ? pos.currentPrice : null);
+                      const isStalePos = currentPrice === null;
+                      const entryPrice = pos.simRealBoughtPriceSol || (tokensQty > 0 && spentSol > 0 ? spentSol / tokensQty : null);
                       
-                      const currentGrossSimReal = currentPrice * tokensQty;
-                      let netSimRealIfSold = currentGrossSimReal;
-                      if (!privateKey) {
-                         const slippageFee = currentGrossSimReal * (slippage / 100);
-                         const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, spentSol);
-                         netSimRealIfSold = Math.max(0, currentGrossSimReal - slippageFee - opFees);
+                      let pnlPct: number | null = null;
+                      let profitSol = 0;
+
+                      if (privateKey && !pos.simRealIsVirtualFallback && pos.realNetPnl !== undefined && !isNaN(pos.realNetPnl)) {
+                         pnlPct = pos.realNetPnl;
+                         profitSol = spentSol * pnlPct;
+                      } else if (currentPrice !== null && spentSol > 0) {
+                         const currentGrossSimReal = currentPrice * tokensQty;
+                         let netSimRealIfSold = currentGrossSimReal;
+                         if (!privateKey || pos.simRealIsVirtualFallback) {
+                            const slippageFee = currentGrossSimReal * (slippage / 100);
+                            const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, spentSol);
+                            netSimRealIfSold = Math.max(0, currentGrossSimReal - slippageFee - opFees);
+                         }
+                         pnlPct = (netSimRealIfSold - spentSol) / spentSol;
+                         profitSol = netSimRealIfSold - spentSol;
                       }
                       
-                      const pnlFraction = spentSol > 0 ? (netSimRealIfSold - spentSol) / spentSol : 0;
-                      const pnlPct = pnlFraction;
-                      const isPos = pnlPct >= 0;
-                      const profitSol = netSimRealIfSold - spentSol;
+                      const isPos = (pnlPct ?? 0) >= 0;
 
                       const stage = detectTokenStage({
                         address: mint,
@@ -1575,10 +1748,10 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                             </div>
                             
                             <div className="ml-auto text-right font-mono">
-                              {isStalePos ? (
+                              {pnlPct === null ? (
                                 <div className="flex flex-col items-end">
-                                  <span className="text-amber-500 font-bold text-[13px] animate-pulse">MIGRATING...</span>
-                                  <span className="text-[10px] text-[#64748b]">On-Chain Processing</span>
+                                  <span className="text-amber-500 font-bold text-[13px] uppercase">N/A</span>
+                                  <span className="text-[10px] text-[#64748b]">Fetching Quote</span>
                                 </div>
                               ) : (
                                 <div className={`text-[14px] font-semibold ${isPos ? 'text-[#c7f284]' : 'text-[#ff4d4d]'}`}>
@@ -1592,7 +1765,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                           <div>
                             <div className="text-[#64748b] text-[11px] mb-1 uppercase font-medium">Entry Price</div>
                             <div className="font-mono text-[14px] font-semibold text-[#e2e8f0]">
-                              {entryPrice.toFixed(8)} SOL
+                              {entryPrice !== null ? `${entryPrice.toFixed(8)} SOL` : 'N/A'}
                             </div>
                             <div className="text-[10px] text-[#64748b] mt-0.5">
                               {tokensQty.toLocaleString(undefined, { maximumFractionDigits: 4 })} tokens for {spentSol.toFixed(4)} SOL
@@ -1602,8 +1775,8 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                           <div>
                             <div className="text-[#64748b] text-[11px] mb-1 uppercase font-medium">Current Price</div>
                             <div className="font-mono text-[14px] font-semibold text-[#e2e8f0]">
-                              {isStalePos ? (
-                                <span className="text-amber-500 font-bold animate-pulse text-[12px]">STALE</span>
+                              {currentPrice === null ? (
+                                <span className="text-amber-500 font-bold text-[12px]">PRICE UNAVAILABLE</span>
                               ) : (
                                 `${currentPrice.toFixed(8)} SOL`
                               )}

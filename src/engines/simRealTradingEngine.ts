@@ -14,6 +14,7 @@ export interface SimRealPosition {
   decimals: number;         // Token decimals (critical for correct sell amounts)
   entryTime: number;
   txid: string;
+  positionId?: string;
   simRealBought: boolean;
   simRealBoughtPriceSol: number;
   simRealAmountTokens: number;
@@ -159,6 +160,7 @@ export class SimRealTradingEngine {
         const exactTokenAmountHuman = exactTokenAmountRaw / (10 ** decimals);
         const boughtPriceSol = exactTokenAmountHuman > 0 ? amountSol / exactTokenAmountHuman : 0;
 
+        const posId = `pos_${Date.now()}_${cleanMint.slice(0, 8)}`;
         const newTrade: SniperTrade = {
           id: this.generateId('simreal-buy'),
           type: 'BUY',
@@ -167,7 +169,8 @@ export class SimRealTradingEngine {
           amount: amountSol,
           timestamp: quoteRequestTime,
           signature: result.txid,
-          tokenAmount: exactTokenAmountHuman
+          tokenAmount: exactTokenAmountHuman,
+          positionId: posId
         };
 
         const newPosition: SimRealPosition = {
@@ -180,6 +183,7 @@ export class SimRealTradingEngine {
           decimals,
           entryTime: quoteRequestTime,
           txid: result.txid,
+          positionId: posId,
           simRealBought: true,
           simRealBoughtPriceSol: boughtPriceSol,
           simRealAmountTokens: exactTokenAmountHuman,
@@ -222,6 +226,7 @@ export class SimRealTradingEngine {
          return;
       }
       const tokensQty = amountSol / effectivePrice;
+      const simPosId = `pos_${Date.now()}_${cleanMint.slice(0, 8)}`;
       const newTrade: SniperTrade = {
         id: this.generateId('simreal-buy'),
         type: 'BUY',
@@ -230,7 +235,8 @@ export class SimRealTradingEngine {
         amount: amountSol,
         timestamp: quoteRequestTime,
         signature: 'SIMREAL_BN_' + Math.random().toString(36).substring(2, 11),
-        tokenAmount: tokensQty
+        tokenAmount: tokensQty,
+        positionId: simPosId
       };
 
       const newPosition: SimRealPosition = {
@@ -243,6 +249,7 @@ export class SimRealTradingEngine {
         decimals,
         entryTime: quoteRequestTime,
         txid: 'simulation-copy',
+        positionId: simPosId,
         simRealBought: true,
         simRealBoughtPriceSol: effectivePrice,
         simRealAmountTokens: tokensQty,
@@ -333,7 +340,8 @@ export class SimRealTradingEngine {
           timestamp: quoteRequestTime,
           pnl: realizedPnlPct,
           signature: result.txid,
-          tokenAmount: position.amount
+          tokenAmount: position.amount,
+          positionId: position.positionId
         };
 
         updateState({
@@ -361,7 +369,8 @@ export class SimRealTradingEngine {
         timestamp: quoteRequestTime,
         pnl: simPnlPct,
         signature: 'SIMREAL_SL_' + Math.random().toString(36).substring(2, 11),
-        tokenAmount: position.amount
+        tokenAmount: position.amount,
+        positionId: position.positionId
       };
 
       updateState({

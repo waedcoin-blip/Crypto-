@@ -99,4 +99,5 @@ export interface SniperTrade {
   pnl?: number; // percentage
   signature: string;
   tokenAmount?: number;
+  positionId?: string;
 }

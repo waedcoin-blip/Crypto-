@@ -103,6 +103,7 @@ interface Position {
   amountLamports?: number;
   entryTime: number;
   txid: string;
+  positionId?: string;
   recoveryMode?: boolean;
   triggersDisabled?: boolean;
   isScalp?: boolean;
@@ -2919,63 +2920,75 @@ export const PnLPage = ({
     return () => clearInterval(interval);
   }, [hasSimPosition, updateSimPrice]);
 
-  // ── SIGNAL EMISSION EFFECT ──
-  // Monitors active PnL positions. All tokens pass through PnLPage active positions before transfer to simreal trading.
-  // Transfers token address without price as simreal trading requests a new price before trading.
+  // ── SIGNAL EMISSION EFFECT (PnL >= +1% → tokenAddress ONLY → SimRealPage) ──
+  const SIMREAL_TRIGGER_PNL_PERCENT = 1;
+  const simRealTriggeredMintsRef = useRef<Set<string>>(new Set());
+
   useEffect(() => {
     const checkProfitTargets = () => {
-      // Check active PnL positions (from positions state)
       const activePositionsEntries = Object.entries(positions);
+
+      // Clean up deduplication set for positions no longer active
+      for (const mint of Array.from(simRealTriggeredMintsRef.current)) {
+        if (!positions[mint]) {
+          simRealTriggeredMintsRef.current.delete(mint);
+        }
+      }
+
       for (const [mint, pos] of activePositionsEntries) {
-        if (pos.signalEmitted) continue;
+        if (!pos || !mint) continue;
 
         const entryPriceSol = pos.buyPrice || pos.simRealBoughtPriceSol || 0;
         const currentPriceSol = pos.currentPrice || 0;
         if (entryPriceSol <= 0 || currentPriceSol <= 0) continue;
 
-        const profitPercent = ((currentPriceSol - entryPriceSol) / entryPriceSol) * 100;
-        const signalMinProfit = 1.0;
+        const pnlPercent = ((currentPriceSol - entryPriceSol) / entryPriceSol) * 100;
 
-        if (profitPercent >= signalMinProfit) {
+        if (Number.isFinite(pnlPercent) && pnlPercent >= SIMREAL_TRIGGER_PNL_PERCENT) {
+          const tokenAddress = mint.trim();
+          if (!tokenAddress) continue;
+
+          if (simRealTriggeredMintsRef.current.has(tokenAddress)) {
+            continue;
+          }
+
+          simRealTriggeredMintsRef.current.add(tokenAddress);
+
           if (!pos.symbol || pos.symbol.trim() === '' || pos.symbol.toUpperCase() === 'UNKNOWN') continue;
 
           const activeDexId = mint.toLowerCase().endsWith('pump') ? 'pumpfun' : 'raydium';
           const sourceCheck = checkDexPlatformSourcesAllowed(mint, activeDexId);
           if (!sourceCheck.pass) continue;
 
-          // Mark signalEmitted = true on the active position
-          setPositions(prev => {
-            if (!prev[mint] || prev[mint].signalEmitted) return prev;
-            return {
-              ...prev,
-              [mint]: { ...prev[mint], signalEmitted: true }
-            };
-          });
+          // ONLY pass the token address across the boundary
+          if (simrealControlRef?.current?.receiveTokenAddress) {
+            simrealControlRef.current.receiveTokenAddress(tokenAddress);
+          } else {
+            // Backup signal emission sending ONLY tokenAddress
+            emitBuySignal({
+              tokenAddress,
+              symbol: pos.symbol,
+              name: pos.symbol,
+              entryPriceUsd: 0,
+              triggerPriceUsd: 0,
+              profitPercent: pnlPercent,
+              liquidityUsd: 0,
+              volume24h: 0,
+              dexId: activeDexId,
+              pairAddress: tokenAddress,
+              simAmountSol: 0,
+              simEntryTime: Date.now(),
+            });
+          }
 
-          // Transfer token address with SOL price mapped to the Usd fields for compatibility
-          emitBuySignal({
-            tokenAddress: mint,
-            symbol: pos.symbol,
-            name: pos.symbol,
-            entryPriceUsd: entryPriceSol,
-            triggerPriceUsd: currentPriceSol,
-            profitPercent,
-            liquidityUsd: pos.liquidityUsd || 50000,
-            volume24h: pos.volume24h || 100000,
-            dexId: mint.toLowerCase().endsWith('pump') ? 'pumpfun' : 'raydium',
-            pairAddress: mint,
-            simAmountSol: pos.solSpent || 0,
-            simEntryTime: pos.entryTime || Date.now(),
-          });
-
-          addLog(`[Active Position Signal] ${pos.symbol} (+${profitPercent.toFixed(2)}%) token transferred → SimRealPage (Requesting fresh price)`, 'success');
+          addLog(`[Active Position Signal] Token address ONLY (${tokenAddress.slice(0, 8)}..., +${pnlPercent.toFixed(2)}%) sent → SimRealPage`, 'success');
         }
       }
     };
 
     const interval = setInterval(checkProfitTargets, 1000);
     return () => clearInterval(interval);
-  }, [positions, emitBuySignal, addLog, setPositions, checkDexPlatformSourcesAllowed]);
+  }, [positions, simrealControlRef, addLog, emitBuySignal, checkDexPlatformSourcesAllowed]);
 
   useEffect(() => {
     if (!privateKey) {
@@ -5681,11 +5694,16 @@ const checkTokenCriteria = (mint: string): {
           if (result.txid) {
              addLog(`✅ [SIMREAL REAL SWAP SUCCESS] Sold ${pos.symbol} on-chain | tx: ${result.txid.slice(0, 12)}...`, 'sell');
              signature = result.txid;
-             const passedOutAmount = typeof result.outputAmount === 'number' && !isNaN(result.outputAmount) ? result.outputAmount : 0;
+             const passedOutAmount = (typeof result.actualOutputAmountRaw === 'number' && !isNaN(result.actualOutputAmountRaw) && result.actualOutputAmountRaw > 0)
+               ? result.actualOutputAmountRaw
+               : ((typeof result.outputAmount === 'number' && !isNaN(result.outputAmount) && result.outputAmount > 0)
+               ? result.outputAmount
+               : 0);
+
              if (passedOutAmount > 0) {
                sellAmtSol = passedOutAmount / 1_000_000_000;
              } else {
-               sellAmtSol = currPrice * tokensQty;
+               throw new Error("Real sell confirmed on-chain but actual SOL output amount could not be parsed from transaction receipt.");
              }
           } else {
              throw new Error("Jupiter swap transaction ID missing.");
@@ -5738,7 +5756,8 @@ const checkTokenCriteria = (mint: string): {
       timestamp: Date.now(),
       signature: signature,
       pnl: tradePnlPct * 100,
-      tokenAmount: pos.simRealAmountTokens
+      tokenAmount: pos.simRealAmountTokens,
+      positionId: pos.positionId
     };
     storeState.setSimRealTrades(prev => [newSimTrade, ...prev]);
 
@@ -5931,6 +5950,8 @@ const checkTokenCriteria = (mint: string): {
               return;
           }
           
+          const posId = `pos_${Date.now()}_${cleanMint.slice(0, 8)}`;
+          
           let boughtPriceSol = buyAmt / exactTokenAmount;
           
           storeState.setSimRealBalance(prev => Math.max(0, prev - buyAmt));
@@ -5943,14 +5964,20 @@ const checkTokenCriteria = (mint: string): {
             amount: buyAmt,
             timestamp: quoteRequestTime,
             signature: result.txid,
-            tokenAmount: exactTokenAmount
+            tokenAmount: exactTokenAmount,
+            positionId: posId
           };
           storeState.setSimRealTrades(prev => [newRealTrade, ...prev]);
           
-          // exactTokenAmount is only decimal-adjusted when quoteOutAmountRaw was
-          // present above; otherwise it's still raw atomic units and must not be
-          // re-scaled here, or the stored lamports get inflated by 10^decimals.
-          const rawAmtLamp = result.quoteOutAmountRaw || Math.floor(exactTokenAmount);
+          // Use actualOutputAmountRaw from transaction parsing; fallback to quoteOutAmountRaw if available
+          const rawAmtLamp = (typeof result.actualOutputAmountRaw === 'number' && result.actualOutputAmountRaw > 0)
+            ? result.actualOutputAmountRaw
+            : (result.quoteOutAmountRaw || Math.floor(exactTokenAmount));
+
+          if (!rawAmtLamp || rawAmtLamp <= 0) {
+            addLog(`❌ [SIMREAL REAL SWAP FAILED] BUY confirmed on-chain but actual token output amount could not be determined.`, 'err');
+            return;
+          }
 
           setPositions(prev => {
             const prevPos = prev[cleanMint];
@@ -5963,6 +5990,7 @@ const checkTokenCriteria = (mint: string): {
               amount: prevPos?.amount ?? exactTokenAmount,
               entryTime: prevPos?.entryTime ?? quoteRequestTime,
               txid: result.txid || prevPos?.txid || 'simulation-copy',
+              positionId: prevPos?.positionId || posId,
               simRealBought: true,
               simRealBoughtPriceSol: boughtPriceSol,
               simRealAmountTokens: exactTokenAmount,
@@ -6035,6 +6063,7 @@ const checkTokenCriteria = (mint: string): {
       }
       
       const tokensQty = buyAmt / boughtPriceSol;
+      const simPosId = `pos_${Date.now()}_${cleanMint.slice(0, 8)}`;
       storeState.setSimRealBalance(prev => Math.max(0, prev - buyAmt));
       
       const newSimTrade: SniperTrade = {
@@ -6045,7 +6074,8 @@ const checkTokenCriteria = (mint: string): {
         amount: buyAmt,
         timestamp: quoteRequestTime,
         signature: 'SIMREAL_BN_' + Math.random().toString(36).substring(7),
-        tokenAmount: tokensQty
+        tokenAmount: tokensQty,
+        positionId: simPosId
       };
       storeState.setSimRealTrades(prev => [newSimTrade, ...prev]);
 
@@ -6060,6 +6090,7 @@ const checkTokenCriteria = (mint: string): {
           amount: prevPos?.amount ?? tokensQty,
           entryTime: prevPos?.entryTime ?? quoteRequestTime,
           txid: prevPos?.txid || 'simulation-copy',
+          positionId: prevPos?.positionId || simPosId,
           simRealBought: true,
           simRealBoughtPriceSol: boughtPriceSol,
           simRealAmountTokens: tokensQty,
