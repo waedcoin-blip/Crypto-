@@ -41,32 +41,37 @@ export function calculateSimRealPnl(
   slippagePct: number = 1.0,
   recoveryMode: boolean = false,
   isRealPrivateKey: boolean = false
-): SimRealPnlResult {
-  const safeSpentSol = spentSol > 0 ? spentSol : 0.1;
-  const safeBoughtPrice = boughtPriceSol > 0 
-    ? boughtPriceSol 
-    : (tokensQty > 0 ? safeSpentSol / tokensQty : 0.000001);
-  const safeCurrPrice = currentPriceSol > 0 ? currentPriceSol : safeBoughtPrice;
-  const safeTokensQty = tokensQty > 0 ? tokensQty : (safeSpentSol / safeBoughtPrice);
+): SimRealPnlResult | null {
+  if (!Number.isFinite(spentSol) || spentSol <= 0) {
+    return null;
+  }
+  
+  if (!Number.isFinite(tokensQty) || tokensQty <= 0) {
+    return null;
+  }
+  
+  if (!Number.isFinite(currentPriceSol) || currentPriceSol <= 0) {
+    return null;
+  }
 
-  const grossValueSol = safeCurrPrice * safeTokensQty;
-  const grossPnlSol = grossValueSol - safeSpentSol;
-  const grossPnlPct = safeSpentSol > 0 ? (grossPnlSol / safeSpentSol) * 100 : 0;
+  const grossValueSol = currentPriceSol * tokensQty;
+  const grossPnlSol = grossValueSol - spentSol;
+  const grossPnlPct = (grossPnlSol / spentSol) * 100;
 
   let netValueSol = grossValueSol;
   if (!isRealPrivateKey) {
     const slippageFee = grossValueSol * (slippagePct / 100);
-    const opFees = getDynamicOperationalFeeSol(recoveryMode, safeSpentSol);
+    const opFees = getDynamicOperationalFeeSol(recoveryMode, spentSol);
     netValueSol = Math.max(0, grossValueSol - slippageFee - opFees);
   }
 
-  const netPnlSol = netValueSol - safeSpentSol;
-  const netPnlPct = safeSpentSol > 0 ? (netPnlSol / safeSpentSol) * 100 : 0;
+  const netPnlSol = netValueSol - spentSol;
+  const netPnlPct = (netPnlSol / spentSol) * 100;
 
   return {
-    currPriceSol: safeCurrPrice,
-    tokensQty: safeTokensQty,
-    spentSol: safeSpentSol,
+    currPriceSol: currentPriceSol,
+    tokensQty: tokensQty,
+    spentSol: spentSol,
     grossValueSol,
     grossPnlSol,
     grossPnlPct,

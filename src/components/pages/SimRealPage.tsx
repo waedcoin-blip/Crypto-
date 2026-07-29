@@ -23,6 +23,9 @@ import { useBuySignalStore } from '../../store/buySignalStore';
 import { useSimulationStore } from '../../store/simulationStore';
 import { simRealTradingEngine } from '../../engines/simRealTradingEngine';
 import { getSimRealTradeCount } from '../../config/rebuyGuard';
+import { getJupiterQuote } from '../../services/jupiterService';
+
+const SOL_MINT = 'So11111111111111111111111111111111111111112';
 import { getSolPriceUsd, getDynamicOperationalFeeSol, calculateSimRealPnl } from '../../utils/pnlCalculator';
 
 interface Position {
@@ -481,19 +484,14 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
             tokenAmount: buy.tokenAmount || trade.tokenAmount
           });
         } else {
-          // Fixes Improper PnL Percentage Math - Division by Zero issue
-          const pnlDenom = trade.pnl !== undefined ? (1 + trade.pnl / 100) : 1.01;
-          const estimatedBuySol = (trade.pnl !== undefined && pnlDenom !== 0) 
-            ? (trade.amount / pnlDenom) 
-            : (trade.amount / 1.01);
-            
+          // If there is no matching BUY, we should not fabricate one.
           completed.push({
             id: trade.id,
             mint: trade.address,
             token: trade.token,
-            buyTime: trade.timestamp - 60000,
+            buyTime: 0, // 0 indicates UNMATCHED
             sellTime: trade.timestamp,
-            buyAmountSol: estimatedBuySol,
+            buyAmountSol: 0, // 0 indicates UNMATCHED
             sellAmountSol: trade.amount,
             pnlPct: trade.pnl !== undefined ? trade.pnl : 0,
             tokenAmount: trade.tokenAmount
@@ -695,7 +693,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
 
         // Always seed/update storeState.tokenMetrics with the newly requested fresh price
         const finalPriceUsd = freshPriceUsd || 0.0001;
-        const finalPriceNative = freshPriceNative || (finalPriceUsd / 180);
+        const finalPriceNative = freshPriceNative || (finalPriceUsd / getSolPriceUsd());
         
         const formattedMetric: TokenMetric = {
           address: tokenAddress,
@@ -736,7 +734,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
 
         // Gate 2: Deviation check (Pump guard: Max 15% above trigger price in SOL if trigger price was specified)
         const triggerPriceSol = triggerPriceUsd;
-        const freshPriceForGate = freshPriceNative > 0 ? freshPriceNative : (freshPriceUsd > 0 ? freshPriceUsd / 180 : 0);
+        const freshPriceForGate = freshPriceNative > 0 ? freshPriceNative : (freshPriceUsd > 0 ? freshPriceUsd / getSolPriceUsd() : 0);
         if (triggerPriceSol > 0 && freshPriceForGate > 0) {
           const priceIncreasePercent = ((freshPriceForGate - triggerPriceSol) / triggerPriceSol) * 100;
           if (priceIncreasePercent > 15) {
@@ -775,8 +773,8 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
 
         // Post-execution sync check to guarantee the token shows up in Active Positions
         const storeActive = useAppStore.getState().activePositions[tokenAddress] || (positions && positions[tokenAddress]);
-        const calculatedPrice = storeActive?.simRealBoughtPriceSol || (freshPriceNative ? freshPriceNative : (freshPriceUsd ? freshPriceUsd / 180 : 0.000001));
-        const calculatedQty = storeActive?.simRealAmountTokens || (buyAmt / (calculatedPrice || 0.000001));
+        const calculatedPrice = storeActive?.simRealBoughtPriceSol || (freshPriceNative ? freshPriceNative : (freshPriceUsd ? freshPriceUsd / getSolPriceUsd() : 0));
+        const calculatedQty = storeActive?.simRealAmountTokens || (calculatedPrice > 0 ? buyAmt / calculatedPrice : 0);
 
         const confirmedPos = {
           ...(storeActive || {}),
@@ -915,34 +913,72 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
              slLimit = -Math.abs(simRealStopLossUnknown !== undefined ? simRealStopLossUnknown : userSL) / 100;
          }
 
-         const spentSol = pos.simRealSolSpent || 0.1;
-         const boughtPrice = pos.simRealBoughtPriceSol || (spentSol / (pos.simRealAmountTokens || 1)) || pos.currentPrice || 0.000001;
-         
-         let metricPriceSol = 0;
-         if (tokenMetric?.priceNative && tokenMetric.priceNative > 0) {
-           metricPriceSol = parseFloat(String(tokenMetric.priceNative));
-         } else if (tokenMetric?.priceUsd && tokenMetric.priceUsd > 0) {
-           metricPriceSol = parseFloat(String(tokenMetric.priceUsd)) / 180;
-         }
-
-         const currPrice = metricPriceSol > 0 ? metricPriceSol : (pos.currentPrice || boughtPrice);
+         const spentSol = pos.simRealSolSpent || pos.solSpent || 0;
          const tokensQty = (pos.simRealAmountTokens && pos.simRealAmountTokens > 0)
            ? pos.simRealAmountTokens
            : (pos.amount && pos.amount > 0)
            ? pos.amount
-           : (spentSol / boughtPrice);
+           : 0;
+         const boughtPrice = pos.simRealBoughtPriceSol || pos.buyPrice || (tokensQty > 0 ? spentSol / tokensQty : 0);
 
-         const currentGrossSimReal = currPrice * tokensQty;
-         let netSimRealIfSold = currentGrossSimReal;
-
-         if (!privateKey) {
-            const slippageFee = currentGrossSimReal * (slippage / 100);
-            const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, spentSol);
-            netSimRealIfSold = Math.max(0, currentGrossSimReal - slippageFee - opFees);
+         if (!spentSol || spentSol <= 0 || !tokensQty || tokensQty <= 0 || !boughtPrice || boughtPrice <= 0) {
+           console.warn(`[SimReal monitorPositions] Skipping exit check for ${mint.slice(0, 8)} due to missing/invalid position data (spentSol=${spentSol}, tokensQty=${tokensQty}, boughtPrice=${boughtPrice}). Refusing to auto-sell on bad data.`);
+           continue;
          }
 
-         const simRealNetPnlPct = spentSol > 0 ? (netSimRealIfSold - spentSol) / spentSol : 0;
-         const simRealGrossPnlPct = boughtPrice > 0 ? (currPrice - boughtPrice) / boughtPrice : 0;
+         let metricPriceSol = 0;
+         if (tokenMetric?.priceNative && tokenMetric.priceNative > 0) {
+           metricPriceSol = parseFloat(String(tokenMetric.priceNative));
+         } else if (tokenMetric?.priceUsd && tokenMetric.priceUsd > 0) {
+           metricPriceSol = parseFloat(String(tokenMetric.priceUsd)) / getSolPriceUsd();
+         }
+
+         const currPrice = metricPriceSol > 0 ? metricPriceSol : (pos.currentPrice || boughtPrice);
+         
+         let simRealNetPnlPct = 0;
+         let simRealGrossPnlPct = 0;
+         
+         // If it's a real money position, we MUST check actual executable Jupiter quote
+         if (privateKey && pos.simRealAmountTokens && pos.simRealAmountTokens > 0 && !pos.simRealIsVirtualFallback) {
+             try {
+                // Determine token lamports dynamically since it's not strongly stored
+                // We'll estimate based on decimals, or just use the amount directly if it's already in lamports
+                const decimals = pos.amountLamports ? Math.round(Math.log10(pos.amountLamports / pos.simRealAmountTokens)) : 6;
+                const lamportsToSell = pos.amountLamports || Math.floor(pos.simRealAmountTokens * (10 ** decimals));
+                
+                if (lamportsToSell > 0) {
+                   const quote = await getJupiterQuote(mint, SOL_MINT, lamportsToSell, tokenMetric?.liquidity || 0);
+                   if (quote && quote.otherAmountThreshold) {
+                      const guaranteedSolOut = Number(BigInt(quote.otherAmountThreshold)) / 1_000_000_000.0;
+                      const operationalFeesSol = getDynamicOperationalFeeSol(pos.recoveryMode, spentSol);
+                      const netSolReturn = Math.max(0, guaranteedSolOut - operationalFeesSol);
+                      simRealNetPnlPct = (netSolReturn - spentSol) / spentSol;
+                      simRealGrossPnlPct = (guaranteedSolOut - spentSol) / spentSol;
+                   } else {
+                      // Fallback to calculator if quote fails
+                      const pnlRes = calculateSimRealPnl(spentSol, tokensQty, boughtPrice, currPrice, slippage, pos.recoveryMode, true);
+                      if (pnlRes) {
+                        simRealNetPnlPct = pnlRes.netPnlPct / 100;
+                        simRealGrossPnlPct = pnlRes.grossPnlPct / 100;
+                      }
+                   }
+                }
+             } catch (e) {
+                // If quote fails, we use the calculator fallback
+                const pnlRes = calculateSimRealPnl(spentSol, tokensQty, boughtPrice, currPrice, slippage, pos.recoveryMode, true);
+                if (pnlRes) {
+                  simRealNetPnlPct = pnlRes.netPnlPct / 100;
+                  simRealGrossPnlPct = pnlRes.grossPnlPct / 100;
+                }
+             }
+         } else {
+             // Simulation fallback
+             const pnlRes = calculateSimRealPnl(spentSol, tokensQty, boughtPrice, currPrice, slippage, pos.recoveryMode, false);
+             if (pnlRes) {
+               simRealNetPnlPct = pnlRes.netPnlPct / 100;
+               simRealGrossPnlPct = pnlRes.grossPnlPct / 100;
+             }
+         }
 
          // Immediate sell trigger when token PnL profit goes higher or reaches take-profit target / stop loss
          if (simRealNetPnlPct >= tpLimit || simRealNetPnlPct <= slLimit) {
@@ -1836,11 +1872,15 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                       const holdHr = Math.floor(holdMs / 3600000);
                       
                       let holdString = '';
-                      if (holdHr > 0) holdString += `${holdHr}h `;
-                      if (holdMin > 0 || holdHr > 0) holdString += `${holdMin}m `;
-                      holdString += `${holdSec}s`;
+                      if (trade.buyTime === 0) {
+                        holdString = 'UNMATCHED';
+                      } else {
+                        if (holdHr > 0) holdString += `${holdHr}h `;
+                        if (holdMin > 0 || holdHr > 0) holdString += `${holdMin}m `;
+                        holdString += `${holdSec}s`;
+                      }
 
-                      const profitSol = trade.sellAmountSol - trade.buyAmountSol;
+                      const profitSol = trade.buyAmountSol > 0 ? trade.sellAmountSol - trade.buyAmountSol : 0;
                       
                       const formattedTokens = trade.tokenAmount !== undefined 
                         ? `${trade.tokenAmount.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 4 })} tokens`
@@ -1871,22 +1911,22 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                             {formattedTokens}
                           </td>
                           <td className="py-2.5 text-[#e2e8f0] pr-4">
-                            {new Date(trade.buyTime).toLocaleTimeString()}
+                            {trade.buyTime === 0 ? 'N/A' : new Date(trade.buyTime).toLocaleTimeString()}
                           </td>
                           <td className="py-2.5 text-[#e2e8f0] pr-4">
                             {holdString}
                           </td>
                           <td className="py-2.5 text-[#e2e8f0] text-right pr-4">
-                            {trade.buyAmountSol.toFixed(4)} SOL
+                            {trade.buyTime === 0 ? 'N/A' : `${trade.buyAmountSol.toFixed(4)} SOL`}
                           </td>
                           <td className="py-2.5 text-[#e2e8f0] text-right pr-4">
                             {trade.sellAmountSol.toFixed(4)} SOL
                           </td>
-                          <td className={`py-2.5 text-right pr-4 font-bold ${profitSol >= 0 ? 'text-[#c7f284]' : 'text-[#ff4d4d]'}`}>
-                            {profitSol >= 0 ? '+' : ''}{profitSol.toFixed(4)} SOL
+                          <td className={`py-2.5 text-right pr-4 font-bold ${trade.buyTime === 0 ? 'text-[#e2e8f0]' : profitSol >= 0 ? 'text-[#c7f284]' : 'text-[#ff4d4d]'}`}>
+                            {trade.buyTime === 0 ? 'N/A' : `${profitSol >= 0 ? '+' : ''}${profitSol.toFixed(4)} SOL`}
                           </td>
-                          <td className={`py-2.5 text-right font-bold ${trade.pnlPct >= 0 ? 'text-[#c7f284]' : 'text-[#ff4d4d]'}`}>
-                            {trade.pnlPct >= 0 ? '+' : ''}{trade.pnlPct.toFixed(2)}%
+                          <td className={`py-2.5 text-right font-bold ${trade.buyTime === 0 ? 'text-[#e2e8f0]' : trade.pnlPct >= 0 ? 'text-[#c7f284]' : 'text-[#ff4d4d]'}`}>
+                            {trade.buyTime === 0 ? 'N/A' : `${trade.pnlPct >= 0 ? '+' : ''}${trade.pnlPct.toFixed(2)}%`}
                           </td>
                         </tr>
                       );

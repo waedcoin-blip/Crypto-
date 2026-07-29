@@ -85,8 +85,12 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
       const pos = state.positions[tokenAddress];
       if (!pos) return state;
 
+      // Rough estimation of execution costs (slippage + network fee)
+      // Assume 1% slippage and a fixed small fee in percentage terms
+      const executionCostPct = 1.0; 
+      
       const profitPercent =
-        ((currentPriceUsd - pos.entryPriceUsd) / pos.entryPriceUsd) * 100;
+        (((currentPriceUsd - pos.entryPriceUsd) / pos.entryPriceUsd) * 100) - executionCostPct;
 
       return {
         positions: {

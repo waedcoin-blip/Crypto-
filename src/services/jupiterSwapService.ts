@@ -10,6 +10,7 @@ export interface SwapResult {
   txid: string;
   outputAmount: number;
   quoteOutAmountRaw?: number;
+  actualOutputAmountRaw?: number;
 }
 
 /**
@@ -180,10 +181,61 @@ export async function executeJupiterSwap({
 
   try {
     const txid = await executeTxWithRPCFallback(transaction, connection);
+    
+    // Fetch transaction to parse actual received amounts
+    let actualOutAmountRaw = Number(quoteResponse.outAmount); // fallback to quote
+    
+    try {
+      let txInfo = null;
+      for (let i = 0; i < 5; i++) {
+        await new Promise(r => setTimeout(r, 1000));
+        txInfo = await connection.getTransaction(txid, { maxSupportedTransactionVersion: 0, commitment: 'confirmed' });
+        if (txInfo && txInfo.meta) break;
+      }
+
+      if (txInfo && txInfo.meta) {
+        const userPubkeyStr = keypair.publicKey.toString();
+        
+        if (outputMint === SOL_MINT) {
+           const accountIndex = txInfo.transaction.message.staticAccountKeys.findIndex(k => k.toString() === userPubkeyStr);
+           if (accountIndex !== -1) {
+             const preBal = txInfo.meta.preBalances[accountIndex];
+             const postBal = txInfo.meta.postBalances[accountIndex];
+             const fee = txInfo.meta.fee || 0;
+             // Net SOL change + fee = actual SOL received from the swap
+             const solReceived = postBal - preBal + fee;
+             if (solReceived > 0) {
+               actualOutAmountRaw = solReceived;
+             }
+           }
+        } else {
+           // Output is an SPL token
+           const preBalances = txInfo.meta.preTokenBalances || [];
+           const postBalances = txInfo.meta.postTokenBalances || [];
+           
+           const getBalance = (balances: any[]) => {
+             const match = balances.find(b => b.owner === userPubkeyStr && b.mint === outputMint);
+             return match ? Number(match.uiTokenAmount.amount) : 0;
+           };
+           
+           const pre = getBalance(preBalances);
+           const post = getBalance(postBalances);
+           const received = post - pre;
+           
+           if (received > 0) {
+             actualOutAmountRaw = received;
+           }
+        }
+      }
+    } catch (parseErr) {
+      console.warn("Failed to parse actual swap transaction, falling back to quote output", parseErr);
+    }
+
     return { 
       txid, 
-      outputAmount: parseFloat(quoteResponse.outAmount), 
-      quoteOutAmountRaw: Number(quoteResponse.outAmount)
+      outputAmount: actualOutAmountRaw, // Now this is actual!
+      quoteOutAmountRaw: Number(quoteResponse.outAmount),
+      actualOutputAmountRaw: actualOutAmountRaw
     };
   } catch (e: any) {
     useAppStore.getState().addJupiterLog({

@@ -16,6 +16,7 @@ import { detectTokenStage } from '../../lib/utils';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { checkTokenInProfitLast2Seconds, clearPriceHistories } from '../../services/priceTracker';
 import { encryptPrivateKey, decryptPrivateKey } from '../../lib/crypto';
+import { getSolPriceUsd, setSolPriceUsd, calculateSimRealPnl } from '../../utils/pnlCalculator';
 
 import { DEFAULT_HELIUS_RPC, DEFAULT_HELIUS_WS, HELIUS_API_KEY } from '../../constants/solana';
 
@@ -82,7 +83,6 @@ const resolveDecimals = async (mint: string, rpcUrl: string | undefined, outAmou
   
   const defaultDec = cleanMint.toLowerCase().endsWith('pump') ? 6 : 9;
   if (!outAmountRaw || !exactMathFallback || exactMathFallback <= 0) {
-    decimalsCache[cleanMint] = defaultDec;
     return defaultDec;
   }
 
@@ -90,12 +90,10 @@ const resolveDecimals = async (mint: string, rpcUrl: string | undefined, outAmou
   if (outAmountRaw > exactMathFallback * 100) {
     const estimated = Math.max(0, Math.round(Math.log10(outAmountRaw / exactMathFallback)));
     if (isFinite(estimated) && !isNaN(estimated) && estimated >= 5 && estimated <= 18) {
-      decimalsCache[cleanMint] = estimated;
       return estimated;
     }
   }
 
-  decimalsCache[cleanMint] = defaultDec;
   return defaultDec;
 };
 
@@ -2393,7 +2391,7 @@ export const PnLPage = ({
               const priceNative = parseFloat(matchPair.priceNative || '0');
               if (priceNative > 0) return priceNative;
               const priceUsd = parseFloat(matchPair.priceUsd || '0');
-              if (priceUsd > 0) return priceUsd / 180;
+              if (priceUsd > 0) return priceUsd / getSolPriceUsd();
             }
           }
         }
@@ -2403,7 +2401,7 @@ export const PnLPage = ({
       const metric = tokenMetricsRef.current[tokenMint] || useAppStore.getState().tokenMetrics[tokenMint];
       if (metric) {
         if (metric.priceNative && metric.priceNative > 0) return parseFloat(String(metric.priceNative));
-        if (metric.priceUsd && metric.priceUsd > 0) return parseFloat(String(metric.priceUsd)) / 180;
+        if (metric.priceUsd && metric.priceUsd > 0) return parseFloat(String(metric.priceUsd)) / getSolPriceUsd();
         if (typeof metric.bondingCurveProgress === 'number' && metric.bondingCurveProgress >= 0) {
           return 0.00000003 + (metric.bondingCurveProgress / 100) * 0.000002;
         }
@@ -2979,7 +2977,7 @@ export const PnLPage = ({
             volume24h: pos.volume24h || 100000,
             dexId: mint.toLowerCase().endsWith('pump') ? 'pumpfun' : 'raydium',
             pairAddress: mint,
-            simAmountSol: pos.solSpent || 0.1,
+            simAmountSol: pos.solSpent || 0,
             simEntryTime: pos.entryTime || Date.now(),
           });
 
@@ -3809,7 +3807,7 @@ const checkTokenCriteria = (mint: string): {
           addLog(`🔄 [REBUY RATE REFRESHED] Rebuy token ${symbol} exchange rate successfully updated to ${freshPrice.toFixed(8)} SOL`, 'info');
           if (tokenMetricsRef.current[mint]) {
             tokenMetricsRef.current[mint].priceNative = freshPrice;
-            tokenMetricsRef.current[mint].priceUsd = freshPrice * 180;
+            tokenMetricsRef.current[mint].priceUsd = freshPrice * getSolPriceUsd();
           }
         } else {
           const lamportsForQuote = Math.floor(solAmount * 1_000_000_000);
@@ -4076,12 +4074,12 @@ const checkTokenCriteria = (mint: string): {
       return;
     }
 
-    const priceNative = metric?.priceNative || (metric?.priceUsd ? metric.priceUsd / 180 : 0.0001);
+    const priceNative = metric?.priceNative || (metric?.priceUsd ? metric.priceUsd / getSolPriceUsd() : 0.0001);
     const tradeSol = configRef.current.tradeAmount || tradeAmount || 0.1;
 
     addLog(`⚡ [SYSTEM LOG QUICK TRADE] Direct sniper order triggered for ${symbol} (${mint.slice(0, 8)}...)...`, 'buy');
 
-    const priceUsd = metric?.priceUsd || (priceNative * 180);
+    const priceUsd = metric?.priceUsd || (priceNative * getSolPriceUsd());
     const quickTradeProfit = metric?.priceChange5m !== undefined ? metric.priceChange5m : (metric?.percentageIncrease !== undefined && !isNaN(metric.percentageIncrease) ? Math.max(3.0, metric.percentageIncrease) : 3.0);
 
     const scannedTokenData = {
@@ -4134,25 +4132,29 @@ const checkTokenCriteria = (mint: string): {
     // 1. Calculate SimReal PnL if SimReal is bought
     let simRealNetPnlPct = 0;
     if (pos.simRealBought && (pos.simRealSolSpent || pos.solSpent)) {
-      const spentSol = pos.simRealSolSpent || pos.solSpent || 0.1;
-      const boughtPrice = pos.simRealBoughtPriceSol || (pos.simRealSolSpent && pos.simRealAmountTokens ? (pos.simRealSolSpent / pos.simRealAmountTokens) : pos.currentPrice || 0.000001);
-      const currPrice = currentPrice || pos.currentPrice || boughtPrice;
+      const spentSol = pos.simRealSolSpent || pos.solSpent || 0;
       const tokensQty = (pos.simRealAmountTokens && pos.simRealAmountTokens > 0)
         ? pos.simRealAmountTokens
         : (pos.amount && pos.amount > 0)
         ? pos.amount
-        : (spentSol / boughtPrice);
+        : 0;
+      const boughtPrice = pos.simRealBoughtPriceSol || pos.buyPrice || (tokensQty > 0 ? spentSol / tokensQty : 0);
+      const currPrice = currentPrice || pos.currentPrice || boughtPrice;
 
-      const simRealGross = currPrice * tokensQty;
-      const simRealGrossPnLPercent = ((simRealGross - spentSol) / spentSol) * 100;
-      let dynamicSlippage = slippage;
-      if (simRealGrossPnLPercent > 0) dynamicSlippage = Math.max(0.3, Math.min(slippage, simRealGrossPnLPercent * 0.3));
-      else dynamicSlippage = Math.min(slippage, 1.0);
-      
-      const slippageFeeCalc = simRealGross * (dynamicSlippage / 100);
-      const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, spentSol);
-      const simRealNetSolReturn = Math.max(0, simRealGross - slippageFeeCalc - opFees);
-      simRealNetPnlPct = (simRealNetSolReturn - spentSol) / spentSol;
+      if (spentSol > 0 && tokensQty > 0 && boughtPrice > 0) {
+        const pnlRes = calculateSimRealPnl(
+          spentSol,
+          tokensQty,
+          boughtPrice,
+          currPrice,
+          slippage,
+          pos.recoveryMode,
+          !!privateKey
+        );
+        if (pnlRes) {
+          simRealNetPnlPct = pnlRes.netPnlPct / 100;
+        }
+      }
     }
 
     const isTransferToSimReal = reason.includes('TRANSFER TO SIMREAL');
@@ -4276,25 +4278,28 @@ const checkTokenCriteria = (mint: string): {
             addLog(`Ordering ${pos.symbol} → SOL...`, 'sell');
             const result = await executeJupiterSwap(mint, SOL_MINT, lamportsToSell);
             if (result.txid) {
-              const actualPnlPct = pnlPct;
-              const pnlSOL = pos.solSpent * actualPnlPct;
+              const actualSolReceived = result.outputAmount || 0;
+              const costBasisSol = pos.solSpent || 0;
+              const actualPnlSOL = costBasisSol > 0 ? actualSolReceived - costBasisSol : 0;
+              const actualPnlPct = costBasisSol > 0 ? actualPnlSOL / costBasisSol : 0;
+              
               setStats((s) => ({
                 ...s,
                 trades: s.trades + 1,
                 wins: s.wins + (actualPnlPct > 0 ? 1 : 0),
                 losses: s.losses + (actualPnlPct <= 0 ? 1 : 0),
-                pnl: s.pnl + pnlSOL,
+                pnl: s.pnl + actualPnlSOL,
                 bestTrade: (actualPnlPct > 0 && (!s.bestTrade || actualPnlPct > s.bestTrade)) ? actualPnlPct : s.bestTrade
               }));
-              addLog(`✅ Sold ${pos.symbol} on-chain | P&L: ${(actualPnlPct * 100).toFixed(1)}% | tx: ${result.txid.slice(0, 12)}...`, 'sell');
+              addLog(`✅ Sold ${pos.symbol} on-chain | Received: ${actualSolReceived.toFixed(6)} SOL | P&L: ${(actualPnlPct * 100).toFixed(1)}% | tx: ${result.txid.slice(0, 12)}...`, 'sell');
               
               setTradeHistory(th => [{
                 id: `trade-${Date.now()}`,
                 mint: mint,
                 buyTime: pos.entryTime,
                 sellTime: Date.now(),
-                buyAmountSol: pos.solSpent,
-                sellAmountSol: Math.max(0, pos.solSpent + pnlSOL),
+                buyAmountSol: costBasisSol,
+                sellAmountSol: actualSolReceived,
                 pnlPct: Math.max(-100, actualPnlPct * 100)
               }, ...th]);
 
@@ -4429,44 +4434,41 @@ const checkTokenCriteria = (mint: string): {
       let tradePnlPct = 0;
       let signature = 'SIMREAL_SL_' + Math.random().toString(36).substring(7);
 
-      if (privateKey && !pos.simRealIsVirtualFallback) {
-        if (simRealRealSwapOutputSol !== undefined) {
-          sellAmtSol = simRealRealSwapOutputSol;
-          tradePnlPct = (sellAmtSol - (pos.simRealSolSpent || 0.1)) / (pos.simRealSolSpent || 0.1);
-          isSimRealSold = true;
-        }
-      }
+      const spentSol = pos.simRealSolSpent || pos.solSpent || 0.05;
 
-      // Simulation fallback / simulated path for SimReal
-      if (!isSimRealSold) {
-        if (simRealRealSwapOutputSol !== undefined) {
-          sellAmtSol = simRealRealSwapOutputSol;
-          tradePnlPct = (sellAmtSol - (pos.simRealSolSpent || 0.1)) / (pos.simRealSolSpent || 0.1);
+      if (simRealRealSwapOutputSol !== undefined) {
+        sellAmtSol = simRealRealSwapOutputSol;
+        tradePnlPct = spentSol > 0 ? (sellAmtSol - spentSol) / spentSol : 0;
+        isSimRealSold = true;
+      } else {
+        const tokensQty = (pos.simRealAmountTokens && pos.simRealAmountTokens > 0)
+          ? pos.simRealAmountTokens
+          : (pos.amount && pos.amount > 0)
+          ? pos.amount
+          : 0;
+        const boughtPrice = pos.simRealBoughtPriceSol || pos.buyPrice || (tokensQty > 0 ? spentSol / tokensQty : 0);
+        const currPrice = currentPrice || pos.currentPrice || boughtPrice;
+
+        const pnlRes = calculateSimRealPnl(
+          spentSol,
+          tokensQty,
+          boughtPrice,
+          currPrice,
+          slippage,
+          pos.recoveryMode,
+          !!privateKey
+        );
+        if (pnlRes) {
+          sellAmtSol = pnlRes.netValueSol;
+          tradePnlPct = pnlRes.netPnlPct / 100;
         } else {
-          const spentSol = pos.simRealSolSpent || pos.solSpent || 0.1;
-          const boughtPrice = pos.simRealBoughtPriceSol || (pos.simRealSolSpent && pos.simRealAmountTokens ? (pos.simRealSolSpent / pos.simRealAmountTokens) : pos.currentPrice || 0.000001);
-          const currPrice = currentPrice || pos.currentPrice || boughtPrice;
-          const tokensQty = (pos.simRealAmountTokens && pos.simRealAmountTokens > 0)
-            ? pos.simRealAmountTokens
-            : (pos.amount && pos.amount > 0)
-            ? pos.amount
-            : (spentSol / boughtPrice);
-
-          const currentGrossSimReal = currPrice * tokensQty;
-          const currentPnLPercent = (((currentGrossSimReal - spentSol) / spentSol) * 100);
-          let dynamicSlippage = slippage;
-          if (currentPnLPercent > 0) dynamicSlippage = Math.max(0.3, Math.min(slippage, currentPnLPercent * 0.3));
-          else dynamicSlippage = Math.min(slippage, 1.0);
-          
-          const slippageFeeCalc = currentGrossSimReal * (dynamicSlippage / 100);
-          const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, spentSol);
-          sellAmtSol = Math.max(0, currentGrossSimReal - slippageFeeCalc - opFees);
-          tradePnlPct = (sellAmtSol - spentSol) / spentSol;
+          sellAmtSol = spentSol;
+          tradePnlPct = 0;
         }
         isSimRealSold = true;
       }
 
-      const profitSol = sellAmtSol - (pos.simRealSolSpent || 0.1);
+      const profitSol = sellAmtSol - spentSol;
       storeState.setSimRealBalance(prev => Math.max(0, prev + sellAmtSol));
       
       const newSimTrade: SniperTrade = {
@@ -4804,6 +4806,11 @@ const checkTokenCriteria = (mint: string): {
         try {
           const pos = currentPositionsState[mint];
           if (!pos || pos.triggersDisabled) continue;
+          
+          // Completely ignore SimReal positions (handled entirely by SimRealPage.tsx)
+          if (pos.simRealBought) {
+            continue;
+          }
           
           if (pendingSellMintsRef.current.has(mint)) continue;
 
@@ -6083,7 +6090,7 @@ const checkTokenCriteria = (mint: string): {
       const formattedMetric: TokenMetric = {
         address: cleanMint,
         symbol: symbol || 'UNKNOWN',
-        priceUsd: currentPrice * 180,
+        priceUsd: currentPrice * getSolPriceUsd(),
         priceNative: currentPrice,
         marketCap: storeState.tokenMetrics[cleanMint]?.marketCap || 0,
         liquidity: storeState.tokenMetrics[cleanMint]?.liquidity || 50000,

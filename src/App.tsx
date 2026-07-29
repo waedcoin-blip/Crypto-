@@ -2753,6 +2753,7 @@ export default function App() {
                  const solData = JSON.parse(solText);
                  if (solData.data && solData.data['So11111111111111111111111111111111111111112'] && solData.data['So11111111111111111111111111111111111111112'].price) {
                    const solPriceUsd = parseFloat(solData.data['So11111111111111111111111111111111111111112'].price);
+                   setSolPriceUsd(solPriceUsd);
                    // Normalize Token's USD price to SOL amount
                    priceNative = priceUsd / solPriceUsd;
                  }

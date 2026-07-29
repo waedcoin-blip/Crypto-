@@ -157,7 +157,7 @@ export class SimRealTradingEngine {
         // Jupiter returns outputAmount in raw base units by default
         const exactTokenAmountRaw = result.outputAmount;
         const exactTokenAmountHuman = exactTokenAmountRaw / (10 ** decimals);
-        const boughtPriceSol = amountSol / (exactTokenAmountHuman || 0.000001);
+        const boughtPriceSol = exactTokenAmountHuman > 0 ? amountSol / exactTokenAmountHuman : 0;
 
         const newTrade: SniperTrade = {
           id: this.generateId('simreal-buy'),
@@ -318,6 +318,8 @@ export class SimRealTradingEngine {
         }
 
         const exactSolOutput = result.outputAmount / 10 ** SOL_DECIMALS;
+        const realizedPnlPct = position.solSpent > 0 ? ((exactSolOutput - position.solSpent) / position.solSpent) * 100 : 0;
+
         const newTrade: SniperTrade = {
           id: this.generateId('simreal-sell'),
           type: 'SELL',
@@ -325,6 +327,7 @@ export class SimRealTradingEngine {
           address: cleanMint,
           amount: exactSolOutput,
           timestamp: quoteRequestTime,
+          pnl: realizedPnlPct,
           signature: result.txid,
           tokenAmount: position.amount
         };
@@ -343,6 +346,8 @@ export class SimRealTradingEngine {
     } else {
       // Simulation mode
       const simulatedPayout = position.amount * sellPriceSol;
+      const simPnlPct = position.solSpent > 0 ? ((simulatedPayout - position.solSpent) / position.solSpent) * 100 : 0;
+
       const newTrade: SniperTrade = {
         id: this.generateId('simreal-sell'),
         type: 'SELL',
@@ -350,6 +355,7 @@ export class SimRealTradingEngine {
         address: cleanMint,
         amount: simulatedPayout,
         timestamp: quoteRequestTime,
+        pnl: simPnlPct,
         signature: 'SIMREAL_SL_' + Math.random().toString(36).substring(2, 11),
         tokenAmount: position.amount
       };
