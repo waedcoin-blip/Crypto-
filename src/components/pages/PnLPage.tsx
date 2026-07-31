@@ -4763,16 +4763,28 @@ const checkTokenCriteria = (mint: string): {
                const slippageFeeCalc = simulatedGross * (dynamicSlippage / 100);
                const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent || 0.05);
                const simulatedNet = Math.max(0, simulatedGross - slippageFeeCalc - opFees);
-               netPnlPct = (simulatedNet - (pos.solSpent || 1)) / (pos.solSpent || 1);
+               const spentSol = pos.solSpent || 1;
+               const entrySlippageSol = spentSol * (slippage / 100);
+               const opFeesEntry = getDynamicOperationalFeeSol(pos.recoveryMode, spentSol);
+               const netEntryAfterSlippageAndJito = Math.max(spentSol * 0.1, spentSol - entrySlippageSol - opFeesEntry);
+               netPnlPct = pos.simRealBought
+                 ? (simulatedNet - netEntryAfterSlippageAndJito) / netEntryAfterSlippageAndJito
+                 : (simulatedNet - spentSol) / spentSol;
                pnlPct = roughNetPnL; 
             } else {
                const guaranteedMinLamports = BigInt(quote.otherAmountThreshold);
                const guaranteedSolOut = Number(guaranteedMinLamports) / 1_000_000_000.0;
                const operationalFeesSol = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent); 
                const realNetSolReturn = Math.max(0, guaranteedSolOut - operationalFeesSol);
+               const spentSol = pos.solSpent || 1;
+               const entrySlippageSol = spentSol * (slippage / 100);
+               const opFeesEntry = getDynamicOperationalFeeSol(pos.recoveryMode, spentSol);
+               const netEntryAfterSlippageAndJito = Math.max(spentSol * 0.1, spentSol - entrySlippageSol - opFeesEntry);
 
-               netPnlPct = (realNetSolReturn - (pos.solSpent || 1)) / (pos.solSpent || 1);
-               pnlPct = (guaranteedSolOut - (pos.solSpent || 1)) / (pos.solSpent || 1);
+               netPnlPct = pos.simRealBought
+                 ? (realNetSolReturn - netEntryAfterSlippageAndJito) / netEntryAfterSlippageAndJito
+                 : (realNetSolReturn - spentSol) / spentSol;
+               pnlPct = (guaranteedSolOut - spentSol) / spentSol;
             }
 
             let inRecoveryMode = pos.recoveryMode;

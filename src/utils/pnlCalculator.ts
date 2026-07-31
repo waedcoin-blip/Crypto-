@@ -31,6 +31,7 @@ export interface SimRealPnlResult {
   netValueSol: number;
   netPnlSol: number;
   netPnlPct: number;
+  tpPctAfterSlippageAndJito: number;
 }
 
 export function calculateSimRealPnl(
@@ -68,6 +69,12 @@ export function calculateSimRealPnl(
   const netPnlSol = netValueSol - spentSol;
   const netPnlPct = (netPnlSol / spentSol) * 100;
 
+  // Calculate TP percentage after detection of slippage and Jito fees
+  const entrySlippageSol = spentSol * (slippagePct / 100);
+  const entryJitoFeeSol = getDynamicOperationalFeeSol(recoveryMode, spentSol);
+  const netEntryAfterSlippageAndJito = Math.max(spentSol * 0.1, spentSol - entrySlippageSol - entryJitoFeeSol);
+  const tpPctAfterSlippageAndJito = ((netValueSol - netEntryAfterSlippageAndJito) / netEntryAfterSlippageAndJito) * 100;
+
   return {
     currPriceSol: currentPriceSol,
     tokensQty: tokensQty,
@@ -77,6 +84,7 @@ export function calculateSimRealPnl(
     grossPnlPct,
     netValueSol,
     netPnlSol,
-    netPnlPct
+    netPnlPct,
+    tpPctAfterSlippageAndJito
   };
 }

@@ -870,8 +870,10 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                       const expectedSolOut = Number(quote.outAmount) / 1_000_000_000.0;
                       const operationalFeesSol = getDynamicOperationalFeeSol(pos.recoveryMode, spentSol);
                       const netSolReturn = Math.max(0, expectedSolOut - operationalFeesSol);
-                      simRealNetPnlPct = (netSolReturn - spentSol) / spentSol;
-                      simRealGrossPnlPct = (expectedSolOut - spentSol) / spentSol;
+                      const entrySlippageSol = spentSol * (slippage / 100);
+                      const netEntryAfterSlippageAndJito = Math.max(spentSol * 0.1, spentSol - entrySlippageSol - operationalFeesSol);
+                      simRealNetPnlPct = (netSolReturn - netEntryAfterSlippageAndJito) / netEntryAfterSlippageAndJito;
+                      simRealGrossPnlPct = (expectedSolOut - netEntryAfterSlippageAndJito) / netEntryAfterSlippageAndJito;
                    }
                 }
              } catch (e) {
@@ -886,7 +888,7 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
              // Simulation fallback
              const pnlRes = calculateSimRealPnl(spentSol, tokensQty, boughtPrice, currPrice, slippage, pos.recoveryMode, false);
              if (pnlRes) {
-               simRealNetPnlPct = pnlRes.netPnlPct / 100;
+               simRealNetPnlPct = pnlRes.tpPctAfterSlippageAndJito / 100;
                simRealGrossPnlPct = pnlRes.grossPnlPct / 100;
              }
          }
@@ -1429,7 +1431,10 @@ export const SimRealPage: React.FC<SimRealPageProps> = ({
                             const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, spentSol);
                             netSimRealIfSold = Math.max(0, currentGrossSimReal - slippageFee - opFees);
                          }
-                         pnlPct = (netSimRealIfSold - spentSol) / spentSol;
+                         const entrySlippageSol = spentSol * (slippage / 100);
+                         const opFeesEntry = getDynamicOperationalFeeSol(pos.recoveryMode, spentSol);
+                         const netEntryAfterSlippageAndJito = Math.max(spentSol * 0.1, spentSol - entrySlippageSol - opFeesEntry);
+                         pnlPct = (netSimRealIfSold - netEntryAfterSlippageAndJito) / netEntryAfterSlippageAndJito;
                          profitSol = netSimRealIfSold - spentSol;
                       }
                       
