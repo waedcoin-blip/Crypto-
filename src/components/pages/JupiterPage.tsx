@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { Play, Square, Search, ShieldCheck, ShieldAlert, AlertTriangle, Shield, TrendingUp, ChevronDown, ChevronUp, BookOpen, X, Zap, Activity, ChevronRight, Download, Trash2, Settings, Pause, Database, Copy, Check, Terminal, ArrowUpDown, SlidersHorizontal, Eye, EyeOff, Clock, Info, Bug, Filter, Server, Globe, RefreshCw, Wifi, CloudUpload } from 'lucide-react';
 import { Connection, Keypair, VersionedTransaction, PublicKey } from '@solana/web3.js';
 import bs58 from 'bs58';
@@ -1049,6 +1049,32 @@ export const PnLPage = ({
   
   const jupRpcUrlToUse = jupiterRpcUrl && jupiterRpcUrl.trim() !== "" ? jupiterRpcUrl.trim() : rpcUrl;
   const navigate = useNavigate();
+  const location = useLocation();
+  const processedPnLRef = useRef<string>('');
+
+  useEffect(() => {
+    const state = location.state as any;
+    let tokens: string[] = state?.profitableTokenAddresses;
+    if (!tokens || !Array.isArray(tokens) || tokens.length === 0) {
+      try {
+        const stored = localStorage.getItem('pnl_profitable_token_addresses');
+        if (stored) {
+          tokens = JSON.parse(stored);
+        }
+      } catch (e) {}
+    }
+
+    if (tokens && Array.isArray(tokens) && tokens.length > 0) {
+      const signature = tokens.join(',');
+      if (processedPnLRef.current !== signature) {
+        processedPnLRef.current = signature;
+        addLog(`🚀 [PNL SYNC] Received ${tokens.length} profitable token address(es) from PnLPage trade history:`, 'success', 'trade');
+        tokens.forEach((addr: string) => {
+          addLog(`💎 [TELEMETRY] Profitable token address: ${addr}`, 'success', 'trade', { tokenAddress: addr, source: 'PnLPage' });
+        });
+      }
+    }
+  }, [location.state]);
   
   const signaledPositions = useRef<Set<string>>(new Set());
   const latestPricesRef = useRef<Record<string, number>>({});

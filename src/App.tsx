@@ -5866,6 +5866,7 @@ function App() {
         telemetryAlerts={telemetryAlerts}
         user={user}
         externalSettings={{
+          setCurrentPage,
           manualGemInput, setManualGemInput,
           buyAmountSol, setBuyAmountSol,
           minTakeProfit, setMinTakeProfit,

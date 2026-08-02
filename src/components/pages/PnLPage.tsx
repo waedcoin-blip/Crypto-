@@ -965,6 +965,7 @@ export const PnLPage = ({
     privateKey?: string;
     setPrivateKey?: (v: string) => void;
     onPositionsChange?: (v: Record<string, any>) => void;
+    setCurrentPage?: (page: any) => void;
   }
 }) => {
   const {
@@ -7564,11 +7565,18 @@ const checkTokenCriteria = (mint: string): {
                         .filter(addr => typeof addr === 'string' && addr.trim().length > 0 && addr !== 'Unknown')
                     )
                   ];
+                  try {
+                    localStorage.setItem('pnl_profitable_token_addresses', JSON.stringify(profitableTokenAddresses));
+                  } catch (e) {}
+
                   navigate("/jupiter", {
                     state: {
                       profitableTokenAddresses
                     }
                   });
+                  if (externalSettings && typeof (externalSettings as any).setCurrentPage === 'function') {
+                    (externalSettings as any).setCurrentPage('jupiter');
+                  }
                 }}
                 className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white rounded-xl text-[10px] font-bold uppercase tracking-wider transition-all flex items-center gap-1.5 cursor-pointer shadow-lg shadow-indigo-600/20"
               >
