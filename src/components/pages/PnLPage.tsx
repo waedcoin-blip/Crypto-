@@ -7555,12 +7555,12 @@ const checkTokenCriteria = (mint: string): {
                     ...new Set(
                       tradeHistory
                         .filter(
-                          trade =>
+                          (trade: any) =>
                             (!trade.status || trade.status === 'closed' || (trade.sellTime && trade.sellTime > 0)) &&
                             ((trade.realizedPnL && trade.realizedPnL > 0) || ((trade.sellAmountSol || 0) - (trade.buyAmountSol || 0) > 0) || ((trade.pnlPct || 0) > 0)) &&
                             (trade.tokenAddress || trade.mint)
                         )
-                        .map(trade => trade.tokenAddress || trade.mint)
+                        .map((trade: any) => trade.tokenAddress || trade.mint)
                         .filter(addr => typeof addr === 'string' && addr.trim().length > 0 && addr !== 'Unknown')
                     )
                   ];

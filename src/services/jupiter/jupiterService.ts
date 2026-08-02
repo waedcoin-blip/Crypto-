@@ -138,7 +138,7 @@ export const createJupiterSwapTransaction = async (
         userPublicKey,
         wrapAndUnwrapSol: true,
         dynamicComputeUnitLimit: true,
-        prioritizationFeeLamports: 'auto'
+        prioritizationFeeLamports: 150000 as any
       }
     });
     return swapRes.swapTransaction || null;
