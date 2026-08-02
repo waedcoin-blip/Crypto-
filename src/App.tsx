@@ -48,7 +48,7 @@ import {
 } from 'firebase/firestore';
 import { Trash2, Plus, LogOut, LogIn, Scan } from 'lucide-react';
 import { useAppStore } from './store/appStore';
-import { JupiterPage } from './components/pages/JupiterPage';
+import JupiterPage from './components/pages/JupiterPage';
 import { SystemCheckPage } from './components/pages/SystemCheckPage';
 import { SafetyPage } from './components/pages/SafetyPage';
 import { PredictionPage } from './components/pages/PredictionPage';

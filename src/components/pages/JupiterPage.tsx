@@ -845,7 +845,7 @@ const isValidPosition = (pos: any): boolean => {
   );
 };
 
-export const PnLPage = ({ 
+export const JupiterPage = ({ 
   tokenMetrics = {}, 
   telemetryAlerts = [],
   user = null,
@@ -854,119 +854,8 @@ export const PnLPage = ({
   tokenMetrics?: Record<string, TokenMetric>; 
   telemetryAlerts?: TelemetryAlert[]; 
   user?: any;
-  externalSettings?: {
-    manualGemInput?: string;
-    setManualGemInput?: (v: string) => void;
-    buyAmountSol?: number;
-    setBuyAmountSol?: (v: number) => void;
-    minTakeProfit?: number;
-    setMinTakeProfit?: (v: number) => void;
-    maxTakeProfit?: number;
-    setMaxTakeProfit?: (v: number) => void;
-    bondingCurveTakeProfit?: number;
-    setBondingCurveTakeProfit?: (v: number) => void;
-    stopLoss?: number;
-    setStopLoss?: (v: number) => void;
-    bondingCurveStopLoss?: number;
-    setBondingCurveStopLoss?: (v: number) => void;
-    pumpSwapStopLoss?: number;
-    setPumpSwapStopLoss?: (v: number) => void;
-    unknownStopLoss?: number;
-    setUnknownStopLoss?: (v: number) => void;
-    maxPositions?: number;
-    setMaxPositions?: (v: number) => void;
-    slippage?: number;
-    setSlippage?: (v: number) => void;
-    hardenedMinBondingProgress?: number;
-    setHardenedMinBondingProgress?: (v: number) => void;
-    hardenedMaxBondingProgress?: number;
-    setHardenedMaxBondingProgress?: (v: number) => void;
-    hardenedMinAge?: number;
-    setHardenedMinAge?: (v: number) => void;
-    hardenedMaxAge?: number;
-    setHardenedMaxAge?: (v: number) => void;
-    hardenedMcapMinPump?: number;
-    setHardenedMcapMinPump?: (v: number) => void;
-    hardenedMcapMinRaydium?: number;
-    setHardenedMcapMinRaydium?: (v: number) => void;
-    hardenedMcapMax?: number;
-    setHardenedMcapMax?: (v: number) => void;
-    hardenedLiquidityMin?: number;
-    setHardenedLiquidityMin?: (v: number) => void;
-    hardenedLiquidityRatio?: number;
-    setHardenedLiquidityRatio?: (v: number) => void;
-    hardenedMaxRiskScore?: number;
-    setHardenedMaxRiskScore?: (v: number) => void;
-    hardenedMaxDevOwnership?: number;
-    setHardenedMaxDevOwnership?: (v: number) => void;
-    hardenedMaxTop10?: number;
-    setHardenedMaxTop10?: (v: number) => void;
-    hardenedMinUniqueBuyers30s?: number;
-    setHardenedMinUniqueBuyers30s?: (v: number) => void;
-    hardenedMinBuyCount30s?: number;
-    setHardenedMinBuyCount30s?: (v: number) => void;
-    hardenedMaxBuyCount30s?: number;
-    setHardenedMaxBuyCount30s?: (v: number) => void;
-    hardenedMinBuySellRatio?: number;
-    setHardenedMinBuySellRatio?: (v: number) => void;
-    hardenedMaxBuySellRatio?: number;
-    setHardenedMaxBuySellRatio?: (v: number) => void;
-    hardenedMaxPriceChange1m?: number;
-    setHardenedMaxPriceChange1m?: (v: number) => void;
-    hardenedMinLatency?: number;
-    setHardenedMinLatency?: (v: number) => void;
-    hardenedMaxLatency?: number;
-    setHardenedMaxLatency?: (v: number) => void;
-    hardenedMatchRequirement?: number;
-    setHardenedMatchRequirement?: (v: number) => void;
-    tradePumpFun?: boolean;
-    setTradePumpFun?: (v: boolean) => void;
-    tradeRaydium?: boolean;
-    setTradeRaydium?: (v: boolean) => void;
-    tradeBonding?: boolean;
-    setTradeBonding?: (v: boolean) => void;
-    tradeUnknown?: boolean;
-    setTradeUnknown?: (v: boolean) => void;
-    hardenedMinProfit5m?: number;
-    setHardenedMinProfit5m?: (v: number) => void;
-    enableLatencyGuard?: boolean;
-    setEnableLatencyGuard?: (v: boolean) => void;
-    rpcLatency?: number | null;
-    rpcUrl?: string;
-    setRpcUrl?: (v: string) => void;
-    rpcUrl2?: string;
-    setRpcUrl2?: (v: string) => void;
-    isSecondaryActive?: boolean;
-    setIsSecondaryActive?: (v: boolean) => void;
-    customWsUrl?: string;
-    setCustomWsUrl?: (v: string) => void;
-    telemetryWhaleBuyMin?: number;
-    setTelemetryWhaleBuyMin?: (v: number) => void;
-    telemetryHighBuyMin?: number;
-    setTelemetryHighBuyMin?: (v: number) => void;
-    telemetryVolumeSpikeMin?: number;
-    setTelemetryVolumeSpikeMin?: (v: number) => void;
-    telemetryAllowWhaleBuy?: boolean;
-    setTelemetryAllowWhaleBuy?: (v: boolean) => void;
-    telemetryAllowHighBuy?: boolean;
-    setTelemetryAllowHighBuy?: (v: boolean) => void;
-    telemetryAllowVolumeSpike?: boolean;
-    setTelemetryAllowVolumeSpike?: (v: boolean) => void;
-    telemetryAllowMigrated?: boolean;
-    setTelemetryAllowMigrated?: (v: boolean) => void;
-    telemetryAllowGoldenCross?: boolean;
-    setTelemetryAllowGoldenCross?: (v: boolean) => void;
-    maxRebuyTimes?: number;
-    setMaxRebuyTimes?: (v: number) => void;
-    apiKey?: string;
-    setApiKey?: (v: string) => void;
-    jupiterRpcUrl?: string;
-    setJupiterRpcUrl?: (v: string) => void;
-    privateKey?: string;
-    setPrivateKey?: (v: string) => void;
-    onPositionsChange?: (v: Record<string, any>) => void;
-  };
-} = {}) => {
+  externalSettings?: any;
+}) => {
   const [localBuyAmountSol, setLocalBuyAmountSol] = useState(1.0);
   const [localMinTakeProfit, setLocalMinTakeProfit] = useState(50);
   const [localMaxTakeProfit, setLocalMaxTakeProfit] = useState(200);
@@ -1054,82 +943,85 @@ export const PnLPage = ({
   const executeBuyRef = useRef<any>(null);
 
   useEffect(() => {
-    const state = location.state as any;
-    let tokens: string[] = state?.profitableTokenAddresses;
-    if (!tokens || !Array.isArray(tokens) || tokens.length === 0) {
-      try {
-        const stored = localStorage.getItem('pnl_profitable_token_addresses');
-        if (stored) {
-          tokens = JSON.parse(stored);
-        }
-      } catch (e) {}
-    }
-
-    if (tokens && Array.isArray(tokens) && tokens.length > 0) {
-      const signature = tokens.join(',');
-      if (processedPnLRef.current !== signature) {
-        processedPnLRef.current = signature;
-        addLog(`🚀 [PNL SYNC] Received ${tokens.length} profitable token address(es) from PnLPage trade history:`, 'success', 'system');
-        tokens.forEach(async (addr: string) => {
-          addLog(`💎 [SYSTEM LOG - PROFITABLE TOKEN] Address: ${addr}`, 'success', 'system', { tokenAddress: addr, source: 'PnLPage' });
-          
-          try {
-            let symbol = 'PROFIT';
-            let priceNative = 0.0001;
-            let priceUsd = 0.1;
-            try {
-              const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${addr}`);
-              if (res.ok) {
-                const data = await res.json();
-                if (data && data.pairs && data.pairs.length > 0) {
-                  const bestPair = data.pairs[0];
-                  symbol = bestPair.baseToken?.symbol || 'PROFIT';
-                  priceNative = bestPair.priceNative ? parseFloat(bestPair.priceNative) : 0.0001;
-                  priceUsd = bestPair.priceUsd ? parseFloat(bestPair.priceUsd) : 0;
-                }
-              }
-            } catch (err) {}
-
-            addLog(`⚡ [SYSTEM LOG AUTO-TRADE] Automatically starting trade for received profitable token ${symbol} (${addr})...`, 'buy', 'system');
-
-            const scannedTokenData: ScannedToken = {
-              address: addr,
-              symbol,
-              name: `${symbol} (Synced Profitable)`,
-              priceUsd: priceUsd || 0.1,
-              priceNative: priceNative || 0.0001,
-              marketCap: 100000,
-              liquidityUsd: 50000,
-              volume24h: 10000,
-              bondingCurveProgress: 100,
-              isRaydium: true,
-              ageMinutes: 10,
-              priceChange5m: 5,
-              priceChange1h: 15,
-              priceChange24h: 30,
-              uniqueBuyers30s: 20,
-              buyCount30s: 25,
-              sellCount30s: 5,
-              buyVolume30s: 10,
-              sellVolume30s: 2,
-              top10HoldersPct: 15,
-              devWalletOwnershipPct: 2,
-              isRugSafe: true,
-              riskScore: 3
-            };
-
-            openSimPosition(scannedTokenData, tradeAmount);
-            monitoredTokensRef.current.set(addr, scannedTokenData);
-
-            if (executeBuyRef.current) {
-              await executeBuyRef.current(addr, symbol, priceNative, tradeAmount, true);
-            }
-          } catch (autoErr: any) {
-            addLog(`❌ [SYSTEM LOG AUTO-TRADE ERROR] Failed to auto-trade ${addr}: ${autoErr?.message || autoErr}`, 'err', 'system');
+    const timer = setTimeout(() => {
+      const state = location.state as any;
+      let tokens: string[] = state?.profitableTokenAddresses;
+      if (!tokens || !Array.isArray(tokens) || tokens.length === 0) {
+        try {
+          const stored = localStorage.getItem('pnl_profitable_token_addresses');
+          if (stored) {
+            tokens = JSON.parse(stored);
           }
-        });
+        } catch (e) {}
       }
-    }
+
+      if (tokens && Array.isArray(tokens) && tokens.length > 0) {
+        const signature = tokens.join(',');
+        if (processedPnLRef.current !== signature) {
+          processedPnLRef.current = signature;
+          addLog(`🚀 [PNL SYNC] Received ${tokens.length} profitable token address(es) from PnLPage trade history:`, 'success', 'system');
+          tokens.forEach(async (addr: string) => {
+            addLog(`💎 [SYSTEM LOG - PROFITABLE TOKEN] Address: ${addr}`, 'success', 'system', { tokenAddress: addr, source: 'PnLPage' });
+            
+            try {
+              let symbol = 'PROFIT';
+              let priceNative = 0.0001;
+              let priceUsd = 0.1;
+              try {
+                const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${addr}`);
+                if (res.ok) {
+                  const data = await res.json();
+                  if (data && data.pairs && data.pairs.length > 0) {
+                    const bestPair = data.pairs[0];
+                    symbol = bestPair.baseToken?.symbol || 'PROFIT';
+                    priceNative = bestPair.priceNative ? parseFloat(bestPair.priceNative) : 0.0001;
+                    priceUsd = bestPair.priceUsd ? parseFloat(bestPair.priceUsd) : 0;
+                  }
+                }
+              } catch (err) {}
+
+              addLog(`⚡ [SYSTEM LOG AUTO-TRADE] Automatically starting trade for received profitable token ${symbol} (${addr})...`, 'buy', 'system');
+
+              const scannedTokenData: ScannedToken = {
+                address: addr,
+                symbol,
+                name: `${symbol} (Synced Profitable)`,
+                priceUsd: priceUsd || 0.1,
+                priceNative: priceNative || 0.0001,
+                marketCap: 100000,
+                liquidityUsd: 50000,
+                volume24h: 10000,
+                bondingCurveProgress: 100,
+                isRaydium: true,
+                ageMinutes: 10,
+                priceChange5m: 5,
+                priceChange1h: 15,
+                priceChange24h: 30,
+                uniqueBuyers30s: 20,
+                buyCount30s: 25,
+                sellCount30s: 5,
+                buyVolume30s: 10,
+                sellVolume30s: 2,
+                top10HoldersPct: 15,
+                devWalletOwnershipPct: 2,
+                isRugSafe: true,
+                riskScore: 3
+              };
+
+              openSimPosition(scannedTokenData, tradeAmount);
+              monitoredTokensRef.current.set(addr, scannedTokenData);
+
+              if (executeBuyRef.current) {
+                await executeBuyRef.current(addr, symbol, priceNative, tradeAmount, true);
+              }
+            } catch (autoErr: any) {
+              addLog(`❌ [SYSTEM LOG AUTO-TRADE ERROR] Failed to auto-trade ${addr}: ${autoErr?.message || autoErr}`, 'err', 'system');
+            }
+          });
+        }
+      }
+    }, 0);
+    return () => clearTimeout(timer);
   }, [location.state, tradeAmount, addLog, openSimPosition]);
   
   const signaledPositions = useRef<Set<string>>(new Set());
@@ -1618,6 +1510,89 @@ export const PnLPage = ({
     } catch { return []; }
   });
 
+  const addLog = useCallback((msgOrEvent: string | Partial<LogEvent>, type: string = 'info', category?: string, metadata?: Record<string, any>) => {
+    let finalMsg = '';
+    let finalType = type;
+    let finalCategory = category || 'system';
+    let finalMetadata = metadata;
+
+    if (typeof msgOrEvent === 'string') {
+      finalMsg = msgOrEvent;
+      // Intelligently infer category from msg content
+      const msgUpper = finalMsg.toUpperCase();
+      if (msgUpper.includes('SWAP') || msgUpper.includes('BUY') || msgUpper.includes('SELL') || msgUpper.includes('TRADE') || msgUpper.includes('TRIGGER') || msgUpper.includes('ENTRY')) {
+        finalCategory = 'trade';
+      } else if (msgUpper.includes('SCAN') || msgUpper.includes('CRITERIA') || msgUpper.includes('DIAGNOSTICS') || msgUpper.includes('HEARTBEAT')) {
+        finalCategory = 'scanner';
+      } else if (msgUpper.includes('DEXSCREENER')) {
+        finalCategory = 'dexscreener';
+      } else if (msgUpper.includes('WALLET') || msgUpper.includes('BALANCE') || msgUpper.includes('RPC') || msgUpper.includes('LATENCY')) {
+        finalCategory = 'wallet';
+      } else if (msgUpper.includes('RISK') || msgUpper.includes('SAFE') || msgUpper.includes('RUG') || msgUpper.includes('BLACKLIST')) {
+        finalCategory = 'risk';
+      }
+    } else if (msgOrEvent && typeof msgOrEvent === 'object') {
+      finalMsg = msgOrEvent.msg || '';
+      finalType = msgOrEvent.type || 'info';
+      finalCategory = msgOrEvent.category || 'system';
+      finalMetadata = msgOrEvent.metadata;
+    }
+
+    setLogs((prev) => {
+      const now = Date.now();
+      const time = new Date().toLocaleTimeString();
+
+      // De-duplication check: if the last message is identical, combine it!
+      if (prev.length > 0) {
+        const lastLog = prev[0];
+        if (lastLog.msg === finalMsg && lastLog.type === finalType && lastLog.category === finalCategory) {
+          const updatedLog: LogEvent = {
+            ...lastLog,
+            count: (lastLog.count || 1) + 1,
+            time // update time to the latest occurrence
+          };
+          return [updatedLog, ...prev.slice(1)];
+        }
+      }
+
+      // Check if total buffer meets or exceeds the retention limit
+      if (prev.length >= retentionLimit) {
+        const resetNotice: LogEvent = {
+          id: (now - 1).toString() + Math.random().toString(),
+          time,
+          timestamp: now - 1,
+          msg: `🔄 BUFFER RESET: Capacity reached (${retentionLimit}/${retentionLimit}). Starting fresh.`,
+          type: 'info',
+          category: 'system',
+          count: 1
+        };
+        const newLog: LogEvent = {
+          id: now.toString() + Math.random().toString(),
+          time,
+          timestamp: now,
+          msg: finalMsg,
+          type: finalType,
+          category: finalCategory,
+          metadata: finalMetadata,
+          count: 1
+        };
+        return [newLog, resetNotice];
+      }
+
+      const newLog: LogEvent = {
+        id: now.toString() + Math.random().toString(),
+        time,
+        timestamp: now,
+        msg: finalMsg,
+        type: finalType,
+        category: finalCategory,
+        metadata: finalMetadata,
+        count: 1
+      };
+      return [newLog, ...prev].slice(0, retentionLimit);
+    });
+  }, [retentionLimit, setLogs]);
+
   // Safe parent-level logs trimming
   useEffect(() => {
     setLogs(prev => {
@@ -1919,7 +1894,10 @@ export const PnLPage = ({
       }
     };
     
-    loadSettings();
+    const timer = setTimeout(() => {
+      loadSettings();
+    }, 0);
+    return () => clearTimeout(timer);
   }, [user]);
 
   useEffect(() => {
@@ -2763,88 +2741,6 @@ export const PnLPage = ({
     }
   }, [privateKey, rpcUrl, customWsUrl, fetchWalletTokens]);
 
-  const addLog = useCallback((msgOrEvent: string | Partial<LogEvent>, type: string = 'info', category?: string, metadata?: Record<string, any>) => {
-    let finalMsg = '';
-    let finalType = type;
-    let finalCategory = category || 'system';
-    let finalMetadata = metadata;
-
-    if (typeof msgOrEvent === 'string') {
-      finalMsg = msgOrEvent;
-      // Intelligently infer category from msg content
-      const msgUpper = finalMsg.toUpperCase();
-      if (msgUpper.includes('SWAP') || msgUpper.includes('BUY') || msgUpper.includes('SELL') || msgUpper.includes('TRADE') || msgUpper.includes('TRIGGER') || msgUpper.includes('ENTRY')) {
-        finalCategory = 'trade';
-      } else if (msgUpper.includes('SCAN') || msgUpper.includes('CRITERIA') || msgUpper.includes('DIAGNOSTICS') || msgUpper.includes('HEARTBEAT')) {
-        finalCategory = 'scanner';
-      } else if (msgUpper.includes('DEXSCREENER')) {
-        finalCategory = 'dexscreener';
-      } else if (msgUpper.includes('WALLET') || msgUpper.includes('BALANCE') || msgUpper.includes('RPC') || msgUpper.includes('LATENCY')) {
-        finalCategory = 'wallet';
-      } else if (msgUpper.includes('RISK') || msgUpper.includes('SAFE') || msgUpper.includes('RUG') || msgUpper.includes('BLACKLIST')) {
-        finalCategory = 'risk';
-      }
-    } else if (msgOrEvent && typeof msgOrEvent === 'object') {
-      finalMsg = msgOrEvent.msg || '';
-      finalType = msgOrEvent.type || 'info';
-      finalCategory = msgOrEvent.category || 'system';
-      finalMetadata = msgOrEvent.metadata;
-    }
-
-    setLogs((prev) => {
-      const now = Date.now();
-      const time = new Date().toLocaleTimeString();
-
-      // De-duplication check: if the last message is identical, combine it!
-      if (prev.length > 0) {
-        const lastLog = prev[0];
-        if (lastLog.msg === finalMsg && lastLog.type === finalType && lastLog.category === finalCategory) {
-          const updatedLog: LogEvent = {
-            ...lastLog,
-            count: (lastLog.count || 1) + 1,
-            time // update time to the latest occurrence
-          };
-          return [updatedLog, ...prev.slice(1)];
-        }
-      }
-
-      // Check if total buffer meets or exceeds the retention limit
-      if (prev.length >= retentionLimit) {
-        const resetNotice: LogEvent = {
-          id: (now - 1).toString() + Math.random().toString(),
-          time,
-          timestamp: now - 1,
-          msg: `🔄 BUFFER RESET: Capacity reached (${retentionLimit}/${retentionLimit}). Starting fresh.`,
-          type: 'info',
-          category: 'system',
-          count: 1
-        };
-        const newLog: LogEvent = {
-          id: now.toString() + Math.random().toString(),
-          time,
-          timestamp: now,
-          msg: finalMsg,
-          type: finalType,
-          category: finalCategory,
-          metadata: finalMetadata,
-          count: 1
-        };
-        return [newLog, resetNotice];
-      }
-
-      const newLog: LogEvent = {
-        id: now.toString() + Math.random().toString(),
-        time,
-        timestamp: now,
-        msg: finalMsg,
-        type: finalType,
-        category: finalCategory,
-        metadata: finalMetadata,
-        count: 1
-      };
-      return [newLog, ...prev].slice(0, retentionLimit);
-    });
-  }, [retentionLimit]);
 
   // ── BACKGROUND SCAN & SIMULATION PIPELINE ──
 
@@ -7913,4 +7809,4 @@ bondingCurveProgress &gt;= 99.5%</code>
   );
 };
 
-export { PnLPage as JupiterPage };
+export default JupiterPage;
