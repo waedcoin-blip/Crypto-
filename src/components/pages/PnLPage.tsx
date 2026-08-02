@@ -8,7 +8,7 @@ import { useAppStore } from '../../store/appStore';
 import { useBuySignalStore } from '../../store/buySignalStore';
 import { TokenScanner, ScannedToken } from '../../services/tokenScanner';
 import { DEFAULT_CRITERIA } from '../../config/tokenCriteria';
-import { getSimRealTradeCount, getTradeCount } from '../../config/rebuyGuard';
+import { getTradeCount } from '../../config/rebuyGuard';
 import { useSimulationStore } from '../../store/simulationStore';
 import { getJupiterQuote, executeTxWithRPCFallback, getTokenBalanceRaw, getLatestBlockhashWithFallback, clearSimPriceCache, resetSimPrice, pingJupiterApi } from '../../services/jupiterService';
 import { db } from '../../lib/firebase';
@@ -16,7 +16,7 @@ import { detectTokenStage } from '../../lib/utils';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { checkTokenInProfitLast2Seconds, clearPriceHistories } from '../../services/priceTracker';
 import { encryptPrivateKey, decryptPrivateKey } from '../../lib/crypto';
-import { getSolPriceUsd, setSolPriceUsd, calculateSimRealPnl } from '../../utils/pnlCalculator';
+import { getSolPriceUsd, setSolPriceUsd } from '../../utils/pnlCalculator';
 
 import { DEFAULT_HELIUS_RPC, DEFAULT_HELIUS_WS, HELIUS_API_KEY } from '../../constants/solana';
 
@@ -110,12 +110,6 @@ interface Position {
   isStale?: boolean;
   realNetPnl?: number;
   realNetSol?: number;
-  simRealBought?: boolean;
-  simRealBoughtPriceSol?: number;
-  simRealAmountTokens?: number;
-  simRealSolSpent?: number;
-  simRealBoughtTime?: number;
-  simRealIsVirtualFallback?: boolean;
   signalEmitted?: boolean;
   entryPriceUsd?: number;
   currentPriceUsd?: number;
@@ -822,10 +816,10 @@ const TerminalConsole: React.FC<TerminalConsoleProps> = ({ logs, setLogs, retent
                               onQuickTrade(tokenInfo.mint, tokenInfo.symbol);
                             }}
                             className="px-1.5 py-0.5 bg-emerald-500/20 hover:bg-emerald-500/35 text-emerald-300 rounded text-[9px] font-bold flex items-center gap-1 transition-colors cursor-pointer border border-emerald-500/30"
-                            title="Send JSON payload token signal to SimReal"
+                            title="Quick Trade Token"
                           >
                             <Zap className="w-2.5 h-2.5 text-emerald-400" />
-                            <span>Send Signal to SimReal</span>
+                            <span>Quick Trade</span>
                           </button>
                         )}
                         <button
@@ -929,22 +923,6 @@ export const PnLPage = ({
     setUnknownStopLoss?: (v: number) => void;
     maxPositions: number;
     setMaxPositions: (v: number) => void;
-    simRealTakeProfitRaydium?: number;
-    setSimRealTakeProfitRaydium?: (v: number) => void;
-    simRealTakeProfitBonding?: number;
-    setSimRealTakeProfitBonding?: (v: number) => void;
-    simRealTakeProfitPumpSwap?: number;
-    setSimRealTakeProfitPumpSwap?: (v: number) => void;
-    simRealTakeProfitUnknown?: number;
-    setSimRealTakeProfitUnknown?: (v: number) => void;
-    simRealStopLossRaydium?: number;
-    setSimRealStopLossRaydium?: (v: number) => void;
-    simRealStopLossBonding?: number;
-    setSimRealStopLossBonding?: (v: number) => void;
-    simRealStopLossPumpSwap?: number;
-    setSimRealStopLossPumpSwap?: (v: number) => void;
-    simRealStopLossUnknown?: number;
-    setSimRealStopLossUnknown?: (v: number) => void;
     slippage: number;
     setSlippage: (v: number) => void;
     hardenedMinBondingProgress?: number;
@@ -1035,7 +1013,6 @@ export const PnLPage = ({
     privateKey?: string;
     setPrivateKey?: (v: string) => void;
     onPositionsChange?: (v: Record<string, any>) => void;
-    simrealControlRef?: React.MutableRefObject<any>;
   }
 }) => {
   const {
@@ -1048,14 +1025,6 @@ export const PnLPage = ({
     pumpSwapStopLoss = -15, setPumpSwapStopLoss = () => {},
     unknownStopLoss = -20, setUnknownStopLoss = () => {},
     maxPositions, setMaxPositions,
-    simRealTakeProfitRaydium = 50, setSimRealTakeProfitRaydium = () => {},
-    simRealTakeProfitBonding = 100, setSimRealTakeProfitBonding = () => {},
-    simRealTakeProfitPumpSwap = 50, setSimRealTakeProfitPumpSwap = () => {},
-    simRealTakeProfitUnknown = 50, setSimRealTakeProfitUnknown = () => {},
-    simRealStopLossRaydium = -15, setSimRealStopLossRaydium = () => {},
-    simRealStopLossBonding = -20, setSimRealStopLossBonding = () => {},
-    simRealStopLossPumpSwap = -15, setSimRealStopLossPumpSwap = () => {},
-    simRealStopLossUnknown = -20, setSimRealStopLossUnknown = () => {},
     slippage, setSlippage,
     hardenedMinBondingProgress = 0, setHardenedMinBondingProgress = () => {},
     hardenedMaxBondingProgress = 100, setHardenedMaxBondingProgress = () => {},
@@ -1107,15 +1076,12 @@ export const PnLPage = ({
     setJupiterRpcUrl = () => {},
     privateKey = '',
     setPrivateKey = () => {},
-    onPositionsChange,
-    simrealControlRef
+    onPositionsChange
   } = externalSettings;
   
   const jupRpcUrlToUse = jupiterRpcUrl && jupiterRpcUrl.trim() !== "" ? jupiterRpcUrl.trim() : rpcUrl;
   
-  const { simRealTrades, simRealBalance } = useAppStore();
   const emitBuySignal = useBuySignalStore(state => state.emitSignal);
-  const emitSimRealToken = useBuySignalStore(state => state.emitSimRealToken);
   const signaledPositions = useRef<Set<string>>(new Set());
   const latestPricesRef = useRef<Record<string, number>>({});
 
@@ -1660,7 +1626,7 @@ export const PnLPage = ({
   }, [blacklistedMints]);
 
   const configRef = useRef({
-    takeProfitPct, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct, slippage, privateKey, tradeAmount, maxPositions, simRealTakeProfitRaydium, simRealTakeProfitBonding, simRealTakeProfitPumpSwap, simRealTakeProfitUnknown, simRealStopLossRaydium, simRealStopLossBonding, simRealStopLossPumpSwap, simRealStopLossUnknown,
+    takeProfitPct, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct, slippage, privateKey, tradeAmount, maxPositions,
     hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax,
     hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore,
     hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s,
@@ -1672,7 +1638,7 @@ export const PnLPage = ({
   });
 
   configRef.current = {
-    takeProfitPct, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct, slippage, privateKey, tradeAmount, maxPositions, simRealTakeProfitRaydium, simRealTakeProfitBonding, simRealTakeProfitPumpSwap, simRealTakeProfitUnknown, simRealStopLossRaydium, simRealStopLossBonding, simRealStopLossPumpSwap, simRealStopLossUnknown,
+    takeProfitPct, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct, slippage, privateKey, tradeAmount, maxPositions,
     hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax,
     hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore,
     hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s,
@@ -1746,13 +1712,11 @@ export const PnLPage = ({
     ftpWebUrl?: string;
     ftpSecure?: boolean;
     simWalletBalance?: number;
-    simRealBalance?: number;
     blacklistedMints?: string;
     positions?: string;
     tokenMetrics?: string;
     stats?: string;
     tradeHistory?: string;
-    simRealTrades?: string;
   } | null>(null);
 
   useEffect(() => {
@@ -2399,7 +2363,7 @@ export const PnLPage = ({
       // 7. Fallback to Active Position Entry / Buy Price
       const activePos = positionsRef.current[tokenMint] || positions[tokenMint];
       if (activePos) {
-        const entryP = activePos.simRealBoughtPriceSol || activePos.buyPrice || activePos.currentPrice;
+        const entryP = activePos.buyPrice || activePos.currentPrice;
         if (entryP && entryP > 0) return entryP;
       }
 
@@ -2616,14 +2580,14 @@ export const PnLPage = ({
   useEffect(() => {
     const activeMintsList = Object.keys(positions).filter(k => {
       const p = positions[k];
-      return p && typeof p === 'object' && p.symbol && ((typeof p.amount === 'number' && p.amount > 0) || !!p.simRealBought);
+      return p && typeof p === 'object' && p.symbol && typeof p.amount === 'number' && p.amount > 0;
     });
     if (activeMintsList.length === 0) return;
     
     const interval = setInterval(async () => {
       const livePrices = await getTokenPrices(activeMintsList);
       
-      // We can first process any SimReal buys that are eligible asynchronously
+      // Process active positions asynchronously
       for (const mint of activeMintsList) {
         const pos = positionsRef.current[mint];
         if (!pos) continue;
@@ -2665,7 +2629,7 @@ export const PnLPage = ({
     return () => clearInterval(interval);
   }, [Object.keys(positions).filter(k => {
     const p = positions[k];
-    return p && typeof p === 'object' && p.symbol && ((typeof p.amount === 'number' && p.amount > 0) || !!p.simRealBought);
+    return p && typeof p === 'object' && p.symbol && typeof p.amount === 'number' && p.amount > 0;
   }).join(','), getTokenPrices]);
 
   useEffect(() => {
@@ -2921,62 +2885,6 @@ export const PnLPage = ({
     return () => clearInterval(interval);
   }, [hasSimPosition, updateSimPrice]);
 
-  // ── SIGNAL EMISSION EFFECT (PnL >= +1% → tokenAddress ONLY → SimRealPage) ──
-  const SIMREAL_TRIGGER_PNL_PERCENT = 1;
-  const simRealTriggeredMintsRef = useRef<Set<string>>(new Set());
-
-  useEffect(() => {
-    const checkProfitTargets = () => {
-      const activePositionsEntries = Object.entries(positions);
-
-      // Clean up deduplication set for positions no longer active
-      for (const mint of Array.from(simRealTriggeredMintsRef.current)) {
-        if (!positions[mint]) {
-          simRealTriggeredMintsRef.current.delete(mint);
-        }
-      }
-
-      for (const [mint, pos] of activePositionsEntries) {
-        if (!pos || !mint) continue;
-
-        const entryPriceSol = pos.buyPrice || pos.simRealBoughtPriceSol || 0;
-        const currentPriceSol = pos.currentPrice || 0;
-        if (entryPriceSol <= 0 || currentPriceSol <= 0) continue;
-
-        const pnlPercent = ((currentPriceSol - entryPriceSol) / entryPriceSol) * 100;
-
-        if (Number.isFinite(pnlPercent) && pnlPercent >= SIMREAL_TRIGGER_PNL_PERCENT) {
-          const tokenAddress = mint.trim();
-          if (!tokenAddress) continue;
-
-          if (!pos.symbol || pos.symbol.trim() === '' || pos.symbol.toUpperCase() === 'UNKNOWN') continue;
-
-          const activeDexId = mint.toLowerCase().endsWith('pump') ? 'pumpfun' : 'raydium';
-          const sourceCheck = checkDexPlatformSourcesAllowed(mint, activeDexId);
-          if (!sourceCheck.pass) continue;
-
-          if (simRealTriggeredMintsRef.current.has(tokenAddress)) {
-            continue;
-          }
-
-          simRealTriggeredMintsRef.current.add(tokenAddress);
-
-          // ONLY pass the token address across the boundary
-          if (simrealControlRef?.current?.receiveTokenAddress) {
-            simrealControlRef.current.receiveTokenAddress(tokenAddress);
-          } else {
-            // Backup address-only signal emission sending ONLY tokenAddress
-            emitSimRealToken(tokenAddress);
-          }
-
-          addLog(`[Active Position Signal] Token address ONLY (${tokenAddress.slice(0, 8)}..., +${pnlPercent.toFixed(2)}%) sent → SimRealPage`, 'success');
-        }
-      }
-    };
-
-    const interval = setInterval(checkProfitTargets, 1000);
-    return () => clearInterval(interval);
-  }, [positions, simrealControlRef, addLog, emitBuySignal, checkDexPlatformSourcesAllowed]);
 
   useEffect(() => {
     if (!privateKey) {
@@ -3028,15 +2936,6 @@ export const PnLPage = ({
           
           let effectiveBal = solBal;
           const isZeroBal = solBal === 0;
-          if (isZeroBal) {
-            const savedVirtual = localStorage.getItem('app_simRealBalance_fallback') || localStorage.getItem('app_simRealBalance');
-            effectiveBal = savedVirtual && Number(savedVirtual) > 0 ? Number(savedVirtual) : 10.0;
-            // Ensure fallback is initialized in storage
-            localStorage.setItem('app_simRealBalance_fallback', String(effectiveBal));
-          }
-          
-          // Sync with the global SimReal store so that other views/pages know about it
-          useAppStore.getState().setSimRealBalance(() => effectiveBal);
 
           if (lastLoggedKeyRef.current !== privateKey) {
             if (isZeroBal) {
@@ -3513,7 +3412,6 @@ export const PnLPage = ({
   const pendingBuysRef = useRef(0);
   const pendingBuyMintsRef = useRef<Set<string>>(new Set());
   const pendingSellMintsRef = useRef<Set<string>>(new Set());
-  const simRealBoughtPending = useRef<Set<string>>(new Set());
 
 const checkTokenCriteria = (mint: string): { 
   pass: boolean; 
@@ -4155,35 +4053,16 @@ const checkTokenCriteria = (mint: string): {
       return;
     }
 
-    const isTransferToSimReal = reason.includes('TRANSFER TO SIMREAL');
-
-    // 2. Decide what needs to be sold (Main only, SimReal is managed by SimRealPage)
-    const shouldSellMain = !!pos.amount && pos.amount > 0 && !reason.includes('SIMREAL');
+    const shouldSellMain = !!pos.amount && pos.amount > 0;
     
-    if (!shouldSellMain && !isTransferToSimReal) {
+    if (!shouldSellMain) {
       return;
     }
 
     // Log the initiation of the sell
-    addLog(`🚨 [SELL PROCESS] Initiating sell for ${pos.symbol}. Main active: ${shouldSellMain} | Reason: ${reason}`, 'info');
+    addLog(`🚨 [SELL PROCESS] Initiating sell for ${pos.symbol}. Reason: ${reason}`, 'info');
 
     let isMainSold = false;
-
-    if (isTransferToSimReal) {
-      addLog(`[TRANSFER] Moving ${pos.symbol} entirely to SimReal. Closing simulation tracking without API quote.`, 'info');
-      // Just mark it as sold silently to remove from PnLPage active list
-      isMainSold = true;
-      
-      setTradeHistory(th => [{
-        id: `sim-sell-${Date.now()}`,
-        mint: mint,
-        buyTime: pos.entryTime,
-        sellTime: Date.now(),
-        buyAmountSol: pos.solSpent,
-        sellAmountSol: pos.solSpent * (1 + pnlPct), 
-        pnlPct: pnlPct * 100
-      }, ...th]);
-    }
 
     // --- EXECUTE MAIN POSITION SELL ---
     if (shouldSellMain && !isMainSold) {
@@ -4366,8 +4245,6 @@ const checkTokenCriteria = (mint: string): {
       }
     }
 
-    simRealBoughtPending.current.delete(mint);
-
     // 3. Update Positions state based on what was sold
     setPositions((currPositions) => {
       const next = { ...currPositions };
@@ -4375,18 +4252,7 @@ const checkTokenCriteria = (mint: string): {
       if (!currentPos) return next;
 
       if (isMainSold) {
-        if (currentPos.simRealBought) {
-          next[mint] = {
-            ...currentPos,
-            amount: 0,
-            amountLamports: 0,
-            solSpent: 0,
-            buyPrice: 0,
-            entryTime: 0,
-          };
-        } else {
-          delete next[mint];
-        }
+        delete next[mint];
       }
       return next;
     });
@@ -4676,8 +4542,6 @@ const checkTokenCriteria = (mint: string): {
           const pos = currentPositionsState[mint];
           if (!pos || pos.triggersDisabled) continue;
           
-          // Skip if this token ONLY has a SimReal position and no Main position. 
-          // SimReal TP/SL is handled exclusively by SimRealPage.
           const hasMainPosition = typeof pos.amount === 'number' && pos.amount > 0;
           if (!hasMainPosition) {
             continue;
@@ -4767,9 +4631,7 @@ const checkTokenCriteria = (mint: string): {
                const entrySlippageSol = spentSol * (slippage / 100);
                const opFeesEntry = getDynamicOperationalFeeSol(pos.recoveryMode, spentSol);
                const netEntryAfterSlippageAndJito = Math.max(spentSol * 0.1, spentSol - entrySlippageSol - opFeesEntry);
-               netPnlPct = pos.simRealBought
-                 ? (simulatedNet - netEntryAfterSlippageAndJito) / netEntryAfterSlippageAndJito
-                 : (simulatedNet - spentSol) / spentSol;
+               netPnlPct = (simulatedNet - spentSol) / spentSol;
                pnlPct = roughNetPnL; 
             } else {
                const guaranteedMinLamports = BigInt(quote.otherAmountThreshold);
@@ -4777,13 +4639,8 @@ const checkTokenCriteria = (mint: string): {
                const operationalFeesSol = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent); 
                const realNetSolReturn = Math.max(0, guaranteedSolOut - operationalFeesSol);
                const spentSol = pos.solSpent || 1;
-               const entrySlippageSol = spentSol * (slippage / 100);
-               const opFeesEntry = getDynamicOperationalFeeSol(pos.recoveryMode, spentSol);
-               const netEntryAfterSlippageAndJito = Math.max(spentSol * 0.1, spentSol - entrySlippageSol - opFeesEntry);
 
-               netPnlPct = pos.simRealBought
-                 ? (realNetSolReturn - netEntryAfterSlippageAndJito) / netEntryAfterSlippageAndJito
-                 : (realNetSolReturn - spentSol) / spentSol;
+               netPnlPct = (realNetSolReturn - spentSol) / spentSol;
                pnlPct = (guaranteedSolOut - spentSol) / spentSol;
             }
 
@@ -4793,8 +4650,8 @@ const checkTokenCriteria = (mint: string): {
               addLog(`RECOVERY MODE: ${pos.symbol} dropped to -50%. Will auto-sell at breakeven.`, 'warn');
             }
 
-            // General Position Strategy (only if main position is active)
-            const isMainActive = typeof pos.amount === 'number' && pos.amount > 0 && !pos.simRealBought;
+            // General Position Strategy
+            const isMainActive = typeof pos.amount === 'number' && pos.amount > 0;
             if (isMainActive) {
               const activePnL = netPnlPct;
               if (activePnL >= currentTakeProfit / 100) {
@@ -4829,13 +4686,6 @@ const checkTokenCriteria = (mint: string): {
                 const existing = cPos[mint] || positionsRef.current[mint];
                 if (!existing) return cPos;
                 const updated = { ...existing, ...pos, currentPrice, recoveryMode: inRecoveryMode, isStale: !!batchedPrices[mint]?.isStale, realNetPnl: netPnlPct, realNetSol: netPnlPct * (existing.solSpent || 1) };
-                if (existing.simRealBought) {
-                  updated.simRealBought = existing.simRealBought;
-                  updated.simRealBoughtPriceSol = existing.simRealBoughtPriceSol ?? updated.simRealBoughtPriceSol;
-                  updated.simRealAmountTokens = existing.simRealAmountTokens ?? updated.simRealAmountTokens;
-                  updated.simRealSolSpent = existing.simRealSolSpent ?? updated.simRealSolSpent;
-                  updated.simRealBoughtTime = existing.simRealBoughtTime ?? updated.simRealBoughtTime;
-                }
                 const res = { ...cPos, [mint]: updated };
                 positionsRef.current = res;
                 return res;
@@ -4854,8 +4704,8 @@ const checkTokenCriteria = (mint: string): {
                 addLog(`RECOVERY MODE: ${pos.symbol} dropped to -50%. Will auto-sell at breakeven.`, 'warn');
             }
 
-            // General Position Strategy (only if main position is active)
-            const isMainActive = typeof pos.amount === 'number' && pos.amount > 0 && !pos.simRealBought;
+            // General Position Strategy
+            const isMainActive = typeof pos.amount === 'number' && pos.amount > 0;
             if (isMainActive) {
               const activePnL = pnlPct;
               if (inRecoveryMode && activePnL >= 0) {
@@ -4890,13 +4740,6 @@ const checkTokenCriteria = (mint: string): {
                 const existing = cPos[mint] || positionsRef.current[mint];
                 if (!existing) return cPos;
                 const updated = { ...existing, ...pos, currentPrice, recoveryMode: inRecoveryMode, isStale: !!batchedPrices[mint]?.isStale, realNetPnl: pnlPct, realNetSol: netSolIfSold - (existing.solSpent || 0) };
-                if (existing.simRealBought) {
-                  updated.simRealBought = existing.simRealBought;
-                  updated.simRealBoughtPriceSol = existing.simRealBoughtPriceSol ?? updated.simRealBoughtPriceSol;
-                  updated.simRealAmountTokens = existing.simRealAmountTokens ?? updated.simRealAmountTokens;
-                  updated.simRealSolSpent = existing.simRealSolSpent ?? updated.simRealSolSpent;
-                  updated.simRealBoughtTime = existing.simRealBoughtTime ?? updated.simRealBoughtTime;
-                }
                 const res = { ...cPos, [mint]: updated };
                 positionsRef.current = res;
                 return res;
@@ -5547,10 +5390,8 @@ const checkTokenCriteria = (mint: string): {
         ...lastLoadedSettingsRef.current,
         positions: JSON.stringify({}),
         tokenMetrics: JSON.stringify({}),
-        simRealTrades: JSON.stringify([]),
         tradeHistory: JSON.stringify([]),
         stats: JSON.stringify({ trades: 0, wins: 0, losses: 0, pnl: 0, bestTrade: null }),
-        simRealBalance: 10.0,
         simWalletBalance: 10.0,
       };
     }
@@ -5562,9 +5403,7 @@ const checkTokenCriteria = (mint: string): {
     store.setTelemetryAlerts(() => []);
     store.updateActivePositions(() => ({}));
     store.setSimulationBalance(() => 10.0);
-    store.setSimRealBalance(() => 10.0);
     store.setMySniperTrades(() => []);
-    store.setSimRealTrades(() => []);
     store.setTelemetryBits([false, false, false, false, false, false]);
     
     // Clear simulation store and scanner monitored tokens
@@ -5573,7 +5412,6 @@ const checkTokenCriteria = (mint: string): {
     useBuySignalStore.getState().clearSignals();
     useBuySignalStore.getState().resetSignals();
     monitoredTokensRef.current.clear();
-    simRealBoughtPending.current.clear();
     signaledPositions.current.clear();
     pendingBuyMintsRef.current.clear();
     pendingSellMintsRef.current.clear();
@@ -5582,9 +5420,6 @@ const checkTokenCriteria = (mint: string): {
     // Completely clear all cache and reset balances to exactly 10.0 SOL
     localStorage.setItem('app_simulationBalance_v4', '10.0');
     localStorage.setItem('juipter_auto_simWalletBalance', '10.0');
-    localStorage.setItem('app_simRealBalance', '10.0');
-    localStorage.setItem('app_simRealBalance_fallback', '10.0');
-    localStorage.setItem('app_simRealTrades', JSON.stringify([]));
     localStorage.setItem('app_mySniperTrades', JSON.stringify([]));
     localStorage.setItem('juipter_auto_isRunning', 'true'); // Auto-start trading on reset
     localStorage.setItem('app_activePositions', JSON.stringify({}));
@@ -5603,10 +5438,8 @@ const checkTokenCriteria = (mint: string): {
         key.startsWith('app_token_') ||
         key.startsWith('token_') ||
         key.includes('token_cache') ||
-        key.includes('simreal_') ||
         key.includes('activePositions') ||
         key.includes('tradeHistory') ||
-        key.includes('simRealTrades') ||
         key.includes('token_activity')
       ) {
         localStorage.removeItem(key);
@@ -5624,13 +5457,11 @@ const checkTokenCriteria = (mint: string): {
         const docRef = doc(db, 'settings', user.uid);
         await setDoc(docRef, {
           simWalletBalance: 10.0,
-          simRealBalance: 10.0,
           blacklistedMints: JSON.stringify([]),
           positions: JSON.stringify({}),
           tokenMetrics: JSON.stringify({}),
           stats: JSON.stringify({ trades: 0, wins: 0, losses: 0, pnl: 0, bestTrade: null }),
           tradeHistory: JSON.stringify([]),
-          simRealTrades: JSON.stringify([]),
           updatedAt: new Date().toISOString()
         }, { merge: true });
       } catch (err) {
@@ -5639,621 +5470,6 @@ const checkTokenCriteria = (mint: string): {
     }
   };
 
-  const executeSimRealSell = async (mint: string) => {
-    const pos = positions[mint];
-    if (!pos || !pos.simRealBought) return;
-
-    if (privateKey && (mint.toLowerCase().startsWith('sim') || (pos.symbol && pos.symbol.toLowerCase().startsWith('sim')))) {
-      addLog(`❌ [SIM BLOCK] Trading for tokens starting with 'sim' is strictly blocked for real-money trading: ${pos.symbol} (${mint})`, 'warn');
-      return;
-    }
-
-    addLog(`🚨 [SIMREAL EMERGENCY] Initiating manual emergency exit for ${pos.symbol}...`, 'warn');
-
-    let sellAmtSol = 0;
-    let signature = 'SIMREAL_SL_' + Math.random().toString(36).substring(7);
-
-    if (privateKey && !pos.simRealIsVirtualFallback) {
-      addLog(`🚨 [SIMREAL REAL SWAP SELL] Initiating real on-chain sell for ${pos.symbol} via Jupiter...`, 'warn');
-      const spentSol = pos.simRealSolSpent || pos.solSpent;
-      if (!spentSol || spentSol <= 0) {
-          addLog(`❌ [SIMREAL REAL SWAP FAILED] Real sell failed for ${pos.symbol}: Missing cost basis (spentSol).`, 'err');
-          return;
-      }
-      const boughtPrice = pos.simRealBoughtPriceSol || (pos.simRealSolSpent && pos.simRealAmountTokens ? (pos.simRealSolSpent / pos.simRealAmountTokens) : pos.currentPrice);
-      if (!boughtPrice || boughtPrice <= 0) {
-          addLog(`❌ [SIMREAL REAL SWAP FAILED] Real sell failed for ${pos.symbol}: Missing bought price.`, 'err');
-          return;
-      }
-      const currPrice = pos.currentPrice || boughtPrice;
-      const tokensQty = (pos.simRealAmountTokens && pos.simRealAmountTokens > 0)
-        ? pos.simRealAmountTokens
-        : (pos.amount && pos.amount > 0)
-        ? pos.amount
-        : (spentSol / boughtPrice);
-      let lamportsToSell = pos.amountLamports;
-      if (!lamportsToSell) {
-        const sellDecimals = await resolveDecimals(mint, jupRpcUrlToUse);
-        lamportsToSell = Math.floor(tokensQty * Math.pow(10, sellDecimals));
-      }
-
-      try {
-        if (lamportsToSell > 0) {
-          const simRealGross = currPrice * tokensQty;
-          const simRealGrossPnLPercent = ((simRealGross - spentSol) / spentSol) * 100;
-          let dynamicSlippage = slippage;
-          if (simRealGrossPnLPercent > 0) dynamicSlippage = Math.max(0.3, Math.min(slippage, simRealGrossPnLPercent * 0.3));
-          else dynamicSlippage = Math.min(slippage, 1.0);
-          const slippageBps = Math.floor(dynamicSlippage * 100);
-          
-          const opFeesSol = getDynamicOperationalFeeSol(pos.recoveryMode, spentSol);
-          const isStopLossSignal = true; // Emergency force exit
-          const minExpectedOut = isStopLossSignal ? undefined : (spentSol + opFeesSol);
-          
-          const result = await executeJupiterSwap(mint, SOL_MINT, lamportsToSell, slippageBps, minExpectedOut);
-          if (result.txid) {
-             addLog(`✅ [SIMREAL REAL SWAP SUCCESS] Sold ${pos.symbol} on-chain | tx: ${result.txid.slice(0, 12)}...`, 'sell');
-             signature = result.txid;
-             const passedOutAmount = (typeof result.actualOutputAmountRaw === 'number' && !isNaN(result.actualOutputAmountRaw) && result.actualOutputAmountRaw > 0)
-               ? result.actualOutputAmountRaw
-               : ((typeof result.outputAmount === 'number' && !isNaN(result.outputAmount) && result.outputAmount > 0)
-               ? result.outputAmount
-               : 0);
-
-             if (passedOutAmount > 0) {
-               sellAmtSol = passedOutAmount / 1_000_000_000;
-             } else {
-               throw new Error("Real sell confirmed on-chain but actual SOL output amount could not be parsed from transaction receipt.");
-             }
-          } else {
-             throw new Error("Jupiter swap transaction ID missing.");
-          }
-        } else {
-          throw new Error("No tokens/lamports found to sell on-chain");
-        }
-      } catch (err: any) {
-        addLog(`❌ [SIMREAL REAL SWAP FAILED] Real sell failed for ${pos.symbol}: ${err.message}. Keeping position active for retry.`, 'err');
-        return;
-      }
-    } else {
-      const spentSol = pos.simRealSolSpent || pos.solSpent;
-      if (!spentSol || spentSol <= 0) {
-          addLog(`❌ [SIMREAL SIM SWAP FAILED] Sim sell failed for ${pos.symbol}: Missing cost basis (spentSol).`, 'err');
-          return;
-      }
-      const boughtPrice = pos.simRealBoughtPriceSol || (pos.simRealSolSpent && pos.simRealAmountTokens ? (pos.simRealSolSpent / pos.simRealAmountTokens) : pos.currentPrice);
-      if (!boughtPrice || boughtPrice <= 0) {
-          addLog(`❌ [SIMREAL SIM SWAP FAILED] Sim sell failed for ${pos.symbol}: Missing bought price.`, 'err');
-          return;
-      }
-      const currPrice = pos.currentPrice || boughtPrice;
-      const tokensQty = (pos.simRealAmountTokens && pos.simRealAmountTokens > 0)
-        ? pos.simRealAmountTokens
-        : (pos.amount && pos.amount > 0)
-        ? pos.amount
-        : (spentSol / boughtPrice);
-
-      const currentGrossSimReal = currPrice * tokensQty;
-      const slippageFee = currentGrossSimReal * (slippage / 100);
-      const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, spentSol);
-      sellAmtSol = Math.max(0, currentGrossSimReal - slippageFee - opFees);
-    }
-    
-    const spentSol = pos.simRealSolSpent || 0;
-    const pnlFraction = spentSol > 0 ? (sellAmtSol - spentSol) / spentSol : 0;
-    const tradePnlPct = pnlFraction;
-    const profitSol = sellAmtSol - spentSol;
-
-    const storeState = useAppStore.getState();
-    storeState.setSimRealBalance(prev => Math.max(0, prev + sellAmtSol));
-
-    const newSimTrade: SniperTrade = {
-      id: `simreal-sell-${Date.now()}`,
-      type: 'SELL',
-      token: pos.symbol,
-      address: mint,
-      amount: sellAmtSol,
-      timestamp: Date.now(),
-      signature: signature,
-      pnl: tradePnlPct * 100,
-      tokenAmount: pos.simRealAmountTokens,
-      positionId: pos.positionId
-    };
-    storeState.setSimRealTrades(prev => [newSimTrade, ...prev]);
-
-    simRealBoughtPending.current.delete(mint);
-
-    setPositions((prev) => {
-      if (!prev[mint]) return prev;
-      const next = { ...prev };
-      next[mint] = {
-        ...next[mint],
-        simRealBought: false,
-        simRealBoughtPriceSol: undefined,
-        simRealAmountTokens: undefined,
-        simRealSolSpent: undefined
-      };
-      return next;
-    });
-
-    addLog(`✅ [SIMREAL SELL] Sold ${pos.symbol} for ${sellAmtSol.toFixed(4)} SOL | Net P&L: ${(tradePnlPct * 100).toFixed(2)}% | Profit: ${profitSol >= 0 ? '+' : ''}${profitSol.toFixed(4)} SOL`, 'sell');
-  };
-
-  const executeSimRealBuy = async (mint: string, buyAmt: number) => {
-    const cleanMint = mint.trim();
-    if (!cleanMint) {
-      addLog(`❌ [SIMREAL BUY] Error: Token address is empty.`, 'err');
-      return;
-    }
-    const isSimToken = cleanMint.toLowerCase().startsWith('sim') || cleanMint.toLowerCase().endsWith('mock');
-    const isAddress = isSimToken || /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(cleanMint);
-    if (!isAddress) {
-      addLog(`❌ [SIMREAL BUY] Error: Invalid Solana token address format: "${cleanMint}".`, 'err');
-      return;
-    }
-
-    if (privateKey && isSimToken) {
-      addLog(`❌ [SIM BLOCK] Trading for tokens starting with 'sim' is strictly blocked for real-money trading: ${cleanMint}`, 'warn');
-      return;
-    }
-
-    const sourceCheck = checkDexPlatformSourcesAllowed(cleanMint);
-    if (!sourceCheck.pass) {
-      addLog(`❌ [SIMREAL BUY BLOCKED] ${sourceCheck.reason}.`, 'warn');
-      return;
-    }
-
-    const storeState = useAppStore.getState();
-
-    const activeMaxRebuyTimes = configRef.current.maxRebuyTimes !== undefined ? configRef.current.maxRebuyTimes : maxRebuyTimes;
-    const existingSym = positionsRef.current[cleanMint]?.symbol || storeState.tokenMetrics[cleanMint]?.symbol;
-    const totalSimRealTradedCount = getSimRealTradeCount(
-      cleanMint,
-      existingSym,
-      storeState.simRealTrades,
-      positionsRef.current,
-      simRealBoughtPending.current
-    );
-
-    if (totalSimRealTradedCount >= activeMaxRebuyTimes) {
-      addLog(`❌ [SIMREAL LIMIT BLOCK] Skipped SimReal buy of ${cleanMint.slice(0, 8)}...: Token has already been traded ${totalSimRealTradedCount} times in SimReal (Limit: max ${activeMaxRebuyTimes}).`, 'warn');
-      return;
-    }
-
-    simRealBoughtPending.current.add(cleanMint);
-
-    if (storeState.simRealBalance < buyAmt) {
-      addLog(`❌ [SIMREAL BUY SKIP] Insufficient simreal wallet balance: ${storeState.simRealBalance.toFixed(4)} SOL (Required: ${buyAmt.toFixed(4)} SOL)`, 'warn');
-      simRealBoughtPending.current.delete(cleanMint);
-      return;
-    }
-
-    addLog(`🔍 [SIMREAL BUY] Initiating manual SimReal trade for ${cleanMint.slice(0, 8)}...`, 'info');
-
-    let symbol = 'UNKNOWN';
-    let currentPrice = 0;
-
-    const isSimRealRebuy = totalSimRealTradedCount > 0 || !!positionsRef.current[cleanMint]?.simRealBought || !!positions[cleanMint];
-
-    const activePos = positionsRef.current[cleanMint] || positions[cleanMint];
-    const simPos = useSimulationStore.getState().positions[cleanMint];
-    if (activePos && activePos.symbol && activePos.symbol !== 'Unknown' && activePos.symbol !== 'UNKNOWN') {
-      symbol = activePos.symbol;
-    } else if (simPos && simPos.symbol && simPos.symbol !== 'Unknown' && simPos.symbol !== 'UNKNOWN') {
-      symbol = simPos.symbol;
-    } else if (storeState.tokenMetrics[cleanMint]?.symbol) {
-      symbol = storeState.tokenMetrics[cleanMint].symbol;
-    }
-
-    addLog(`🔄 [REBUY QUOTE REFRESH] Fetching fresh exchange quote price for ${cleanMint.slice(0, 8)}... (${symbol})`, 'info');
-
-    // 1. First attempt direct Jupiter price v2 lookup
-    try {
-      const freshJupPrice = await fetchJupiterPriceFallback(cleanMint);
-      if (freshJupPrice && freshJupPrice > 0) {
-        currentPrice = freshJupPrice;
-        resetSimPrice(cleanMint, freshJupPrice);
-        addLog(`🔄 [REBUY RATE REFRESHED] Updated Jupiter exchange price quote for ${symbol}: ${currentPrice.toFixed(8)} SOL`, 'info');
-      }
-    } catch (e) {}
-
-    // 2. If Jupiter v2 price unavailable, fetch DexScreener with cache-buster
-    if (!currentPrice || currentPrice <= 0) {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 1200);
-        const res = await fetch(`/api/dex/tokens/${cleanMint}?t=${Date.now()}`, { signal: controller.signal });
-        clearTimeout(timeoutId);
-        if (res.ok) {
-          const data = await res.json();
-          if (data && data.pairs && data.pairs.length > 0) {
-            const solPairs = data.pairs.filter((p: any) => 
-              (p.quoteToken?.address === SOL_MINT || p.quoteToken?.symbol === 'SOL') &&
-              (p.chainKb === 'solana' || p.chainId === 'solana' || p.dexId)
-            );
-            const targetPairs = solPairs.length > 0 ? solPairs : data.pairs;
-            const sortedPairs = [...targetPairs].sort((a, b) => parseFloat(b.liquidity?.usd || '0') - parseFloat(a.liquidity?.usd || '0'));
-            const bestPair = sortedPairs[0];
-            if (bestPair) {
-              symbol = bestPair.baseToken?.symbol || symbol || 'UNKNOWN';
-              currentPrice = parseFloat(bestPair.priceNative || '0');
-              if (currentPrice > 0) {
-                resetSimPrice(cleanMint, currentPrice);
-                addLog(`🔄 [REBUY RATE REFRESHED] Updated DexScreener market price quote for ${symbol}: ${currentPrice.toFixed(8)} SOL`, 'info');
-              }
-            }
-          }
-        }
-      } catch (err: any) {
-        addLog(`⚠️ [SIMREAL BUY] DexScreener fetch warning: ${err.message}. Proceeding with Jupiter quote lookup.`, 'warn');
-      }
-    }
-
-    if (currentPrice > 0) {
-      const formattedMetric: TokenMetric = {
-        address: cleanMint,
-        symbol: symbol || 'UNKNOWN',
-        priceUsd: currentPrice * getSolPriceUsd(),
-        priceNative: currentPrice,
-        marketCap: storeState.tokenMetrics[cleanMint]?.marketCap || 0,
-        liquidity: storeState.tokenMetrics[cleanMint]?.liquidity || 50000,
-        volume24h: storeState.tokenMetrics[cleanMint]?.volume24h || 100000,
-        discoveredAt: Date.now(),
-        lastUpdated: Date.now(),
-        buyCount: storeState.tokenMetrics[cleanMint]?.buyCount || 0,
-        sellCount: storeState.tokenMetrics[cleanMint]?.sellCount || 0,
-        buyVolume: storeState.tokenMetrics[cleanMint]?.buyVolume || 0,
-        sellVolume: 0,
-        priceChange5m: storeState.tokenMetrics[cleanMint]?.priceChange5m || 0,
-        priceChange1m: 0,
-        percentageIncrease: storeState.tokenMetrics[cleanMint]?.percentageIncrease || 0,
-        recentBuysTimeline: [],
-        category: cleanMint.toLowerCase().endsWith('pump') ? 'PUMP_FUN' : 'RAYDIUM',
-        isRugSafe: true,
-        mintAuthorityRevoked: true,
-        freezeAuthorityRevoked: true,
-        liquidityBurned: true,
-        top10Percentage: 8.5
-      };
-      storeState.setTokenMetrics(prev => ({
-        ...prev,
-        [cleanMint]: formattedMetric
-      }));
-    }
-
-    if (typeof navigator !== 'undefined' && !navigator.onLine) {
-      addLog(`⚠️ [SIMREAL BUY ABORTED] Internet is offline (${symbol}). Skipped trade entry.`, 'warn');
-      return;
-    }
-
-    const quoteRequestTime = Date.now();
-    const isFallbackSim = !!(privateKey && jupiterBalance === 0);
-
-    addLog(`🟢 [BUY TRIGGER] All required criteria & buy limits verified for SimReal buy of ${symbol} (${cleanMint.slice(0, 8)}...) | Amount: ${buyAmt} SOL, Wallet Bal: ${storeState.simRealBalance.toFixed(4)} SOL. Executing trade entry...`, 'buy');
-
-    if (privateKey && !isFallbackSim) {
-      addLog(`[SIMREAL REAL SWAP] Initiating real buy for ${symbol} via Jupiter...`, 'buy');
-      try {
-        const amountLamports = Math.floor(buyAmt * 1_000_000_000);
-        const result = await executeJupiterSwap(SOL_MINT, cleanMint, amountLamports);
-        if (result.txid) {
-          const passedOutputAmount = typeof result.actualOutputAmountRaw === 'number' && !isNaN(result.actualOutputAmountRaw) ? result.actualOutputAmountRaw : 0;
-          let exactTokenAmount = passedOutputAmount;
-          
-          if (result.quotedOutputAmountRaw && passedOutputAmount > 0) {
-            const decimals = await resolveDecimals(cleanMint, jupRpcUrlToUse);
-            exactTokenAmount = passedOutputAmount / Math.pow(10, decimals);
-          }
-          
-          if (!exactTokenAmount || exactTokenAmount <= 0) {
-              addLog(`❌ [SIMREAL REAL SWAP FAILED] Received 0 tokens from swap for ${symbol}.`, 'err');
-              return;
-          }
-          
-          const posId = `pos_${Date.now()}_${cleanMint.slice(0, 8)}`;
-          
-          let boughtPriceSol = buyAmt / exactTokenAmount;
-          
-          storeState.setSimRealBalance(prev => Math.max(0, prev - buyAmt));
-          
-          const newRealTrade: SniperTrade = {
-            id: `simreal-buy-${Date.now()}`,
-            type: 'BUY',
-            token: symbol,
-            address: cleanMint,
-            amount: buyAmt,
-            timestamp: quoteRequestTime,
-            signature: result.txid,
-            tokenAmount: exactTokenAmount,
-            positionId: posId
-          };
-          storeState.setSimRealTrades(prev => [newRealTrade, ...prev]);
-          
-          // Use actualOutputAmountRaw from transaction parsing; fallback to quoteOutAmountRaw if available
-          const rawAmtLamp = (typeof result.actualOutputAmountRaw === 'number' && result.actualOutputAmountRaw > 0)
-            ? result.actualOutputAmountRaw
-            : (result.quoteOutAmountRaw || Math.floor(exactTokenAmount));
-
-          if (!rawAmtLamp || rawAmtLamp <= 0) {
-            addLog(`❌ [SIMREAL REAL SWAP FAILED] BUY confirmed on-chain but actual token output amount could not be determined.`, 'err');
-            return;
-          }
-
-          setPositions(prev => {
-            const prevPos = prev[cleanMint];
-            const updated = {
-              ...prevPos,
-              symbol: symbol || prevPos?.symbol || 'UNKNOWN',
-              buyPrice: prevPos?.buyPrice ?? boughtPriceSol,
-              currentPrice: currentPrice || boughtPriceSol,
-              solSpent: prevPos?.solSpent ?? buyAmt,
-              amount: prevPos?.amount ?? exactTokenAmount,
-              entryTime: prevPos?.entryTime ?? quoteRequestTime,
-              txid: result.txid || prevPos?.txid || 'simulation-copy',
-              positionId: prevPos?.positionId || posId,
-              simRealBought: true,
-              simRealBoughtPriceSol: boughtPriceSol,
-              simRealAmountTokens: exactTokenAmount,
-              simRealSolSpent: buyAmt,
-              simRealBoughtTime: quoteRequestTime,
-              amountLamports: rawAmtLamp,
-            };
-            const next = {
-              ...prev,
-              [cleanMint]: updated
-            };
-            positionsRef.current = next;
-            useAppStore.getState().updateActivePositions(storePrev => ({
-              ...storePrev,
-              [cleanMint]: updated
-            }));
-            return next;
-          });
-          
-          addLog(`✅ [SIMREAL REAL SWAP] Bought ${symbol} @ ${boughtPriceSol.toFixed(8)} SOL | tx: ${result.txid.slice(0, 12)}...`, 'buy');
-        } else {
-          throw new Error("Jupiter swap transaction ID missing.");
-        }
-      } catch (err: any) {
-        addLog(`❌ [SIMREAL REAL SWAP FAILED] Real entry failed for ${symbol}: ${err.message}.`, 'err');
-      }
-    } else {
-      const lamportsForQuote = Math.floor(buyAmt * 1_000_000_000);
-      let boughtPriceSol = 0;
-      try {
-        const quote = await getJupiterQuote(SOL_MINT, cleanMint, lamportsForQuote, 0).catch(() => null);
-        if (quote && Number(quote.outAmount) > 0) {
-          const exactTokenAmount = Number(quote.outAmount);
-          const exactMathFallback = currentPrice && currentPrice > 0 ? buyAmt / currentPrice : 0;
-          const decimals = await resolveDecimals(cleanMint, jupRpcUrlToUse);
-          const normalizedOut = exactTokenAmount / Math.pow(10, decimals);
-          if (normalizedOut > 0) {
-            boughtPriceSol = buyAmt / normalizedOut;
-            addLog(`[SIMREAL QUOTE REFRESH] Got fresh buy quote price for ${symbol}: ${boughtPriceSol.toFixed(8)} SOL`, 'info');
-          }
-        }
-      } catch (e: any) {
-        addLog(`[SIMREAL QUOTE ERROR] Error requesting quote for ${symbol}: ${e.message}`, 'warn');
-      }
-
-      if (!boughtPriceSol || boughtPriceSol <= 0) {
-        try {
-          const res = await fetch(`/api/dex/tokens/${cleanMint}`);
-          if (res.ok) {
-            const data = await res.json();
-            if (data && data.pairs && data.pairs.length > 0) {
-              const bestPair = [...data.pairs].sort((a: any, b: any) => parseFloat(b.liquidity?.usd || '0') - parseFloat(a.liquidity?.usd || '0'))[0];
-              if (bestPair && parseFloat(bestPair.priceNative || '0') > 0) {
-                boughtPriceSol = parseFloat(bestPair.priceNative);
-                addLog(`[SIMREAL DEX REFRESH] Got fresh DEX price for ${symbol}: ${boughtPriceSol.toFixed(8)} SOL`, 'info');
-              }
-            }
-          }
-        } catch (e) {}
-      }
-
-      if (!boughtPriceSol || boughtPriceSol <= 0) {
-        boughtPriceSol = currentPrice || 0;
-        if (boughtPriceSol <= 0) {
-           addLog(`❌ [SIMREAL ERROR] Cannot execute SimReal buy for ${symbol}, price is zero.`, 'err');
-           simRealBoughtPending.current.delete(cleanMint);
-           return;
-        }
-        addLog(`[SIMREAL QUOTE FALLBACK] Using current market price for ${symbol}: ${boughtPriceSol.toFixed(8)} SOL`, 'warn');
-      }
-      
-      const tokensQty = buyAmt / boughtPriceSol;
-      const simPosId = `pos_${Date.now()}_${cleanMint.slice(0, 8)}`;
-      storeState.setSimRealBalance(prev => Math.max(0, prev - buyAmt));
-      
-      const newSimTrade: SniperTrade = {
-        id: `simreal-buy-${Date.now()}`,
-        type: 'BUY',
-        token: symbol,
-        address: cleanMint,
-        amount: buyAmt,
-        timestamp: quoteRequestTime,
-        signature: 'SIMREAL_BN_' + Math.random().toString(36).substring(7),
-        tokenAmount: tokensQty,
-        positionId: simPosId
-      };
-      storeState.setSimRealTrades(prev => [newSimTrade, ...prev]);
-
-      setPositions(prev => {
-        const prevPos = prev[cleanMint];
-        const updated = {
-          ...prevPos,
-          symbol: symbol || prevPos?.symbol || 'UNKNOWN',
-          buyPrice: prevPos?.buyPrice ?? boughtPriceSol,
-          currentPrice: currentPrice || boughtPriceSol,
-          solSpent: prevPos?.solSpent ?? buyAmt,
-          amount: prevPos?.amount ?? tokensQty,
-          entryTime: prevPos?.entryTime ?? quoteRequestTime,
-          txid: prevPos?.txid || 'simulation-copy',
-          positionId: prevPos?.positionId || simPosId,
-          simRealBought: true,
-          simRealBoughtPriceSol: boughtPriceSol,
-          simRealAmountTokens: tokensQty,
-          simRealSolSpent: buyAmt,
-          simRealBoughtTime: quoteRequestTime,
-          simRealIsVirtualFallback: isFallbackSim ? true : undefined
-        };
-        const next = {
-          ...prev,
-          [cleanMint]: updated
-        };
-        positionsRef.current = next;
-        useAppStore.getState().updateActivePositions(storePrev => ({
-          ...storePrev,
-          [cleanMint]: updated
-        }));
-        return next;
-      });
-      
-      if (isFallbackSim) {
-        addLog(`⚠️ [SIMREAL FALLBACK BUY] Bought ${symbol} for ${buyAmt.toFixed(4)} SOL via simulation (Fallback active: On-chain balance is 0.0000 SOL)`, 'info');
-      } else {
-        addLog(`✅ [SIMREAL BUY] Bought ${symbol} for ${buyAmt.toFixed(4)} SOL @ ${boughtPriceSol.toFixed(8)} SOL`, 'buy');
-      }
-    }
-  };
-
-  const resetSimRealWallet = async () => {
-    const storeState = useAppStore.getState();
-    storeState.setSimRealBalance(() => 10.0);
-    storeState.setSimRealTrades(() => []);
-    storeState.setTokenMetrics(() => ({}));
-    storeState.updateActivePositions(() => ({}));
-    
-    // Clear Cross-Page Buy Signals Pipeline
-    useBuySignalStore.getState().clearSignals();
-    useBuySignalStore.getState().resetSignals();
-
-    // Clear tracking refs
-    simRealBoughtPending.current.clear();
-    monitoredTokensRef.current.clear();
-    signaledPositions.current.clear();
-    pendingBuyMintsRef.current.clear();
-    pendingSellMintsRef.current.clear();
-    processedAlerts.current.clear();
-
-    // Clear simulation store positions so old signals aren't re-triggered
-    useSimulationStore.getState().clearPositions();
-    useSimulationStore.setState({ positions: {}, closedPositions: [] });
-    
-    // Clear active positions and sync ref
-    setPositions({});
-    positionsRef.current = {};
-
-    if (lastLoadedSettingsRef.current) {
-      lastLoadedSettingsRef.current = {
-        ...lastLoadedSettingsRef.current,
-        positions: JSON.stringify({}),
-        tokenMetrics: JSON.stringify({}),
-        simRealTrades: JSON.stringify([]),
-        simRealBalance: 10.0,
-      };
-    }
-    
-    // Clear price caches
-    clearSimPriceCache();
-    clearPriceHistories();
-
-    // Clear LocalStorage cache
-    localStorage.setItem('app_simRealBalance', '10.0');
-    localStorage.setItem('app_simRealBalance_fallback', '10.0');
-    localStorage.setItem('app_simRealTrades', JSON.stringify([]));
-    localStorage.setItem('app_activePositions', JSON.stringify({}));
-    localStorage.removeItem('juipter_auto_positions');
-    localStorage.removeItem('juipter_auto_tradeHistory');
-
-    Object.keys(localStorage).forEach(key => {
-      if (
-        key.startsWith('app_token_') ||
-        key.startsWith('token_') ||
-        key.includes('token_cache') ||
-        key.includes('simreal_') ||
-        key.includes('activePositions') ||
-        key.includes('tradeHistory') ||
-        key.includes('simRealTrades') ||
-        key.includes('token_activity')
-      ) {
-        localStorage.removeItem(key);
-      }
-    });
-
-    localStorage.setItem('app_activePositions', JSON.stringify({}));
-    localStorage.setItem('juipter_auto_positions', JSON.stringify({}));
-
-    if (user) {
-      try {
-        const docRef = doc(db, 'settings', user.uid);
-        await setDoc(docRef, {
-          simRealBalance: 10.0,
-          simRealTrades: JSON.stringify([]),
-          positions: JSON.stringify({}),
-          tokenMetrics: JSON.stringify({}),
-          updatedAt: new Date().toISOString()
-        }, { merge: true });
-      } catch (err) {
-        console.error('Error resetting SimReal data in Firestore:', err);
-      }
-    }
-    
-    addLog('♻️ Simreal Reset: Deleted all tokens in cache and database. Balance set to 10.0 SOL.', 'info');
-  };
-
-  const getCompletedSimRealTrades = () => {
-    const completed: Array<{
-      id: string;
-      mint: string;
-      token: string;
-      buyTime: number;
-      sellTime: number;
-      buyAmountSol: number;
-      sellAmountSol: number;
-      pnlPct: number;
-    }> = [];
-    
-    // simRealTrades has newest first, so we reverse it to process chronologically
-    const chronological = [...(simRealTrades || [])].reverse();
-    const openBuys: Record<string, Array<{ timestamp: number; amount: number }>> = {};
-    
-    for (const trade of chronological) {
-      if (trade.type === 'BUY') {
-        if (!openBuys[trade.address]) openBuys[trade.address] = [];
-        openBuys[trade.address].push({ timestamp: trade.timestamp, amount: trade.amount });
-      } else if (trade.type === 'SELL') {
-        const buy = openBuys[trade.address]?.shift();
-        if (buy) {
-          completed.push({
-            id: trade.id,
-            mint: trade.address,
-            token: trade.token,
-            buyTime: buy.timestamp,
-            sellTime: trade.timestamp,
-            buyAmountSol: buy.amount,
-            sellAmountSol: trade.amount,
-            pnlPct: buy.amount > 0 ? ((trade.amount - buy.amount) / buy.amount) * 100 : (trade.pnl ?? 0)
-          });
-        } else {
-          // If there is no matching BUY, we should not fabricate one.
-          completed.push({
-            id: trade.id,
-            mint: trade.address,
-            token: trade.token,
-            buyTime: 0, // 0 indicates UNMATCHED
-            sellTime: trade.timestamp,
-            buyAmountSol: 0, // 0 indicates UNMATCHED
-            sellAmountSol: trade.amount,
-            pnlPct: trade.pnl !== undefined ? trade.pnl : 0
-          });
-        }
-      }
-    }
-    
-    return completed.reverse();
-  };
 
   const getUptimeString = () => {
     const h = Math.floor(uptime / 3600);
@@ -6261,16 +5477,6 @@ const checkTokenCriteria = (mint: string): {
     const s = uptime % 60;
     return `${h}h ${m}m ${s}s`;
   };
-
-  if (simrealControlRef) {
-    simrealControlRef.current = {
-      ...(simrealControlRef.current || {}),
-      executeSimRealSell,
-      resetSimRealWallet,
-      executeSimRealBuy,
-      privateKey
-    };
-  }
 
   return (
     <div className="flex-1 text-[#e2e8f0] font-sans flex flex-col h-full lg:rounded-2xl overflow-hidden min-h-0" style={{ backgroundImage: 'radial-gradient(circle at top right, #13141f, #050509)' }}>
@@ -7353,7 +6559,7 @@ const checkTokenCriteria = (mint: string): {
               )}
             </div>
             <div className="flex-1 space-y-3">
-              {Object.values(positions || {}).filter(pos => pos && !pos.simRealBought && pos.symbol && pos.symbol.trim() !== '' && pos.symbol !== 'Unknown' && typeof pos.buyPrice === 'number' && !isNaN(pos.buyPrice) && typeof pos.amount === 'number' && !isNaN(pos.amount) && typeof pos.solSpent === 'number' && !isNaN(pos.solSpent)).length === 0 ? (
+              {Object.values(positions || {}).filter(pos => pos && pos.symbol && pos.symbol.trim() !== '' && pos.symbol !== 'Unknown' && typeof pos.buyPrice === 'number' && !isNaN(pos.buyPrice) && typeof pos.amount === 'number' && !isNaN(pos.amount) && typeof pos.solSpent === 'number' && !isNaN(pos.solSpent)).length === 0 ? (
                 <div className="bg-[#10111a]/40 border border-[#1f212e] border-dashed rounded-2xl p-8 flex flex-col items-center justify-center text-center text-[#64748b]">
                   <div className="w-12 h-12 rounded-full bg-[#1a1b26] border border-[#2d2e3d] flex items-center justify-center mb-3">
                     <Search className="w-5 h-5 text-[#94a3b8] opacity-50" />
@@ -7367,7 +6573,6 @@ const checkTokenCriteria = (mint: string): {
                     // 🛡️ Robust validation filter to prevent displaying visually buggy/corrupt positions
                     if (
                       !pos ||
-                      pos.simRealBought ||
                       typeof pos.symbol !== 'string' ||
                       pos.symbol.trim() === '' ||
                       pos.symbol === 'Unknown' ||
@@ -7419,7 +6624,7 @@ const checkTokenCriteria = (mint: string): {
                     const isPos = pnlPct >= 0;
 
                     const token = tokenMetrics[mint];
-                    const displayPrice = pos.currentPrice || pos.buyPrice || pos.simRealBoughtPriceSol || (token?.priceNative ? parseFloat(String(token.priceNative)) : 0);
+                    const displayPrice = pos.currentPrice || pos.buyPrice || (token?.priceNative ? parseFloat(String(token.priceNative)) : 0);
                     const isStalePos = !!pos.isStale && (!displayPrice || displayPrice === 0);
                     const stage = detectTokenStage({
                       address: mint,
@@ -7541,7 +6746,6 @@ const checkTokenCriteria = (mint: string): {
             </div>
           </div>
 
-          {/* SECURE WALLET TOKENS section removed as real trading is strictly integrated with the SimRealPage */}
         </section>
 
         {/* Right Column: Stats & Logs */}
@@ -7658,7 +6862,7 @@ const checkTokenCriteria = (mint: string): {
                 {activeLogTab === 'diagnostics' && (() => {
                   const activeMints = Object.keys(positions).filter(k => {
                     const p = positions[k];
-                    return p && typeof p === 'object' && p.symbol && ((typeof p.amount === 'number' && p.amount > 0) || !!p.simRealBought);
+                    return p && typeof p === 'object' && p.symbol && typeof p.amount === 'number' && p.amount > 0;
                   });
                   const candidates = Object.entries(tokenMetricsRef.current).filter(
                     ([mint]) => !activeMints.includes(mint) && !blacklistedMints.includes(mint)
@@ -7783,7 +6987,7 @@ const checkTokenCriteria = (mint: string): {
                 {activeLogTab === 'leaderboard' && (() => {
                   const activeMints = Object.keys(positions).filter(k => {
                     const p = positions[k];
-                    return p && typeof p === 'object' && p.symbol && ((typeof p.amount === 'number' && p.amount > 0) || !!p.simRealBought);
+                    return p && typeof p === 'object' && p.symbol && typeof p.amount === 'number' && p.amount > 0;
                   });
                   const candidates = Object.entries(tokenMetricsRef.current)
                     .filter(([mint]) => !activeMints.includes(mint) && !blacklistedMints.includes(mint))

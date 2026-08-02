@@ -29,7 +29,6 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { cn, detectTokenStage } from './lib/utils';
 import { setSolPriceUsd, getSolPriceUsd } from './utils/pnlCalculator';
-import { getSimRealTradeCount } from './config/rebuyGuard';
 import { DEFAULT_HELIUS_RPC, HELIUS_API_KEY } from './constants/solana';
 import { encryptPrivateKey, decryptPrivateKey } from './lib/crypto';
 import { auth, db, signInWithGoogle, signInWithEmailAndPassword, createUserWithEmailAndPassword } from './lib/firebase';
@@ -52,7 +51,6 @@ import { SafetyPage } from './components/pages/SafetyPage';
 import { PredictionPage } from './components/pages/PredictionPage';
 import { PnLPage } from './components/pages/PnLPage';
 import { SystemCheckPage } from './components/pages/SystemCheckPage';
-import { SimRealPage } from './components/pages/SimRealPage';
 
 
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
@@ -352,9 +350,9 @@ const categorizeToken = (symbol: string | undefined, address: string | undefined
   return 'DEFI'; // Default to DEFI for non-pump tokens if no other match
 };
 
-export default function App() {
+function App() {
   const [user, setUser] = useState<User | null>(null);
-  const [currentPage, setCurrentPage] = useState<'dashboard' | 'alerts' | 'high-buy' | 'discovery' | 'gems-100x' | 'portfolio' | 'system-check' | 'simreal'>('dashboard');
+  const [currentPage, setCurrentPage] = useState<'dashboard' | 'high-buy' | 'portfolio' | 'system-check' | 'discovery'>('dashboard');
   const [alphaSubTab, setAlphaSubTab] = useState<'high-buy' | 'safety' | 'prediction' | 'intel'>('high-buy');
   const [viewMode, setViewMode] = useState<'responsive' | 'mobile' | 'laptop'>('responsive');
   const [alphaProtocol, setAlphaProtocol] = useState<'ALL' | 'HIGH_PROFIT' | 'WHALE_BUY' | 'NEW_DISCOVERY' | 'SNIPER' | 'GEMS_100X' | 'JUPITER_AUTO' | 'MIGRATED'>('JUPITER_AUTO');
@@ -407,7 +405,7 @@ export default function App() {
   const [isAddingGem, setIsAddingGem] = useState(false);
   const [sectorFilter, setSectorFilter] = useState<'ALL' | 'AI' | 'MEME' | 'GAMEFI' | 'DEPIN' | 'RWA' | 'DEFI' | 'POLITIFI' | 'AI_MEME'>('ALL');
   const [trackedFilter, setTrackedFilter] = useState<'ALL' | 'PROFIT' | 'LOSS'>('ALL');
-  const { telemetryAlerts, tokenMetrics, addTelemetryAlert, setTelemetryAlerts, setTokenMetrics } = useAppStore();
+  const { telemetryAlerts, tokenMetrics, addTelemetryAlert, setTelemetryAlerts, setTokenMetrics, trades, setTrades, simulationBalance, setSimulationBalance, mySniperTrades, setMySniperTrades } = useAppStore();
   const [telemetryBits, setTelemetryBits] = useState<boolean[]>(Array(12).fill(false));
   const [monitoredWallets, setMonitoredWallets] = useState<{id: string, address: string, label: string}[]>([]);
   const alertedTokens = useRef<Set<string>>(new Set());
@@ -416,14 +414,11 @@ export default function App() {
   const { publicKey, sendTransaction, wallet } = useWallet();
   const { connection } = useConnection();
   
-  const [simrealPositions, setSimrealPositions] = useState<Record<string, any>>({});
-  const simrealControlRef = useRef<any>(null);
   
   const [autoSniperEnabled, setAutoSniperEnabled] = useState(false);
   const [isLiveTrading, setIsLiveTrading] = useState(false); // Live via Jupiter V6
   const [buyAmountSol, setBuyAmountSol] = useState(() => Number(localStorage.getItem('app_buyAmountSol')) || 0.1);
   // buyAmountSol also lives in useAppStore (read directly via storeState.buyAmountSol
-  // by PnLPage's and SimRealPage's automated buy pipelines), but the store's copy was
   // never updated after initial load - so changing the buy amount in the UI here had
   // no effect on live/automated trades until a full page reload. Keep them in sync.
   useEffect(() => {
@@ -438,14 +433,6 @@ export default function App() {
   const [pumpSwapStopLoss, setPumpSwapStopLoss] = useState(() => Number(localStorage.getItem('app_pumpSwapStopLoss')) || -15);
   const [unknownStopLoss, setUnknownStopLoss] = useState(() => Number(localStorage.getItem('app_unknownStopLoss')) || -20);
   const [maxPositions, setMaxPositions] = useState(() => Number(localStorage.getItem('app_maxPositions')) || 5);
-  const [simRealTakeProfitRaydium, setSimRealTakeProfitRaydium] = useState(() => Number(localStorage.getItem('app_simRealTakeProfitRaydium')) || 50);
-  const [simRealTakeProfitBonding, setSimRealTakeProfitBonding] = useState(() => Number(localStorage.getItem('app_simRealTakeProfitBonding')) || 100);
-  const [simRealTakeProfitPumpSwap, setSimRealTakeProfitPumpSwap] = useState(() => Number(localStorage.getItem('app_simRealTakeProfitPumpSwap')) || 50);
-  const [simRealTakeProfitUnknown, setSimRealTakeProfitUnknown] = useState(() => Number(localStorage.getItem('app_simRealTakeProfitUnknown')) || 50);
-  const [simRealStopLossRaydium, setSimRealStopLossRaydium] = useState(() => Number(localStorage.getItem('app_simRealStopLossRaydium')) || -15);
-  const [simRealStopLossBonding, setSimRealStopLossBonding] = useState(() => Number(localStorage.getItem('app_simRealStopLossBonding')) || -20);
-  const [simRealStopLossPumpSwap, setSimRealStopLossPumpSwap] = useState(() => Number(localStorage.getItem('app_simRealStopLossPumpSwap')) || -15);
-  const [simRealStopLossUnknown, setSimRealStopLossUnknown] = useState(() => Number(localStorage.getItem('app_simRealStopLossUnknown')) || -20);
   
   const updateMasterStopLoss = (val: number) => {
     const sl = -Math.abs(val);
@@ -453,10 +440,6 @@ export default function App() {
     setBondingCurveStopLoss(sl);
     setPumpSwapStopLoss(sl);
     setUnknownStopLoss(sl);
-    setSimRealStopLossRaydium(sl);
-    setSimRealStopLossBonding(sl);
-    setSimRealStopLossPumpSwap(sl);
-    setSimRealStopLossUnknown(sl);
   };
   const [slippage, setSlippage] = useState(1.0); 
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('jupiter_auto_apiKey') || localStorage.getItem('juipter_auto_apiKey') || '');
@@ -517,15 +500,7 @@ export default function App() {
     localStorage.setItem('app_pumpSwapStopLoss', pumpSwapStopLoss.toString());
     localStorage.setItem('app_unknownStopLoss', unknownStopLoss.toString());
     localStorage.setItem('app_maxPositions', maxPositions.toString());
-    localStorage.setItem('app_simRealTakeProfitRaydium', simRealTakeProfitRaydium.toString());
-    localStorage.setItem('app_simRealTakeProfitBonding', simRealTakeProfitBonding.toString());
-    localStorage.setItem('app_simRealTakeProfitPumpSwap', simRealTakeProfitPumpSwap.toString());
-    localStorage.setItem('app_simRealTakeProfitUnknown', simRealTakeProfitUnknown.toString());
-    localStorage.setItem('app_simRealStopLossRaydium', simRealStopLossRaydium.toString());
-    localStorage.setItem('app_simRealStopLossBonding', simRealStopLossBonding.toString());
-    localStorage.setItem('app_simRealStopLossPumpSwap', simRealStopLossPumpSwap.toString());
-    localStorage.setItem('app_simRealStopLossUnknown', simRealStopLossUnknown.toString());
-  }, [buyAmountSol, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, unknownStopLoss, maxPositions, simRealTakeProfitRaydium, simRealTakeProfitBonding, simRealTakeProfitPumpSwap, simRealTakeProfitUnknown, simRealStopLossRaydium, simRealStopLossBonding, simRealStopLossPumpSwap, simRealStopLossUnknown]);
+  }, [buyAmountSol, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, moonbagStrategy, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, unknownStopLoss, maxPositions]);
 
   useEffect(() => {
     localStorage.setItem('tg_bot_token', telegramBotToken);
@@ -791,7 +766,6 @@ export default function App() {
   ]);
 
   const [isXRayEnabled, setIsXRayEnabled] = useState(true);
-  const { trades, setTrades, mySniperTrades, setMySniperTrades, simulationBalance, setSimulationBalance, simRealBalance, setSimRealBalance, simRealTrades, setSimRealTrades, jupiterLogs } = useAppStore();
   
   // ... (find the return block and look for currentPage rendering) ...
   const [isExportingKey, setIsExportingKey] = useState(false);
@@ -1191,7 +1165,6 @@ export default function App() {
   const autoBoughtTokens = useRef<Set<string>>(new Set());
   const pendingTrades = useRef<Set<string>>(new Set());
   const optimisticPositions = useRef<Set<string>>(new Set());
-  const simRealBoughtPending = useRef<Set<string>>(new Set());
 
   const snipedPortfolio = useRef<Record<string, { boughtAt: number, amount: number }>>({});
 
@@ -1237,14 +1210,12 @@ export default function App() {
     hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax, hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore, hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s, hardenedMinBuyCount30s, hardenedMaxBuyCount30s, hardenedMinBuySellRatio, hardenedMaxBuySellRatio, hardenedMaxPriceChange1m,
     hardenedMinBondingProgress, hardenedMaxBondingProgress, hardenedMinAge, hardenedMaxAge,
     hardenedMinLatency, hardenedMaxLatency, hardenedMatchRequirement, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown, hardenedMinProfit5m, enableLatencyGuard, maxRebuyTimes,
-    simRealBalance, simRealTrades, buyAmountSol
   });
   latestState.current = { 
     tokenMetrics, autoSniperEnabled, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, unknownStopLoss, activePositions, maxPositions, slippage, moonbagStrategy, telegramBotToken, telegramChatId, mySniperTrades,
     hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax, hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore, hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s, hardenedMinBuyCount30s, hardenedMaxBuyCount30s, hardenedMinBuySellRatio, hardenedMaxBuySellRatio, hardenedMaxPriceChange1m,
     hardenedMinBondingProgress, hardenedMaxBondingProgress, hardenedMinAge, hardenedMaxAge,
     hardenedMinLatency, hardenedMaxLatency, hardenedMatchRequirement, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown, hardenedMinProfit5m, enableLatencyGuard, maxRebuyTimes,
-    simRealBalance, simRealTrades, buyAmountSol
   };
 
   const fns = useRef<any>({});
@@ -1265,7 +1236,7 @@ export default function App() {
       // MONITORING LOOP 1: EXITS (Hardened All-or-Nothing Exit)
       const activePositionEntries = Object.entries(state.activePositions) as [string, any][];
       for (const [tokenAddress, position] of activePositionEntries) {
-        if (position.simRealBought || position.triggersDisabled) continue;
+        if (position.triggersDisabled) continue;
         let token = state.tokenMetrics[tokenAddress];
         
         if (!token) {
@@ -1323,7 +1294,7 @@ export default function App() {
 
           if (!amountLamports || amountLamports === 0) continue;
 
-          const realCostBasis = position.simRealSolSpent || position.solSpent || position.entryPriceSol || 0.1;
+          const realCostBasis = position.solSpent || position.entryPriceSol || 0.1;
           const actPos = {
             tokenAddress: token.address,
             currentTokenBalance: BigInt(amountLamports),
@@ -1344,33 +1315,20 @@ export default function App() {
 
           let baseSL = typeof state.stopLoss === 'number' ? state.stopLoss : -30;
           const userGlobalSL = typeof state.stopLoss === 'number' ? state.stopLoss : -15;
-          if (position.simRealBought) {
-            if (stage.platform === 'RAYDIUM' || stage.isMigrated) {
-              baseSL = simRealStopLossRaydium !== undefined ? simRealStopLossRaydium : userGlobalSL;
-            } else if (stage.platform === 'PUMP_FUN' || stage.isBonding || tokenAddress.toLowerCase().endsWith('pump')) {
-              baseSL = simRealStopLossBonding !== undefined ? simRealStopLossBonding : userGlobalSL;
-            } else if (stage.platform === 'PUMPSWAP') {
-              baseSL = simRealStopLossPumpSwap !== undefined ? simRealStopLossPumpSwap : userGlobalSL;
-            } else {
-              baseSL = simRealStopLossUnknown !== undefined ? simRealStopLossUnknown : userGlobalSL;
-            }
-            baseSL = -Math.abs(baseSL);
-          } else {
-            if (stage.platform === 'PUMP_FUN' || stage.isBonding) {
-              baseSL = typeof state.bondingCurveStopLoss === 'number' ? state.bondingCurveStopLoss : userGlobalSL;
-            } else if (stage.platform === 'PUMPSWAP') {
-              baseSL = typeof state.pumpSwapStopLoss === 'number' ? state.pumpSwapStopLoss : userGlobalSL;
-            } else if (stage.platform === 'UNKNOWN' || stage.stage === 'UNKNOWN') {
-              baseSL = typeof state.unknownStopLoss === 'number' ? state.unknownStopLoss : userGlobalSL;
-            }
-            baseSL = -Math.abs(baseSL);
+          if (stage.platform === 'PUMP_FUN' || stage.isBonding) {
+            baseSL = typeof state.bondingCurveStopLoss === 'number' ? state.bondingCurveStopLoss : userGlobalSL;
+          } else if (stage.platform === 'PUMPSWAP') {
+            baseSL = typeof state.pumpSwapStopLoss === 'number' ? state.pumpSwapStopLoss : userGlobalSL;
+          } else if (stage.platform === 'UNKNOWN' || stage.stage === 'UNKNOWN') {
+            baseSL = typeof state.unknownStopLoss === 'number' ? state.unknownStopLoss : userGlobalSL;
           }
+          baseSL = -Math.abs(baseSL);
 
           // ── TRAILING STOP LOSS: lock in gains as price rises ────────────────
           // If price has rallied >20%, trail stop loss to protect profits
           // e.g. up 50% → stop at 35%; up 100% → stop at 75%
           const currentPriceSol = (token.priceNative || 0);
-          const posTokensQty = position.simRealAmountTokens || position.amount || 0;
+          const posTokensQty = position.amount || 0;
           const currentPnLPct = realCostBasis > 0 
             ? (((currentPriceSol * posTokensQty) - realCostBasis) / realCostBasis) * 100 
             : 0;
@@ -1385,26 +1343,12 @@ export default function App() {
 
           const peakPnL = position.peakPnLPct || 0;
           
-          // Trailing stop: for simReal positions, strictly stick to configured baseSL (e.g. -100%)
           const trailingSL = peakPnL > 20 ? peakPnL - 15 : baseSL;
-          const effectiveSL = position.simRealBought ? baseSL : Math.max(baseSL, trailingSL); // never looser than base SL
+          const effectiveSL = Math.max(baseSL, trailingSL); // never looser than base SL
 
-          let activeTakeProfit = state.minTakeProfit;
-          if (position.simRealBought) {
-            if (stage.platform === 'RAYDIUM' || stage.isMigrated) {
-              activeTakeProfit = simRealTakeProfitRaydium !== undefined ? simRealTakeProfitRaydium : 50;
-            } else if (stage.platform === 'PUMP_FUN' || stage.isBonding || tokenAddress.toLowerCase().endsWith('pump')) {
-              activeTakeProfit = simRealTakeProfitBonding !== undefined ? simRealTakeProfitBonding : 100;
-            } else if (stage.platform === 'PUMPSWAP') {
-              activeTakeProfit = simRealTakeProfitPumpSwap !== undefined ? simRealTakeProfitPumpSwap : 50;
-            } else {
-              activeTakeProfit = simRealTakeProfitUnknown !== undefined ? simRealTakeProfitUnknown : 50;
-            }
-          } else {
-            activeTakeProfit = stage.isBonding 
-              ? (typeof state.bondingCurveTakeProfit === 'number' ? state.bondingCurveTakeProfit : 25) 
-              : (state.moonbagStrategy ? (position.soldPartial ? state.maxTakeProfit : state.minTakeProfit) : state.minTakeProfit);
-          }
+          let activeTakeProfit = stage.isBonding 
+            ? (typeof state.bondingCurveTakeProfit === 'number' ? state.bondingCurveTakeProfit : 25) 
+            : (state.moonbagStrategy ? (position.soldPartial ? state.maxTakeProfit : state.minTakeProfit) : state.minTakeProfit);
             
           const trackingVerdict = await processActiveTrackingFrame(
             connection,
@@ -1768,19 +1712,6 @@ export default function App() {
     
     optimisticPositions.current.add(tokenAddress);
 
-    // Trade frequency guard: Max trade frequency check
-    const totalTradedCount = getSimRealTradeCount(
-      tokenAddress,
-      symbol,
-      simRealTrades,
-      activePositions,
-      simRealBoughtPending.current
-    );
-
-    if (totalTradedCount >= maxRebuyTimes) {
-      addNotification(`Trade Limit: Skipped buy of ${symbol} (Already traded ${totalTradedCount} times, max limit is ${maxRebuyTimes}).`);
-      return;
-    }
 
     if (!isLiveTrading && simulationBalance < buyAmountSol) {
       addNotification(`Insufficient Simulation Balance (Need ${buyAmountSol} SOL)`);
@@ -2046,14 +1977,6 @@ export default function App() {
       return;
     }
 
-    if (position.simRealBought) {
-      console.log(`[App.tsx executeAutoSell] SimReal position ${symbol} detected; delegating exit to SimReal engine.`);
-      if (simrealControlRef.current?.executeSimRealSell) {
-        simrealControlRef.current.executeSimRealSell(tokenAddress).catch(err => console.error("SimReal delegate sell error:", err));
-      }
-      pendingTrades.current.delete(tokenAddress);
-      return;
-    }
 
     // CALCULATE CENTRALIZED PNL FOR DYNAMIC SLIPPAGE
     const metric = tokenMetrics[tokenAddress];
@@ -2103,7 +2026,7 @@ export default function App() {
       const guaranteedSolOut = guaranteedMinLamports / 1_000_000_000.0;
       const networkFeesSol = 0.0035; // Simulated / average Jito fee
       const realNetReturnSol = guaranteedSolOut - networkFeesSol;
-      const currentCostBasisSol = position.simRealSolSpent || position.solSpent || position.entryPriceSol || 0.1;
+      const currentCostBasisSol = position.solSpent || position.entryPriceSol || 0.1;
 
       // Unify Profit Guard for both LIVE and SIM
       if (curPnLPercent >= minTakeProfit && realNetReturnSol <= currentCostBasisSol) {
@@ -2174,36 +2097,6 @@ export default function App() {
       setMySniperTrades(prev => [newTrade, ...prev]);
       if (isSimulated) {
         setSimulationBalance(prev => prev + totalReturned);
-      }
-
-      if (position.simRealBought) {
-        const exitPriceSol = metric?.priceNative || 0;
-        const boughtPriceSol = position.simRealBoughtPriceSol || 0;
-        let simRealPnL = 0;
-        if (exitPriceSol > 0 && boughtPriceSol > 0) {
-          simRealPnL = ((exitPriceSol - boughtPriceSol) / boughtPriceSol) * 100;
-        } else {
-          simRealPnL = realizedPnL - 1.0;
-        }
-        const solSpent = position.simRealSolSpent || 0.1;
-        const simRealReturnSol = solSpent * (1 + (simRealPnL / 100));
-        
-        setSimRealBalance(prev => prev + simRealReturnSol);
-        
-        const newSimRealTrade: SniperTrade = {
-          id: `simreal-sell-${Date.now()}`,
-          type: 'SELL',
-          token: symbol,
-          address: tokenAddress,
-          amount: simRealReturnSol,
-          timestamp: Date.now(),
-          pnl: simRealPnL,
-          signature: 'SIMREAL_SELL_' + Math.random().toString(36).substring(7),
-          tokenAmount: position.simRealAmountTokens
-        };
-        setSimRealTrades(prev => [newSimRealTrade, ...prev]);
-        console.log(`[SIMREAL SELL] Sold ${symbol}. Return: ${simRealReturnSol.toFixed(4)} SOL, PnL: ${simRealPnL.toFixed(2)}%`);
-        addNotification(`SIMREAL SOLD: ${symbol} for ${simRealReturnSol.toFixed(4)} SOL (PnL: ${simRealPnL.toFixed(2)}%)`, symbol, tokenAddress);
       }
 
       setActivePositions(prev => {
@@ -4108,16 +4001,6 @@ export default function App() {
           <span className="text-[10px] font-bold uppercase tracking-tighter">PnL</span>
         </button>
         <button 
-          onClick={() => setCurrentPage('simreal')}
-          className={cn(
-            "flex shrink-0 flex-col items-center gap-1 transition-all px-3 py-2 rounded-xl",
-            currentPage === 'simreal' ? "text-emerald-400" : "text-slate-500"
-          )}
-        >
-          <Wallet className={cn("w-5 h-5", currentPage === 'simreal' && "animate-pulse")} />
-          <span className="text-[10px] font-bold uppercase tracking-tighter">Simreal</span>
-        </button>
-        <button 
           onClick={() => setCurrentPage('system-check')}
           className={cn(
             "flex shrink-0 flex-col items-center gap-1 transition-all px-3 py-2 rounded-xl",
@@ -4253,15 +4136,6 @@ export default function App() {
                 )}
               >
                 PORTFOLIO / PNL
-              </button>
-              <button 
-                onClick={() => setCurrentPage('simreal')}
-                className={cn(
-                  "px-5 py-2 rounded-full transition-all text-[10px] font-black",
-                  currentPage === 'simreal' ? "bg-emerald-600 text-white shadow-lg" : "text-slate-500 hover:text-slate-300"
-                )}
-              >
-                SIMREAL
               </button>
               <button 
                 onClick={() => setCurrentPage('system-check')}
@@ -4689,16 +4563,6 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="flex items-center justify-between pb-3 border-b border-slate-800/50">
-                <div className="flex flex-col">
-                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest leading-tight">SIMREAL Wallet Balance</span>
-                  <span className="text-[8px] text-emerald-400/80 font-bold uppercase mt-0.5 tracking-tighter">Copy Trading Active</span>
-                </div>
-                <div className="text-right">
-                   <div className="text-xl font-black text-emerald-400 font-mono tracking-tighter">{simRealBalance.toFixed(4)} SOL</div>
-                   <div className="text-[9px] text-slate-500 font-bold uppercase tracking-widest">simreal wallet</div>
-                </div>
-              </div>
               
               <div className="flex items-center justify-between mb-2">
                 <span className="text-[10px] font-bold text-slate-500">SESSION ADDRESS</span>
@@ -5984,12 +5848,6 @@ export default function App() {
           pumpSwapStopLoss, setPumpSwapStopLoss,
           unknownStopLoss, setUnknownStopLoss,
           maxPositions, setMaxPositions,
-          simRealTakeProfitRaydium, setSimRealTakeProfitRaydium,
-          simRealTakeProfitBonding, setSimRealTakeProfitBonding,
-          simRealStopLossRaydium, setSimRealStopLossRaydium,
-          simRealStopLossBonding, setSimRealStopLossBonding,
-          simRealStopLossPumpSwap, setSimRealStopLossPumpSwap,
-          simRealStopLossUnknown, setSimRealStopLossUnknown,
           slippage, setSlippage,
           hardenedMinBondingProgress,
           setHardenedMinBondingProgress,
@@ -6078,72 +5936,8 @@ export default function App() {
           setJupiterRpcUrl,
           privateKey,
           setPrivateKey,
-          onPositionsChange: setSimrealPositions,
-          simrealControlRef: simrealControlRef
         }}
 
-      />
-    </section>
-    <section className={cn("col-span-12 flex-col h-full overflow-hidden", currentPage === 'simreal' ? "flex" : "hidden")}>
-      <SimRealPage 
-        tokenMetrics={tokenMetrics}
-        positions={simrealPositions}
-        setPositions={setSimrealPositions}
-        simRealBalance={simRealBalance}
-        simRealTrades={simRealTrades}
-        maxPositions={maxPositions}
-        simrealControlRef={simrealControlRef}
-        tradePumpFun={tradePumpFun}
-        tradeRaydium={tradeRaydium}
-        tradeBonding={tradeBonding}
-        tradeUnknown={tradeUnknown}
-        simRealTakeProfitRaydium={simRealTakeProfitRaydium}
-        setSimRealTakeProfitRaydium={setSimRealTakeProfitRaydium}
-        simRealTakeProfitBonding={simRealTakeProfitBonding}
-        setSimRealTakeProfitBonding={setSimRealTakeProfitBonding}
-        simRealTakeProfitPumpSwap={simRealTakeProfitPumpSwap}
-        setSimRealTakeProfitPumpSwap={setSimRealTakeProfitPumpSwap}
-        simRealTakeProfitUnknown={simRealTakeProfitUnknown}
-        setSimRealTakeProfitUnknown={setSimRealTakeProfitUnknown}
-        simRealStopLossRaydium={simRealStopLossRaydium}
-        setSimRealStopLossRaydium={setSimRealStopLossRaydium}
-        simRealStopLossBonding={simRealStopLossBonding}
-        setSimRealStopLossBonding={setSimRealStopLossBonding}
-        simRealStopLossPumpSwap={simRealStopLossPumpSwap}
-        setSimRealStopLossPumpSwap={setSimRealStopLossPumpSwap}
-        simRealStopLossUnknown={simRealStopLossUnknown}
-        setSimRealStopLossUnknown={setSimRealStopLossUnknown}
-        slippage={slippage}
-        privateKey={privateKey}
-        setPrivateKey={setPrivateKey}
-        apiKey={apiKey}
-        setApiKey={setApiKey}
-        jupiterRpcUrl={jupiterRpcUrl}
-        setJupiterRpcUrl={setJupiterRpcUrl}
-        rpcUrl={rpcUrl}
-        customWsUrl={customWsUrl}
-        stopLoss={stopLoss}
-        bondingCurveStopLoss={bondingCurveStopLoss}
-        pumpSwapStopLoss={pumpSwapStopLoss}
-        unknownStopLoss={unknownStopLoss}
-        executeSimRealSell={async (mint) => {
-          if (simrealControlRef.current?.executeSimRealSell) {
-            await simrealControlRef.current.executeSimRealSell(mint);
-          }
-        }}
-        executeSimRealBuy={async (mint, amount) => {
-          if (simrealControlRef.current?.executeSimRealBuy) {
-            await simrealControlRef.current.executeSimRealBuy(mint, amount);
-          }
-        }}
-        resetSimRealWallet={() => {
-          if (simrealControlRef.current?.resetSimRealWallet) {
-            simrealControlRef.current.resetSimRealWallet();
-          }
-        }}
-        maxRebuyTimes={maxRebuyTimes}
-        setMaxRebuyTimes={setMaxRebuyTimes}
-        jupiterLogs={jupiterLogs}
       />
     </section>
     <section className={cn("col-span-12 flex-col h-full overflow-auto", currentPage === 'system-check' ? "flex" : "hidden")}>
@@ -7004,3 +6798,4 @@ export default function App() {
     </div>
   );
 }
+export default App;

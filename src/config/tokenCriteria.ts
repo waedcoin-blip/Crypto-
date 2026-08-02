@@ -27,9 +27,6 @@ export interface TokenCriteria {
   // Simulation buy amount in SOL
   readonly simulationBuyAmountSol: number;
 
-  // Real buy amount in SOL (used by SimRealPage)
-  readonly realBuyAmountSol: number;
-
   // Profit threshold to trigger signal in percentage points (e.g. 1.0 = +1.0% profit required)
   readonly signalProfitThreshold: number;
 
@@ -46,7 +43,6 @@ export const DEFAULT_CRITERIA: Readonly<TokenCriteria> = Object.freeze({
   minPriceChange5m: -50,
   maxPriceChange5m: 500,
   simulationBuyAmountSol: 0.1,
-  realBuyAmountSol: 0.05,
   signalProfitThreshold: 1.0, // 1.0 = 1.0% profit threshold
   slippageBps: 100, // 100 bps = 1.0%
 });

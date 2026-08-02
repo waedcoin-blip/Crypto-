@@ -15,13 +15,12 @@ function normalizeSymbol(sym: string | undefined): string {
   return cleaned;
 }
 
-export function getSimRealTradeCount(
+export function getTradeCount(
   tokenAddress: string,
   symbol: string | undefined,
   trades: SniperTrade[],
   positions: Record<string, any>,
-  pendingQueue?: Set<string>,
-  isSimReal: boolean = true
+  pendingQueue?: Set<string>
 ): number {
   if (!tokenAddress) return 0;
 
@@ -36,7 +35,6 @@ export function getSimRealTradeCount(
 
   const allTradesList: SniperTrade[] = [
     ...(trades || []),
-    ...(storeState?.simRealTrades || []),
     ...(storeState?.mySniperTrades || []),
     ...(storeState?.trades || [])
   ];
@@ -77,9 +75,7 @@ export function getSimRealTradeCount(
     const pAddr = normalizeAddress(key || p?.address || p?.mint);
     const pSym = normalizeSymbol(p?.symbol);
 
-    const isActivePos = isSimReal 
-      ? !!p?.simRealBought 
-      : (p?.amount !== undefined && p.amount > 0) || (p?.solSpent !== undefined && p.solSpent > 0);
+    const isActivePos = (p?.amount !== undefined && p.amount > 0) || (p?.solSpent !== undefined && p.solSpent > 0);
 
     if (isActivePos) {
       const matchByAddr = normAddr && pAddr && pAddr === normAddr;
@@ -105,13 +101,4 @@ export function getSimRealTradeCount(
   return Math.max(completedBuys, isActive) + isPending;
 }
 
-export function getTradeCount(
-  tokenAddress: string,
-  symbol: string | undefined,
-  trades: SniperTrade[],
-  positions: Record<string, any>,
-  pendingMints?: Set<string>
-): number {
-  return getSimRealTradeCount(tokenAddress, symbol, trades, positions, pendingMints, false);
-}
 

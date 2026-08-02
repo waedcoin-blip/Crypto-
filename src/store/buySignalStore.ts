@@ -6,12 +6,12 @@ export interface BuySignal {
   symbol: string;
   name: string;
 
-  // Prices for SimRealPage to verify before buying
+  // Prices for simulation to verify before buying
   entryPriceUsd: number;      // PnLPage's simulation entry
   triggerPriceUsd: number;    // Price when +1% was hit
   profitPercent: number;      // Actual profit at trigger time
 
-  // Token metadata for SimRealPage's fresh quote
+  // Token metadata for fresh quote
   liquidityUsd: number;
   volume24h: number;
   dexId: string;
@@ -39,7 +39,6 @@ interface BuySignalStore {
   };
 
   emitSignal: (signal: Omit<BuySignal, 'id' | 'timestamp' | 'status'>) => void;
-  emitSimRealToken: (tokenAddress: string) => void;
   
   // Support both interfaces for ultimate compatibility
   claimNextPending: () => BuySignal | null;
@@ -85,35 +84,6 @@ export const useBuySignalStore = create<BuySignalStore>((set, get) => ({
     );
   },
 
-  emitSimRealToken: (tokenAddress: string) => {
-    const mint = tokenAddress.trim();
-    if (!mint) return;
-
-    const newSignal: BuySignal = {
-      id: `sig-${Date.now()}-${++counter}`,
-      tokenAddress: mint,
-      symbol: 'TOKEN',
-      name: 'TOKEN',
-      entryPriceUsd: 0,
-      triggerPriceUsd: 0,
-      profitPercent: 0,
-      liquidityUsd: 0,
-      volume24h: 0,
-      dexId: mint.toLowerCase().endsWith('pump') ? 'pumpfun' : 'raydium',
-      pairAddress: mint,
-      simAmountSol: 0,
-      simEntryTime: Date.now(),
-      timestamp: Date.now(),
-      status: 'pending',
-    };
-
-    set(state => ({
-      signals: [...state.signals, newSignal],
-      stats: { ...state.stats, totalEmitted: state.stats.totalEmitted + 1 },
-    }));
-
-    console.log(`[Signal] Address-only token emitted to store: ${mint}`);
-  },
 
   claimNextPending: () => {
     const state = get();

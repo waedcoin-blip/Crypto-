@@ -11,7 +11,7 @@ export interface SimPosition {
   entryTime: number;
   profitPercent: number;
   signalEmitted: boolean;
-  // Token metadata for passing to SimRealPage
+  // Token metadata
   liquidityUsd: number;
   volume24h: number;
   dexId: string;

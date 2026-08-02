@@ -1,4 +1,4 @@
-// Unified PnL and Fee Calculation Utilities for SimReal & Live Trading Engine
+// Unified PnL and Fee Calculation Utilities for Live Trading Engine
 
 let cachedSolPriceUsd = 200; // Default fallback, but will be updated dynamically
 
@@ -21,70 +21,3 @@ export const getDynamicOperationalFeeSol = (isRecovery: boolean = false, tradeAm
   return baseGasAndComputeSol + jitoTip;
 };
 
-export interface SimRealPnlResult {
-  currPriceSol: number;
-  tokensQty: number;
-  spentSol: number;
-  grossValueSol: number;
-  grossPnlSol: number;
-  grossPnlPct: number;
-  netValueSol: number;
-  netPnlSol: number;
-  netPnlPct: number;
-  tpPctAfterSlippageAndJito: number;
-}
-
-export function calculateSimRealPnl(
-  spentSol: number,
-  tokensQty: number,
-  boughtPriceSol: number,
-  currentPriceSol: number,
-  slippagePct: number = 1.0,
-  recoveryMode: boolean = false,
-  isRealPrivateKey: boolean = false
-): SimRealPnlResult | null {
-  if (!Number.isFinite(spentSol) || spentSol <= 0) {
-    return null;
-  }
-  
-  if (!Number.isFinite(tokensQty) || tokensQty <= 0) {
-    return null;
-  }
-  
-  if (!Number.isFinite(currentPriceSol) || currentPriceSol <= 0) {
-    return null;
-  }
-
-  const grossValueSol = currentPriceSol * tokensQty;
-  const grossPnlSol = grossValueSol - spentSol;
-  const grossPnlPct = (grossPnlSol / spentSol) * 100;
-
-  let netValueSol = grossValueSol;
-  if (!isRealPrivateKey) {
-    const slippageFee = grossValueSol * (slippagePct / 100);
-    const opFees = getDynamicOperationalFeeSol(recoveryMode, spentSol);
-    netValueSol = Math.max(0, grossValueSol - slippageFee - opFees);
-  }
-
-  const netPnlSol = netValueSol - spentSol;
-  const netPnlPct = (netPnlSol / spentSol) * 100;
-
-  // Calculate TP percentage after detection of slippage and Jito fees
-  const entrySlippageSol = spentSol * (slippagePct / 100);
-  const entryJitoFeeSol = getDynamicOperationalFeeSol(recoveryMode, spentSol);
-  const netEntryAfterSlippageAndJito = Math.max(spentSol * 0.1, spentSol - entrySlippageSol - entryJitoFeeSol);
-  const tpPctAfterSlippageAndJito = ((netValueSol - netEntryAfterSlippageAndJito) / netEntryAfterSlippageAndJito) * 100;
-
-  return {
-    currPriceSol: currentPriceSol,
-    tokensQty: tokensQty,
-    spentSol: spentSol,
-    grossValueSol,
-    grossPnlSol,
-    grossPnlPct,
-    netValueSol,
-    netPnlSol,
-    netPnlPct,
-    tpPctAfterSlippageAndJito
-  };
-}
