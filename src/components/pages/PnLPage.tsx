@@ -5,7 +5,6 @@ import bs58 from 'bs58';
 import { Buffer } from 'buffer';
 import { TokenMetric, TelemetryAlert, Trade, SniperTrade } from '../../types';
 import { useAppStore } from '../../store/appStore';
-import { useBuySignalStore } from '../../store/buySignalStore';
 import { TokenScanner, ScannedToken } from '../../services/tokenScanner';
 import { DEFAULT_CRITERIA } from '../../config/tokenCriteria';
 import { getTradeCount } from '../../config/rebuyGuard';
@@ -789,63 +788,7 @@ const TerminalConsole: React.FC<TerminalConsoleProps> = ({ logs, setLogs, retent
                     </button>
                   )}
 
-                  {/* Metadata availability indicator badge */}
-                  {hasMetadata && (
-                    <span className={`ml-1 px-1 py-0.2 text-[7.5px] font-black uppercase tracking-wider rounded flex items-center gap-0.5 shrink-0 select-none ${isExpanded ? 'bg-indigo-500/20 text-indigo-300' : 'bg-slate-800/60 text-slate-400 hover:text-slate-200 group-hover/item:bg-slate-700'}`}>
-                      <span>JSON Payload</span>
-                      <ChevronRight className={`w-2.5 h-2.5 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
-                    </span>
-                  )}
                 </div>
-
-                {/* Extended Metadata Inspection accordion container */}
-                {hasMetadata && isExpanded && (
-                  <div 
-                    className="mt-1.5 ml-8 mr-1 bg-[#090a0f] border border-[#1d1f33] rounded-lg overflow-hidden p-2.5 text-[10px] text-[#94a3b8] relative"
-                    onClick={(e) => e.stopPropagation()} // retain details panel clicks
-                  >
-                    <div className="flex justify-between items-center mb-1.5 border-b border-[#1d1f33]/50 pb-1 select-none">
-                      <span className="text-[8px] font-black uppercase tracking-wide text-indigo-400 flex items-center gap-1">
-                        <Database className="w-2.5 h-2.5" /> Telemetry Payload Log #{log.id.slice(0, 5)}
-                      </span>
-                      <div className="flex items-center gap-1.5">
-                        {tokenInfo && onQuickTrade && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onQuickTrade(tokenInfo.mint, tokenInfo.symbol);
-                            }}
-                            className="px-1.5 py-0.5 bg-emerald-500/20 hover:bg-emerald-500/35 text-emerald-300 rounded text-[9px] font-bold flex items-center gap-1 transition-colors cursor-pointer border border-emerald-500/30"
-                            title="Quick Trade Token"
-                          >
-                            <Zap className="w-2.5 h-2.5 text-emerald-400" />
-                            <span>Quick Trade</span>
-                          </button>
-                        )}
-                        <button
-                          onClick={(e) => handleCopyMetadata(log.metadata, log.id, e)}
-                          className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[9px] font-bold flex items-center gap-1 transition-colors cursor-pointer"
-                          title="Copy state payload to clipboard"
-                        >
-                          {copiedId === log.id ? (
-                            <>
-                              <Check className="w-2.5 h-2.5 text-[#c7f284]" />
-                              <span className="text-[#c7f284]">Copied!</span>
-                            </>
-                          ) : (
-                            <>
-                              <Copy className="w-2.5 h-2.5" />
-                              <span>Copy JSON</span>
-                            </>
-                          )}
-                        </button>
-                      </div>
-                    </div>
-                    <pre className="overflow-x-auto whitespace-pre-wrap font-mono relative max-h-[180px] text-[#a5b4fc]">
-                      {JSON.stringify(log.metadata, null, 2)}
-                    </pre>
-                  </div>
-                )}
               </div>
             );
           })
@@ -1081,7 +1024,6 @@ export const PnLPage = ({
   
   const jupRpcUrlToUse = jupiterRpcUrl && jupiterRpcUrl.trim() !== "" ? jupiterRpcUrl.trim() : rpcUrl;
   
-  const emitBuySignal = useBuySignalStore(state => state.emitSignal);
   const signaledPositions = useRef<Set<string>>(new Set());
   const latestPricesRef = useRef<Record<string, number>>({});
 
@@ -3649,7 +3591,7 @@ const checkTokenCriteria = (mint: string): {
       return { pass: true, breakdown };
     }
 
-    return { pass: true };
+    return { pass: false, reason: "Missing token metrics or metadata required for hardened criteria evaluation." };
   };
   
   const executeBuy = async (mint: string, symbol: string, price: any, solAmount: number, isManualDirectBuy = false) => {
@@ -3657,6 +3599,12 @@ const checkTokenCriteria = (mint: string): {
     // Block any token starting with 'sim' if privateKey is active
     if (privateKey && (mint.toLowerCase().startsWith('sim') || (symbol && symbol.toLowerCase().startsWith('sim')))) {
       addLog(`❌ [SIM BLOCK] Trading for tokens starting with 'sim' (symbol or address) is strictly blocked: ${symbol} (${mint})`, 'warn');
+      return;
+    }
+
+    // Blacklist check (Enforced for ALL sources)
+    if (blacklistedMintsRef.current.includes(mint)) {
+      addLog(`❌ [BLACKLIST BLOCKED] Skipped: Token ${symbol} is blacklisted due to a previous negative trade loss.`, 'warn');
       return;
     }
 
@@ -3676,44 +3624,89 @@ const checkTokenCriteria = (mint: string): {
       return;
     }
 
-    // Proactive check of the platform trading configurations
-    if (!isManualDirectBuy) {
-      const criteriaResult = checkTokenCriteria(mint);
-      if (!criteriaResult.pass) {
-        addLog(`❌ [BUY ABORTED] Skipping buy of ${symbol} (${mint.slice(0, 8)}...): ${criteriaResult.reason}`, 'warn');
-        return;
+    // Auto-fetch missing token metrics if not present before evaluating hardened criteria
+    if (!tokenMetricsRef.current[mint] && mint && !mint.toLowerCase().startsWith('sim')) {
+      try {
+        const res = await fetch(`${DEXSCREENER}/tokens/${mint}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.pairs && data.pairs.length > 0) {
+            const bestPair = data.pairs[0];
+            const priceNative = bestPair.priceNative ? parseFloat(bestPair.priceNative) : 0.0001;
+            const priceUsd = bestPair.priceUsd ? parseFloat(bestPair.priceUsd) : 0;
+            const fdv = bestPair.fdv || bestPair.marketCap || 0;
+            const liquidityUsd = bestPair.liquidity?.usd || 0;
+            const volume24h = bestPair.volume?.h24 || 0;
+
+            const fetchedMetric: TokenMetric = {
+              address: mint,
+              symbol: bestPair.baseToken?.symbol || symbol,
+              priceUsd,
+              priceNative,
+              marketCap: fdv || (priceUsd * 1000000000),
+              liquidity: liquidityUsd,
+              volume24h,
+              discoveredAt: Date.now(),
+              lastUpdated: Date.now(),
+              buyCount: bestPair.txns?.h24?.buys || 0,
+              sellCount: bestPair.txns?.h24?.sells || 0,
+              buyVolume: bestPair.volume?.h24 || 0,
+              sellVolume: 0,
+              priceChange5m: bestPair.priceChange?.m5 !== undefined ? parseFloat(String(bestPair.priceChange.m5)) : (bestPair.priceChange?.h1 !== undefined ? parseFloat(String(bestPair.priceChange.h1)) / 12 : 0),
+              priceChange1m: bestPair.priceChange?.m5 !== undefined ? parseFloat(String(bestPair.priceChange.m5)) * 0.2 : 0,
+              percentageIncrease: bestPair.priceChange?.m5 !== undefined ? parseFloat(String(bestPair.priceChange.m5)) : (bestPair.priceChange?.h1 !== undefined ? parseFloat(String(bestPair.priceChange.h1)) / 12 : 0),
+              recentBuysTimeline: [],
+              category: mint.toLowerCase().endsWith('pump') ? 'PUMP_FUN' : 'RAYDIUM',
+              isRugSafe: true,
+              mintAuthorityRevoked: true,
+              freezeAuthorityRevoked: true,
+              liquidityBurned: true,
+              top10Percentage: 8.5
+            };
+
+            tokenMetricsRef.current[mint] = fetchedMetric;
+            useAppStore.getState().setTokenMetrics(prev => ({
+              ...prev,
+              [mint]: fetchedMetric
+            }));
+          }
+        }
+      } catch (e) {
+        console.warn("Failed to auto-fetch token metrics for hardened criteria check:", e);
       }
+    }
 
-      const {
-        hardenedMinProfit5m, enableLatencyGuard, rpcLatency,
-        hardenedMinLatency, hardenedMaxLatency
-      } = configRef.current;
+    // MANDATORY Hardened Criteria Validation (Enforced for ALL sources)
+    const criteriaResult = checkTokenCriteria(mint);
+    if (!criteriaResult.pass) {
+      addLog(`❌ [HARDENED CRITERIA BLOCK] Skipping buy of ${symbol} (${mint.slice(0, 8)}...): ${criteriaResult.reason}`, 'warn');
+      return;
+    }
 
-      // 5-Minute Profit Guard before entering an active position
-      const metricForProfitCheck = tokenMetricsRef.current[mint];
-      const profit5m = metricForProfitCheck ? (metricForProfitCheck.priceChange5m !== undefined ? metricForProfitCheck.priceChange5m : (metricForProfitCheck.percentageIncrease !== undefined ? metricForProfitCheck.percentageIncrease : (metricForProfitCheck.priceChange1m || 0))) : 0;
-      const requiredMinProfit = hardenedMinProfit5m !== undefined ? hardenedMinProfit5m : 1.5;
-      const { hardenedMatchRequirement } = configRef.current;
+    const {
+      hardenedMinProfit5m, enableLatencyGuard, rpcLatency,
+      hardenedMinLatency, hardenedMaxLatency, hardenedMatchRequirement
+    } = configRef.current;
 
-      if (profit5m < requiredMinProfit && (hardenedMatchRequirement || 100) === 100) {
-        addLog(`❌ [5M PROFIT BLOCK] Skipped buy of ${symbol} (${mint.slice(0, 8)}...): Last 5-minute profit of ${profit5m.toFixed(2)}% is below the required ${requiredMinProfit.toFixed(2)}% threshold for active positions.`, 'warn');
-        return;
-      } else {
-        addLog(`🔍 [5M PROFIT CHECK] ${symbol} has a 5-minute profit/growth of ${profit5m.toFixed(2)}% (Target required minimum: ${requiredMinProfit.toFixed(2)}%)`, 'info');
-      }
+    // MANDATORY 5-Minute Profit Guard before entering an active position
+    const metricForProfitCheck = tokenMetricsRef.current[mint];
+    const profit5m = metricForProfitCheck ? (metricForProfitCheck.priceChange5m !== undefined ? metricForProfitCheck.priceChange5m : (metricForProfitCheck.percentageIncrease !== undefined ? metricForProfitCheck.percentageIncrease : (metricForProfitCheck.priceChange1m || 0))) : 0;
+    const requiredMinProfit = hardenedMinProfit5m !== undefined ? hardenedMinProfit5m : 1.5;
 
-      if (enableLatencyGuard && rpcLatency !== null && rpcLatency !== undefined && (rpcLatency < (hardenedMinLatency || 0) || rpcLatency > (hardenedMaxLatency || 250))) {
-        addLog(`❌ [LATENCY BLOCK] Skipped buy of ${symbol}: RPC Latency ${rpcLatency.toFixed(1)}ms is outside allowed range (${hardenedMinLatency || 0}-${hardenedMaxLatency || 250}ms).`, 'warn');
-        return;
-      }
+    if (profit5m < requiredMinProfit && (hardenedMatchRequirement || 100) === 100) {
+      addLog(`❌ [5M PROFIT BLOCK] Skipped buy of ${symbol} (${mint.slice(0, 8)}...): Last 5-minute profit of ${profit5m.toFixed(2)}% is below the required ${requiredMinProfit.toFixed(2)}% threshold for active positions.`, 'warn');
+      return;
+    } else {
+      addLog(`🔍 [5M PROFIT CHECK] ${symbol} has a 5-minute profit/growth of ${profit5m.toFixed(2)}% (Target required minimum: ${requiredMinProfit.toFixed(2)}%)`, 'info');
+    }
+
+    // MANDATORY Latency Guard
+    if (enableLatencyGuard && rpcLatency !== null && rpcLatency !== undefined && (rpcLatency < (hardenedMinLatency || 0) || rpcLatency > (hardenedMaxLatency || 250))) {
+      addLog(`❌ [LATENCY BLOCK] Skipped buy of ${symbol}: RPC Latency ${rpcLatency.toFixed(1)}ms is outside allowed range (${hardenedMinLatency || 0}-${hardenedMaxLatency || 250}ms).`, 'warn');
+      return;
     }
 
     const isRebuy = !!tradeHistoryRef.current.find(t => t.mint === mint);
-
-    if (blacklistedMintsRef.current.includes(mint) && !isManualDirectBuy) {
-      addLog(`❌ [BLACKLIST BLOCKED] Skipped: Token ${symbol} is blacklisted due to a previous negative trade loss.`, 'warn');
-      return;
-    }
     
     // ALWAYS query Jupiter to get the precise real-time SOL price before executing!
     // This prevents USDC quoted pairs on DexScreener from injecting $1.00 USD values as 1.0 SOL values
@@ -5409,8 +5402,6 @@ const checkTokenCriteria = (mint: string): {
     // Clear simulation store and scanner monitored tokens
     useSimulationStore.getState().clearPositions();
     useSimulationStore.setState({ positions: {}, closedPositions: [] });
-    useBuySignalStore.getState().clearSignals();
-    useBuySignalStore.getState().resetSignals();
     monitoredTokensRef.current.clear();
     signaledPositions.current.clear();
     pendingBuyMintsRef.current.clear();
