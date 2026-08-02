@@ -52,6 +52,7 @@ import { JupiterPage } from './components/pages/JupiterPage';
 import { SystemCheckPage } from './components/pages/SystemCheckPage';
 import { SafetyPage } from './components/pages/SafetyPage';
 import { PredictionPage } from './components/pages/PredictionPage';
+import { PnLPage } from './components/pages/PnLPage';
 
 
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
