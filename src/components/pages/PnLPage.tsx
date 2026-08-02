@@ -184,6 +184,26 @@ const TerminalConsole: React.FC<TerminalConsoleProps> = ({ logs, setLogs, retent
     return { total: logs.length, errs, warns, success, info, trades };
   }, [logs]);
 
+  // Auto-update profitable tokens to localStorage
+  useEffect(() => {
+    const profitableTokenAddresses = [
+      ...new Set(
+        tradeHistory
+          .filter(
+            (trade: any) =>
+              (!trade.status || trade.status === 'closed' || (trade.sellTime && trade.sellTime > 0)) &&
+              ((trade.realizedPnL && trade.realizedPnL > 0) || ((trade.sellAmountSol || 0) - (trade.buyAmountSol || 0) > 0) || ((trade.pnlPct || 0) > 0)) &&
+              (trade.tokenAddress || trade.mint)
+          )
+          .map((trade: any) => trade.tokenAddress || trade.mint)
+          .filter(addr => typeof addr === 'string' && addr.trim().length > 0 && addr !== 'Unknown')
+      )
+    ];
+    try {
+      localStorage.setItem('pnl_profitable_token_addresses', JSON.stringify(profitableTokenAddresses));
+    } catch (e) {}
+  }, [tradeHistory]);
+
   // Capture snapshot of logs ONLY when frozen starts
   useEffect(() => {
     if (isPaused) {

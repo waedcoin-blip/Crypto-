@@ -1108,6 +1108,15 @@ export const JupiterPage = ({
     }
   };
 
+  const [activeMints, setActiveMints] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setActiveMints(new Set(monitoredTokensRef.current.keys()));
+    }, 2000);
+    return () => clearInterval(interval);
+  }, []);
+
   const [positions, setPositions] = useState<Record<string, Position>>(() => {
     try {
       const saved = localStorage.getItem('juipter_auto_positions');
@@ -1515,17 +1524,19 @@ export const JupiterPage = ({
   useEffect(() => {
     const timer = setTimeout(() => {
       const state = location.state as any;
-      let tokens: string[] = state?.profitableTokenAddresses;
-      if (!tokens || !Array.isArray(tokens) || tokens.length === 0) {
-        try {
-          const stored = localStorage.getItem('pnl_profitable_token_addresses');
-          if (stored) {
-            tokens = JSON.parse(stored);
-          }
-        } catch (e) {}
-      }
+      const stateTokens: string[] = state?.profitableTokenAddresses || [];
+      let storedTokens: string[] = [];
+      
+      try {
+        const stored = localStorage.getItem('pnl_profitable_token_addresses');
+        if (stored) {
+          storedTokens = JSON.parse(stored);
+        }
+      } catch (e) {}
 
-      if (tokens && Array.isArray(tokens) && tokens.length > 0) {
+      const tokens = [...new Set([...stateTokens, ...storedTokens])];
+
+      if (tokens && tokens.length > 0) {
         const signature = tokens.join(',');
         if (processedPnLRef.current !== signature) {
           processedPnLRef.current = signature;
@@ -3374,11 +3385,12 @@ export const JupiterPage = ({
   const pendingBuyMintsRef = useRef<Set<string>>(new Set());
   const pendingSellMintsRef = useRef<Set<string>>(new Set());
 
-const checkTokenCriteria = (mint: string): { 
+const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): { 
   pass: boolean; 
   reason?: string; 
   breakdown?: { name: string; pass: boolean; actual: string; limit: string }[] 
 } => {
+    if (bypassCriteria) return { pass: true };
     if (mint === 'So11111111111111111111111111111111111111112' || mint.toLowerCase() === 'so11111111111111111111111111111111111111112') {
       return { pass: false, reason: "Solana native token cannot be added as an active tradeable position." };
     }
@@ -3697,7 +3709,7 @@ const checkTokenCriteria = (mint: string): {
     }
 
     // MANDATORY Hardened Criteria Validation (Enforced for ALL sources)
-    const criteriaResult = checkTokenCriteria(mint);
+    const criteriaResult = checkTokenCriteria(mint, isManualDirectBuy);
     if (!criteriaResult.pass) {
       addLog(`❌ [HARDENED CRITERIA BLOCK] Skipping buy of ${symbol} (${mint.slice(0, 8)}...): ${criteriaResult.reason}`, 'warn');
       return;
@@ -7565,7 +7577,7 @@ const checkTokenCriteria = (mint: string): {
               </button>
             </div>
             <div className="p-4 overflow-x-auto">
-          {tradeHistory.length === 0 ? (
+          {tradeHistory.filter(t => activeMints.has(t.mint)).length === 0 ? (
             <div className="text-center text-[#64748b] py-4 text-[11px] font-mono">No trades executed yet.</div>
           ) : (
             <table className="w-full text-left border-collapse text-[11px] font-mono whitespace-nowrap">
@@ -7581,7 +7593,7 @@ const checkTokenCriteria = (mint: string): {
                 </tr>
               </thead>
               <tbody>
-                {tradeHistory.map(trade => {
+                {tradeHistory.filter(t => activeMints.has(t.mint)).map(trade => {
                   const buySol = trade.buyAmountSol || 0;
                   let sellSol = trade.sellAmountSol || 0;
                   let pnl = trade.pnlPct || 0;
