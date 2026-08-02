@@ -942,88 +942,7 @@ export const JupiterPage = ({
   const processedPnLRef = useRef<string>('');
   const executeBuyRef = useRef<any>(null);
 
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      const state = location.state as any;
-      let tokens: string[] = state?.profitableTokenAddresses;
-      if (!tokens || !Array.isArray(tokens) || tokens.length === 0) {
-        try {
-          const stored = localStorage.getItem('pnl_profitable_token_addresses');
-          if (stored) {
-            tokens = JSON.parse(stored);
-          }
-        } catch (e) {}
-      }
 
-      if (tokens && Array.isArray(tokens) && tokens.length > 0) {
-        const signature = tokens.join(',');
-        if (processedPnLRef.current !== signature) {
-          processedPnLRef.current = signature;
-          addLog(`🚀 [PNL SYNC] Received ${tokens.length} profitable token address(es) from PnLPage trade history:`, 'success', 'system');
-          tokens.forEach(async (addr: string) => {
-            addLog(`💎 [SYSTEM LOG - PROFITABLE TOKEN] Address: ${addr}`, 'success', 'system', { tokenAddress: addr, source: 'PnLPage' });
-            
-            try {
-              let symbol = 'PROFIT';
-              let priceNative = 0.0001;
-              let priceUsd = 0.1;
-              try {
-                const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${addr}`);
-                if (res.ok) {
-                  const data = await res.json();
-                  if (data && data.pairs && data.pairs.length > 0) {
-                    const bestPair = data.pairs[0];
-                    symbol = bestPair.baseToken?.symbol || 'PROFIT';
-                    priceNative = bestPair.priceNative ? parseFloat(bestPair.priceNative) : 0.0001;
-                    priceUsd = bestPair.priceUsd ? parseFloat(bestPair.priceUsd) : 0;
-                  }
-                }
-              } catch (err) {}
-
-              addLog(`⚡ [SYSTEM LOG AUTO-TRADE] Automatically starting trade for received profitable token ${symbol} (${addr})...`, 'buy', 'system');
-
-              const scannedTokenData: ScannedToken = {
-                address: addr,
-                symbol,
-                name: `${symbol} (Synced Profitable)`,
-                priceUsd: priceUsd || 0.1,
-                priceNative: priceNative || 0.0001,
-                marketCap: 100000,
-                liquidityUsd: 50000,
-                volume24h: 10000,
-                bondingCurveProgress: 100,
-                isRaydium: true,
-                ageMinutes: 10,
-                priceChange5m: 5,
-                priceChange1h: 15,
-                priceChange24h: 30,
-                uniqueBuyers30s: 20,
-                buyCount30s: 25,
-                sellCount30s: 5,
-                buyVolume30s: 10,
-                sellVolume30s: 2,
-                top10HoldersPct: 15,
-                devWalletOwnershipPct: 2,
-                isRugSafe: true,
-                riskScore: 3
-              };
-
-              openSimPosition(scannedTokenData, tradeAmount);
-              monitoredTokensRef.current.set(addr, scannedTokenData);
-
-              if (executeBuyRef.current) {
-                await executeBuyRef.current(addr, symbol, priceNative, tradeAmount, true);
-              }
-            } catch (autoErr: any) {
-              addLog(`❌ [SYSTEM LOG AUTO-TRADE ERROR] Failed to auto-trade ${addr}: ${autoErr?.message || autoErr}`, 'err', 'system');
-            }
-          });
-        }
-      }
-    }, 0);
-    return () => clearTimeout(timer);
-  }, [location.state, tradeAmount, addLog, openSimPosition]);
-  
   const signaledPositions = useRef<Set<string>>(new Set());
   const latestPricesRef = useRef<Record<string, number>>({});
 
@@ -1592,6 +1511,81 @@ export const JupiterPage = ({
       return [newLog, ...prev].slice(0, retentionLimit);
     });
   }, [retentionLimit, setLogs]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const state = location.state as any;
+      let tokens: string[] = state?.profitableTokenAddresses;
+      if (!tokens || !Array.isArray(tokens) || tokens.length === 0) {
+        try {
+          const stored = localStorage.getItem('pnl_profitable_token_addresses');
+          if (stored) {
+            tokens = JSON.parse(stored);
+          }
+        } catch (e) {}
+      }
+
+      if (tokens && Array.isArray(tokens) && tokens.length > 0) {
+        const signature = tokens.join(',');
+        if (processedPnLRef.current !== signature) {
+          processedPnLRef.current = signature;
+          addLog(`🚀 [PNL SYNC] Received ${tokens.length} profitable token address(es) from PnLPage trade history:`, 'success', 'system');
+          tokens.forEach(async (addr: string) => {
+            addLog(`💎 [SYSTEM LOG - PROFITABLE TOKEN] Address: ${addr}`, 'success', 'system', { tokenAddress: addr, source: 'PnLPage' });
+            
+            try {
+              let symbol = 'PROFIT';
+              let priceNative = 0.0001;
+              let priceUsd = 0.1;
+              try {
+                const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${addr}`);
+                if (res.ok) {
+                  const data = await res.json();
+                  if (data && data.pairs && data.pairs.length > 0) {
+                    const bestPair = data.pairs[0];
+                    symbol = bestPair.baseToken?.symbol || 'PROFIT';
+                    priceNative = bestPair.priceNative ? parseFloat(bestPair.priceNative) : 0.0001;
+                    priceUsd = bestPair.priceUsd ? parseFloat(bestPair.priceUsd) : 0;
+                  }
+                }
+              } catch (err) {}
+
+              addLog(`⚡ [SYSTEM LOG AUTO-TRADE] Automatically starting trade for received profitable token ${symbol} (${addr})...`, 'buy', 'system');
+
+              const scannedTokenData: ScannedToken = {
+                address: addr,
+                symbol,
+                name: `${symbol} (Synced Profitable)`,
+                priceUsd: priceUsd || 0.1,
+                marketCap: 100000,
+                liquidityUsd: 50000,
+                volume24h: 10000,
+                fdv: 0,
+                pairCreatedAt: Date.now(),
+                dexId: 'raydium',
+                pairAddress: '',
+                url: '',
+                priceChange5m: 5,
+                priceChange1h: 15,
+                priceChange24h: 30
+              };
+
+              openSimPosition(scannedTokenData, tradeAmount);
+              monitoredTokensRef.current.set(addr, scannedTokenData);
+
+              if (executeBuyRef.current) {
+                await executeBuyRef.current(addr, symbol, priceNative, tradeAmount, true);
+              }
+            } catch (autoErr: any) {
+              addLog(`❌ [SYSTEM LOG AUTO-TRADE ERROR] Failed to auto-trade ${addr}: ${autoErr?.message || autoErr}`, 'err', 'system');
+            }
+          });
+        }
+      }
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [location.state, tradeAmount, addLog, openSimPosition]);
+
 
   // Safe parent-level logs trimming
   useEffect(() => {
