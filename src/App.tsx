@@ -4014,14 +4014,17 @@ function App() {
           <span className="text-[10px] font-bold uppercase tracking-tighter">PnL</span>
         </button>
         <button 
-          onClick={() => setCurrentPage('system-check')}
+          onClick={() => {
+            setCurrentPage('jupiter');
+            navigate('/jupiter');
+          }}
           className={cn(
             "flex shrink-0 flex-col items-center gap-1 transition-all px-3 py-2 rounded-xl",
-            currentPage === 'system-check' ? "text-indigo-400" : "text-slate-500"
+            currentPage === 'jupiter' ? "text-indigo-400" : "text-slate-500"
           )}
         >
-          <Terminal className={cn("w-5 h-5", currentPage === 'system-check' && "animate-pulse")} />
-          <span className="text-[10px] font-bold uppercase tracking-tighter">Test</span>
+          <Rocket className={cn("w-5 h-5", currentPage === 'jupiter' && "animate-pulse")} />
+          <span className="text-[10px] font-bold uppercase tracking-tighter">Jupiter</span>
         </button>
         <div className="w-px h-8 bg-slate-800 mx-1 shrink-0" />
         <button 
@@ -4149,6 +4152,18 @@ function App() {
                 )}
               >
                 PORTFOLIO / PNL
+              </button>
+              <button 
+                onClick={() => {
+                  setCurrentPage('jupiter');
+                  navigate('/jupiter');
+                }}
+                className={cn(
+                  "px-5 py-2 rounded-full transition-all text-[10px] font-black flex items-center gap-1.5",
+                  currentPage === 'jupiter' ? "bg-indigo-600 text-white shadow-lg" : "text-slate-500 hover:text-slate-300"
+                )}
+              >
+                <Rocket className="w-3 h-3" /> JUPITER
               </button>
               <button 
                 onClick={() => setCurrentPage('system-check')}
@@ -5955,6 +5970,9 @@ function App() {
     </section>
     <section className={cn("col-span-12 flex-col h-full overflow-auto", currentPage === 'system-check' ? "flex" : "hidden")}>
       <SystemCheckPage rpcUrl={rpcUrl} />
+    </section>
+    <section className={cn("col-span-12 flex-col h-full overflow-hidden", currentPage === 'jupiter' ? "flex" : "hidden")}>
+      <JupiterPage />
     </section>
     {currentPage === 'high-buy' && alphaSubTab === 'intel' ? (
       <section className="col-span-12 flex flex-col gap-6 lg:overflow-hidden">
