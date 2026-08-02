@@ -3221,6 +3221,11 @@ function App() {
             const val = Number(data.maxRebuyTimes);
             setMaxRebuyTimes(val === 2 ? 3 : val);
           }
+          if (data.rpcUrl !== undefined) setRpcUrl(String(data.rpcUrl));
+          if (data.rpcUrl2 !== undefined) setRpcUrl2(String(data.rpcUrl2));
+          if (data.customWsUrl !== undefined) setCustomWsUrl(String(data.customWsUrl));
+          if (data.apiKey !== undefined) setApiKey(String(data.apiKey));
+          if (data.jupiterRpcUrl !== undefined) setJupiterRpcUrl(String(data.jupiterRpcUrl));
         }
       } catch (err) {
         console.error('Error loading settings from Firestore in App.tsx:', err);
@@ -3308,7 +3313,8 @@ function App() {
     hardenedMaxBondingProgress, hardenedMinAge, hardenedMaxAge, hardenedMinLatency, hardenedMaxLatency,
     hardenedMatchRequirement, enableLatencyGuard, telemetryWhaleBuyMin, telemetryHighBuyMin,
     telemetryVolumeSpikeMin, telemetryAllowWhaleBuy, telemetryAllowHighBuy, telemetryAllowVolumeSpike,
-    telemetryAllowMigrated, telemetryAllowGoldenCross, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown, hardenedMinProfit5m, maxRebuyTimes
+    telemetryAllowMigrated, telemetryAllowGoldenCross, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown, hardenedMinProfit5m, maxRebuyTimes,
+    rpcUrl, rpcUrl2, customWsUrl, apiKey, jupiterRpcUrl
   ]);
 
   const safePublicKey = (addr: string) => {
