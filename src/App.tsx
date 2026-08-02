@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { 
   Search, 
   Activity, 
@@ -51,6 +52,7 @@ import { SafetyPage } from './components/pages/SafetyPage';
 import { PredictionPage } from './components/pages/PredictionPage';
 import { PnLPage } from './components/pages/PnLPage';
 import { SystemCheckPage } from './components/pages/SystemCheckPage';
+import { JupiterPage } from './components/pages/JupiterPage';
 
 
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
@@ -352,10 +354,21 @@ const categorizeToken = (symbol: string | undefined, address: string | undefined
 
 function App() {
   const [user, setUser] = useState<User | null>(null);
-  const [currentPage, setCurrentPage] = useState<'dashboard' | 'high-buy' | 'portfolio' | 'system-check' | 'discovery'>('dashboard');
+  const [currentPage, setCurrentPage] = useState<'dashboard' | 'high-buy' | 'portfolio' | 'system-check' | 'discovery' | 'jupiter'>('dashboard');
   const [alphaSubTab, setAlphaSubTab] = useState<'high-buy' | 'safety' | 'prediction' | 'intel'>('high-buy');
   const [viewMode, setViewMode] = useState<'responsive' | 'mobile' | 'laptop'>('responsive');
   const [alphaProtocol, setAlphaProtocol] = useState<'ALL' | 'HIGH_PROFIT' | 'WHALE_BUY' | 'NEW_DISCOVERY' | 'SNIPER' | 'GEMS_100X' | 'JUPITER_AUTO' | 'MIGRATED'>('JUPITER_AUTO');
+  
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (location.pathname === '/jupiter') {
+      setCurrentPage('jupiter');
+    } else if (location.pathname === '/portfolio') {
+      setCurrentPage('portfolio');
+    }
+  }, [location.pathname]);
 
   const renderAlphaHeader = () => {
     return (

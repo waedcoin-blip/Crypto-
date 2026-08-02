@@ -596,13 +596,24 @@ export const getJupiterQuote = async (
       ? simulatedPrice * (1 + marketImpactPct)
       : simulatedPrice * (1 - marketImpactPct);
 
+    let tokenDecimals = 6;
+    if (simMint.toLowerCase().endsWith('pump')) {
+      tokenDecimals = 6;
+    } else {
+      const state = useAppStore.getState();
+      const m = state?.tokenMetrics?.[simMint];
+      if (m && typeof (m as any).decimals === 'number' && (m as any).decimals >= 0) {
+        tokenDecimals = (m as any).decimals;
+      }
+    }
+
     let outAmountVal = 0n;
     if (isBuy) {
       const inputSol = Number(amount) / 1_000_000_000;
       const tokensOut = inputSol / Math.max(priceWithImpact, 0.000000001);
-      outAmountVal = BigInt(Math.floor(tokensOut * 1_000_000));
+      outAmountVal = BigInt(Math.floor(tokensOut * Math.pow(10, tokenDecimals)));
     } else {
-      const inputTokens = Number(amount) / 1_000_000;
+      const inputTokens = Number(amount) / Math.pow(10, tokenDecimals);
       const solOut = inputTokens * Math.max(priceWithImpact, 0.000000001);
       outAmountVal = BigInt(Math.floor(solOut * 1_000_000_000));
     }

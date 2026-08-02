@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Play, Square, Search, ShieldCheck, ShieldAlert, AlertTriangle, Shield, TrendingUp, ChevronDown, ChevronUp, BookOpen, X, Zap, Activity, ChevronRight, Download, Trash2, Settings, Pause, Database, Copy, Check, Terminal, ArrowUpDown, SlidersHorizontal, Eye, EyeOff, Clock, Info, Bug, Filter, Server, Globe, RefreshCw, Wifi, CloudUpload } from 'lucide-react';
 import { Connection, Keypair, VersionedTransaction, PublicKey } from '@solana/web3.js';
 import bs58 from 'bs58';
@@ -71,16 +72,24 @@ const fetchMintDecimals = async (mint: string, rpcUrl?: string): Promise<number>
 
 const resolveDecimals = async (mint: string, rpcUrl: string | undefined): Promise<number> => {
   const cleanMint = mint.trim();
-  if (decimalsCache[cleanMint] !== undefined) {
+  if (decimalsCache[cleanMint] !== undefined && decimalsCache[cleanMint] >= 0) {
     return decimalsCache[cleanMint];
   }
-  const metricDecimals = await fetchMintDecimals(cleanMint, rpcUrl);
-  if (metricDecimals >= 0 && metricDecimals <= 18) {
-    decimalsCache[cleanMint] = metricDecimals;
-    return metricDecimals;
+  if (cleanMint.toLowerCase().endsWith('pump')) {
+    decimalsCache[cleanMint] = 6;
+    return 6;
   }
+  try {
+    const metricDecimals = await fetchMintDecimals(cleanMint, rpcUrl);
+    if (metricDecimals >= 0 && metricDecimals <= 18) {
+      decimalsCache[cleanMint] = metricDecimals;
+      return metricDecimals;
+    }
+  } catch (e) {}
   
-  throw new Error(`Failed to resolve decimals for ${mint} via RPC.`);
+  const fallback = 6;
+  decimalsCache[cleanMint] = fallback;
+  return fallback;
 };
 
 const getDynamicOperationalFeeSol = (isRecovery: boolean = false, tradeAmountSol: number = 0.05): number => {
@@ -1023,6 +1032,7 @@ export const PnLPage = ({
   } = externalSettings;
   
   const jupRpcUrlToUse = jupiterRpcUrl && jupiterRpcUrl.trim() !== "" ? jupiterRpcUrl.trim() : rpcUrl;
+  const navigate = useNavigate();
   
   const signaledPositions = useRef<Set<string>>(new Set());
   const latestPricesRef = useRef<Record<string, number>>({});
@@ -1535,15 +1545,27 @@ export const PnLPage = ({
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) {
-          return parsed.map(t => ({
-            id: t.id || Math.random().toString(),
-            mint: t.mint || 'Unknown',
-            buyTime: t.buyTime || Date.now(),
-            sellTime: t.sellTime || Date.now(),
-            buyAmountSol: t.buyAmountSol !== undefined && t.buyAmountSol !== null ? Number(t.buyAmountSol) : 0,
-            sellAmountSol: t.sellAmountSol !== undefined && t.sellAmountSol !== null ? Number(t.sellAmountSol) : 0,
-            pnlPct: t.pnlPct !== undefined && t.pnlPct !== null ? Number(t.pnlPct) : 0
-          }));
+          return parsed.map(t => {
+            const buySol = t.buyAmountSol !== undefined && t.buyAmountSol !== null ? Number(t.buyAmountSol) : 0;
+            let sellSol = t.sellAmountSol !== undefined && t.sellAmountSol !== null ? Number(t.sellAmountSol) : 0;
+            let pnl = t.pnlPct !== undefined && t.pnlPct !== null ? Number(t.pnlPct) : 0;
+
+            // Sanitize corrupt historical trade where sell SOL stored raw token count
+            if (buySol > 0 && sellSol > buySol * 50 && pnl > 5000) {
+              pnl = Math.min(pnl, 100);
+              sellSol = buySol * (1 + (pnl / 100));
+            }
+
+            return {
+              id: t.id || Math.random().toString(),
+              mint: t.mint || 'Unknown',
+              buyTime: t.buyTime || Date.now(),
+              sellTime: t.sellTime || Date.now(),
+              buyAmountSol: buySol,
+              sellAmountSol: sellSol,
+              pnlPct: pnl
+            };
+          });
         }
       }
       return [];
@@ -2363,7 +2385,16 @@ export const PnLPage = ({
               isPriceInSol = false;
             }
 
-            const finalPriceInSol = isPriceInSol ? rawPrice : (rawPrice / solPriceInUsd);
+            let finalPriceInSol = isPriceInSol ? rawPrice : (rawPrice / solPriceInUsd);
+
+            // Price Sanity Guard: Prevent corrupted 1.0 SOL or equal-to-SOL prices for low-cap memecoins
+            const activePos = positionsRef.current[mint];
+            if (activePos && activePos.buyPrice > 0 && activePos.buyPrice < 0.05) {
+              if (finalPriceInSol >= 1.0 || finalPriceInSol > activePos.buyPrice * 50) {
+                // If price jumped >50x or evaluated to >=1.0 SOL, check if it's an uncalibrated default
+                finalPriceInSol = activePos.currentPrice || activePos.buyPrice;
+              }
+            }
 
             const currentBest = prices[mint];
             if (!currentBest || (isSol && !currentBest.isSol) || (isSol === currentBest.isSol && liq > currentBest.liq)) {
@@ -4174,7 +4205,13 @@ const checkTokenCriteria = (mint: string): {
             throw new Error("No lamports stored");
           }
         } catch (e: any) {
-          const grossReceived = currentPrice * (pos.amount || 0);
+          let validSellPrice = currentPrice;
+          if (pos.buyPrice > 0 && validSellPrice > pos.buyPrice * 20) {
+            // Guard against corrupted unscaled 1.0 SOL price when buy price was ~0.000001 SOL
+            validSellPrice = pos.buyPrice * (1 + Math.max(-0.9, Math.min(pnlPct, 5)));
+          }
+
+          const grossReceived = validSellPrice * (pos.amount || 0);
           const currentPnLPercent = pnlPct * 100;
           let dynamicSlippage = slippage;
           if (currentPnLPercent > 0) {
@@ -4201,6 +4238,11 @@ const checkTokenCriteria = (mint: string): {
           }
           
           netReceivedSOL = Math.max(0, fallbackNet);
+        }
+
+        // Sanity guard on netReceivedSOL to prevent storing corrupt token counts as SOL amounts
+        if (pos.solSpent > 0 && netReceivedSOL > pos.solSpent * 50 && pos.buyPrice > 0 && currentPrice < pos.buyPrice * 20) {
+          netReceivedSOL = pos.solSpent * (1 + Math.min(pnlPct, 5));
         }
 
         const actualPnlAmount = netReceivedSOL - pos.solSpent;
@@ -7507,6 +7549,31 @@ const checkTokenCriteria = (mint: string): {
           <div className="bg-[#10111a]/60 border border-[#1f212e] rounded-2xl flex flex-col shrink-0">
             <div className="p-4 border-b border-[#1f212e] flex justify-between items-center">
               <h2 className="text-[12px] uppercase tracking-[1px] text-[#94a3b8] font-bold">Trade History</h2>
+              <button
+                onClick={() => {
+                  const profitableTokenAddresses = [
+                    ...new Set(
+                      tradeHistory
+                        .filter(
+                          trade =>
+                            (!trade.status || trade.status === 'closed' || (trade.sellTime && trade.sellTime > 0)) &&
+                            ((trade.realizedPnL && trade.realizedPnL > 0) || ((trade.sellAmountSol || 0) - (trade.buyAmountSol || 0) > 0) || ((trade.pnlPct || 0) > 0)) &&
+                            (trade.tokenAddress || trade.mint)
+                        )
+                        .map(trade => trade.tokenAddress || trade.mint)
+                        .filter(addr => typeof addr === 'string' && addr.trim().length > 0 && addr !== 'Unknown')
+                    )
+                  ];
+                  navigate("/jupiter", {
+                    state: {
+                      profitableTokenAddresses
+                    }
+                  });
+                }}
+                className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white rounded-xl text-[10px] font-bold uppercase tracking-wider transition-all flex items-center gap-1.5 cursor-pointer shadow-lg shadow-indigo-600/20"
+              >
+                <span>Open in Jupiter</span>
+              </button>
             </div>
             <div className="p-4 overflow-x-auto">
           {tradeHistory.length === 0 ? (
@@ -7527,14 +7594,20 @@ const checkTokenCriteria = (mint: string): {
               <tbody>
                 {tradeHistory.map(trade => {
                   const buySol = trade.buyAmountSol || 0;
-                  const sellSol = trade.sellAmountSol || 0;
+                  let sellSol = trade.sellAmountSol || 0;
+                  let pnl = trade.pnlPct || 0;
+
+                  if (buySol > 0 && sellSol > buySol * 50 && pnl > 5000) {
+                    pnl = Math.min(pnl, 100);
+                    sellSol = buySol * (1 + (pnl / 100));
+                  }
+
                   const profitSol = sellSol - buySol;
                   const buyTime = trade.buyTime || Date.now();
                   const sellTime = trade.sellTime || Date.now();
                   const durationSecs = Math.max(0, Math.floor((sellTime - buyTime) / 1000));
                   const durationMins = Math.floor(durationSecs / 60);
                   const durationStr = durationMins > 0 ? `${durationMins}m ${durationSecs % 60}s` : `${durationSecs}s`;
-                  const pnl = trade.pnlPct || 0;
                   const mintStr = trade.mint || '';
                   const mintDisplay = mintStr.length > 12 ? `${mintStr.slice(0, 6)}...${mintStr.slice(-6)}` : mintStr || 'Unknown';
                   return (

@@ -1,4 +1,5 @@
 import {StrictMode, useMemo, useEffect} from 'react';
+import { BrowserRouter } from 'react-router-dom';
 import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
 import './index.css';
@@ -217,7 +218,9 @@ function Root() {
     <ConnectionProvider endpoint={endpoint}>
       <WalletProvider wallets={wallets} autoConnect>
         <WalletModalProvider>
-          <App />
+          <BrowserRouter>
+            <App />
+          </BrowserRouter>
         </WalletModalProvider>
       </WalletProvider>
     </ConnectionProvider>
