@@ -856,12 +856,175 @@ export const JupiterPage = ({
   user?: any;
   externalSettings?: any;
 }) => {
-  const [localBuyAmountSol, setLocalBuyAmountSol] = useState(1.0);
-  const [localMinTakeProfit, setLocalMinTakeProfit] = useState(50);
-  const [localMaxTakeProfit, setLocalMaxTakeProfit] = useState(200);
-  const [localStopLoss, setLocalStopLoss] = useState(-20);
-  const [localMaxPositions, setLocalMaxPositions] = useState(5);
-  const [localSlippage, setLocalSlippage] = useState(1.0);
+  // ── INDEPENDENT LOCAL STATE FOR JUPITER PAGE (DISCONNECTED FROM PNL PAGE & GLOBAL SETTINGS) ──
+  const [tradeAmount, setTradeAmountState] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('jup_tradeAmount');
+      if (saved !== null) {
+        const val = Number(saved);
+        if (!isNaN(val) && val > 0) return val;
+      }
+    } catch {}
+    return 1.0;
+  });
+  const setTradeAmount = (val: number) => {
+    setTradeAmountState(val);
+    try { localStorage.setItem('jup_tradeAmount', String(val)); } catch {}
+  };
+  const buyAmountSol = tradeAmount;
+  const setBuyAmountSol = setTradeAmount;
+
+  const [minTakeProfit, setMinTakeProfitState] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('jup_minTakeProfit');
+      if (saved !== null) {
+        const val = Number(saved);
+        if (!isNaN(val)) return val;
+      }
+    } catch {}
+    return 50;
+  });
+  const setMinTakeProfit = (val: number) => {
+    setMinTakeProfitState(val);
+    try { localStorage.setItem('jup_minTakeProfit', String(val)); } catch {}
+  };
+
+  const [takeProfitPct, setTakeProfitPctState] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('jup_maxTakeProfit');
+      if (saved !== null) {
+        const val = Number(saved);
+        if (!isNaN(val)) return val;
+      }
+    } catch {}
+    return 200;
+  });
+  const setTakeProfitPct = (val: number) => {
+    setTakeProfitPctState(val);
+    try { localStorage.setItem('jup_maxTakeProfit', String(val)); } catch {}
+  };
+
+  const [bondingCurveTakeProfit, setBondingCurveTakeProfitState] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('jup_bondingCurveTakeProfit');
+      if (saved !== null) {
+        const val = Number(saved);
+        if (!isNaN(val)) return val;
+      }
+    } catch {}
+    return 25;
+  });
+  const setBondingCurveTakeProfit = (val: number) => {
+    setBondingCurveTakeProfitState(val);
+    try { localStorage.setItem('jup_bondingCurveTakeProfit', String(val)); } catch {}
+  };
+
+  const [stopLoss, setStopLossState] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('jup_stopLoss');
+      if (saved !== null) {
+        const val = Number(saved);
+        if (!isNaN(val)) return val;
+      }
+    } catch {}
+    return -20;
+  });
+  const setStopLoss = (val: number) => {
+    setStopLossState(val);
+    try { localStorage.setItem('jup_stopLoss', String(val)); } catch {}
+  };
+
+  const [bondingCurveStopLoss, setBondingCurveStopLossState] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('jup_bondingCurveStopLoss');
+      if (saved !== null) {
+        const val = Number(saved);
+        if (!isNaN(val)) return val;
+      }
+    } catch {}
+    return -15;
+  });
+  const setBondingCurveStopLoss = (val: number) => {
+    setBondingCurveStopLossState(val);
+    try { localStorage.setItem('jup_bondingCurveStopLoss', String(val)); } catch {}
+  };
+
+  const [pumpSwapStopLoss, setPumpSwapStopLossState] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('jup_pumpSwapStopLoss');
+      if (saved !== null) {
+        const val = Number(saved);
+        if (!isNaN(val)) return val;
+      }
+    } catch {}
+    return -15;
+  });
+  const setPumpSwapStopLoss = (val: number) => {
+    setPumpSwapStopLossState(val);
+    try { localStorage.setItem('jup_pumpSwapStopLoss', String(val)); } catch {}
+  };
+
+  const [unknownStopLoss, setUnknownStopLossState] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('jup_unknownStopLoss');
+      if (saved !== null) {
+        const val = Number(saved);
+        if (!isNaN(val)) return val;
+      }
+    } catch {}
+    return -20;
+  });
+  const setUnknownStopLoss = (val: number) => {
+    setUnknownStopLossState(val);
+    try { localStorage.setItem('jup_unknownStopLoss', String(val)); } catch {}
+  };
+
+  const [maxPositions, setMaxPositionsState] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('jup_maxPositions');
+      if (saved !== null) {
+        const val = Number(saved);
+        if (!isNaN(val)) return val;
+      }
+    } catch {}
+    return 5;
+  });
+  const setMaxPositions = (val: number) => {
+    setMaxPositionsState(val);
+    try { localStorage.setItem('jup_maxPositions', String(val)); } catch {}
+  };
+
+  const [slippage, setSlippageState] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('jup_slippage');
+      if (saved !== null) {
+        const val = Number(saved);
+        if (!isNaN(val)) return val;
+      }
+    } catch {}
+    return 1.0;
+  });
+  const setSlippage = (val: number) => {
+    setSlippageState(val);
+    try { localStorage.setItem('jup_slippage', String(val)); } catch {}
+  };
+
+  const [maxRebuyTimes, setMaxRebuyTimesState] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('jup_maxRebuyTimes');
+      if (saved !== null) {
+        const val = Number(saved);
+        if (!isNaN(val)) return val;
+      }
+    } catch {}
+    return 3;
+  });
+  const setMaxRebuyTimes = (val: number) => {
+    setMaxRebuyTimesState(val);
+    try { localStorage.setItem('jup_maxRebuyTimes', String(val)); } catch {}
+  };
+
+  // Local fallback for RPC & key settings
   const [localRpcUrl, setLocalRpcUrl] = useState('https://api.mainnet-beta.solana.com');
   const [localRpcUrl2, setLocalRpcUrl2] = useState('');
   const [localCustomWsUrl, setLocalCustomWsUrl] = useState('');
@@ -870,16 +1033,6 @@ export const JupiterPage = ({
   const [localPrivateKey, setLocalPrivateKey] = useState('');
 
   const {
-    buyAmountSol = localBuyAmountSol, setBuyAmountSol = setLocalBuyAmountSol,
-    maxTakeProfit: takeProfitPct = localMaxTakeProfit, setMaxTakeProfit: setTakeProfitPct = setLocalMaxTakeProfit,
-    minTakeProfit = localMinTakeProfit, setMinTakeProfit = setLocalMinTakeProfit,
-    bondingCurveTakeProfit = 25, setBondingCurveTakeProfit = () => {},
-    stopLoss = localStopLoss, setStopLoss = setLocalStopLoss,
-    bondingCurveStopLoss = -15, setBondingCurveStopLoss = () => {},
-    pumpSwapStopLoss = -15, setPumpSwapStopLoss = () => {},
-    unknownStopLoss = -20, setUnknownStopLoss = () => {},
-    maxPositions = localMaxPositions, setMaxPositions = setLocalMaxPositions,
-    slippage = localSlippage, setSlippage = setLocalSlippage,
     hardenedMinBondingProgress = 0, setHardenedMinBondingProgress = () => {},
     hardenedMaxBondingProgress = 100, setHardenedMaxBondingProgress = () => {},
     hardenedMinAge = 0, setHardenedMinAge = () => {},
@@ -908,10 +1061,10 @@ export const JupiterPage = ({
     tradeUnknown = true, setTradeUnknown = () => {},
     hardenedMinProfit5m = 1.5, setHardenedMinProfit5m = () => {},
     enableLatencyGuard = true, setEnableLatencyGuard = () => {},
-    rpcUrl, setRpcUrl,
-    rpcUrl2, setRpcUrl2,
+    rpcUrl = localRpcUrl, setRpcUrl = setLocalRpcUrl,
+    rpcUrl2 = localRpcUrl2, setRpcUrl2 = setLocalRpcUrl2,
     isSecondaryActive = false, setIsSecondaryActive = () => {},
-    customWsUrl, setCustomWsUrl,
+    customWsUrl = localCustomWsUrl, setCustomWsUrl = setLocalCustomWsUrl,
     telemetryWhaleBuyMin = 500000, setTelemetryWhaleBuyMin = () => {},
     telemetryHighBuyMin = 100000, setTelemetryHighBuyMin = () => {},
     telemetryVolumeSpikeMin = 1000, setTelemetryVolumeSpikeMin = () => {},
@@ -922,19 +1075,14 @@ export const JupiterPage = ({
     telemetryAllowGoldenCross = true, setTelemetryAllowGoldenCross = () => {},
     manualGemInput = '',
     setManualGemInput = () => {},
-    maxRebuyTimes = 3,
-    setMaxRebuyTimes = () => {},
-    apiKey = '',
-    setApiKey = () => {},
-    jupiterRpcUrl = '',
-    setJupiterRpcUrl = () => {},
-    privateKey = '',
-    setPrivateKey = () => {},
+    apiKey = localApiKey,
+    setApiKey = setLocalApiKey,
+    jupiterRpcUrl = localJupiterRpcUrl,
+    setJupiterRpcUrl = setLocalJupiterRpcUrl,
+    privateKey = localPrivateKey,
+    setPrivateKey = setLocalPrivateKey,
     onPositionsChange
   } = externalSettings;
-  
-  const tradeAmount = buyAmountSol;
-  const setTradeAmount = setBuyAmountSol;
   
   const jupRpcUrlToUse = jupiterRpcUrl && jupiterRpcUrl.trim() !== "" ? jupiterRpcUrl.trim() : rpcUrl;
   const navigate = useNavigate();
