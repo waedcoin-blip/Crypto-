@@ -2348,6 +2348,40 @@ export const JupiterPage = ({
     ftpHost, ftpUser, ftpPass, ftpDir, ftpWebUrl, ftpSecure,
     simWalletBalance, blacklistedMints, positions, stats, tradeHistory
   ]);
+
+  const syncStatsAndHistoryDirectly = async (updatedStats: any, updatedHistory: any[]) => {
+    if (!user) return;
+    try {
+      const docRef = doc(db, 'settings', user.uid);
+      const statsStr = JSON.stringify(updatedStats);
+      const historyStr = JSON.stringify(updatedHistory);
+      
+      if (lastLoadedSettingsRef.current) {
+        lastLoadedSettingsRef.current = {
+          ...lastLoadedSettingsRef.current,
+          stats: statsStr,
+          tradeHistory: historyStr
+        };
+      }
+      
+      await setDoc(docRef, {
+        stats: statsStr,
+        tradeHistory: historyStr,
+        updatedAt: new Date().toISOString()
+      }, { merge: true });
+      
+      addLog({
+        id: 'direct-sync-' + Date.now(),
+        time: new Date().toLocaleTimeString(),
+        timestamp: Date.now(),
+        msg: '⚡ Session Stats and Trade History successfully synchronized with Firestore Cloud.',
+        type: 'success'
+      });
+    } catch (err: any) {
+      console.error('Error in syncStatsAndHistoryDirectly:', err);
+    }
+  };
+
   useEffect(() => {
     localStorage.setItem('juipter_auto_isRunning', isRunning.toString());
   }, [isRunning]);
@@ -4541,17 +4575,18 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
               const actualPnlSOL = costBasisSol > 0 ? actualSolReceived - costBasisSol : 0;
               const actualPnlPct = costBasisSol > 0 ? actualPnlSOL / costBasisSol : 0;
               
-              setStats((s) => ({
-                ...s,
-                trades: s.trades + 1,
-                wins: s.wins + (actualPnlPct > 0 ? 1 : 0),
-                losses: s.losses + (actualPnlPct <= 0 ? 1 : 0),
-                pnl: s.pnl + actualPnlSOL,
-                bestTrade: (actualPnlPct > 0 && (!s.bestTrade || actualPnlPct > s.bestTrade)) ? actualPnlPct : s.bestTrade
-              }));
+              const updatedStats = {
+                ...stats,
+                trades: stats.trades + 1,
+                wins: stats.wins + (actualPnlPct > 0 ? 1 : 0),
+                losses: stats.losses + (actualPnlPct <= 0 ? 1 : 0),
+                pnl: stats.pnl + actualPnlSOL,
+                bestTrade: (actualPnlPct > 0 && (!stats.bestTrade || actualPnlPct > stats.bestTrade)) ? actualPnlPct : stats.bestTrade
+              };
+              setStats(updatedStats);
               addLog(`✅ Sold ${pos.symbol} on-chain | Received: ${actualSolReceived.toFixed(6)} SOL | P&L: ${(actualPnlPct * 100).toFixed(1)}% | tx: ${result.txid.slice(0, 12)}...`, 'sell');
               
-              setTradeHistory(th => [{
+              const newTrade = {
                 id: `trade-${Date.now()}`,
                 mint: mint,
                 buyTime: pos.entryTime,
@@ -4559,7 +4594,12 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
                 buyAmountSol: costBasisSol,
                 sellAmountSol: actualSolReceived,
                 pnlPct: Math.max(-100, actualPnlPct * 100)
-              }, ...th]);
+              };
+              const updatedHistory = [newTrade, ...tradeHistory];
+              setTradeHistory(updatedHistory);
+
+              // Force direct, synchronous-like cloud database save to prevent lost metrics on immediate refresh
+              syncStatsAndHistoryDirectly(updatedStats, updatedHistory);
 
               if (pnlPct < 0) {
                 setBlacklistedMints(prev => Array.from(new Set([...prev, mint])));
@@ -4692,17 +4732,19 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
         const walletNetPnlPct = (realWalletReturn - pos.solSpent) / pos.solSpent;
         setSimWalletBalance(prev => prev + realWalletReturn);
 
-        setStats((s) => ({
-          trades: s.trades + 1,
-          wins: s.wins + (walletNetPnlPct > 0 ? 1 : 0),
-          losses: s.losses + (walletNetPnlPct <= 0 ? 1 : 0),
-          pnl: s.pnl + (realWalletReturn - pos.solSpent), 
-          bestTrade: (walletNetPnlPct > 0 && (!s.bestTrade || walletNetPnlPct > s.bestTrade)) ? walletNetPnlPct : s.bestTrade
-        }));
+        const updatedStats = {
+          ...stats,
+          trades: stats.trades + 1,
+          wins: stats.wins + (walletNetPnlPct > 0 ? 1 : 0),
+          losses: stats.losses + (walletNetPnlPct <= 0 ? 1 : 0),
+          pnl: stats.pnl + (realWalletReturn - pos.solSpent), 
+          bestTrade: (walletNetPnlPct > 0 && (!stats.bestTrade || walletNetPnlPct > stats.bestTrade)) ? walletNetPnlPct : stats.bestTrade
+        };
+        setStats(updatedStats);
 
         addLog(`✅ [SIM] Sold ${pos.symbol} | Net P&L: ${(walletNetPnlPct * 100).toFixed(1)}% (Wallet)`, 'sell');
         
-        setTradeHistory(th => [{
+        const newTrade = {
           id: `sim-sell-${Date.now()}`,
           mint: mint,
           buyTime: pos.entryTime,
@@ -4710,7 +4752,12 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
           buyAmountSol: pos.solSpent,
           sellAmountSol: realWalletReturn, 
           pnlPct: walletNetPnlPct * 100
-        }, ...th]);
+        };
+        const updatedHistory = [newTrade, ...tradeHistory];
+        setTradeHistory(updatedHistory);
+
+        // Force direct, synchronous-like cloud database save to prevent lost metrics on immediate refresh
+        syncStatsAndHistoryDirectly(updatedStats, updatedHistory);
 
         if (actualPnlPct < 0) {
           setBlacklistedMints(prev => Array.from(new Set([...prev, mint])));
@@ -5129,32 +5176,16 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
                pnlPct = (expectedSolOut - spentSol) / spentSol;
             }
 
-            let inRecoveryMode = pos.recoveryMode;
-            if (!inRecoveryMode && pnlPct <= -0.50) {
-              inRecoveryMode = true;
-              addLog(`RECOVERY MODE: ${pos.symbol} dropped to -50%. Will auto-sell at breakeven.`, 'warn');
-            }
-
-            // General Position Strategy
+            // General Position Strategy (strictly enforce user-configured TP & SL)
             const isMainActive = typeof pos.amount === 'number' && pos.amount > 0;
             if (isMainActive) {
               const activePnL = netPnlPct;
               if (activePnL >= currentTakeProfit / 100) {
-                 executeReason = `TAKE PROFIT: ${pos.symbol} +${(activePnL * 100).toFixed(1)}% (NET)`;
-                 safeToExecute = true;
-              } else if (inRecoveryMode && activePnL >= 0) {
-                 executeReason = `RECOVERY BREAKEVEN: ${pos.symbol} returned capital`;
-                 safeToExecute = true;
-              } else if (inRecoveryMode && activePnL <= -0.85) {
-                executeReason = `RECOVERY FAILED: ${pos.symbol} hard stop at -85%`;
+                executeReason = `TAKE PROFIT: ${pos.symbol} +${(activePnL * 100).toFixed(1)}% (NET)`;
                 safeToExecute = true;
               } else if (activePnL <= -currentSLPct / 100) {
-                if (isHoldProtected) {
-                   if (Math.random() < 0.1) addLog(`[HOLD BUFFER]: ${pos.symbol} at Stop Loss limit but under 25s hold time. Waiting.`, 'info');
-                } else {
-                   executeReason = `STOP LOSS: ${pos.symbol} ${(activePnL * 100).toFixed(1)}% (NET)`;
-                   safeToExecute = true;
-                }
+                executeReason = `STOP LOSS: ${pos.symbol} ${(activePnL * 100).toFixed(1)}% (NET)`;
+                safeToExecute = true;
               }
             }
 
@@ -5170,7 +5201,7 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
                 }
                 const existing = cPos[mint] || positionsRef.current[mint];
                 if (!existing) return cPos;
-                const updated = { ...existing, ...pos, currentPrice, recoveryMode: inRecoveryMode, isStale: !!batchedPrices[mint]?.isStale, realNetPnl: netPnlPct, realNetSol: netPnlPct * (existing.solSpent || 1) };
+                const updated = { ...existing, ...pos, currentPrice, isStale: !!batchedPrices[mint]?.isStale, realNetPnl: netPnlPct, realNetSol: netPnlPct * (existing.solSpent || 1) };
                 const res = { ...cPos, [mint]: updated };
                 positionsRef.current = res;
                 return res;
@@ -5178,37 +5209,20 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
             }
           } else {
             // Live/Fallback Logic
-            const quote: any = undefined;
             const currentGrossSol = currentPrice * (pos.amount || 0);
             let netSolIfSold = currentGrossSol;
             pnlPct = (netSolIfSold - (pos.solSpent || 0)) / (pos.solSpent || 1);
 
-            let inRecoveryMode = pos.recoveryMode;
-            if (!inRecoveryMode && pnlPct <= -0.50) {
-                inRecoveryMode = true;
-                addLog(`RECOVERY MODE: ${pos.symbol} dropped to -50%. Will auto-sell at breakeven.`, 'warn');
-            }
-
-            // General Position Strategy
+            // General Position Strategy (strictly enforce user-configured TP & SL)
             const isMainActive = typeof pos.amount === 'number' && pos.amount > 0;
             if (isMainActive) {
               const activePnL = pnlPct;
-              if (inRecoveryMode && activePnL >= 0) {
-                  executeReason = `RECOVERY BREAKEVEN: ${pos.symbol} returned capital`;
-                  safeToExecute = true;
-              } else if (inRecoveryMode && activePnL <= -0.85) {
-                executeReason = `RECOVERY FAILED: ${pos.symbol} hard stop at -85%`;
+              if (activePnL >= currentTakeProfit / 100) {
+                executeReason = `TAKE PROFIT: ${pos.symbol} +${(activePnL * 100).toFixed(1)}%`;
                 safeToExecute = true;
-              } else if (activePnL >= currentTakeProfit / 100) {
-                   executeReason = `TAKE PROFIT: ${pos.symbol} +${(activePnL * 100).toFixed(1)}%`;
-                   safeToExecute = true;
               } else if (activePnL <= -currentSLPct / 100) {
-                if (isHoldProtected) {
-                  if (Math.random() < 0.1) addLog(`[HOLD BUFFER]: ${pos.symbol} hitting Stop Loss. Waiting for 25s limit.`, 'info');
-                } else {
-                  executeReason = `STOP LOSS: ${pos.symbol} ${(activePnL * 100).toFixed(1)}%`;
-                  safeToExecute = true;
-                }
+                executeReason = `STOP LOSS: ${pos.symbol} ${(activePnL * 100).toFixed(1)}%`;
+                safeToExecute = true;
               }
             }
 
@@ -5224,7 +5238,7 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
                 }
                 const existing = cPos[mint] || positionsRef.current[mint];
                 if (!existing) return cPos;
-                const updated = { ...existing, ...pos, currentPrice, recoveryMode: inRecoveryMode, isStale: !!batchedPrices[mint]?.isStale, realNetPnl: pnlPct, realNetSol: netSolIfSold - (existing.solSpent || 0) };
+                const updated = { ...existing, ...pos, currentPrice, isStale: !!batchedPrices[mint]?.isStale, realNetPnl: pnlPct, realNetSol: netSolIfSold - (existing.solSpent || 0) };
                 const res = { ...cPos, [mint]: updated };
                 positionsRef.current = res;
                 return res;
