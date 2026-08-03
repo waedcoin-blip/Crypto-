@@ -1544,7 +1544,10 @@ export const JupiterPage = ({
         let previouslyBought: string[] = [];
         try {
           const pb = localStorage.getItem('auto_bought_profitable_tokens');
-          if (pb) previouslyBought = JSON.parse(pb) || [];
+          if (pb) {
+            const parsed = JSON.parse(pb);
+            if (Array.isArray(parsed)) previouslyBought = parsed;
+          }
         } catch (e) {}
 
         const newTokensToBuy = tokens.filter(t => !previouslyBought.includes(t));
@@ -3410,6 +3413,26 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
     if (mint === 'So11111111111111111111111111111111111111112' || mint.toLowerCase() === 'so11111111111111111111111111111111111111112') {
       return { pass: false, reason: "Solana native token cannot be added as an active tradeable position." };
     }
+
+    // STRICT MODE: ONLY trade tokens that were profitable in PnL history
+    let profitableTokens: string[] = [];
+    try {
+      const stored = localStorage.getItem('auto_bought_profitable_tokens');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) profitableTokens = parsed;
+      }
+      const pending = localStorage.getItem('pnl_profitable_token_addresses');
+      if (pending) {
+        const parsed = JSON.parse(pending);
+        if (Array.isArray(parsed)) profitableTokens = [...profitableTokens, ...parsed];
+      }
+    } catch(e) {}
+    
+    if (!Array.isArray(profitableTokens) || !profitableTokens.includes(mint)) {
+       return { pass: false, reason: "Strict Mode: Token is not in PnL profitable history." };
+    }
+
     const {
       tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown,
       hardenedMcapMinRaydium, hardenedMcapMinPump, hardenedMcapMax,
@@ -3739,11 +3762,10 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
     const metricForProfitCheck = tokenMetricsRef.current[mint];
     const profit5m = metricForProfitCheck ? (metricForProfitCheck.priceChange5m !== undefined ? metricForProfitCheck.priceChange5m : (metricForProfitCheck.percentageIncrease !== undefined ? metricForProfitCheck.percentageIncrease : (metricForProfitCheck.priceChange1m || 0))) : 0;
     const requiredMinProfit = hardenedMinProfit5m !== undefined ? hardenedMinProfit5m : 1.5;
-
-    if (profit5m < requiredMinProfit && (hardenedMatchRequirement || 100) === 100) {
+    if (!isManualDirectBuy && profit5m < requiredMinProfit && (hardenedMatchRequirement || 100) === 100) {
       addLog(`❌ [5M PROFIT BLOCK] Skipped buy of ${symbol} (${mint.slice(0, 8)}...): Last 5-minute profit of ${profit5m.toFixed(2)}% is below the required ${requiredMinProfit.toFixed(2)}% threshold for active positions.`, 'warn');
       return;
-    } else {
+    } else if (!isManualDirectBuy) {
       addLog(`🔍 [5M PROFIT CHECK] ${symbol} has a 5-minute profit/growth of ${profit5m.toFixed(2)}% (Target required minimum: ${requiredMinProfit.toFixed(2)}%)`, 'info');
     }
 
@@ -4172,13 +4194,22 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
                 try {
                   const stored = localStorage.getItem('auto_bought_profitable_tokens');
                   if (stored) {
-                    let parsed = JSON.parse(stored) || [];
-                    parsed = parsed.filter((t: string) => t !== mint);
-                    localStorage.setItem('auto_bought_profitable_tokens', JSON.stringify(parsed));
+                    try {
+                      let parsed = JSON.parse(stored);
+                      if (Array.isArray(parsed)) {
+                        parsed = parsed.filter((t: string) => t !== mint);
+                        localStorage.setItem('auto_bought_profitable_tokens', JSON.stringify(parsed));
+                      }
+                    } catch(e) {}
                   }
                   const storedPnl = localStorage.getItem('pnl_profitable_token_addresses');
-                  let parsedPnl = [];
-                  if (storedPnl) parsedPnl = JSON.parse(storedPnl);
+                  let parsedPnl: string[] = [];
+                  if (storedPnl) {
+                    try {
+                      const p = JSON.parse(storedPnl);
+                      if (Array.isArray(p)) parsedPnl = p;
+                    } catch(e) {}
+                  }
                   parsedPnl.push(mint);
                   localStorage.setItem('pnl_profitable_token_addresses', JSON.stringify([...new Set(parsedPnl)]));
                   addLog(`🔄 [REBUY QUEUE] Token ${pos.symbol} was profitable on-chain. Added back to trade queue!`, 'success');
@@ -4314,13 +4345,22 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
           try {
             const stored = localStorage.getItem('auto_bought_profitable_tokens');
             if (stored) {
-              let parsed = JSON.parse(stored) || [];
-              parsed = parsed.filter((t: string) => t !== mint);
-              localStorage.setItem('auto_bought_profitable_tokens', JSON.stringify(parsed));
+              try {
+                let parsed = JSON.parse(stored);
+                if (Array.isArray(parsed)) {
+                  parsed = parsed.filter((t: string) => t !== mint);
+                  localStorage.setItem('auto_bought_profitable_tokens', JSON.stringify(parsed));
+                }
+              } catch(e) {}
             }
             const storedPnl = localStorage.getItem('pnl_profitable_token_addresses');
-            let parsedPnl = [];
-            if (storedPnl) parsedPnl = JSON.parse(storedPnl);
+            let parsedPnl: string[] = [];
+            if (storedPnl) {
+              try {
+                const p = JSON.parse(storedPnl);
+                if (Array.isArray(p)) parsedPnl = p;
+              } catch(e) {}
+            }
             parsedPnl.push(mint);
             localStorage.setItem('pnl_profitable_token_addresses', JSON.stringify([...new Set(parsedPnl)]));
             addLog(`🔄 [REBUY QUEUE] Token ${pos.symbol} was profitable in simulation. Added back to trade queue!`, 'success');
