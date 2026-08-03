@@ -1522,26 +1522,41 @@ export const JupiterPage = ({
   }, [retentionLimit, setLogs]);
 
   useEffect(() => {
-    const timer = setTimeout(() => {
+    const timer = setInterval(() => {
       const state = location.state as any;
-      const stateTokens: string[] = state?.profitableTokenAddresses || [];
+      const stateTokens: string[] = Array.isArray(state?.profitableTokenAddresses) ? state.profitableTokenAddresses : [];
       let storedTokens: string[] = [];
       
       try {
         const stored = localStorage.getItem('pnl_profitable_token_addresses');
         if (stored) {
-          storedTokens = JSON.parse(stored);
+          const parsed = JSON.parse(stored);
+          if (Array.isArray(parsed)) {
+            storedTokens = parsed;
+          }
         }
       } catch (e) {}
 
       const tokens = [...new Set([...stateTokens, ...storedTokens])];
 
       if (tokens && tokens.length > 0) {
-        const signature = tokens.join(',');
-        if (processedPnLRef.current !== signature) {
-          processedPnLRef.current = signature;
-          addLog(`🚀 [PNL SYNC] Received ${tokens.length} profitable token address(es) from PnLPage trade history:`, 'success', 'system');
-          tokens.forEach(async (addr: string) => {
+        // Track historically bought ones to avoid duplicate re-buys when jumping between tabs
+        let previouslyBought: string[] = [];
+        try {
+          const pb = localStorage.getItem('auto_bought_profitable_tokens');
+          if (pb) previouslyBought = JSON.parse(pb) || [];
+        } catch (e) {}
+
+        const newTokensToBuy = tokens.filter(t => !previouslyBought.includes(t));
+
+        if (newTokensToBuy.length > 0) {
+          try {
+            localStorage.setItem('auto_bought_profitable_tokens', JSON.stringify([...previouslyBought, ...newTokensToBuy]));
+            localStorage.removeItem('pnl_profitable_token_addresses'); // clean up pending
+          } catch(e) {}
+          
+          addLog(`🚀 [PNL SYNC] Received ${newTokensToBuy.length} NEW profitable token address(es) from PnLPage trade history:`, 'success', 'system');
+          newTokensToBuy.forEach(async (addr: string) => {
             addLog(`💎 [SYSTEM LOG - PROFITABLE TOKEN] Address: ${addr}`, 'success', 'system', { tokenAddress: addr, source: 'PnLPage' });
             
             try {
@@ -1593,8 +1608,8 @@ export const JupiterPage = ({
           });
         }
       }
-    }, 0);
-    return () => clearTimeout(timer);
+    }, 3000);
+    return () => clearInterval(timer);
   }, [location.state, tradeAmount, addLog, openSimPosition]);
 
 
@@ -1623,7 +1638,7 @@ export const JupiterPage = ({
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) {
-          return parsed.map(t => {
+          return parsed.filter(t => t !== null && typeof t === 'object').map(t => {
             const buySol = t.buyAmountSol !== undefined && t.buyAmountSol !== null ? Number(t.buyAmountSol) : 0;
             let sellSol = t.sellAmountSol !== undefined && t.sellAmountSol !== null ? Number(t.sellAmountSol) : 0;
             let pnl = t.pnlPct !== undefined && t.pnlPct !== null ? Number(t.pnlPct) : 0;
@@ -1654,6 +1669,7 @@ export const JupiterPage = ({
   useEffect(() => {
     tradeHistoryRef.current = tradeHistory;
   }, [tradeHistory]);
+
   const [uptime, setUptime] = useState(() => Number(localStorage.getItem('juipter_auto_uptime')) || 0);
   const [blacklistedMints, setBlacklistedMints] = useState<string[]>(() => {
     try {
@@ -3626,7 +3642,6 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
   };
   
   const executeBuy = async (mint: string, symbol: string, price: any, solAmount: number, isManualDirectBuy = false) => {
-    executeBuyRef.current = executeBuy;
     const { maxPositions, privateKey, slippage } = configRef.current;
     // Block any token starting with 'sim' if privateKey is active
     if (privateKey && (mint.toLowerCase().startsWith('sim') || (symbol && symbol.toLowerCase().startsWith('sim')))) {
@@ -4068,6 +4083,10 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
     await executeBuy(mint, symbol, priceNative, tradeSol, true);
   }, [executeBuy, addLog, tradeAmount]);
 
+  useEffect(() => {
+    executeBuyRef.current = executeBuy;
+  }, [executeBuy]);
+
   const executeSell = async (mint: string, currentPrice: number, pnlPct: number, reason: string = '') => {
     const { privateKey, slippage } = configRef.current;
     let pos = positionsRef.current[mint];
@@ -4149,6 +4168,21 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
               if (pnlPct < 0) {
                 setBlacklistedMints(prev => Array.from(new Set([...prev, mint])));
                 addLog(`Blacklisted ${pos.symbol} due to negative PnL.`, 'warn');
+              } else if (actualPnlPct > 0) {
+                try {
+                  const stored = localStorage.getItem('auto_bought_profitable_tokens');
+                  if (stored) {
+                    let parsed = JSON.parse(stored) || [];
+                    parsed = parsed.filter((t: string) => t !== mint);
+                    localStorage.setItem('auto_bought_profitable_tokens', JSON.stringify(parsed));
+                  }
+                  const storedPnl = localStorage.getItem('pnl_profitable_token_addresses');
+                  let parsedPnl = [];
+                  if (storedPnl) parsedPnl = JSON.parse(storedPnl);
+                  parsedPnl.push(mint);
+                  localStorage.setItem('pnl_profitable_token_addresses', JSON.stringify([...new Set(parsedPnl)]));
+                  addLog(`🔄 [REBUY QUEUE] Token ${pos.symbol} was profitable on-chain. Added back to trade queue!`, 'success');
+                } catch (e) {}
               }
               isMainSold = true;
             } else {
@@ -4276,6 +4310,21 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
         if (actualPnlPct < 0) {
           setBlacklistedMints(prev => Array.from(new Set([...prev, mint])));
           addLog(`Blacklisted ${pos.symbol} due to negative PnL.`, 'warn');
+        } else if (actualPnlPct > 0) {
+          try {
+            const stored = localStorage.getItem('auto_bought_profitable_tokens');
+            if (stored) {
+              let parsed = JSON.parse(stored) || [];
+              parsed = parsed.filter((t: string) => t !== mint);
+              localStorage.setItem('auto_bought_profitable_tokens', JSON.stringify(parsed));
+            }
+            const storedPnl = localStorage.getItem('pnl_profitable_token_addresses');
+            let parsedPnl = [];
+            if (storedPnl) parsedPnl = JSON.parse(storedPnl);
+            parsedPnl.push(mint);
+            localStorage.setItem('pnl_profitable_token_addresses', JSON.stringify([...new Set(parsedPnl)]));
+            addLog(`🔄 [REBUY QUEUE] Token ${pos.symbol} was profitable in simulation. Added back to trade queue!`, 'success');
+          } catch (e) {}
         }
         isMainSold = true;
       }

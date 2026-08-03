@@ -184,26 +184,6 @@ const TerminalConsole: React.FC<TerminalConsoleProps> = ({ logs, setLogs, retent
     return { total: logs.length, errs, warns, success, info, trades };
   }, [logs]);
 
-  // Auto-update profitable tokens to localStorage
-  useEffect(() => {
-    const profitableTokenAddresses = [
-      ...new Set(
-        tradeHistory
-          .filter(
-            (trade: any) =>
-              (!trade.status || trade.status === 'closed' || (trade.sellTime && trade.sellTime > 0)) &&
-              ((trade.realizedPnL && trade.realizedPnL > 0) || ((trade.sellAmountSol || 0) - (trade.buyAmountSol || 0) > 0) || ((trade.pnlPct || 0) > 0)) &&
-              (trade.tokenAddress || trade.mint)
-          )
-          .map((trade: any) => trade.tokenAddress || trade.mint)
-          .filter(addr => typeof addr === 'string' && addr.trim().length > 0 && addr !== 'Unknown')
-      )
-    ];
-    try {
-      localStorage.setItem('pnl_profitable_token_addresses', JSON.stringify(profitableTokenAddresses));
-    } catch (e) {}
-  }, [tradeHistory]);
-
   // Capture snapshot of logs ONLY when frozen starts
   useEffect(() => {
     if (isPaused) {
@@ -1566,7 +1546,7 @@ export const PnLPage = ({
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) {
-          return parsed.map(t => {
+          return parsed.filter(t => t !== null && typeof t === 'object').map(t => {
             const buySol = t.buyAmountSol !== undefined && t.buyAmountSol !== null ? Number(t.buyAmountSol) : 0;
             let sellSol = t.sellAmountSol !== undefined && t.sellAmountSol !== null ? Number(t.sellAmountSol) : 0;
             let pnl = t.pnlPct !== undefined && t.pnlPct !== null ? Number(t.pnlPct) : 0;
@@ -1597,6 +1577,27 @@ export const PnLPage = ({
   useEffect(() => {
     tradeHistoryRef.current = tradeHistory;
   }, [tradeHistory]);
+
+  // Auto-update profitable tokens to localStorage
+  useEffect(() => {
+    const profitableTokenAddresses = [
+      ...new Set(
+        tradeHistory
+          .filter(
+            (trade: any) =>
+              (!trade.status || trade.status === 'closed' || (trade.sellTime && trade.sellTime > 0)) &&
+              ((trade.realizedPnL && trade.realizedPnL > 0) || ((trade.sellAmountSol || 0) - (trade.buyAmountSol || 0) > 0) || ((trade.pnlPct || 0) > 0)) &&
+              (trade.tokenAddress || trade.mint)
+          )
+          .map((trade: any) => trade.tokenAddress || trade.mint)
+          .filter(addr => typeof addr === 'string' && addr.trim().length > 0 && addr !== 'Unknown')
+      )
+    ];
+    try {
+      localStorage.setItem('pnl_profitable_token_addresses', JSON.stringify(profitableTokenAddresses));
+    } catch (e) {}
+  }, [tradeHistory]);
+
   const [uptime, setUptime] = useState(() => Number(localStorage.getItem('juipter_auto_uptime')) || 0);
   const [blacklistedMints, setBlacklistedMints] = useState<string[]>(() => {
     try {
