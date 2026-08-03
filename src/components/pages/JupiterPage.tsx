@@ -1594,8 +1594,17 @@ export const JupiterPage = ({
 
     if (typeof msgOrEvent === 'string') {
       finalMsg = msgOrEvent;
-      // Intelligently infer category from msg content
       const msgUpper = finalMsg.toUpperCase();
+
+      // DISABILITY / SUPPRESSION: Disallow DexScreener Engine and Bot Protocol updates from system logs as requested
+      if (
+        msgUpper.includes('DEXSCREENER ENGINE') ||
+        msgUpper.includes('BOT PROTOCOL') ||
+        msgUpper.includes('DEXSCREENER')
+      ) {
+        return;
+      }
+
       if (msgUpper.includes('SWAP') || msgUpper.includes('BUY') || msgUpper.includes('SELL') || msgUpper.includes('TRADE') || msgUpper.includes('TRIGGER') || msgUpper.includes('ENTRY')) {
         finalCategory = 'trade';
       } else if (msgUpper.includes('SCAN') || msgUpper.includes('CRITERIA') || msgUpper.includes('DIAGNOSTICS') || msgUpper.includes('HEARTBEAT')) {
@@ -1612,6 +1621,16 @@ export const JupiterPage = ({
       finalType = msgOrEvent.type || 'info';
       finalCategory = msgOrEvent.category || 'system';
       finalMetadata = msgOrEvent.metadata;
+
+      const msgUpper = finalMsg.toUpperCase();
+      if (
+        msgUpper.includes('DEXSCREENER ENGINE') ||
+        msgUpper.includes('BOT PROTOCOL') ||
+        msgUpper.includes('DEXSCREENER') ||
+        finalCategory === 'dexscreener'
+      ) {
+        return;
+      }
     }
 
     setLogs((prev) => {
@@ -1669,99 +1688,175 @@ export const JupiterPage = ({
     });
   }, [retentionLimit, setLogs]);
 
+  // Ref tracking tokens currently in active PnL sync processing to prevent double buys
+  const processingPnlTokensRef = useRef<Set<string>>(new Set());
+
+  // Ultra-fast zero-latency PnL trade history sync executor
+  const processPnlTokens = useCallback((incomingTokens: string[]) => {
+    if (!Array.isArray(incomingTokens) || incomingTokens.length === 0) return;
+
+    // Sanitize valid mint addresses
+    const validTokens = incomingTokens
+      .map(t => (typeof t === 'string' ? t.trim() : ''))
+      .filter(t => t.length >= 32 && t !== 'So11111111111111111111111111111111111111112' && t !== 'Unknown');
+
+    if (validTokens.length === 0) return;
+
+    // Persist all received PnL tokens into master set so checkTokenCriteria passes
+    try {
+      const existingMasterStr = localStorage.getItem('pnl_all_history_tokens');
+      const existingMaster: string[] = existingMasterStr ? JSON.parse(existingMasterStr) : [];
+      const updatedMaster = [...new Set([...existingMaster, ...validTokens])];
+      localStorage.setItem('pnl_all_history_tokens', JSON.stringify(updatedMaster));
+    } catch (e) {}
+
+    // Find tokens that need to be traded (skip if already active open position or currently being executed)
+    const tokensToProcess = validTokens.filter(addr => {
+      if (positionsRef.current && positionsRef.current[addr]) return false;
+      if (processingPnlTokensRef.current.has(addr)) return false;
+      return true;
+    });
+
+    if (tokensToProcess.length === 0) return;
+
+    addLog(`🚀 [PNL SYNC] Received ${tokensToProcess.length} token address(es) from PnLPage trade history:`, 'success', 'system');
+
+    tokensToProcess.forEach((addr: string) => {
+      processingPnlTokensRef.current.add(addr);
+
+      addLog(`💎 [SYSTEM LOG - PROFITABLE TOKEN] Processing trade history token: ${addr}`, 'success', 'system', { tokenAddress: addr, source: 'PnLPage' });
+
+      const defaultSymbol = addr.slice(0, 6).toUpperCase();
+      const scannedTokenData: ScannedToken = {
+        address: addr,
+        symbol: defaultSymbol,
+        name: `${defaultSymbol} (Synced PnL History)`,
+        priceUsd: 0.1,
+        marketCap: 100000,
+        liquidityUsd: 50000,
+        volume24h: 10000,
+        fdv: 0,
+        pairCreatedAt: Date.now(),
+        dexId: 'raydium',
+        pairAddress: '',
+        url: '',
+        priceChange5m: 5,
+        priceChange1h: 15,
+        priceChange24h: 30
+      };
+
+      addLog(`⚡ [SYSTEM LOG AUTO-TRADE] Instantly executing trade for PnL history token (${addr.slice(0, 8)}...)...`, 'buy', 'system');
+
+      // 1. OPEN POSITION AND EXECUTE BUY IMMEDIATELY (ZERO DELAY) TO CATCH MOMENTUM
+      openSimPosition(scannedTokenData, tradeAmount);
+      monitoredTokensRef.current.set(addr, scannedTokenData);
+
+      if (executeBuyRef.current) {
+        executeBuyRef.current(addr, defaultSymbol, 0.0001, tradeAmount, true).catch(err => {
+          addLog(`❌ [SYSTEM LOG AUTO-TRADE ERROR] Trade execution error for ${addr.slice(0, 8)}: ${err?.message || err}`, 'err', 'system');
+        });
+      }
+
+      // 2. Fetch metadata asynchronously in background without delaying trade execution
+      fetch(`https://api.dexscreener.com/latest/dex/tokens/${addr}`)
+        .then(res => res.ok ? res.json() : null)
+        .then(data => {
+          if (data && data.pairs && data.pairs.length > 0) {
+            const bestPair = data.pairs[0];
+            const fetchedSymbol = bestPair.baseToken?.symbol || defaultSymbol;
+            const fetchedPriceNative = bestPair.priceNative ? parseFloat(bestPair.priceNative) : 0.0001;
+            const fetchedPriceUsd = bestPair.priceUsd ? parseFloat(bestPair.priceUsd) : 0.1;
+
+            const updatedTokenData: ScannedToken = {
+              ...scannedTokenData,
+              symbol: fetchedSymbol,
+              name: bestPair.baseToken?.name || fetchedSymbol,
+              priceUsd: fetchedPriceUsd,
+              marketCap: bestPair.marketCap || bestPair.fdv || 100000,
+              liquidityUsd: bestPair.liquidity?.usd || 50000,
+              volume24h: bestPair.volume?.h24 || 10000,
+            };
+            monitoredTokensRef.current.set(addr, updatedTokenData);
+          }
+        })
+        .catch(() => {})
+        .finally(() => {
+          setTimeout(() => {
+            processingPnlTokensRef.current.delete(addr);
+          }, 2000);
+        });
+    });
+
+    try {
+      localStorage.removeItem('pnl_profitable_token_addresses');
+    } catch (e) {}
+  }, [tradeAmount, addLog, openSimPosition]);
+
+  // Event-driven & high-frequency sync listener for instant PnL trade history updates
   useEffect(() => {
-    const timer = setInterval(() => {
-      const state = location.state as any;
-      const stateTokens: string[] = Array.isArray(state?.profitableTokenAddresses) ? state.profitableTokenAddresses : [];
-      let storedTokens: string[] = [];
-      
+    // 1. Initial check on mount & route state
+    const state = location.state as any;
+    const stateTokens: string[] = Array.isArray(state?.profitableTokenAddresses) ? state.profitableTokenAddresses : [];
+    let storedTokens: string[] = [];
+    try {
+      const stored = localStorage.getItem('pnl_profitable_token_addresses');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) storedTokens = parsed;
+      }
+      const masterStored = localStorage.getItem('pnl_all_history_tokens');
+      if (masterStored) {
+        const parsed = JSON.parse(masterStored);
+        if (Array.isArray(parsed)) storedTokens = [...storedTokens, ...parsed];
+      }
+    } catch (e) {}
+
+    const initialTokens = [...new Set([...stateTokens, ...storedTokens])];
+    if (initialTokens.length > 0) {
+      processPnlTokens(initialTokens);
+    }
+
+    // 2. Custom event listener for instant <10ms sync
+    const handlePnlUpdate = (e: any) => {
+      const tokens = e.detail;
+      if (Array.isArray(tokens) && tokens.length > 0) {
+        processPnlTokens(tokens);
+      }
+    };
+    window.addEventListener('pnl_trade_history_updated', handlePnlUpdate);
+
+    // 3. Storage event listener for cross-tab sync
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === 'pnl_profitable_token_addresses' || e.key === 'pnl_all_history_tokens') {
+        try {
+          if (e.newValue) {
+            const parsed = JSON.parse(e.newValue);
+            if (Array.isArray(parsed)) processPnlTokens(parsed);
+          }
+        } catch(err) {}
+      }
+    };
+    window.addEventListener('storage', handleStorage);
+
+    // 4. High-frequency 250ms polling loop as fallback
+    const interval = setInterval(() => {
       try {
-        const stored = localStorage.getItem('pnl_profitable_token_addresses');
-        if (stored) {
-          const parsed = JSON.parse(stored);
-          if (Array.isArray(parsed)) {
-            storedTokens = parsed;
+        const pending = localStorage.getItem('pnl_profitable_token_addresses');
+        if (pending) {
+          const parsed = JSON.parse(pending);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            processPnlTokens(parsed);
           }
         }
       } catch (e) {}
+    }, 250);
 
-      const tokens = [...new Set([...stateTokens, ...storedTokens])];
-
-      if (tokens && tokens.length > 0) {
-        // Track historically bought ones to avoid duplicate re-buys when jumping between tabs
-        let previouslyBought: string[] = [];
-        try {
-          const pb = localStorage.getItem('auto_bought_profitable_tokens');
-          if (pb) {
-            const parsed = JSON.parse(pb);
-            if (Array.isArray(parsed)) previouslyBought = parsed;
-          }
-        } catch (e) {}
-
-        const newTokensToBuy = tokens.filter(t => !previouslyBought.includes(t));
-
-        if (newTokensToBuy.length > 0) {
-          try {
-            localStorage.setItem('auto_bought_profitable_tokens', JSON.stringify([...previouslyBought, ...newTokensToBuy]));
-            localStorage.removeItem('pnl_profitable_token_addresses'); // clean up pending
-          } catch(e) {}
-          
-          addLog(`🚀 [PNL SYNC] Received ${newTokensToBuy.length} NEW profitable token address(es) from PnLPage trade history:`, 'success', 'system');
-          newTokensToBuy.forEach(async (addr: string) => {
-            addLog(`💎 [SYSTEM LOG - PROFITABLE TOKEN] Address: ${addr}`, 'success', 'system', { tokenAddress: addr, source: 'PnLPage' });
-            
-            try {
-              let symbol = 'PROFIT';
-              let priceNative = 0.0001;
-              let priceUsd = 0.1;
-              try {
-                const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${addr}`);
-                if (res.ok) {
-                  const data = await res.json();
-                  if (data && data.pairs && data.pairs.length > 0) {
-                    const bestPair = data.pairs[0];
-                    symbol = bestPair.baseToken?.symbol || 'PROFIT';
-                    priceNative = bestPair.priceNative ? parseFloat(bestPair.priceNative) : 0.0001;
-                    priceUsd = bestPair.priceUsd ? parseFloat(bestPair.priceUsd) : 0;
-                  }
-                }
-              } catch (err) {}
-
-              addLog(`⚡ [SYSTEM LOG AUTO-TRADE] Automatically starting trade for received profitable token ${symbol} (${addr})...`, 'buy', 'system');
-
-              const scannedTokenData: ScannedToken = {
-                address: addr,
-                symbol,
-                name: `${symbol} (Synced Profitable)`,
-                priceUsd: priceUsd || 0.1,
-                marketCap: 100000,
-                liquidityUsd: 50000,
-                volume24h: 10000,
-                fdv: 0,
-                pairCreatedAt: Date.now(),
-                dexId: 'raydium',
-                pairAddress: '',
-                url: '',
-                priceChange5m: 5,
-                priceChange1h: 15,
-                priceChange24h: 30
-              };
-
-              openSimPosition(scannedTokenData, tradeAmount);
-              monitoredTokensRef.current.set(addr, scannedTokenData);
-
-              if (executeBuyRef.current) {
-                await executeBuyRef.current(addr, symbol, priceNative, tradeAmount, true);
-              }
-            } catch (autoErr: any) {
-              addLog(`❌ [SYSTEM LOG AUTO-TRADE ERROR] Failed to auto-trade ${addr}: ${autoErr?.message || autoErr}`, 'err', 'system');
-            }
-          });
-        }
-      }
-    }, 3000);
-    return () => clearInterval(timer);
-  }, [location.state, tradeAmount, addLog, openSimPosition]);
+    return () => {
+      window.removeEventListener('pnl_trade_history_updated', handlePnlUpdate);
+      window.removeEventListener('storage', handleStorage);
+      clearInterval(interval);
+    };
+  }, [location.state, processPnlTokens]);
 
 
   // Safe parent-level logs trimming
@@ -3562,7 +3657,7 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
       return { pass: false, reason: "Solana native token cannot be added as an active tradeable position." };
     }
 
-    // STRICT MODE: ONLY trade tokens that were profitable in PnL history
+    // STRICT MODE: ONLY trade tokens that were in PnL history
     let profitableTokens: string[] = [];
     try {
       const stored = localStorage.getItem('auto_bought_profitable_tokens');
@@ -3573,6 +3668,11 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
       const pending = localStorage.getItem('pnl_profitable_token_addresses');
       if (pending) {
         const parsed = JSON.parse(pending);
+        if (Array.isArray(parsed)) profitableTokens = [...profitableTokens, ...parsed];
+      }
+      const masterAll = localStorage.getItem('pnl_all_history_tokens');
+      if (masterAll) {
+        const parsed = JSON.parse(masterAll);
         if (Array.isArray(parsed)) profitableTokens = [...profitableTokens, ...parsed];
       }
     } catch(e) {}

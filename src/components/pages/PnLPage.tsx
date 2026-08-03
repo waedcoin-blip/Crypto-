@@ -1578,23 +1578,19 @@ export const PnLPage = ({
     tradeHistoryRef.current = tradeHistory;
   }, [tradeHistory]);
 
-  // Auto-update profitable tokens to localStorage
+  // Auto-update trade history token addresses to localStorage & dispatch event to JupiterPage
   useEffect(() => {
-    const profitableTokenAddresses = [
+    const allPnlTokens = [
       ...new Set(
         tradeHistory
-          .filter(
-            (trade: any) =>
-              (!trade.status || trade.status === 'closed' || (trade.sellTime && trade.sellTime > 0)) &&
-              ((trade.realizedPnL && trade.realizedPnL > 0) || ((trade.sellAmountSol || 0) - (trade.buyAmountSol || 0) > 0) || ((trade.pnlPct || 0) > 0)) &&
-              (trade.tokenAddress || trade.mint)
-          )
           .map((trade: any) => trade.tokenAddress || trade.mint)
-          .filter(addr => typeof addr === 'string' && addr.trim().length > 0 && addr !== 'Unknown')
+          .filter((addr: any) => typeof addr === 'string' && addr.trim().length > 0 && addr !== 'Unknown')
       )
     ];
     try {
-      localStorage.setItem('pnl_profitable_token_addresses', JSON.stringify(profitableTokenAddresses));
+      localStorage.setItem('pnl_profitable_token_addresses', JSON.stringify(allPnlTokens));
+      localStorage.setItem('pnl_all_history_tokens', JSON.stringify(allPnlTokens));
+      window.dispatchEvent(new CustomEvent('pnl_trade_history_updated', { detail: allPnlTokens }));
     } catch (e) {}
   }, [tradeHistory]);
 
@@ -7573,26 +7569,22 @@ const checkTokenCriteria = (mint: string): {
               <h2 className="text-[12px] uppercase tracking-[1px] text-[#94a3b8] font-bold">Trade History</h2>
               <button
                 onClick={() => {
-                  const profitableTokenAddresses = [
+                  const allPnlTokens = [
                     ...new Set(
                       tradeHistory
-                        .filter(
-                          (trade: any) =>
-                            (!trade.status || trade.status === 'closed' || (trade.sellTime && trade.sellTime > 0)) &&
-                            ((trade.realizedPnL && trade.realizedPnL > 0) || ((trade.sellAmountSol || 0) - (trade.buyAmountSol || 0) > 0) || ((trade.pnlPct || 0) > 0)) &&
-                            (trade.tokenAddress || trade.mint)
-                        )
                         .map((trade: any) => trade.tokenAddress || trade.mint)
-                        .filter(addr => typeof addr === 'string' && addr.trim().length > 0 && addr !== 'Unknown')
+                        .filter((addr: any) => typeof addr === 'string' && addr.trim().length > 0 && addr !== 'Unknown')
                     )
                   ];
                   try {
-                    localStorage.setItem('pnl_profitable_token_addresses', JSON.stringify(profitableTokenAddresses));
+                    localStorage.setItem('pnl_profitable_token_addresses', JSON.stringify(allPnlTokens));
+                    localStorage.setItem('pnl_all_history_tokens', JSON.stringify(allPnlTokens));
+                    window.dispatchEvent(new CustomEvent('pnl_trade_history_updated', { detail: allPnlTokens }));
                   } catch (e) {}
 
                   navigate("/jupiter", {
                     state: {
-                      profitableTokenAddresses
+                      profitableTokenAddresses: allPnlTokens
                     }
                   });
                   if (externalSettings && typeof (externalSettings as any).setCurrentPage === 'function') {
