@@ -94,10 +94,12 @@ export function generateSimulatedPair(mint: string): DexPair {
   const isPump = mint.toLowerCase().endsWith('pump');
 
   const basePrice = 0.00001 + (hash % 1000) * 0.00001;
-  const priceUsd = basePrice.toFixed(8);
-  const priceNative = (basePrice / 150.0).toFixed(12);
-  const marketCap = 25000 + (hash % 180000);
-  const liquidityUsd = 8000 + (hash % 35000);
+  const fluctuationFactor = 1.0 + Math.sin(Date.now() / 25000 + (hash % 50)) * 0.25 + Math.cos(Date.now() / 80000 - (hash % 30)) * 0.1;
+  const currentPrice = basePrice * fluctuationFactor;
+  const priceUsd = currentPrice.toFixed(8);
+  const priceNative = (currentPrice / 150.0).toFixed(12);
+  const marketCap = Math.round((25000 + (hash % 180000)) * fluctuationFactor);
+  const liquidityUsd = Math.round((8000 + (hash % 35000)) * fluctuationFactor);
   const volh24 = 5000 + (hash % 150000);
   const buys24h = 100 + (hash % 2000);
   const sells24h = 50 + (hash % 1200);

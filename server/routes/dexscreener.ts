@@ -198,21 +198,23 @@ router.get('/tokens/:mint', asyncHandler(async (req, res) => {
 
         if (response.ok) {
           const parsed = JSON.parse(text);
-          if (parsed?.pairs) {
-            pairs.push(...parsed.pairs);
+          const returnedPairs = parsed?.pairs || [];
+          pairs.push(...returnedPairs);
 
-            // Cache individual mint results
-            const pairsByMint: Record<string, any[]> = {};
-            for (const p of parsed.pairs) {
-              const baseAddr = p.baseToken?.address;
-              if (baseAddr) {
-                if (!pairsByMint[baseAddr]) pairsByMint[baseAddr] = [];
-                pairsByMint[baseAddr].push(p);
-              }
+          // Cache individual mint results
+          const pairsByMint: Record<string, any[]> = {};
+          for (const p of returnedPairs) {
+            const baseAddr = p.baseToken?.address;
+            if (baseAddr) {
+              if (!pairsByMint[baseAddr]) pairsByMint[baseAddr] = [];
+              pairsByMint[baseAddr].push(p);
             }
-            for (const [m, p] of Object.entries(pairsByMint)) {
-              tokenCache.set(m, { schemaVersion: '1.0.0', pairs: p });
-            }
+          }
+
+          // Cache every requested mint to prevent spamming for untracked/missing tokens
+          for (const m of chunk) {
+            const foundPairs = pairsByMint[m] || [];
+            tokenCache.set(m, { schemaVersion: '1.0.0', pairs: foundPairs });
           }
         }
       } catch (chunkErr: any) {
