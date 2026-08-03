@@ -2811,9 +2811,77 @@ export const JupiterPage = ({
       }
 
       return null;
-      } catch (err) {
+    } catch (err) {
       console.warn(`Failed to fetch Jupiter fallback price for ${tokenMint}`, err);
       return null;
+    }
+  }, [apiKey]);
+
+  const getJupiterPricesBatch = useCallback(async (mints: string[]): Promise<Record<string, number>> => {
+    if (mints.length === 0) return {};
+    try {
+      const ids = mints.join(',');
+      const headers: Record<string, string> = {};
+      if (apiKey && !apiKey.startsWith('http')) {
+        headers['x-api-key'] = apiKey;
+      }
+      
+      const fetchWithFallback = async (proxyUrl: string, directUrl: string) => {
+        try {
+          const res = await fetch(proxyUrl, { headers });
+          if (res.ok) {
+             const contentType = res.headers.get("content-type");
+             if (contentType && contentType.includes("application/json")) {
+                 return await res.json();
+             }
+          }
+        } catch (e) {}
+        try {
+          const resDirect = await fetch(directUrl);
+          if (resDirect.ok) return await resDirect.json();
+        } catch(e) {}
+        return null;
+      };
+
+      const results: Record<string, number> = {};
+      const data = await fetchWithFallback(
+        `/api/jup/price?ids=${ids}&vsToken=${SOL_MINT}&t=${Date.now()}`,
+        `https://api.jup.ag/price/v2?ids=${ids}&vsToken=${SOL_MINT}`
+      );
+
+      if (data && data.data) {
+        for (const mint of mints) {
+          if (data.data[mint] && data.data[mint].price) {
+            const price = parseFloat(data.data[mint].price);
+            if (price > 0) {
+              results[mint] = price;
+            }
+          }
+        }
+      }
+
+      // For any missing mints, try the USD endpoint and convert to SOL
+      const missingMints = mints.filter(m => !results[m]);
+      if (missingMints.length > 0) {
+        const usdData = await fetchWithFallback(
+          `/api/jup/price?ids=${missingMints.join(',')},${SOL_MINT}&t=${Date.now()}`,
+          `https://api.jup.ag/price/v2?ids=${missingMints.join(',')},${SOL_MINT}`
+        );
+        if (usdData && usdData.data) {
+          const solUsd = parseFloat(usdData.data[SOL_MINT]?.price || '150');
+          for (const mint of missingMints) {
+            const tokenUsd = parseFloat(usdData.data[mint]?.price || '0');
+            if (tokenUsd > 0 && solUsd > 0) {
+              results[mint] = tokenUsd / solUsd;
+            }
+          }
+        }
+      }
+
+      return results;
+    } catch (e) {
+      console.warn('Error fetching batch Jupiter prices:', e);
+      return {};
     }
   }, [apiKey]);
 
@@ -5178,7 +5246,24 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
       const mintsToFetch = activeMints;
       let batchedPrices: Record<string, any> = {};
       if (mintsToFetch.length > 0) {
-        batchedPrices = await getTokenPrices(mintsToFetch);
+        try {
+          const jupPrices = await getJupiterPricesBatch(mintsToFetch);
+          const dexPrices = await getTokenPrices(mintsToFetch);
+          for (const m of mintsToFetch) {
+            if (jupPrices[m]) {
+              batchedPrices[m] = {
+                price: jupPrices[m],
+                isSol: true,
+                liq: dexPrices[m]?.liq || 150000,
+                isStale: false
+              };
+            } else if (dexPrices[m]) {
+              batchedPrices[m] = dexPrices[m];
+            }
+          }
+        } catch (e) {
+          batchedPrices = await getTokenPrices(mintsToFetch);
+        }
       }
 
       for (const mint of activeMints) {
@@ -5287,7 +5372,7 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
               }
             }
 
-            if (safeToExecute) {
+            if (isRunning && safeToExecute) {
               pendingSellMintsRef.current.add(mint);
               addLog(executeReason, 'sell');
               await executeSell(mint, currentPrice, pnlPct, executeReason);
@@ -5324,7 +5409,7 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
               }
             }
 
-            if (safeToExecute) {
+            if (isRunning && safeToExecute) {
               pendingSellMintsRef.current.add(mint);
               addLog(executeReason, 'sell');
               await executeSell(mint, currentPrice, pnlPct, executeReason);
@@ -5351,16 +5436,17 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
     } finally {
       isCheckingRef.current = false;
     }
-  }, [privateKey, addLog]);
+  }, [privateKey, addLog, getJupiterPricesBatch, isRunning]);
 
   useEffect(() => {
+    // Keep checking and trading interval running always to update PnL in real-time
+    botIntervalRef.current = window.setInterval(() => {
+      checkAndTrade();
+    }, 1500); // Poll every 1.5s for real-time updates without spamming
+
     if (isRunning) {
-      botIntervalRef.current = window.setInterval(() => {
-        checkAndTrade();
-      }, 1000);
       uptimeIntervalRef.current = window.setInterval(updateUptime, 1000);
     } else {
-      if (botIntervalRef.current) clearInterval(botIntervalRef.current);
       if (uptimeIntervalRef.current) clearInterval(uptimeIntervalRef.current);
     }
     
