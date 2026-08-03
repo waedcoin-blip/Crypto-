@@ -1249,15 +1249,20 @@ export const PnLPage = ({
     } catch { return { trades: 0, wins: 0, losses: 0, pnl: 0, bestTrade: null as number | null }; }
   });
   const [simWalletBalance, setSimWalletBalance] = useState(() => {
-    const saved = localStorage.getItem('app_simulationBalance_v4'); // Sync with App.tsx
+    const storeVal = useAppStore.getState().simulationBalance;
+    if (typeof storeVal === 'number' && !isNaN(storeVal) && storeVal > 0) return storeVal;
+
+    const saved = localStorage.getItem('app_simulationBalance_v4');
     if (saved && saved !== 'undefined') {
       const val = Number(saved);
-      if (!isNaN(val) && val > 0.12) return val;
+      if (!isNaN(val) && val > 0) return val;
     }
     const old = localStorage.getItem('juipter_auto_simWalletBalance');
-    if (old === '10' || !old || old === 'undefined' || Number(old) === 0.12) return 10.0;
-    const oldVal = Number(old);
-    return isNaN(oldVal) || oldVal <= 0.12 ? 10.0 : oldVal;
+    if (old && old !== 'undefined') {
+      const oldVal = Number(old);
+      if (!isNaN(oldVal) && oldVal > 0) return oldVal;
+    }
+    return 10.0;
   });
   const [retentionLimit, setRetentionLimit] = useState<number>(() => {
     try {
@@ -1752,7 +1757,19 @@ export const PnLPage = ({
           if (data.ftpDir !== undefined) setFtpDir(String(data.ftpDir));
           if (data.ftpWebUrl !== undefined) setFtpWebUrl(String(data.ftpWebUrl));
           if (data.ftpSecure !== undefined) setFtpSecure(data.ftpSecure === true);
-          if (data.simWalletBalance !== undefined) setSimWalletBalance(Number(data.simWalletBalance));
+          if (data.simWalletBalance !== undefined) {
+            const fsBal = Number(data.simWalletBalance);
+            if (!isNaN(fsBal) && fsBal > 0) {
+              const localSaved = localStorage.getItem('app_simulationBalance_v4');
+              const localNum = localSaved ? Number(localSaved) : NaN;
+              if (!isNaN(localNum) && localNum > 0 && fsBal === 10.0 && localNum !== 10.0) {
+                // Preserve local updated balance if Firestore returned default 10
+              } else {
+                setSimWalletBalance(fsBal);
+                useAppStore.getState().setSimulationBalance(() => fsBal);
+              }
+            }
+          }
           
           if (data.blacklistedMints !== undefined) {
             try {
@@ -1780,7 +1797,25 @@ export const PnLPage = ({
           }
           if (data.tradeHistory !== undefined) {
             try {
-              setTradeHistory(JSON.parse(data.tradeHistory));
+              const fsHistory = JSON.parse(data.tradeHistory);
+              if (Array.isArray(fsHistory)) {
+                setTradeHistory(prev => {
+                  const map = new Map<string, any>();
+                  prev.forEach(t => {
+                    if (t && (t.id || t.mint)) {
+                      map.set(t.id || `${t.mint}-${t.buyTime}`, t);
+                    }
+                  });
+                  fsHistory.forEach((t: any) => {
+                    if (t && (t.id || t.mint)) {
+                      map.set(t.id || `${t.mint}-${t.buyTime}`, t);
+                    }
+                  });
+                  const merged = Array.from(map.values());
+                  merged.sort((a, b) => (b.sellTime || b.buyTime || 0) - (a.sellTime || a.buyTime || 0));
+                  return merged;
+                });
+              }
             } catch (e) {
               console.error('Error parsing tradeHistory from firestore:', e);
             }
@@ -1971,6 +2006,8 @@ export const PnLPage = ({
   }, [stats]);
   useEffect(() => {
     localStorage.setItem('app_simulationBalance_v4', simWalletBalance.toString());
+    localStorage.setItem('juipter_auto_simWalletBalance', simWalletBalance.toString());
+    useAppStore.getState().setSimulationBalance(() => simWalletBalance);
   }, [simWalletBalance]);
   useEffect(() => {
     localStorage.setItem('juipter_auto_logs', JSON.stringify(logs.slice(0, retentionLimit))); // Keep last logs matching chosen limit
