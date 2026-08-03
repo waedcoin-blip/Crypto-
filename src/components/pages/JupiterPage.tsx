@@ -1702,12 +1702,12 @@ export const JupiterPage = ({
 
     if (validTokens.length === 0) return;
 
-    // Persist all received PnL tokens into master set so checkTokenCriteria passes
+    // Persist all received profitable PnL tokens into master set so checkTokenCriteria passes
     try {
-      const existingMasterStr = localStorage.getItem('pnl_all_history_tokens');
+      const existingMasterStr = localStorage.getItem('auto_bought_profitable_tokens');
       const existingMaster: string[] = existingMasterStr ? JSON.parse(existingMasterStr) : [];
       const updatedMaster = [...new Set([...existingMaster, ...validTokens])];
-      localStorage.setItem('pnl_all_history_tokens', JSON.stringify(updatedMaster));
+      localStorage.setItem('auto_bought_profitable_tokens', JSON.stringify(updatedMaster));
     } catch (e) {}
 
     // Find tokens that need to be traded (skip if already active open position or currently being executed)
@@ -1804,11 +1804,6 @@ export const JupiterPage = ({
         const parsed = JSON.parse(stored);
         if (Array.isArray(parsed)) storedTokens = parsed;
       }
-      const masterStored = localStorage.getItem('pnl_all_history_tokens');
-      if (masterStored) {
-        const parsed = JSON.parse(masterStored);
-        if (Array.isArray(parsed)) storedTokens = [...storedTokens, ...parsed];
-      }
     } catch (e) {}
 
     const initialTokens = [...new Set([...stateTokens, ...storedTokens])];
@@ -1827,7 +1822,7 @@ export const JupiterPage = ({
 
     // 3. Storage event listener for cross-tab sync
     const handleStorage = (e: StorageEvent) => {
-      if (e.key === 'pnl_profitable_token_addresses' || e.key === 'pnl_all_history_tokens') {
+      if (e.key === 'pnl_profitable_token_addresses') {
         try {
           if (e.newValue) {
             const parsed = JSON.parse(e.newValue);
@@ -3657,7 +3652,7 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
       return { pass: false, reason: "Solana native token cannot be added as an active tradeable position." };
     }
 
-    // STRICT MODE: ONLY trade tokens that were in PnL history
+    // STRICT MODE: ONLY trade tokens that were profitable in PnL history
     let profitableTokens: string[] = [];
     try {
       const stored = localStorage.getItem('auto_bought_profitable_tokens');
@@ -3668,11 +3663,6 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
       const pending = localStorage.getItem('pnl_profitable_token_addresses');
       if (pending) {
         const parsed = JSON.parse(pending);
-        if (Array.isArray(parsed)) profitableTokens = [...profitableTokens, ...parsed];
-      }
-      const masterAll = localStorage.getItem('pnl_all_history_tokens');
-      if (masterAll) {
-        const parsed = JSON.parse(masterAll);
         if (Array.isArray(parsed)) profitableTokens = [...profitableTokens, ...parsed];
       }
     } catch(e) {}

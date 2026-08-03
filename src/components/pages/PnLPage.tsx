@@ -1578,19 +1578,31 @@ export const PnLPage = ({
     tradeHistoryRef.current = tradeHistory;
   }, [tradeHistory]);
 
-  // Auto-update trade history token addresses to localStorage & dispatch event to JupiterPage
+  // Auto-update ONLY profitable trade history token addresses to localStorage & dispatch event to JupiterPage
   useEffect(() => {
-    const allPnlTokens = [
+    const profitablePnlTokens = [
       ...new Set(
         tradeHistory
-          .map((trade: any) => trade.tokenAddress || trade.mint)
-          .filter((addr: any) => typeof addr === 'string' && addr.trim().length > 0 && addr !== 'Unknown')
+          .filter((trade: any) => {
+            if (!trade) return false;
+            const addr = trade.tokenAddress || trade.mint;
+            if (!addr || typeof addr !== 'string' || addr.trim().length === 0 || addr === 'Unknown') return false;
+            
+            const isProfitable = 
+              (trade.realizedPnL && Number(trade.realizedPnL) > 0) ||
+              ((Number(trade.sellAmountSol) || 0) - (Number(trade.buyAmountSol) || 0) > 0) ||
+              (trade.pnlPct && Number(trade.pnlPct) > 0) ||
+              (trade.pnl && Number(trade.pnl) > 0) ||
+              (trade.netPnl && Number(trade.netPnl) > 0);
+            
+            return isProfitable;
+          })
+          .map((trade: any) => (trade.tokenAddress || trade.mint).trim())
       )
     ];
     try {
-      localStorage.setItem('pnl_profitable_token_addresses', JSON.stringify(allPnlTokens));
-      localStorage.setItem('pnl_all_history_tokens', JSON.stringify(allPnlTokens));
-      window.dispatchEvent(new CustomEvent('pnl_trade_history_updated', { detail: allPnlTokens }));
+      localStorage.setItem('pnl_profitable_token_addresses', JSON.stringify(profitablePnlTokens));
+      window.dispatchEvent(new CustomEvent('pnl_trade_history_updated', { detail: profitablePnlTokens }));
     } catch (e) {}
   }, [tradeHistory]);
 
@@ -7569,22 +7581,34 @@ const checkTokenCriteria = (mint: string): {
               <h2 className="text-[12px] uppercase tracking-[1px] text-[#94a3b8] font-bold">Trade History</h2>
               <button
                 onClick={() => {
-                  const allPnlTokens = [
+                  const profitablePnlTokens = [
                     ...new Set(
                       tradeHistory
-                        .map((trade: any) => trade.tokenAddress || trade.mint)
-                        .filter((addr: any) => typeof addr === 'string' && addr.trim().length > 0 && addr !== 'Unknown')
+                        .filter((trade: any) => {
+                          if (!trade) return false;
+                          const addr = trade.tokenAddress || trade.mint;
+                          if (!addr || typeof addr !== 'string' || addr.trim().length === 0 || addr === 'Unknown') return false;
+                          
+                          const isProfitable = 
+                            (trade.realizedPnL && Number(trade.realizedPnL) > 0) ||
+                            ((Number(trade.sellAmountSol) || 0) - (Number(trade.buyAmountSol) || 0) > 0) ||
+                            (trade.pnlPct && Number(trade.pnlPct) > 0) ||
+                            (trade.pnl && Number(trade.pnl) > 0) ||
+                            (trade.netPnl && Number(trade.netPnl) > 0);
+                          
+                          return isProfitable;
+                        })
+                        .map((trade: any) => (trade.tokenAddress || trade.mint).trim())
                     )
                   ];
                   try {
-                    localStorage.setItem('pnl_profitable_token_addresses', JSON.stringify(allPnlTokens));
-                    localStorage.setItem('pnl_all_history_tokens', JSON.stringify(allPnlTokens));
-                    window.dispatchEvent(new CustomEvent('pnl_trade_history_updated', { detail: allPnlTokens }));
+                    localStorage.setItem('pnl_profitable_token_addresses', JSON.stringify(profitablePnlTokens));
+                    window.dispatchEvent(new CustomEvent('pnl_trade_history_updated', { detail: profitablePnlTokens }));
                   } catch (e) {}
 
                   navigate("/jupiter", {
                     state: {
-                      profitableTokenAddresses: allPnlTokens
+                      profitableTokenAddresses: profitablePnlTokens
                     }
                   });
                   if (externalSettings && typeof (externalSettings as any).setCurrentPage === 'function') {
