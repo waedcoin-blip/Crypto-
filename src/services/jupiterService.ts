@@ -321,7 +321,7 @@ export const executeTxWithRPCFallback = async (
           }
           console.warn(`Helius Sender connection status check glitch:`, pollingErr.message || pollingErr);
         }
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await new Promise(resolve => setTimeout(resolve, 300)); // Fast status polling
       }
 
       throw new Error("Sender transaction confirmation timeout (45s).");
@@ -345,7 +345,12 @@ export const executeTxWithRPCFallback = async (
     "https://ny.mainnet.block-engine.jito.wtf/api/v1/transactions"
   ];
 
-  const rpcsToTry = [connection.rpcEndpoint];
+  const rpcsToTry = [
+    connection.rpcEndpoint,
+    localStorage.getItem('juipter_auto_rpcUrl') || '',
+    localStorage.getItem('juipter_auto_rpcUrl2') || '',
+    ...FALLBACK_RPCS
+  ].filter((url, index, self) => url && url.trim() !== "" && self.indexOf(url) === index);
 
   // Robust parallel broadcaster: broadcasts to all RPCs + Jito endpoints immediately
   const broadcastTransaction = async () => {
@@ -376,22 +381,22 @@ export const executeTxWithRPCFallback = async (
   // Initial broadcast
   useAppStore.getState().addJupiterLog({
     type: 'INFO',
-    message: `Broadcasting transaction: ${signature.slice(0, 8)}... (re-sending every 3s)`,
+    message: `Broadcasting transaction: ${signature.slice(0, 8)}... (re-sending every 400ms)`,
   });
   await broadcastTransaction();
 
-  // Set up periodic re-broadcasting every 3 seconds to ensure dropped transactions are replaced
+  // Set up periodic re-broadcasting every 400ms to ensure dropped transactions are replaced (faster momentum)
   const broadcastInterval = setInterval(() => {
     console.log(`[TX] Re-broadcasting transaction: ${signature}`);
     broadcastTransaction();
-  }, 3000);
+  }, 400);
 
   try {
     const finalSignature = await Promise.any(rpcsToTry.map(async rpc => {
       const conn = new Connection(rpc, 'confirmed');
       
       // Fast Signature Status Polling Loop
-      const deadline = Date.now() + 90000; // 90s max wait for final confirmation
+      const deadline = Date.now() + 45000; // 45s max wait for final confirmation in momentum
       while (Date.now() < deadline) {
         try {
           const value = await getSignatureStatusRobust(conn, signature);
@@ -409,10 +414,10 @@ export const executeTxWithRPCFallback = async (
           }
           console.warn(`RPC ${rpc} status check glitch:`, pollingErr.message || pollingErr);
         }
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise(resolve => setTimeout(resolve, 300)); // Polling status every 300ms
       }
 
-      throw new Error(`RPC ${rpc} timed out waiting for confirmation (90s). Signature: ${signature}. Check Solscan: https://solscan.io/tx/${signature}`);
+      throw new Error(`RPC ${rpc} timed out waiting for confirmation (45s). Signature: ${signature}.`);
     }));
 
     useAppStore.getState().addJupiterLog({
@@ -434,6 +439,273 @@ export const executeTxWithRPCFallback = async (
     throw new Error(`Failed to confirm transaction: ${errorMsg || 'All RPC endpoints failed to confirm'}`);
   } finally {
     clearInterval(broadcastInterval);
+  }
+};
+
+// --- MOMENTUM SELLING & JITO TIP FLOORS ---
+
+export const getJitoTipFloor = async (): Promise<number> => {
+  try {
+    const res = await fetch('https://bundles.jito.wtf/api/v1/bundles/tip_floor');
+    const data = await res.json();
+    return data[0]?.landed_tips_75th_percentile || 0.00005;
+  } catch {
+    return 0.00005;
+  }
+};
+
+export const calculateDynamicJitoTip = async (
+  tradeValueUsd: number,
+  expectedProfitPct: number,
+  urgency: 'low' | 'medium' | 'high' | 'extreme' = 'medium'
+): Promise<number> => {
+  const floorTip = await getJitoTipFloor();
+  const urgencyMultipliers = {
+    low: 1,
+    medium: 3,
+    high: 10,
+    extreme: 50
+  };
+  
+  const expectedProfitPctSafe = Math.max(0, expectedProfitPct);
+  const maxTipFromProfit = (tradeValueUsd * (expectedProfitPctSafe / 100) * 0.05);
+  const solPrice = 150; 
+  const maxTipSol = Math.min(maxTipFromProfit / solPrice, 0.5);
+  
+  const baseTip = floorTip * urgencyMultipliers[urgency];
+  const finalTip = Math.min(baseTip, maxTipSol);
+  return Math.max(finalTip, 0.00001);
+};
+
+export interface PriceGuardConfig {
+  quoteResponse: QuoteResponse;
+  maxSlippageFromQuotePct: number;
+  checkIntervalMs: number;
+  inputMint: string;
+  outputMint: string;
+  amount: number;
+}
+
+export const executeWithPriceGuard = async (
+  tx: VersionedTransaction,
+  connection: Connection,
+  guardConfig: PriceGuardConfig
+): Promise<string> => {
+  const { quoteResponse, maxSlippageFromQuotePct, checkIntervalMs, inputMint, outputMint, amount } = guardConfig;
+  const originalOutAmount = BigInt(quoteResponse.outAmount);
+  const maxAcceptableOutAmount = originalOutAmount * BigInt(Math.floor(100 - maxSlippageFromQuotePct)) / BigInt(100);
+  
+  let isAborted = false;
+  let abortReason = '';
+  
+  const priceGuardInterval = setInterval(async () => {
+    if (isAborted) return;
+    try {
+      const freshQuote = await getJupiterQuote(inputMint, outputMint, amount, 0);
+      if (!freshQuote) return;
+      const freshOutAmount = BigInt(freshQuote.outAmount);
+      if (freshOutAmount < maxAcceptableOutAmount) {
+        isAborted = true;
+        abortReason = `Price dropped too fast. Expected: ${originalOutAmount}, Fresh: ${freshOutAmount}`;
+        console.warn(`[KILL SWITCH] ${abortReason}`);
+        useAppStore.getState().addJupiterLog({
+          type: 'ERROR',
+          message: `[KILL SWITCH] Trade aborted: ${abortReason}`
+        });
+      }
+    } catch (e) {}
+  }, checkIntervalMs);
+  
+  try {
+    const result = await Promise.race([
+      executeTxWithRPCFallback(tx, connection),
+      new Promise<string>((_, reject) => {
+        const checkInterval = setInterval(() => {
+          if (isAborted) {
+            clearInterval(checkInterval);
+            clearInterval(priceGuardInterval);
+            reject(new Error(`Trade aborted by Price Guard: ${abortReason}`));
+          }
+        }, 100);
+      })
+    ]);
+    clearInterval(priceGuardInterval);
+    return result;
+  } catch (error) {
+    clearInterval(priceGuardInterval);
+    throw error;
+  }
+};
+
+export const pollBundleStatus = async (bundleId: string, maxWaitMs = 30000) => {
+  const deadline = Date.now() + maxWaitMs;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch('https://mainnet.block-engine.jito.wtf/api/v1/bundles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'getBundleStatuses',
+          params: [[bundleId]]
+        })
+      });
+      const data = await res.json();
+      const status = data.result?.value?.[0];
+      if (status?.confirmationStatus === 'confirmed' || status?.confirmationStatus === 'finalized') {
+        return status;
+      }
+      if (status?.err) throw new Error(`Bundle failed: ${JSON.stringify(status.err)}`);
+    } catch (e) {}
+    await new Promise(r => setTimeout(r, 500));
+  }
+  throw new Error('Bundle status polling timeout');
+};
+
+export const executeSellBundle = async (
+  tx: VersionedTransaction,
+  tipAmountSol: number,
+  connection: Connection,
+  userPublicKeyStr: string,
+  keypair: any
+): Promise<string> => {
+  const signature = bs58.encode(tx.signatures[0]);
+  const TIP_ACCOUNTS = [
+    "96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5",
+    "HFqU5x63VT4Cx95GCNsLi2zLYRTU67RAWhJ7iXhcq6uY",
+    "Cw8CFBTZSTb9Vec6Y2uZ35f1fRA6ikM352v8Jf1t1VJD",
+    "ADa6gJu6412f22uhXWvY8862DEWbC2fLyUn37uHG73vX",
+    "ADuUk9ni9uYgGB9417E2K8C9ZfY948EtwbvL3yJZUpvY",
+    "DttWaW8SUVTGySgcCjEpft2AeaH23uWv8yvG63nwKHY9",
+    "3AVM98jm7NoW8S2FFbaA89z79986751jQ6619ufEXhnL"
+  ];
+  const tipAccountStr = TIP_ACCOUNTS[Math.floor(Math.random() * TIP_ACCOUNTS.length)];
+
+  const tipIx = SystemProgram.transfer({
+    fromPubkey: new PublicKey(userPublicKeyStr),
+    toPubkey: new PublicKey(tipAccountStr),
+    lamports: Math.floor(tipAmountSol * 1e9),
+  });
+  
+  const tipTx = new Transaction().add(tipIx);
+  tipTx.feePayer = new PublicKey(userPublicKeyStr);
+  const latestBlockhash = await getLatestBlockhashWithFallback(connection);
+  tipTx.recentBlockhash = latestBlockhash.blockhash;
+  tipTx.sign(keypair);
+  
+  const serializedTx = Buffer.from(tx.serialize()).toString('base64');
+  const serializedTipTx = Buffer.from(tipTx.serialize()).toString('base64');
+  
+  const bundleBody = {
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'sendBundle',
+    params: [[serializedTx, serializedTipTx]]
+  };
+  
+  const jitoEndpoints = [
+    'https://mainnet.block-engine.jito.wtf/api/v1/bundles',
+    'https://frankfurt.mainnet.block-engine.jito.wtf/api/v1/bundles',
+    'https://tokyo.mainnet.block-engine.jito.wtf/api/v1/bundles',
+    'https://ny.mainnet.block-engine.jito.wtf/api/v1/bundles'
+  ];
+  
+  const bundlePromises = jitoEndpoints.map(endpoint =>
+    fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(bundleBody)
+    }).then(async res => {
+      if (!res.ok) throw new Error(`Jito error: ${await res.text()}`);
+      return res.json();
+    })
+  );
+  
+  const result = await Promise.any(bundlePromises);
+  const bundleId = result.result;
+  
+  useAppStore.getState().addJupiterLog({
+    type: 'INFO',
+    message: `Bundle submitted to Jito (ID: ${bundleId.slice(0, 8)}...). Polling status...`,
+  });
+  
+  await pollBundleStatus(bundleId);
+  return signature;
+};
+
+export const executeMomentumSell = async (
+  tx: VersionedTransaction,
+  connection: Connection,
+  userPublicKeyStr: string,
+  keypair: any,
+  guardConfig: PriceGuardConfig,
+  tradeValueUsd: number,
+  expectedProfitPct: number,
+  urgency: 'low' | 'medium' | 'high' | 'extreme' = 'extreme'
+): Promise<string> => {
+  useAppStore.getState().addJupiterLog({
+    type: 'INFO',
+    message: `⚡ [MOMENTUM SELL] Initiating momentum-selling logic...`,
+    details: { tradeValueUsd, expectedProfitPct, urgency }
+  });
+
+  const tipAmountSol = await calculateDynamicJitoTip(tradeValueUsd, expectedProfitPct, urgency);
+  useAppStore.getState().addJupiterLog({
+    type: 'INFO',
+    message: `Dynamic Jito Tip: ${tipAmountSol.toFixed(6)} SOL (Urgency: ${urgency})`,
+  });
+
+  const isBundlePreferred = localStorage.getItem('hd_momentum_bundle') !== 'false';
+
+  if (isBundlePreferred) {
+    const originalOutAmount = BigInt(guardConfig.quoteResponse.outAmount);
+    const maxAcceptableOutAmount = originalOutAmount * BigInt(Math.floor(100 - guardConfig.maxSlippageFromQuotePct)) / BigInt(100);
+    
+    let isAborted = false;
+    let abortReason = '';
+    
+    const priceGuardInterval = setInterval(async () => {
+      if (isAborted) return;
+      try {
+        const freshQuote = await getJupiterQuote(guardConfig.inputMint, guardConfig.outputMint, guardConfig.amount, 0);
+        if (!freshQuote) return;
+        const freshOutAmount = BigInt(freshQuote.outAmount);
+        if (freshOutAmount < maxAcceptableOutAmount) {
+          isAborted = true;
+          abortReason = `Price guard aborted momentum bundle: dropped below acceptable floor.`;
+          console.warn(`[MOMENTUM KILL SWITCH] ${abortReason}`);
+          useAppStore.getState().addJupiterLog({
+            type: 'ERROR',
+            message: `[MOMENTUM KILL SWITCH] ${abortReason}`
+          });
+        }
+      } catch (e) {}
+    }, guardConfig.checkIntervalMs);
+
+    try {
+      const txid = await Promise.race([
+        executeSellBundle(tx, tipAmountSol, connection, userPublicKeyStr, keypair),
+        new Promise<string>((_, reject) => {
+          const checkInterval = setInterval(() => {
+            if (isAborted) {
+              clearInterval(checkInterval);
+              clearInterval(priceGuardInterval);
+              reject(new Error(abortReason));
+            }
+          }, 100);
+        })
+      ]);
+      clearInterval(priceGuardInterval);
+      return txid;
+    } catch (err) {
+      clearInterval(priceGuardInterval);
+      throw err;
+    }
+  } else {
+    const txWithTip = await addTipInstructionToVersionedTx(connection, tx, new PublicKey(userPublicKeyStr), tipAmountSol);
+    txWithTip.sign([keypair]);
+    return await executeWithPriceGuard(txWithTip, connection, guardConfig);
   }
 };
 
@@ -550,7 +822,9 @@ export const getJupiterQuote = async (
   liquidityUsd: number = 0,
   initialBuyCostSol?: number,
   minTargetProfitPct?: number,
-  currentPnLPercent?: number
+  currentPnLPercent?: number,
+  restrictIntermediateTokens?: boolean,
+  onlyDirectRoutes?: boolean
 ): Promise<QuoteResponse | null> => {
   const isValidSolanaAddress = (addr: string) => {
     if (!addr) return false;
@@ -662,6 +936,8 @@ export const getJupiterQuote = async (
       t: String(Date.now())
     });
     if (baseUrlParam) queryParams.set('baseUrl', baseUrlParam);
+    if (restrictIntermediateTokens) queryParams.set('restrictIntermediateTokens', 'true');
+    if (onlyDirectRoutes) queryParams.set('onlyDirectRoutes', 'true');
 
     const headers: Record<string, string> = {};
     if (customApiKey && !customApiKey.startsWith('http')) headers['x-api-key'] = customApiKey;
@@ -766,21 +1042,31 @@ export const createJupiterSwapTransaction = async (
   prioritizationFeeLamports: number = 100000,
   connection?: Connection
 ): Promise<VersionedTransaction | null> => {
+  const useDynamicSlippage = localStorage.getItem('hd_jupiter_dynamic_slippage') !== 'false';
   useAppStore.getState().addJupiterLog({
     type: 'INFO',
     message: `Building swap tx for ${userPublicKey.slice(0,6)}...`,
-    details: { prioritiyFee: prioritizationFeeLamports }
+    details: { prioritiyFee: prioritizationFeeLamports, useDynamicSlippage }
   });
   try {
+    const swapRequest: any = {
+      quoteResponse,
+      userPublicKey,
+      wrapAndUnwrapSol: true,
+      dynamicComputeUnitLimit: true,
+      trackingAccount: "FE2vyoM5CbGcTXSHUsPj79eKAd8fvMzuy3jgr9pYBCLv",
+      prioritizationFeeLamports: prioritizationFeeLamports as any,
+    };
+
+    if (useDynamicSlippage) {
+      swapRequest.dynamicSlippage = {
+        minBps: 50,   // 0.5% minimum
+        maxBps: 1000  // 10% maximum
+      };
+    }
+
     const { swapTransaction } = await getJupiterApiClient().swapPost({
-      swapRequest: {
-        quoteResponse,
-        userPublicKey,
-        wrapAndUnwrapSol: true,
-        dynamicComputeUnitLimit: true,
-        trackingAccount: "FE2vyoM5CbGcTXSHUsPj79eKAd8fvMzuy3jgr9pYBCLv",
-        prioritizationFeeLamports: prioritizationFeeLamports as any,
-      },
+      swapRequest,
     });
 
     const swapTransactionBuf = Buffer.from(swapTransaction, 'base64');

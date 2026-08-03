@@ -43,32 +43,29 @@ function normalizeJupiterBase(base: string): string {
 
 function buildJupiterQuoteUrl(
   base: string,
-  inputMint: string,
-  outputMint: string,
-  amount: string,
-  slippageBps: string
+  query: any
 ): string {
   const isUnified = base.includes('api.jup.ag');
   const pathVersion = isUnified ? '/swap/v1' : '/v6';
 
-  if (!base.includes('/quote') && !base.includes('/swap')) {
-    return `${base}${pathVersion}/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amount}&slippageBps=${slippageBps}`;
-  }
-
-  // Handle full path normalization
   let url = base;
-  if (isUnified && url.includes('/v6/')) {
-    url = url.replace('/v6/', '/swap/v1/');
-  }
-  if (isUnified && !url.includes('/swap/v1/') && url.includes('/quote')) {
-    url = url.replace('/quote', '/swap/v1/quote');
+  if (!base.includes('/quote') && !base.includes('/swap')) {
+    url = `${base}${pathVersion}/quote`;
+  } else {
+    if (isUnified && url.includes('/v6/')) {
+      url = url.replace('/v6/', '/swap/v1/');
+    }
+    if (isUnified && !url.includes('/swap/v1/') && url.includes('/quote')) {
+      url = url.replace('/quote', '/swap/v1/quote');
+    }
   }
 
   const urlObj = new URL(url);
-  urlObj.searchParams.set('inputMint', inputMint);
-  urlObj.searchParams.set('outputMint', outputMint);
-  urlObj.searchParams.set('amount', amount);
-  urlObj.searchParams.set('slippageBps', slippageBps);
+  for (const [key, val] of Object.entries(query)) {
+    if (key !== 'baseUrl' && key !== 't' && val !== undefined) {
+      urlObj.searchParams.set(key, String(val));
+    }
+  }
   return urlObj.toString();
 }
 
@@ -146,13 +143,17 @@ router.get('/quote', asyncHandler(async (req, res) => {
     return res.json(mockQuote);
   }
 
-  const cacheKey = `${inputMint}-${outputMint}-${amount}-${slippageBps}-${baseUrl}-${req.query.t || ''}`;
+  const extraKeys = Object.entries(req.query)
+    .filter(([k]) => k !== 'baseUrl' && k !== 't' && k !== 'inputMint' && k !== 'outputMint' && k !== 'amount' && k !== 'slippageBps')
+    .map(([k, v]) => `${k}:${v}`)
+    .join('-');
+  const cacheKey = `${inputMint}-${outputMint}-${amount}-${slippageBps}-${baseUrl}-${extraKeys}-${req.query.t || ''}`;
 
   const quoteResult = await quoteCache.fetch(cacheKey, async () => {
     jupiterLogger.debug({ inputMint, outputMint, amount }, 'Jupiter Quote Proxy Request');
 
     const base = normalizeJupiterBase(baseUrl);
-    const jupUrl = buildJupiterQuoteUrl(base, inputMint, outputMint, amount, slippageBps);
+    const jupUrl = buildJupiterQuoteUrl(base, req.query);
 
     const fetchOpts: RequestInit = {
       method: 'GET',
@@ -161,9 +162,23 @@ router.get('/quote', asyncHandler(async (req, res) => {
     const resolvedKey = getJupiterApiKey(req.headers['x-api-key'] as string);
     if (resolvedKey) (fetchOpts.headers as Record<string, string>)['x-api-key'] = resolvedKey;
 
+    const appendExtraParams = (url: string, query: any): string => {
+      try {
+        const urlObj = new URL(url);
+        for (const [key, val] of Object.entries(query)) {
+          if (key !== 'baseUrl' && key !== 't' && val !== undefined) {
+            urlObj.searchParams.set(key, String(val));
+          }
+        }
+        return urlObj.toString();
+      } catch (e) {
+        return url;
+      }
+    };
+
     // Fallback URLs
-    const v1FallbackUrl = `https://api.jup.ag/swap/v1/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amount}&slippageBps=${slippageBps}`;
-    const liteFallbackUrl = `https://lite-api.jup.ag/v6/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amount}&slippageBps=${slippageBps}`;
+    const v1FallbackUrl = appendExtraParams(`https://api.jup.ag/swap/v1/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amount}&slippageBps=${slippageBps}`, req.query);
+    const liteFallbackUrl = appendExtraParams(`https://lite-api.jup.ag/v6/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amount}&slippageBps=${slippageBps}`, req.query);
     const fallbacks = [
       jupUrl,
       ...(jupUrl !== v1FallbackUrl ? [v1FallbackUrl] : []),

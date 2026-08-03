@@ -10,7 +10,7 @@ import { TokenScanner, ScannedToken } from '../../services/tokenScanner';
 import { DEFAULT_CRITERIA } from '../../config/tokenCriteria';
 import { getTradeCount } from '../../config/rebuyGuard';
 import { useSimulationStore } from '../../store/simulationStore';
-import { getJupiterQuote, executeTxWithRPCFallback, getTokenBalanceRaw, getLatestBlockhashWithFallback, clearSimPriceCache, resetSimPrice, pingJupiterApi } from '../../services/jupiterService';
+import { getJupiterQuote, executeTxWithRPCFallback, getTokenBalanceRaw, getLatestBlockhashWithFallback, clearSimPriceCache, resetSimPrice, pingJupiterApi, executeMomentumSell } from '../../services/jupiterService';
 import { db } from '../../lib/firebase';
 import { detectTokenStage } from '../../lib/utils';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
@@ -3463,7 +3463,16 @@ export const JupiterPage = ({
   ]);
 
   
-  const executeJupiterSwap = async (inputMint: string, outputMint: string, amount: number, customSlippageBps?: number, minExpectedOutSol?: number) => {
+  const executeJupiterSwap = async (
+    inputMint: string,
+    outputMint: string,
+    amount: number,
+    customSlippageBps?: number,
+    minExpectedOutSol?: number,
+    isSellMomentumFlow?: boolean,
+    expectedProfitPct?: number,
+    tradeValueUsd?: number
+  ) => {
     if (inputMint.toLowerCase().startsWith('sim') || outputMint.toLowerCase().startsWith('sim')) {
       throw new Error("Trading of tokens starting with 'sim' is strictly blocked.");
     }
@@ -3494,7 +3503,8 @@ export const JupiterPage = ({
         details: { amount: swapAmt }
       });
       const slippageToUse = customSlippageBps !== undefined ? customSlippageBps : Math.floor(slippage * 100);
-      const quoteUrl = `/api/jup/quote?baseUrl=${encodeURIComponent(normalizedBaseUrl)}&inputMint=${inMint}&outputMint=${outMint}&amount=${Math.floor(swapAmt)}&slippageBps=${slippageToUse}&t=${Date.now()}`;
+      const restrictParam = (localStorage.getItem('hd_restrict_intermediate') !== 'false') ? '&restrictIntermediateTokens=true' : '';
+      const quoteUrl = `/api/jup/quote?baseUrl=${encodeURIComponent(normalizedBaseUrl)}&inputMint=${inMint}&outputMint=${outMint}&amount=${Math.floor(swapAmt)}&slippageBps=${slippageToUse}${restrictParam}&t=${Date.now()}`;
       
       let quoteResponse;
       const quoteRes = await fetch(quoteUrl, { headers: apiHeaders });
@@ -3611,7 +3621,30 @@ export const JupiterPage = ({
       transaction.sign([keypair]);
 
       try {
-        const txid = await executeTxWithRPCFallback(transaction, connection);
+        let txid: string;
+        if (isSellMomentumFlow && expectedProfitPct !== undefined && tradeValueUsd !== undefined) {
+          const guardConfig = {
+            quoteResponse,
+            maxSlippageFromQuotePct: Number(localStorage.getItem('hd_momentum_guard_pct') || '2'),
+            checkIntervalMs: Number(localStorage.getItem('hd_momentum_guard_interval') || '500'),
+            inputMint: inputMint,
+            outputMint: outputMint,
+            amount: amount
+          };
+          const urgency = expectedProfitPct < 0 ? 'extreme' : 'high';
+          txid = await executeMomentumSell(
+            transaction,
+            connection,
+            keypair.publicKey.toString(),
+            keypair,
+            guardConfig,
+            tradeValueUsd,
+            expectedProfitPct,
+            urgency
+          );
+        } else {
+          txid = await executeTxWithRPCFallback(transaction, connection);
+        }
         let actualOutAmountRaw = Number(quoteResponse.outAmount);
         try {
           let txInfo = null;
@@ -4568,7 +4601,21 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
             isMainSold = true;
           } else {
             addLog(`Ordering ${pos.symbol} → SOL...`, 'sell');
-            const result = await executeJupiterSwap(mint, SOL_MINT, lamportsToSell);
+            const currentPrice = pos.currentPrice || pos.buyPrice || 0;
+            const solValue = (lamportsToSell / 1e9) * currentPrice;
+            const tradeValueUsd = solValue * 150;
+            const expectedProfitPct = pnlPct * 100;
+            
+            const result = await executeJupiterSwap(
+              mint,
+              SOL_MINT,
+              lamportsToSell,
+              undefined,
+              undefined,
+              true, // isSellMomentumFlow
+              expectedProfitPct,
+              tradeValueUsd
+            );
             if (result.txid) {
               const actualSolReceived = result.outputAmount || 0;
               const costBasisSol = pos.solSpent || 0;
