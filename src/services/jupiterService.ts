@@ -717,10 +717,10 @@ export const getJupiterQuote = async (
     }
 
     if (initialBuyCostSol !== undefined && minTargetProfitPct !== undefined) {
-      const guaranteedLamportsOut = BigInt(quote.otherAmountThreshold);
-      const guaranteedSolOut = Number(guaranteedLamportsOut) / 1_000_000_000;
+      const expectedLamportsOut = BigInt(quote.outAmount);
+      const expectedSolOut = Number(expectedLamportsOut) / 1_000_000_000;
       const estimatedFeesSol = 0.002;
-      const cleanReturn = guaranteedSolOut - estimatedFeesSol;
+      const cleanReturn = expectedSolOut - estimatedFeesSol;
       const trueNetProfitPct = ((cleanReturn - initialBuyCostSol) / initialBuyCostSol) * 100;
       if (trueNetProfitPct <= minTargetProfitPct) {
         console.warn(`[QUOTE REJECTED]: Net P&L (${trueNetProfitPct.toFixed(2)}%) below target (${minTargetProfitPct}%)`);

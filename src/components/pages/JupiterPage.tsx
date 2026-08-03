@@ -1028,9 +1028,17 @@ export const JupiterPage = ({
   const [localRpcUrl, setLocalRpcUrl] = useState('https://api.mainnet-beta.solana.com');
   const [localRpcUrl2, setLocalRpcUrl2] = useState('');
   const [localCustomWsUrl, setLocalCustomWsUrl] = useState('');
-  const [localApiKey, setLocalApiKey] = useState('');
+  const [localApiKey, setLocalApiKey] = useState(() => {
+    try {
+      return localStorage.getItem('jupiter_auto_apiKey') || localStorage.getItem('juipter_auto_apiKey') || '';
+    } catch { return ''; }
+  });
   const [localJupiterRpcUrl, setLocalJupiterRpcUrl] = useState('');
-  const [localPrivateKey, setLocalPrivateKey] = useState('');
+  const [localPrivateKey, setLocalPrivateKey] = useState(() => {
+    try {
+      return localStorage.getItem('jupiter_auto_privateKey') || localStorage.getItem('juipter_auto_privateKey') || '';
+    } catch { return ''; }
+  });
 
   const {
     hardenedMinBondingProgress = 0, setHardenedMinBondingProgress = () => {},
@@ -1351,6 +1359,43 @@ export const JupiterPage = ({
   const [jupApiStatus, setJupApiStatus] = useState<'IDLE'|'HEALTHY'|'DEGRADED'|'ERROR'>('IDLE');
   const [jupApiPing, setJupApiPing] = useState<number>(0);
   const lastLoggedKeyRef = useRef<string>('');
+
+  const [showPrivateKey, setShowPrivateKey] = useState(false);
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [copiedAddress, setCopiedAddress] = useState(false);
+
+  const handleCopyAddress = () => {
+    if (jupiterAddress) {
+      navigator.clipboard.writeText(jupiterAddress);
+      setCopiedAddress(true);
+      setTimeout(() => setCopiedAddress(false), 2000);
+    }
+  };
+
+  const handleUpdateApiKey = (val: string) => {
+    const sanitized = val.trim();
+    setApiKey(sanitized);
+    setLocalApiKey(sanitized);
+    try {
+      localStorage.setItem('jupiter_auto_apiKey', sanitized);
+      localStorage.setItem('juipter_auto_apiKey', sanitized);
+    } catch (e) {}
+  };
+
+  const handleUpdatePrivateKey = async (val: string) => {
+    const sanitized = val.trim();
+    setPrivateKey(sanitized);
+    setLocalPrivateKey(sanitized);
+    try {
+      localStorage.setItem('jupiter_auto_privateKey', sanitized);
+      localStorage.setItem('juipter_auto_privateKey', sanitized);
+      if (user && db && sanitized) {
+        const encrypted = await encryptPrivateKey(sanitized, user.uid);
+        const docRef = doc(db, 'settings', user.uid);
+        await setDoc(docRef, { privateKey: encrypted, apiKey: apiKey }, { merge: true });
+      }
+    } catch (e) {}
+  };
 
   useEffect(() => {
     let isMounted = true;
@@ -3456,9 +3501,9 @@ export const JupiterPage = ({
         });
         
         if (minExpectedOutSol !== undefined && outMint === SOL_MINT) {
-           const guaranteedSol = Number(quoteResponse.otherAmountThreshold) / 1_000_000_000;
-           if (guaranteedSol < minExpectedOutSol) {
-             throw new Error(`PROFIT GUARD: Jupiter guaranteed out (${guaranteedSol.toFixed(4)} SOL) is lower than the required minimum (${minExpectedOutSol.toFixed(4)} SOL). Swap aborted.`);
+           const expectedSol = Number(quoteResponse.outAmount) / 1_000_000_000;
+           if (expectedSol < minExpectedOutSol) {
+             throw new Error(`PROFIT GUARD: Jupiter expected out (${expectedSol.toFixed(4)} SOL) is lower than the required minimum (${minExpectedOutSol.toFixed(4)} SOL). Swap aborted.`);
            }
         }
       } catch (e: any) {
@@ -4204,7 +4249,8 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
       return;
     }
     
-    if (true) {
+    const isSimMode = !privateKey || privateKey.trim() === '';
+    if (isSimMode) {
       // Simulation wallet logic
       let currentBal = 0;
       setSimWalletBalance(curr => { currentBal = curr; return curr; });
@@ -4579,9 +4625,9 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
 
             if (!sellQuote) throw new Error("No exit route found.");
             
-            const guaranteedSolOutSell = Number(sellQuote.otherAmountThreshold) / 1_000_000_000;
+            const expectedSolOutSell = Number(sellQuote.outAmount) / 1_000_000_000;
             const operationalFeesSol = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent);
-            const netReturnSell = guaranteedSolOutSell - operationalFeesSol;
+            const netReturnSell = Math.max(0, expectedSolOutSell - operationalFeesSol);
 
             const isStopLoss = reason.toLowerCase().includes('stop loss') || reason.toLowerCase().includes('recovery failed');
             const isEmergency = reason.toLowerCase().includes('force') || reason.toLowerCase().includes('emergency') || reason.toLowerCase().includes('manual');
@@ -5068,33 +5114,19 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
             if (!quote) {
                // Math fallback if Jupiter route is missing for this token
                const simulatedGross = currentPrice * (pos.amount || 0);
-               
-               const currentPnLPercent = roughNetPnL * 100;
-               let dynamicSlippage = slippage;
-               if (currentPnLPercent > 0) {
-                 dynamicSlippage = Math.max(0.3, Math.min(slippage, currentPnLPercent * 0.3));
-               } else {
-                 dynamicSlippage = Math.min(slippage, 1.0);
-               }
-               
-               const slippageFeeCalc = simulatedGross * (dynamicSlippage / 100);
                const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent || 0.05);
-               const simulatedNet = Math.max(0, simulatedGross - slippageFeeCalc - opFees);
+               const simulatedNet = Math.max(0, simulatedGross - opFees);
                const spentSol = pos.solSpent || 1;
-               const entrySlippageSol = spentSol * (slippage / 100);
-               const opFeesEntry = getDynamicOperationalFeeSol(pos.recoveryMode, spentSol);
-               const netEntryAfterSlippageAndJito = Math.max(spentSol * 0.1, spentSol - entrySlippageSol - opFeesEntry);
                netPnlPct = (simulatedNet - spentSol) / spentSol;
                pnlPct = roughNetPnL; 
             } else {
-               const guaranteedMinLamports = BigInt(quote.otherAmountThreshold);
-               const guaranteedSolOut = Number(guaranteedMinLamports) / 1_000_000_000.0;
+               const expectedSolOut = Number(quote.outAmount) / 1_000_000_000.0;
                const operationalFeesSol = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent); 
-               const realNetSolReturn = Math.max(0, guaranteedSolOut - operationalFeesSol);
+               const realNetSolReturn = Math.max(0, expectedSolOut - operationalFeesSol);
                const spentSol = pos.solSpent || 1;
 
                netPnlPct = (realNetSolReturn - spentSol) / spentSol;
-               pnlPct = (guaranteedSolOut - spentSol) / spentSol;
+               pnlPct = (expectedSolOut - spentSol) / spentSol;
             }
 
             let inRecoveryMode = pos.recoveryMode;
@@ -5936,6 +5968,13 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
           <span>⚡</span> JUPITER.AUTO
         </h1>
         <div className="flex items-center gap-3">
+          {/* Real Wallet Balance Pill */}
+          <div className="flex items-center gap-1.5 border border-[#2d2e3d] bg-[#1a1b26] px-2.5 py-1 rounded-full text-[10px] lg:text-[11px] font-mono">
+            <div className={`w-1.5 h-1.5 rounded-full ${jupiterStatus === 'CONNECTED' ? 'bg-emerald-400' : jupiterStatus === 'CONNECTING' ? 'bg-amber-400 animate-pulse' : jupiterStatus === 'ERROR' ? 'bg-rose-500' : 'bg-slate-500'}`} />
+            <span className="text-white font-semibold">
+              {jupiterStatus === 'CONNECTED' ? (jupiterBalance !== null ? `${jupiterBalance.toFixed(3)} SOL` : 'CONNECTED') : 'SIMULATION'}
+            </span>
+          </div>
           <div className="flex items-center gap-1.5 border border-[#2d2e3d] bg-[#1a1b26] px-2 py-1 rounded-full text-[10px] lg:text-[11px]">
             <div className={`w-1.5 h-1.5 rounded-full ${jupApiStatus === 'HEALTHY' ? 'bg-[#c7f284]' : jupApiStatus === 'DEGRADED' ? 'bg-amber-400 animate-pulse' : jupApiStatus === 'ERROR' ? 'bg-rose-500' : 'bg-slate-500'}`} />
             <span className={`font-bold uppercase tracking-widest ${jupApiStatus === 'HEALTHY' ? 'text-[#c7f284]' : jupApiStatus === 'DEGRADED' ? 'text-amber-400' : jupApiStatus === 'ERROR' ? 'text-rose-500' : 'text-slate-500'}`}>
@@ -5954,6 +5993,150 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
       <main className="flex-1 grid lg:grid-cols-[280px_1fr_300px] gap-4 p-3 lg:gap-5 lg:p-5 w-full h-[calc(100%-56px)] lg:h-[calc(100%-64px)] overflow-y-auto lg:overflow-hidden pb-32 lg:pb-5">
         {/* Left Column: Configuration & Controls */}
         <aside className="space-y-5 lg:overflow-y-auto scrollbar-hide flex flex-col pr-1 pb-4 min-w-0">
+          {/* Jupiter Wallet Integration & Keys Panel */}
+          <div className="bg-[#10111a]/80 border border-[#2d2e3d] rounded-2xl flex flex-col shrink-0 overflow-hidden shadow-lg shadow-black/20">
+            <div className="p-3.5 border-b border-[#1f212e] bg-[#0d0e17] flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 rounded-lg bg-[#c7f284]/10 border border-[#c7f284]/30 text-[#c7f284]">
+                  <Zap className="w-4 h-4" />
+                </div>
+                <div>
+                  <h2 className="text-[11px] uppercase tracking-[1px] text-white font-bold flex items-center gap-1.5">
+                    Jupiter Wallet & API
+                  </h2>
+                  <p className="text-[9px] text-[#64748b]">Real On-Chain Trading Keys</p>
+                </div>
+              </div>
+              <span className={`text-[8px] font-mono font-bold uppercase rounded-full px-2 py-0.5 border ${
+                jupiterStatus === 'CONNECTED' ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' :
+                jupiterStatus === 'CONNECTING' ? 'bg-amber-400/15 text-amber-300 border-amber-400/30 animate-pulse' :
+                jupiterStatus === 'ERROR' ? 'bg-rose-500/15 text-rose-300 border-rose-500/30' :
+                'bg-slate-500/15 text-slate-400 border-slate-500/30'
+              }`}>
+                {jupiterStatus === 'CONNECTED' ? 'REAL TRADING' : jupiterStatus}
+              </span>
+            </div>
+
+            <div className="p-3.5 space-y-3">
+              {/* Wallet Status Card */}
+              <div className="bg-[#050509] border border-[#1f212e] rounded-xl p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[9px] text-[#64748b] uppercase font-bold tracking-wider">Solana Wallet Status</span>
+                  <button 
+                    onClick={() => {
+                      lastLoggedKeyRef.current = '';
+                      setJupiterStatus('CONNECTING');
+                    }}
+                    title="Refresh Wallet Balance"
+                    className="text-[9px] text-[#c7f284] hover:text-white flex items-center gap-1 transition-colors cursor-pointer font-bold uppercase"
+                  >
+                    <RefreshCw className="w-3 h-3" /> Sync
+                  </button>
+                </div>
+
+                {jupiterStatus === 'CONNECTED' && jupiterAddress ? (
+                  <div className="space-y-2 pt-0.5">
+                    <div className="flex items-center justify-between bg-[#0a0b12] border border-[#1f212e] rounded-lg px-2.5 py-1.5 text-xs font-mono">
+                      <span className="text-white font-semibold">{jupiterAddress.slice(0, 6)}...{jupiterAddress.slice(-6)}</span>
+                      <button
+                        onClick={handleCopyAddress}
+                        className="text-[#64748b] hover:text-[#c7f284] transition-colors cursor-pointer"
+                        title="Copy Wallet Address"
+                      >
+                        {copiedAddress ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 pt-1 border-t border-[#1f212e]/60">
+                      <div>
+                        <span className="text-[8px] text-[#64748b] block uppercase font-medium">SOL Balance</span>
+                        <span className="text-xs font-bold font-mono text-[#c7f284]">
+                          {jupiterBalance !== null ? `${jupiterBalance.toFixed(4)} SOL` : 'Loading...'}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-[8px] text-[#64748b] block uppercase font-medium">Est. Value (USD)</span>
+                        <span className="text-xs font-bold font-mono text-white">
+                          {jupiterBalance !== null ? `$${(jupiterBalance * getSolPriceUsd()).toFixed(2)}` : '$0.00'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ) : jupiterStatus === 'CONNECTING' ? (
+                  <div className="text-[10px] text-amber-400 font-mono py-1 flex items-center gap-2">
+                    <div className="w-3 h-3 border-2 border-amber-400 border-t-transparent rounded-full animate-spin"></div>
+                    Connecting & fetching balance...
+                  </div>
+                ) : jupiterStatus === 'ERROR' ? (
+                  <div className="text-[10px] text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-lg p-2 font-mono">
+                    ⚠️ Invalid key or RPC error. Verify key format.
+                  </div>
+                ) : (
+                  <div className="text-[10px] text-[#94a3b8] bg-[#0a0b12] border border-[#1f212e] rounded-lg p-2 leading-tight">
+                    💡 <span className="font-semibold text-white">Simulation Mode Active.</span> Enter your Solana Private Key below for real on-chain auto-trading.
+                  </div>
+                )}
+              </div>
+
+              {/* Key Entry Inputs */}
+              <div className="space-y-2.5">
+                <div>
+                  <div className="flex justify-between items-center text-[9px] text-[#64748b] mb-1 uppercase font-semibold">
+                    <span>Jupiter API Key</span>
+                    <span className="text-[8px] text-[#c7f284] font-mono">Optional</span>
+                  </div>
+                  <div className="relative">
+                    <input 
+                      type={showApiKey ? 'text' : 'password'}
+                      value={apiKey}
+                      onChange={(e) => handleUpdateApiKey(e.target.value)}
+                      placeholder="Jupiter API Key (Optional)"
+                      className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg pl-2.5 pr-8 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowApiKey(!showApiKey)}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#64748b] hover:text-white transition-colors cursor-pointer"
+                    >
+                      {showApiKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <div className="flex justify-between items-center text-[9px] text-[#64748b] mb-1 uppercase font-semibold">
+                    <span>Solana Secret Key (Private Key)</span>
+                    <span className="text-[8px] text-amber-400 font-mono">Base58</span>
+                  </div>
+                  <div className="relative">
+                    <input 
+                      type={showPrivateKey ? 'text' : 'password'}
+                      value={privateKey}
+                      onChange={(e) => handleUpdatePrivateKey(e.target.value)}
+                      placeholder="Enter Base58 Secret Key (e.g. 5Kx8...)"
+                      className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg pl-2.5 pr-8 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPrivateKey(!showPrivateKey)}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#64748b] hover:text-white transition-colors cursor-pointer"
+                    >
+                      {showPrivateKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+                </div>
+
+                {privateKey && (
+                  <button
+                    onClick={() => handleUpdatePrivateKey('')}
+                    className="w-full py-1 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-300 rounded-lg text-[9px] uppercase font-bold tracking-wider transition-all cursor-pointer flex items-center justify-center gap-1"
+                  >
+                    <Trash2 className="w-3 h-3" /> Clear Key & Switch to Simulation
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
           {/* Master Manual DexScreener Contract Ingestor & Scanner */}
           <div className="bg-[#10111a]/60 border border-[#1f212e] rounded-2xl flex flex-col shrink-0">
             <div className="p-4 border-b border-[#1f212e]">
@@ -7046,9 +7229,8 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
                     
                     let netSolIfSold = currentGrossSol;
                     if (!privateKey) {
-                       const slippageFee = currentGrossSol * (slippage / 100);
                        const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent);
-                       netSolIfSold = Math.max(0, currentGrossSol - slippageFee - opFees);
+                       netSolIfSold = Math.max(0, currentGrossSol - opFees);
                     }
                     
                     let pnlPct = (pos.solSpent > 0) ? ((netSolIfSold - pos.solSpent) / pos.solSpent) : 0;
@@ -7066,9 +7248,8 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
                     
                     let netSolIfSold = currentGrossSol;
                     if (!privateKey) {
-                       const slippageFee = currentGrossSol * (slippage / 100);
                        const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent);
-                       netSolIfSold = Math.max(0, currentGrossSol - slippageFee - opFees);
+                       netSolIfSold = Math.max(0, currentGrossSol - opFees);
                     }
                     
                     let pnlPct = (pos.solSpent > 0) ? ((netSolIfSold - pos.solSpent) / pos.solSpent) : 0;
