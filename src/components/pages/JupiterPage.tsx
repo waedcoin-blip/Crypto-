@@ -1961,6 +1961,31 @@ export const JupiterPage = ({
     tradeHistoryRef.current = tradeHistory;
   }, [tradeHistory]);
 
+  // Synchronize stats state from tradeHistory array automatically to ensure consistent totals
+  useEffect(() => {
+    if (!tradeHistory) return;
+    
+    const count = tradeHistory.length;
+    const wins = tradeHistory.filter(t => (t.pnlPct || 0) > 0).length;
+    const losses = count - wins;
+    const totalPnl = tradeHistory.reduce((acc, t) => {
+      const buy = t.buyAmountSol || 0;
+      const sell = t.sellAmountSol || 0;
+      return acc + (sell - buy);
+    }, 0);
+    
+    const profitableTrades = tradeHistory.filter(t => (t.pnlPct || 0) > 0);
+    const bestTradeVal = profitableTrades.length > 0 ? Math.max(...profitableTrades.map(t => (t.pnlPct || 0) / 100)) : null;
+
+    setStats({
+      trades: count,
+      wins,
+      losses,
+      pnl: totalPnl,
+      bestTrade: bestTradeVal
+    });
+  }, [tradeHistory]);
+
   const [uptime, setUptime] = useState(() => Number(localStorage.getItem('juipter_auto_uptime')) || 0);
   const [blacklistedMints, setBlacklistedMints] = useState<string[]>(() => {
     try {
@@ -4622,17 +4647,6 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
               const actualPnlSOL = costBasisSol > 0 ? actualSolReceived - costBasisSol : 0;
               const actualPnlPct = costBasisSol > 0 ? actualPnlSOL / costBasisSol : 0;
               
-              const updatedStats = {
-                ...stats,
-                trades: stats.trades + 1,
-                wins: stats.wins + (actualPnlPct > 0 ? 1 : 0),
-                losses: stats.losses + (actualPnlPct <= 0 ? 1 : 0),
-                pnl: stats.pnl + actualPnlSOL,
-                bestTrade: (actualPnlPct > 0 && (!stats.bestTrade || actualPnlPct > stats.bestTrade)) ? actualPnlPct : stats.bestTrade
-              };
-              setStats(updatedStats);
-              addLog(`✅ Sold ${pos.symbol} on-chain | Received: ${actualSolReceived.toFixed(6)} SOL | P&L: ${(actualPnlPct * 100).toFixed(1)}% | tx: ${result.txid.slice(0, 12)}...`, 'sell');
-              
               const newTrade = {
                 id: `trade-${Date.now()}`,
                 mint: mint,
@@ -4642,11 +4656,36 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
                 sellAmountSol: actualSolReceived,
                 pnlPct: Math.max(-100, actualPnlPct * 100)
               };
-              const updatedHistory = [newTrade, ...tradeHistory];
-              setTradeHistory(updatedHistory);
 
-              // Force direct, synchronous-like cloud database save to prevent lost metrics on immediate refresh
-              syncStatsAndHistoryDirectly(updatedStats, updatedHistory);
+              addLog(`✅ Sold ${pos.symbol} on-chain | Received: ${actualSolReceived.toFixed(6)} SOL | P&L: ${(actualPnlPct * 100).toFixed(1)}% | tx: ${result.txid.slice(0, 12)}...`, 'sell');
+
+              setTradeHistory(prev => {
+                const updatedHistory = [newTrade, ...prev];
+                
+                const count = updatedHistory.length;
+                const wins = updatedHistory.filter(t => (t.pnlPct || 0) > 0).length;
+                const losses = count - wins;
+                const totalPnl = updatedHistory.reduce((acc, t) => {
+                  const buy = t.buyAmountSol || 0;
+                  const sell = t.sellAmountSol || 0;
+                  return acc + (sell - buy);
+                }, 0);
+                
+                const profitableTrades = updatedHistory.filter(t => (t.pnlPct || 0) > 0);
+                const bestTradeVal = profitableTrades.length > 0 ? Math.max(...profitableTrades.map(t => (t.pnlPct || 0) / 100)) : null;
+
+                const updatedStats = {
+                  trades: count,
+                  wins,
+                  losses,
+                  pnl: totalPnl,
+                  bestTrade: bestTradeVal
+                };
+
+                // Sync directly
+                syncStatsAndHistoryDirectly(updatedStats, updatedHistory);
+                return updatedHistory;
+              });
 
               if (pnlPct < 0) {
                 setBlacklistedMints(prev => Array.from(new Set([...prev, mint])));
@@ -4779,18 +4818,6 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
         const walletNetPnlPct = (realWalletReturn - pos.solSpent) / pos.solSpent;
         setSimWalletBalance(prev => prev + realWalletReturn);
 
-        const updatedStats = {
-          ...stats,
-          trades: stats.trades + 1,
-          wins: stats.wins + (walletNetPnlPct > 0 ? 1 : 0),
-          losses: stats.losses + (walletNetPnlPct <= 0 ? 1 : 0),
-          pnl: stats.pnl + (realWalletReturn - pos.solSpent), 
-          bestTrade: (walletNetPnlPct > 0 && (!stats.bestTrade || walletNetPnlPct > stats.bestTrade)) ? walletNetPnlPct : stats.bestTrade
-        };
-        setStats(updatedStats);
-
-        addLog(`✅ [SIM] Sold ${pos.symbol} | Net P&L: ${(walletNetPnlPct * 100).toFixed(1)}% (Wallet)`, 'sell');
-        
         const newTrade = {
           id: `sim-sell-${Date.now()}`,
           mint: mint,
@@ -4800,11 +4827,35 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
           sellAmountSol: realWalletReturn, 
           pnlPct: walletNetPnlPct * 100
         };
-        const updatedHistory = [newTrade, ...tradeHistory];
-        setTradeHistory(updatedHistory);
 
-        // Force direct, synchronous-like cloud database save to prevent lost metrics on immediate refresh
-        syncStatsAndHistoryDirectly(updatedStats, updatedHistory);
+        addLog(`✅ [SIM] Sold ${pos.symbol} | Net P&L: ${(walletNetPnlPct * 100).toFixed(1)}% (Wallet)`, 'sell');
+
+        setTradeHistory(prev => {
+          const updatedHistory = [newTrade, ...prev];
+          
+          const count = updatedHistory.length;
+          const wins = updatedHistory.filter(t => (t.pnlPct || 0) > 0).length;
+          const losses = count - wins;
+          const totalPnl = updatedHistory.reduce((acc, t) => {
+            const buy = t.buyAmountSol || 0;
+            const sell = t.sellAmountSol || 0;
+            return acc + (sell - buy);
+          }, 0);
+          
+          const profitableTrades = updatedHistory.filter(t => (t.pnlPct || 0) > 0);
+          const bestTradeVal = profitableTrades.length > 0 ? Math.max(...profitableTrades.map(t => (t.pnlPct || 0) / 100)) : null;
+
+          const updatedStats = {
+            trades: count,
+            wins,
+            losses,
+            pnl: totalPnl,
+            bestTrade: bestTradeVal
+          };
+
+          syncStatsAndHistoryDirectly(updatedStats, updatedHistory);
+          return updatedHistory;
+        });
 
         if (actualPnlPct < 0) {
           setBlacklistedMints(prev => Array.from(new Set([...prev, mint])));
