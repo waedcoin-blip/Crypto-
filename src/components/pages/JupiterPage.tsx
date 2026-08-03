@@ -2924,7 +2924,54 @@ export const JupiterPage = ({
     return () => clearInterval(interval);
   }, [walletTokenMintsKey, isRunning, updateWalletTokenPrices]);
 
-  // Independent Live Price Polling for Active Positions
+  // Sync tokenMetrics prices into active positions in real time
+  useEffect(() => {
+    const activeMintsList = Object.keys(positions).filter(k => {
+      const p = positions[k];
+      return p && typeof p === 'object' && p.symbol && typeof p.amount === 'number' && p.amount > 0;
+    });
+    if (activeMintsList.length === 0) return;
+
+    setPositions(prev => {
+      let changed = false;
+      const next = { ...prev };
+      activeMintsList.forEach(mint => {
+        const metric = tokenMetrics[mint];
+        if (metric && next[mint]) {
+          const freshPrice = metric.priceNative
+            ? (typeof metric.priceNative === 'number' ? metric.priceNative : parseFloat(String(metric.priceNative)))
+            : (metric.priceUsd ? parseFloat(String(metric.priceUsd)) / getSolPriceUsd() : 0);
+          if (freshPrice > 0 && next[mint].currentPrice !== freshPrice) {
+            const currentGrossSol = freshPrice * (next[mint].amount || 0);
+            let netSolIfSold = currentGrossSol;
+            if (!privateKey) {
+              const slippageFee = currentGrossSol * (slippage / 100);
+              const opFees = getDynamicOperationalFeeSol(next[mint].recoveryMode, next[mint].solSpent);
+              netSolIfSold = Math.max(0, currentGrossSol - slippageFee - opFees);
+            }
+            const calcNetPnlPct = (next[mint].solSpent && next[mint].solSpent > 0) ? (netSolIfSold - next[mint].solSpent) / next[mint].solSpent : 0;
+            const calcNetSol = netSolIfSold - (next[mint].solSpent || 0);
+
+            next[mint] = {
+              ...next[mint],
+              currentPrice: freshPrice,
+              isStale: false,
+              realNetPnl: calcNetPnlPct,
+              realNetSol: calcNetSol
+            };
+            changed = true;
+          }
+        }
+      });
+      if (changed) {
+        positionsRef.current = next;
+        useAppStore.getState().updateActivePositions(() => next);
+      }
+      return changed ? next : prev;
+    });
+  }, [tokenMetrics]);
+
+  // Independent Live Price Polling for Active Positions (1s interval)
   useEffect(() => {
     const activeMintsList = Object.keys(positions).filter(k => {
       const p = positions[k];
@@ -2935,45 +2982,51 @@ export const JupiterPage = ({
     const interval = setInterval(async () => {
       const livePrices = await getTokenPrices(activeMintsList);
       
-      // Process active positions asynchronously
-      for (const mint of activeMintsList) {
-        const pos = positionsRef.current[mint];
-        if (!pos) continue;
-        const priceInfo = livePrices[mint];
-        if (!priceInfo) continue;
-        
-        const newPrice = priceInfo.price;
-        const currentGrossSol = (newPrice || pos.buyPrice || 0) * (pos.amount || 0);
-        let netSolIfSold = currentGrossSol;
-        if (!privateKey) {
-           const slippageFee = currentGrossSol * (slippage / 100);
-           const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent);
-           netSolIfSold = Math.max(0, currentGrossSol - slippageFee - opFees);
-        }
-        const pnlFraction = (netSolIfSold - pos.solSpent) / pos.solSpent;
-        const currentPnLPct = pnlFraction * 100;
-      }
-
-      // Then do the regular position currentPrice / isStale updates
       setPositions(prev => {
         const next = { ...prev };
         let changed = false;
         activeMintsList.forEach(mint => {
           if (next[mint]) {
             const priceInfo = livePrices[mint];
-            if (priceInfo) {
+            if (priceInfo && typeof priceInfo.price === 'number' && priceInfo.price > 0) {
               const newPrice = priceInfo.price;
               const isStale = !!priceInfo.isStale;
-              if (next[mint].currentPrice !== newPrice || next[mint].isStale !== isStale) {
-                 next[mint] = { ...next[mint], currentPrice: newPrice, isStale };
-                 changed = true;
+
+              const currentGrossSol = newPrice * (next[mint].amount || 0);
+              let netSolIfSold = currentGrossSol;
+              if (!privateKey) {
+                const slippageFee = currentGrossSol * (slippage / 100);
+                const opFees = getDynamicOperationalFeeSol(next[mint].recoveryMode, next[mint].solSpent);
+                netSolIfSold = Math.max(0, currentGrossSol - slippageFee - opFees);
+              }
+              const calcNetPnlPct = (next[mint].solSpent && next[mint].solSpent > 0) ? (netSolIfSold - next[mint].solSpent) / next[mint].solSpent : 0;
+              const calcNetSol = netSolIfSold - (next[mint].solSpent || 0);
+
+              if (
+                next[mint].currentPrice !== newPrice ||
+                next[mint].isStale !== isStale ||
+                next[mint].realNetPnl !== calcNetPnlPct ||
+                next[mint].realNetSol !== calcNetSol
+              ) {
+                next[mint] = {
+                  ...next[mint],
+                  currentPrice: newPrice,
+                  isStale,
+                  realNetPnl: calcNetPnlPct,
+                  realNetSol: calcNetSol
+                };
+                changed = true;
               }
             }
           }
         });
+        if (changed) {
+          positionsRef.current = next;
+          useAppStore.getState().updateActivePositions(() => next);
+        }
         return changed ? next : prev;
       });
-    }, 2000); // 2s sync for positions
+    }, 1000); // 1s sync for positions
     return () => clearInterval(interval);
   }, [Object.keys(positions).filter(k => {
     const p = positions[k];
@@ -6967,7 +7020,7 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2 gap-3 content-start">
-                  {Object.entries(positions || {}).filter(([_, pos]: [string, any]) => {
+                  {Object.entries(positions || {}).filter(([mint, pos]: [string, any]) => {
                     // 🛡️ Robust validation filter to prevent displaying visually buggy/corrupt positions
                     if (
                       !pos ||
@@ -6987,7 +7040,9 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
                       return false;
                     }
 
-                    const currentGrossSol = (pos.currentPrice || pos.buyPrice || 0) * (pos.amount || 0);
+                    const token = tokenMetrics[mint];
+                    const displayPrice = pos.currentPrice || (token?.priceNative ? parseFloat(String(token.priceNative)) : 0) || pos.buyPrice || 0;
+                    const currentGrossSol = displayPrice * (pos.amount || 0);
                     
                     let netSolIfSold = currentGrossSol;
                     if (!privateKey) {
@@ -6996,13 +7051,18 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
                        netSolIfSold = Math.max(0, currentGrossSol - slippageFee - opFees);
                     }
                     
-                    let pnlPct = ((netSolIfSold - pos.solSpent) / pos.solSpent);
-                    if (pos.realNetPnl !== undefined) {
+                    let pnlPct = (pos.solSpent > 0) ? ((netSolIfSold - pos.solSpent) / pos.solSpent) : 0;
+                    if (displayPrice === 0 && pos.realNetPnl !== undefined) {
                       pnlPct = pos.realNetPnl;
+                    }
+                    if (displayPrice === 0 && pos.realNetSol !== undefined) {
+                      netSolIfSold = pos.solSpent + pos.realNetSol;
                     }
                     return !isNaN(pnlPct) && isFinite(pnlPct);
                   }).map(([mint, pos]: [string, Position]) => {
-                    const currentGrossSol = (pos.currentPrice || pos.buyPrice || 0) * (pos.amount || 0);
+                    const token = tokenMetrics[mint];
+                    const displayPrice = pos.currentPrice || (token?.priceNative ? parseFloat(String(token.priceNative)) : 0) || pos.buyPrice || 0;
+                    const currentGrossSol = displayPrice * (pos.amount || 0);
                     
                     let netSolIfSold = currentGrossSol;
                     if (!privateKey) {
@@ -7011,18 +7071,15 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
                        netSolIfSold = Math.max(0, currentGrossSol - slippageFee - opFees);
                     }
                     
-                    let pnlPct = ((netSolIfSold - pos.solSpent) / pos.solSpent);
-                    if (pos.realNetPnl !== undefined) {
+                    let pnlPct = (pos.solSpent > 0) ? ((netSolIfSold - pos.solSpent) / pos.solSpent) : 0;
+                    if (displayPrice === 0 && pos.realNetPnl !== undefined) {
                       pnlPct = pos.realNetPnl;
                     }
-                    if (pos.realNetSol !== undefined) {
+                    if (displayPrice === 0 && pos.realNetSol !== undefined) {
                       netSolIfSold = pos.solSpent + pos.realNetSol;
                     }
                     
                     const isPos = pnlPct >= 0;
-
-                    const token = tokenMetrics[mint];
-                    const displayPrice = pos.currentPrice || pos.buyPrice || (token?.priceNative ? parseFloat(String(token.priceNative)) : 0);
                     const isStalePos = !!pos.isStale && (!displayPrice || displayPrice === 0);
                     const stage = detectTokenStage({
                       address: mint,
