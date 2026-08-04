@@ -4866,9 +4866,9 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
 
             if (!sellQuote) throw new Error("No exit route found.");
             
-            const expectedSolOutSell = Number(sellQuote.outAmount) / 1_000_000_000;
+            const guaranteedSolOutSell = Number(sellQuote.otherAmountThreshold) / 1_000_000_000;
             const operationalFeesSol = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent);
-            const netReturnSell = Math.max(0, expectedSolOutSell - operationalFeesSol);
+            const netReturnSell = guaranteedSolOutSell - operationalFeesSol;
 
             const isStopLoss = reason.toLowerCase().includes('stop loss') || reason.toLowerCase().includes('recovery failed');
             const isEmergency = reason.toLowerCase().includes('force') || reason.toLowerCase().includes('emergency') || reason.toLowerCase().includes('manual');
@@ -4881,7 +4881,7 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
               return;
             }
 
-            netReceivedSOL = Number(sellQuote.outAmount) / 1_000_000_000;
+            netReceivedSOL = Number(sellQuote.otherAmountThreshold) / 1_000_000_000;
           } else {
             throw new Error("No lamports stored");
           }
@@ -5391,19 +5391,33 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
             if (!quote) {
                // Math fallback if Jupiter route is missing for this token
                const simulatedGross = currentPrice * (pos.amount || 0);
+               
+               const currentPnLPercent = roughNetPnL * 100;
+               let dynamicSlippage = slippage;
+               if (currentPnLPercent > 0) {
+                 dynamicSlippage = Math.max(0.3, Math.min(slippage, currentPnLPercent * 0.3));
+               } else {
+                 dynamicSlippage = Math.min(slippage, 1.0);
+               }
+               
+               const slippageFeeCalc = simulatedGross * (dynamicSlippage / 100);
                const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent || 0.05);
-               const simulatedNet = Math.max(0, simulatedGross - opFees);
+               const simulatedNet = Math.max(0, simulatedGross - slippageFeeCalc - opFees);
                const spentSol = pos.solSpent || 1;
+               const entrySlippageSol = spentSol * (slippage / 100);
+               const opFeesEntry = getDynamicOperationalFeeSol(pos.recoveryMode, spentSol);
+               const netEntryAfterSlippageAndJito = Math.max(spentSol * 0.1, spentSol - entrySlippageSol - opFeesEntry);
                netPnlPct = (simulatedNet - spentSol) / spentSol;
                pnlPct = roughNetPnL; 
             } else {
-               const expectedSolOut = Number(quote.outAmount) / 1_000_000_000.0;
+               const guaranteedMinLamports = BigInt(quote.otherAmountThreshold);
+               const guaranteedSolOut = Number(guaranteedMinLamports) / 1_000_000_000.0;
                const operationalFeesSol = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent); 
-               const realNetSolReturn = Math.max(0, expectedSolOut - operationalFeesSol);
+               const realNetSolReturn = Math.max(0, guaranteedSolOut - operationalFeesSol);
                const spentSol = pos.solSpent || 1;
 
                netPnlPct = (realNetSolReturn - spentSol) / spentSol;
-               pnlPct = (expectedSolOut - spentSol) / spentSol;
+               pnlPct = (guaranteedSolOut - spentSol) / spentSol;
             }
 
             // General Position Strategy (strictly enforce user-configured TP & SL)
@@ -7474,8 +7488,9 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
                     
                     let netSolIfSold = currentGrossSol;
                     if (!privateKey) {
+                       const slippageFee = currentGrossSol * (slippage / 100);
                        const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent);
-                       netSolIfSold = Math.max(0, currentGrossSol - opFees);
+                       netSolIfSold = Math.max(0, currentGrossSol - slippageFee - opFees);
                     }
                     
                     let pnlPct = (pos.solSpent > 0) ? ((netSolIfSold - pos.solSpent) / pos.solSpent) : 0;
@@ -7493,8 +7508,9 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
                     
                     let netSolIfSold = currentGrossSol;
                     if (!privateKey) {
+                       const slippageFee = currentGrossSol * (slippage / 100);
                        const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent);
-                       netSolIfSold = Math.max(0, currentGrossSol - opFees);
+                       netSolIfSold = Math.max(0, currentGrossSol - slippageFee - opFees);
                     }
                     
                     let pnlPct = (pos.solSpent > 0) ? ((netSolIfSold - pos.solSpent) / pos.solSpent) : 0;

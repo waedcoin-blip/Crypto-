@@ -5,6 +5,16 @@ import App from './App.tsx';
 import './index.css';
 
 import { Buffer } from 'buffer';
+import { ConnectionProvider, WalletProvider } from '@solana/wallet-adapter-react';
+import { WalletAdapterNetwork } from '@solana/wallet-adapter-base';
+import { PhantomWalletAdapter, SolflareWalletAdapter, TrustWalletAdapter } from '@solana/wallet-adapter-wallets';
+import { WalletModalProvider } from '@solana/wallet-adapter-react-ui';
+import '@solana/wallet-adapter-react-ui/styles.css';
+
+import { DEFAULT_HELIUS_RPC } from './constants/solana';
+import { ErrorBoundary } from './components/ErrorBoundary';
+import { startAlertManager } from './engines';
+
 window.Buffer = Buffer;
 
 // ─── MONKEY-PATCH CONSOLE TO SUPPRESS BENIGN METRIC/WS LIMITS ──────────────
@@ -83,17 +93,8 @@ window.addEventListener('error', (event) => {
     return;
   }
 
-  console.error('[GLOBAL ERROR]:', event.error);
-  // Prevent white screen of death on runtime errors
+// Prevent white screen of death on runtime errors
 });
-
-import { ConnectionProvider, WalletProvider } from '@solana/wallet-adapter-react';
-import { WalletAdapterNetwork } from '@solana/wallet-adapter-base';
-import { PhantomWalletAdapter, SolflareWalletAdapter, TrustWalletAdapter } from '@solana/wallet-adapter-wallets';
-import { WalletModalProvider } from '@solana/wallet-adapter-react-ui';
-import '@solana/wallet-adapter-react-ui/styles.css';
-
-import { DEFAULT_HELIUS_RPC } from './constants/solana';
 
 // Using Helius RPC from App.tsx via environment or hardcoded fallback
 const savedRpc = localStorage.getItem('juipter_auto_rpcUrl');
@@ -226,9 +227,6 @@ function Root() {
     </ConnectionProvider>
   );
 }
-
-import { ErrorBoundary } from './components/ErrorBoundary';
-import { startAlertManager } from './engines';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
