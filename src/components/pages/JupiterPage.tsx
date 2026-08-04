@@ -1040,6 +1040,45 @@ export const JupiterPage = ({
     } catch { return ''; }
   });
 
+  // Decoupled independent local states for Jupiter Page Trade
+  const [rpcUrl, setRpcUrlState] = useState(() => {
+    try {
+      return localStorage.getItem('jupiter_page_rpcUrl') || DEFAULT_HELIUS_RPC;
+    } catch {
+      return DEFAULT_HELIUS_RPC;
+    }
+  });
+  const setRpcUrl = (val: string) => {
+    setRpcUrlState(val);
+    try { localStorage.setItem('jupiter_page_rpcUrl', val); } catch {}
+  };
+
+  const [rpcUrl2, setRpcUrl2State] = useState(() => {
+    try {
+      return localStorage.getItem('jupiter_page_rpcUrl2') || '';
+    } catch {
+      return '';
+    }
+  });
+  const setRpcUrl2 = (val: string) => {
+    setRpcUrl2State(val);
+    try { localStorage.setItem('jupiter_page_rpcUrl2', val); } catch {}
+  };
+
+  const [customWsUrl, setCustomWsUrlState] = useState(() => {
+    try {
+      return localStorage.getItem('jupiter_page_customWsUrl') || '';
+    } catch {
+      return '';
+    }
+  });
+  const setCustomWsUrl = (val: string) => {
+    setCustomWsUrlState(val);
+    try { localStorage.setItem('jupiter_page_customWsUrl', val); } catch {}
+  };
+
+  const [isSecondaryActive, setIsSecondaryActive] = useState(false);
+
   const {
     hardenedMinBondingProgress = 0, setHardenedMinBondingProgress = () => {},
     hardenedMaxBondingProgress = 100, setHardenedMaxBondingProgress = () => {},
@@ -1069,10 +1108,10 @@ export const JupiterPage = ({
     tradeUnknown = true, setTradeUnknown = () => {},
     hardenedMinProfit5m = 1.5, setHardenedMinProfit5m = () => {},
     enableLatencyGuard = true, setEnableLatencyGuard = () => {},
-    rpcUrl = localRpcUrl, setRpcUrl = setLocalRpcUrl,
-    rpcUrl2 = localRpcUrl2, setRpcUrl2 = setLocalRpcUrl2,
-    isSecondaryActive = false, setIsSecondaryActive = () => {},
-    customWsUrl = localCustomWsUrl, setCustomWsUrl = setLocalCustomWsUrl,
+    rpcUrl: _sharedRpcUrl = '', setRpcUrl: _setSharedRpcUrl = () => {},
+    rpcUrl2: _sharedRpcUrl2 = '', setRpcUrl2: _setSharedRpcUrl2 = () => {},
+    isSecondaryActive: _sharedIsSecondaryActive = false, setIsSecondaryActive: _setSharedIsSecondaryActive = () => {},
+    customWsUrl: _sharedCustomWsUrl = '', setCustomWsUrl: _setSharedCustomWsUrl = () => {},
     telemetryWhaleBuyMin = 500000, setTelemetryWhaleBuyMin = () => {},
     telemetryHighBuyMin = 100000, setTelemetryHighBuyMin = () => {},
     telemetryVolumeSpikeMin = 1000, setTelemetryVolumeSpikeMin = () => {},
@@ -2103,15 +2142,20 @@ export const JupiterPage = ({
         const docSnap = await getDoc(docRef);
         if (docSnap.exists()) {
           const data = docSnap.data();
-          if (data.rpcUrl) {
-            const sanitized = data.rpcUrl.includes('winter-methodical-river') ? DEFAULT_HELIUS_RPC : data.rpcUrl;
+          const rawJupRpc = data.jupiterPageRpcUrl || data.rpcUrl;
+          if (rawJupRpc) {
+            const sanitized = rawJupRpc.includes('winter-methodical-river') ? DEFAULT_HELIUS_RPC : rawJupRpc;
             setRpcUrl(sanitized);
           }
-          if (data.rpcUrl2) {
-            const sanitized = data.rpcUrl2.includes('winter-methodical-river') ? DEFAULT_HELIUS_RPC : data.rpcUrl2;
+          const rawJupRpc2 = data.jupiterPageRpcUrl2 || data.rpcUrl2;
+          if (rawJupRpc2) {
+            const sanitized = rawJupRpc2.includes('winter-methodical-river') ? DEFAULT_HELIUS_RPC : rawJupRpc2;
             setRpcUrl2(sanitized);
           }
-          if (data.customWsUrl) setCustomWsUrl(data.customWsUrl);
+          const rawJupWs = data.jupiterPageCustomWsUrl || data.customWsUrl;
+          if (rawJupWs) {
+            setCustomWsUrl(rawJupWs);
+          }
           if (data.apiKey) setApiKey(data.apiKey);
           if (data.privateKey) {
             const decrypted = await decryptPrivateKey(data.privateKey, user.uid);
@@ -2196,19 +2240,22 @@ export const JupiterPage = ({
             }
           }
           
-          const sanitizedRpcUrl = data.rpcUrl && data.rpcUrl.includes('winter-methodical-river') 
+          const rawJupRpcVal = data.jupiterPageRpcUrl || data.rpcUrl;
+          const sanitizedRpcUrl = rawJupRpcVal && rawJupRpcVal.includes('winter-methodical-river') 
             ? DEFAULT_HELIUS_RPC 
-            : (data.rpcUrl || rpcUrl);
-          const sanitizedRpcUrl2 = data.rpcUrl2 && data.rpcUrl2.includes('winter-methodical-river') 
+            : (rawJupRpcVal || rpcUrl);
+          
+          const rawJupRpcVal2 = data.jupiterPageRpcUrl2 || data.rpcUrl2;
+          const sanitizedRpcUrl2 = rawJupRpcVal2 && rawJupRpcVal2.includes('winter-methodical-river') 
             ? DEFAULT_HELIUS_RPC 
-            : (data.rpcUrl2 || rpcUrl2);
+            : (rawJupRpcVal2 || rpcUrl2);
 
           const decryptedKey = data.privateKey ? await decryptPrivateKey(data.privateKey, user.uid) : privateKey;
 
           lastLoadedSettingsRef.current = {
             rpcUrl: sanitizedRpcUrl,
             rpcUrl2: sanitizedRpcUrl2,
-            customWsUrl: data.customWsUrl || customWsUrl,
+            customWsUrl: data.jupiterPageCustomWsUrl || data.customWsUrl || customWsUrl,
             apiKey: data.apiKey || apiKey,
             privateKey: decryptedKey,
             senderEnabled: data.senderEnabled !== undefined ? data.senderEnabled : senderEnabled,
@@ -2310,9 +2357,9 @@ export const JupiterPage = ({
         const docRef = doc(db, 'settings', user.uid);
         await setDoc(docRef, {
           userId: user.uid,
-          rpcUrl,
-          rpcUrl2,
-          customWsUrl,
+          jupiterPageRpcUrl: rpcUrl,
+          jupiterPageRpcUrl2: rpcUrl2,
+          jupiterPageCustomWsUrl: customWsUrl,
           apiKey,
           privateKey: encryptedKey,
           senderEnabled,
