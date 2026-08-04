@@ -1164,9 +1164,9 @@ export const JupiterPage = ({
   const [senderSwqos, setSenderSwqos] = useState(() => localStorage.getItem('hd_sender_swqos') === 'true');
 
   // Helius LaserStream (Ultra-Low Latency Ingestion gRPC) Configurations
-  const [laserstreamEnabled, setLaserstreamEnabled] = useState(() => localStorage.getItem('hd_laserstream_enabled') !== 'false');
-  const [laserstreamApiKey, setLaserstreamApiKey] = useState(() => localStorage.getItem('hd_laserstream_apiKey') || HELIUS_API_KEY);
-  const [laserstreamEndpoint, setLaserstreamEndpoint] = useState(() => localStorage.getItem('hd_laserstream_endpoint') || 'auto');
+  const [laserstreamEnabled, setLaserstreamEnabled] = useState(() => localStorage.getItem('jup_laserstream_enabled') !== null ? localStorage.getItem('jup_laserstream_enabled') !== 'false' : localStorage.getItem('hd_laserstream_enabled') !== 'false');
+  const [laserstreamApiKey, setLaserstreamApiKey] = useState(() => localStorage.getItem('jup_laserstream_apiKey') || localStorage.getItem('hd_laserstream_apiKey') || HELIUS_API_KEY);
+  const [laserstreamEndpoint, setLaserstreamEndpoint] = useState(() => localStorage.getItem('jup_laserstream_endpoint') || localStorage.getItem('hd_laserstream_endpoint') || 'auto');
   const [laserstreamStatus, setLaserstreamStatus] = useState<'connected'|'disconnected'|'connecting'>('disconnected');
   const [laserstreamIsFallback, setLaserstreamIsFallback] = useState(false);
   const [laserstreamIsSimulated, setLaserstreamIsSimulated] = useState(false);
@@ -2165,9 +2165,21 @@ export const JupiterPage = ({
           if (data.senderApiKey !== undefined) setSenderApiKey(String(data.senderApiKey));
           if (data.senderEndpoint !== undefined) setSenderEndpoint(String(data.senderEndpoint));
           if (data.senderSwqos !== undefined) setSenderSwqos(data.senderSwqos === true);
-          if (data.laserstreamEnabled !== undefined) setLaserstreamEnabled(data.laserstreamEnabled === true);
-          if (data.laserstreamApiKey !== undefined) setLaserstreamApiKey(String(data.laserstreamApiKey));
-          if (data.laserstreamEndpoint !== undefined) setLaserstreamEndpoint(String(data.laserstreamEndpoint));
+          if (data.jupiterLaserstreamEnabled !== undefined) {
+            setLaserstreamEnabled(data.jupiterLaserstreamEnabled === true);
+          } else if (data.laserstreamEnabled !== undefined) {
+            setLaserstreamEnabled(data.laserstreamEnabled === true);
+          }
+          if (data.jupiterLaserstreamApiKey !== undefined) {
+            setLaserstreamApiKey(String(data.jupiterLaserstreamApiKey));
+          } else if (data.laserstreamApiKey !== undefined) {
+            setLaserstreamApiKey(String(data.laserstreamApiKey));
+          }
+          if (data.jupiterLaserstreamEndpoint !== undefined) {
+            setLaserstreamEndpoint(String(data.jupiterLaserstreamEndpoint));
+          } else if (data.laserstreamEndpoint !== undefined) {
+            setLaserstreamEndpoint(String(data.laserstreamEndpoint));
+          }
           if (data.dexScreenerEnabled !== undefined) setDexScreenerEnabled(data.dexScreenerEnabled === true);
           if (data.forceUsdcRouting !== undefined) setForceUsdcRouting(data.forceUsdcRouting === true);
           if (data.ftpHost !== undefined) setFtpHost(String(data.ftpHost));
@@ -2262,9 +2274,9 @@ export const JupiterPage = ({
             senderApiKey: data.senderApiKey !== undefined ? data.senderApiKey : senderApiKey,
             senderEndpoint: data.senderEndpoint !== undefined ? data.senderEndpoint : senderEndpoint,
             senderSwqos: data.senderSwqos !== undefined ? data.senderSwqos : senderSwqos,
-            laserstreamEnabled: data.laserstreamEnabled !== undefined ? data.laserstreamEnabled : laserstreamEnabled,
-            laserstreamApiKey: data.laserstreamApiKey !== undefined ? data.laserstreamApiKey : laserstreamApiKey,
-            laserstreamEndpoint: data.laserstreamEndpoint !== undefined ? data.laserstreamEndpoint : laserstreamEndpoint,
+            laserstreamEnabled: data.jupiterLaserstreamEnabled !== undefined ? data.jupiterLaserstreamEnabled : (data.laserstreamEnabled !== undefined ? data.laserstreamEnabled : laserstreamEnabled),
+            laserstreamApiKey: data.jupiterLaserstreamApiKey !== undefined ? data.jupiterLaserstreamApiKey : (data.laserstreamApiKey !== undefined ? data.laserstreamApiKey : laserstreamApiKey),
+            laserstreamEndpoint: data.jupiterLaserstreamEndpoint !== undefined ? data.jupiterLaserstreamEndpoint : (data.laserstreamEndpoint !== undefined ? data.laserstreamEndpoint : laserstreamEndpoint),
             dexScreenerEnabled: data.dexScreenerEnabled !== undefined ? data.dexScreenerEnabled : dexScreenerEnabled,
             forceUsdcRouting: data.forceUsdcRouting !== undefined ? data.forceUsdcRouting : forceUsdcRouting,
             ftpHost: data.ftpHost !== undefined ? data.ftpHost : ftpHost,
@@ -2366,9 +2378,9 @@ export const JupiterPage = ({
           senderApiKey,
           senderEndpoint,
           senderSwqos,
-          laserstreamEnabled,
-          laserstreamApiKey,
-          laserstreamEndpoint,
+          jupiterLaserstreamEnabled: laserstreamEnabled,
+          jupiterLaserstreamApiKey: laserstreamApiKey,
+          jupiterLaserstreamEndpoint: laserstreamEndpoint,
           dexScreenerEnabled,
           forceUsdcRouting,
           ftpHost,
@@ -2514,13 +2526,13 @@ export const JupiterPage = ({
 
   // Sync Helius LaserStream values and perform backend configuration sync
   useEffect(() => {
-    localStorage.setItem('hd_laserstream_enabled', laserstreamEnabled.toString());
+    localStorage.setItem('jup_laserstream_enabled', laserstreamEnabled.toString());
   }, [laserstreamEnabled]);
   useEffect(() => {
-    localStorage.setItem('hd_laserstream_apiKey', laserstreamApiKey);
+    localStorage.setItem('jup_laserstream_apiKey', laserstreamApiKey);
   }, [laserstreamApiKey]);
   useEffect(() => {
-    localStorage.setItem('hd_laserstream_endpoint', laserstreamEndpoint);
+    localStorage.setItem('jup_laserstream_endpoint', laserstreamEndpoint);
   }, [laserstreamEndpoint]);
 
   // Sync DexScreener Engine configuration

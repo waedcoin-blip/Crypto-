@@ -903,6 +903,11 @@ function App() {
     localStorage.setItem('arina_saved_gems', JSON.stringify(savedGems));
   }, [savedGems]);
 
+  const savedGemsRef = useRef(savedGems);
+  useEffect(() => {
+    savedGemsRef.current = savedGems;
+  }, [savedGems]);
+
   useEffect(() => {
     // Re-categorize all tokens when the app starts or when categorization logic updates
     setTokenMetrics(prev => {
@@ -1601,11 +1606,14 @@ function App() {
 
 
 
+  const activePositionsKeysString = Object.keys(activePositions).sort().join(',');
+  const savedGemsKeysString = Object.keys(savedGems).sort().join(',');
+
   // Active Position & Saved Gems Background Polling (Sync with DexScreener)
   useEffect(() => {
-    const activeMints = Object.keys(activePositions);
-    const savedMints = Object.keys(savedGems);
-    const allMints = [...new Set([...activeMints, ...savedMints])];
+    const activeMints = activePositionsKeysString ? activePositionsKeysString.split(',') : [];
+    const savedMints = savedGemsKeysString ? savedGemsKeysString.split(',') : [];
+    const allMints = [...new Set([...activeMints, ...savedMints])].filter(Boolean);
     
     if (allMints.length === 0) return;
 
@@ -1625,8 +1633,8 @@ function App() {
               
               // If it doesn't exist, create a baseline metric from saved data or active position
               if (!current) {
-                const saved = savedGems[mint];
-                const active = activePositions[mint];
+                const saved = savedGemsRef.current[mint];
+                const active = useAppStore.getState().activePositions[mint];
                 if (!saved && !active) return prev; 
                 
                 const currentSymbol = saved?.symbol || active?.symbol || "UNKNOWN";
@@ -1711,7 +1719,7 @@ function App() {
       isMounted = false;
       clearTimeout(timeoutId);
     };
-  }, [activePositions, savedGems]);
+  }, [activePositionsKeysString, savedGemsKeysString]);
 
   const handleManualBuy = async (tokenAddress: string, symbol: string) => {
     if (tokenAddress === 'So11111111111111111111111111111111111111112') {
