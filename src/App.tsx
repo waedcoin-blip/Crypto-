@@ -1606,8 +1606,8 @@ function App() {
 
 
 
-  const activePositionsKeysString = Object.keys(activePositions).sort().join(',');
-  const savedGemsKeysString = Object.keys(savedGems).sort().join(',');
+  const activePositionsKeysString = Object.keys(activePositions || {}).sort().join(',');
+  const savedGemsKeysString = Object.keys(savedGems || {}).sort().join(',');
 
   // Active Position & Saved Gems Background Polling (Sync with DexScreener)
   useEffect(() => {
