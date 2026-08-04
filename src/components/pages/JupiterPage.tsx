@@ -5325,17 +5325,45 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
         }
       }
 
-      for (const mint of activeMints) {
+      // ── FAST DISPLAY REFRESH ──
+      // Push the batch price into every position immediately, before running the
+      // slower per-mint quote/exit-decision work below. This is what the UI reads,
+      // so PnL% stops waiting on Jupiter quote latency entirely.
+      if (Object.keys(batchedPrices).length > 0) {
+        setPositions((cPos) => {
+          let changed = false;
+          const next = { ...cPos };
+          for (const mint of activeMints) {
+            const bp = batchedPrices[mint];
+            const existing = next[mint];
+            if (bp?.price && existing) {
+              next[mint] = {
+                ...existing,
+                currentPrice: parseFloat(bp.price),
+                isStale: !!bp.isStale
+              };
+              changed = true;
+            }
+          }
+          if (changed) positionsRef.current = next;
+          return changed ? next : cPos;
+        });
+      }
+
+      // ── PER-MINT EXIT CHECK (parallelized) ──
+      // Each mint's quote fetch + SL/TP decision runs independently. Previously this
+      // was a sequential `for...of` with `await` inside, so total tick time was the
+      // SUM of every position's network latency. Promise.allSettled makes it the MAX
+      // instead, and one slow/failed quote no longer blocks every position after it.
+      const processPositionExit = async (mint: string) => {
         try {
           const pos = currentPositionsState[mint];
-          if (!pos || pos.triggersDisabled) continue;
-          
+          if (!pos || pos.triggersDisabled) return;
+
           const hasMainPosition = typeof pos.amount === 'number' && pos.amount > 0;
-          if (!hasMainPosition) {
-            continue;
-          }
-          
-          if (pendingSellMintsRef.current.has(mint)) continue;
+          if (!hasMainPosition) return;
+
+          if (pendingSellMintsRef.current.has(mint)) return;
 
           let currentPrice = pos.currentPrice;
 
@@ -5345,21 +5373,16 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
           } else if (metric) {
             currentPrice = metric.priceNative ? parseFloat(String(metric.priceNative)) : (metric.priceUsd ? parseFloat(String(metric.priceUsd)) / getSolPriceUsd() : 0);
           }
-          
-          if (!currentPrice || currentPrice === 0) continue;
-          
+
+          if (!currentPrice || currentPrice === 0) return;
+
           let pnlPct = 0;
           let safeToExecute = false;
           let executeReason = '';
-          const scalpTargetProfit = 25.0 / 100; // Increased to 25% for high momentum
-          const scalpStopLoss = 8.0 / 100; // Tight 8% stop for scalps
 
-          // Calculate "rough" PnL based on current oracle/metric price for basic guards
           const currentGrossValueSol = currentPrice * (pos.amount || 0);
           const roughNetPnL = pos.solSpent > 0 ? (currentGrossValueSol - pos.solSpent) / pos.solSpent : 0;
 
-          // Minimum Hold Time Buffer: Prevent panic-selling in the first 25 seconds
-          // BYPASS: If the crash is extreme (>1.5x stop loss), exit immediately regardless of time
           const holdTimeMs = Date.now() - (pos.entryTime || Date.now());
           const stage = detectTokenStage({
             address: mint,
@@ -5385,54 +5408,40 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
             currentTakeProfit = minTakeProfit;
           }
 
-          const isFlashCrash = (roughNetPnL <= -(currentSLPct * 1.5) / 100);
-          // Set to false to disable minimum hold time delay so stop loss/take profit execute instantly
-          let isHoldProtected = false;
-
-          // Wait... check if simulated:
           if (!privateKey && pos.amountLamports) {
-            // Hard execution check logic to eliminate paper profit mirage
             const poolLiquidityUsd = metric?.liquidity || 0;
             let quote = null;
             try {
               quote = await getJupiterQuote(mint, SOL_MINT, pos.amountLamports, poolLiquidityUsd, undefined, undefined, roughNetPnL * 100);
             } catch (e) {}
-            
-            let netPnlPct = roughNetPnL; // Default to rough if quote fails
+
+            let netPnlPct = roughNetPnL;
 
             if (!quote) {
-               // Math fallback if Jupiter route is missing for this token
-               const simulatedGross = currentPrice * (pos.amount || 0);
-               
-               const currentPnLPercent = roughNetPnL * 100;
-               let dynamicSlippage = slippage;
-               if (currentPnLPercent > 0) {
-                 dynamicSlippage = Math.max(0.3, Math.min(slippage, currentPnLPercent * 0.3));
-               } else {
-                 dynamicSlippage = Math.min(slippage, 1.0);
-               }
-               
-               const slippageFeeCalc = simulatedGross * (dynamicSlippage / 100);
-               const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent || 0.05);
-               const simulatedNet = Math.max(0, simulatedGross - slippageFeeCalc - opFees);
-               const spentSol = pos.solSpent || 1;
-               const entrySlippageSol = spentSol * (slippage / 100);
-               const opFeesEntry = getDynamicOperationalFeeSol(pos.recoveryMode, spentSol);
-               const netEntryAfterSlippageAndJito = Math.max(spentSol * 0.1, spentSol - entrySlippageSol - opFeesEntry);
-               netPnlPct = (simulatedNet - spentSol) / spentSol;
-               pnlPct = roughNetPnL; 
+              const simulatedGross = currentPrice * (pos.amount || 0);
+              const currentPnLPercent = roughNetPnL * 100;
+              let dynamicSlippage = slippage;
+              if (currentPnLPercent > 0) {
+                dynamicSlippage = Math.max(0.3, Math.min(slippage, currentPnLPercent * 0.3));
+              } else {
+                dynamicSlippage = Math.min(slippage, 1.0);
+              }
+              const slippageFeeCalc = simulatedGross * (dynamicSlippage / 100);
+              const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent || 0.05);
+              const simulatedNet = Math.max(0, simulatedGross - slippageFeeCalc - opFees);
+              const spentSol = pos.solSpent || 1;
+              netPnlPct = (simulatedNet - spentSol) / spentSol;
+              pnlPct = roughNetPnL;
             } else {
-               const guaranteedMinLamports = BigInt(quote.otherAmountThreshold);
-               const guaranteedSolOut = Number(guaranteedMinLamports) / 1_000_000_000.0;
-               const operationalFeesSol = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent); 
-               const realNetSolReturn = Math.max(0, guaranteedSolOut - operationalFeesSol);
-               const spentSol = pos.solSpent || 1;
-
-               netPnlPct = (realNetSolReturn - spentSol) / spentSol;
-               pnlPct = (guaranteedSolOut - spentSol) / spentSol;
+              const guaranteedMinLamports = BigInt(quote.otherAmountThreshold);
+              const guaranteedSolOut = Number(guaranteedMinLamports) / 1_000_000_000.0;
+              const operationalFeesSol = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent);
+              const realNetSolReturn = Math.max(0, guaranteedSolOut - operationalFeesSol);
+              const spentSol = pos.solSpent || 1;
+              netPnlPct = (realNetSolReturn - spentSol) / spentSol;
+              pnlPct = (guaranteedSolOut - spentSol) / spentSol;
             }
 
-            // General Position Strategy (strictly enforce user-configured TP & SL)
             const isMainActive = typeof pos.amount === 'number' && pos.amount > 0;
             if (isMainActive) {
               const activePnL = netPnlPct;
@@ -5464,12 +5473,10 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
               });
             }
           } else {
-            // Live/Fallback Logic
             const currentGrossSol = currentPrice * (pos.amount || 0);
             let netSolIfSold = currentGrossSol;
             pnlPct = (netSolIfSold - (pos.solSpent || 0)) / (pos.solSpent || 1);
 
-            // General Position Strategy (strictly enforce user-configured TP & SL)
             const isMainActive = typeof pos.amount === 'number' && pos.amount > 0;
             if (isMainActive) {
               const activePnL = pnlPct;
@@ -5505,7 +5512,9 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
           addLog(`Exit check error for ${mint.slice(0, 8)}: ${e.message}`, 'err');
           pendingSellMintsRef.current.delete(mint);
         }
-      }
+      };
+
+      await Promise.allSettled(activeMints.map(mint => processPositionExit(mint)));
     } finally {
       isCheckingRef.current = false;
     }
@@ -7506,10 +7515,10 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
                     }
                     
                     let pnlPct = (pos.solSpent > 0) ? ((netSolIfSold - pos.solSpent) / pos.solSpent) : 0;
-                    if (displayPrice === 0 && pos.realNetPnl !== undefined) {
+                    if (pos.realNetPnl !== undefined) {
                       pnlPct = pos.realNetPnl;
                     }
-                    if (displayPrice === 0 && pos.realNetSol !== undefined) {
+                    if (pos.realNetSol !== undefined) {
                       netSolIfSold = pos.solSpent + pos.realNetSol;
                     }
                     return !isNaN(pnlPct) && isFinite(pnlPct);
@@ -7526,10 +7535,10 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
                     }
                     
                     let pnlPct = (pos.solSpent > 0) ? ((netSolIfSold - pos.solSpent) / pos.solSpent) : 0;
-                    if (displayPrice === 0 && pos.realNetPnl !== undefined) {
+                    if (pos.realNetPnl !== undefined) {
                       pnlPct = pos.realNetPnl;
                     }
-                    if (displayPrice === 0 && pos.realNetSol !== undefined) {
+                    if (pos.realNetSol !== undefined) {
                       netSolIfSold = pos.solSpent + pos.realNetSol;
                     }
                     
