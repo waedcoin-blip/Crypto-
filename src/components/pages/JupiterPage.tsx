@@ -118,6 +118,7 @@ interface Position {
   isStale?: boolean;
   realNetPnl?: number;
   realNetSol?: number;
+  decimals?: number;
   signalEmitted?: boolean;
   entryPriceUsd?: number;
   currentPriceUsd?: number;
@@ -5380,8 +5381,13 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
           let safeToExecute = false;
           let executeReason = '';
 
-          const currentGrossValueSol = currentPrice * (pos.amount || 0);
-          const roughNetPnL = pos.solSpent > 0 ? (currentGrossValueSol - pos.solSpent) / pos.solSpent : 0;
+          let tokenAmount = pos.amount || 0;
+          if (pos.decimals && tokenAmount > Math.pow(10, pos.decimals)) {
+            tokenAmount = tokenAmount / Math.pow(10, pos.decimals);
+          }
+
+          const currentGrossValueSol = currentPrice * tokenAmount;
+          const roughNetPnL = (pos.solSpent > 0.000001) ? (currentGrossValueSol - pos.solSpent) / pos.solSpent : 0;
 
           const holdTimeMs = Date.now() - (pos.entryTime || Date.now());
           const stage = detectTokenStage({
@@ -5418,7 +5424,7 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
             let netPnlPct = roughNetPnL;
 
             if (!quote) {
-              const simulatedGross = currentPrice * (pos.amount || 0);
+              const simulatedGross = currentPrice * tokenAmount;
               const currentPnLPercent = roughNetPnL * 100;
               let dynamicSlippage = slippage;
               if (currentPnLPercent > 0) {
@@ -5429,7 +5435,7 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
               const slippageFeeCalc = simulatedGross * (dynamicSlippage / 100);
               const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent || 0.05);
               const simulatedNet = Math.max(0, simulatedGross - slippageFeeCalc - opFees);
-              const spentSol = pos.solSpent || 1;
+              const spentSol = (pos.solSpent && pos.solSpent > 0.000001) ? pos.solSpent : 1;
               netPnlPct = (simulatedNet - spentSol) / spentSol;
               pnlPct = roughNetPnL;
             } else {
@@ -5437,9 +5443,20 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
               const guaranteedSolOut = Number(guaranteedMinLamports) / 1_000_000_000.0;
               const operationalFeesSol = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent);
               const realNetSolReturn = Math.max(0, guaranteedSolOut - operationalFeesSol);
-              const spentSol = pos.solSpent || 1;
+              const spentSol = (pos.solSpent && pos.solSpent > 0.000001) ? pos.solSpent : 1;
               netPnlPct = (realNetSolReturn - spentSol) / spentSol;
               pnlPct = (guaranteedSolOut - spentSol) / spentSol;
+            }
+
+            if (Math.abs(netPnlPct) > 50) {
+              console.error('ABSURD PnL DETECTED', {
+                mint: mint.slice(0, 8),
+                branch: quote ? 'jupiter' : 'simulated-fallback',
+                currentPrice,
+                rawAmount: pos.amount,
+                solSpent: pos.solSpent,
+                netPnlPct,
+              });
             }
 
             const isMainActive = typeof pos.amount === 'number' && pos.amount > 0;

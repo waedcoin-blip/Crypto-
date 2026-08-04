@@ -118,6 +118,7 @@ interface Position {
   isStale?: boolean;
   realNetPnl?: number;
   realNetSol?: number;
+  decimals?: number;
   signalEmitted?: boolean;
   entryPriceUsd?: number;
   currentPriceUsd?: number;
@@ -4721,9 +4722,14 @@ const checkTokenCriteria = (mint: string): {
           const scalpTargetProfit = 25.0 / 100; // Increased to 25% for high momentum
           const scalpStopLoss = 8.0 / 100; // Tight 8% stop for scalps
 
+          let tokenAmount = pos.amount || 0;
+          if (pos.decimals && tokenAmount > Math.pow(10, pos.decimals)) {
+            tokenAmount = tokenAmount / Math.pow(10, pos.decimals);
+          }
+
           // Calculate "rough" PnL based on current oracle/metric price for basic guards
-          const currentGrossValueSol = currentPrice * (pos.amount || 0);
-          const roughNetPnL = pos.solSpent > 0 ? (currentGrossValueSol - pos.solSpent) / pos.solSpent : 0;
+          const currentGrossValueSol = currentPrice * tokenAmount;
+          const roughNetPnL = (pos.solSpent > 0.000001) ? (currentGrossValueSol - pos.solSpent) / pos.solSpent : 0;
 
           // Minimum Hold Time Buffer: Prevent panic-selling in the first 25 seconds
           // BYPASS: If the crash is extreme (>1.5x stop loss), exit immediately regardless of time
@@ -4769,7 +4775,7 @@ const checkTokenCriteria = (mint: string): {
 
             if (!quote) {
                // Math fallback if Jupiter route is missing for this token
-               const simulatedGross = currentPrice * (pos.amount || 0);
+               const simulatedGross = currentPrice * tokenAmount;
                
                const currentPnLPercent = roughNetPnL * 100;
                let dynamicSlippage = slippage;
@@ -4782,7 +4788,7 @@ const checkTokenCriteria = (mint: string): {
                const slippageFeeCalc = simulatedGross * (dynamicSlippage / 100);
                const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent || 0.05);
                const simulatedNet = Math.max(0, simulatedGross - slippageFeeCalc - opFees);
-               const spentSol = pos.solSpent || 1;
+               const spentSol = (pos.solSpent && pos.solSpent > 0.000001) ? pos.solSpent : 1;
                const entrySlippageSol = spentSol * (slippage / 100);
                const opFeesEntry = getDynamicOperationalFeeSol(pos.recoveryMode, spentSol);
                const netEntryAfterSlippageAndJito = Math.max(spentSol * 0.1, spentSol - entrySlippageSol - opFeesEntry);
@@ -4793,10 +4799,21 @@ const checkTokenCriteria = (mint: string): {
                const guaranteedSolOut = Number(guaranteedMinLamports) / 1_000_000_000.0;
                const operationalFeesSol = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent); 
                const realNetSolReturn = Math.max(0, guaranteedSolOut - operationalFeesSol);
-               const spentSol = pos.solSpent || 1;
+               const spentSol = (pos.solSpent && pos.solSpent > 0.000001) ? pos.solSpent : 1;
 
                netPnlPct = (realNetSolReturn - spentSol) / spentSol;
                pnlPct = (guaranteedSolOut - spentSol) / spentSol;
+            }
+
+            if (Math.abs(netPnlPct) > 50) {
+              console.error('ABSURD PnL DETECTED', {
+                mint: mint.slice(0, 8),
+                branch: quote ? 'jupiter' : 'simulated-fallback',
+                currentPrice,
+                rawAmount: pos.amount,
+                solSpent: pos.solSpent,
+                netPnlPct,
+              });
             }
 
             let inRecoveryMode = pos.recoveryMode;
