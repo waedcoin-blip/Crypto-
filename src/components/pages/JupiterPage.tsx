@@ -5466,7 +5466,7 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
                 }
                 const existing = cPos[mint] || positionsRef.current[mint];
                 if (!existing) return cPos;
-                const updated = { ...existing, ...pos, currentPrice, isStale: !!batchedPrices[mint]?.isStale, realNetPnl: netPnlPct, realNetSol: netPnlPct * (existing.solSpent || 1) };
+                const updated = { ...existing, currentPrice, isStale: !!batchedPrices[mint]?.isStale, realNetPnl: netPnlPct, realNetSol: netPnlPct * (existing.solSpent || 1) };
                 const res = { ...cPos, [mint]: updated };
                 positionsRef.current = res;
                 return res;
@@ -5501,7 +5501,7 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
                 }
                 const existing = cPos[mint] || positionsRef.current[mint];
                 if (!existing) return cPos;
-                const updated = { ...existing, ...pos, currentPrice, isStale: !!batchedPrices[mint]?.isStale, realNetPnl: pnlPct, realNetSol: netSolIfSold - (existing.solSpent || 0) };
+                const updated = { ...existing, currentPrice, isStale: !!batchedPrices[mint]?.isStale, realNetPnl: pnlPct, realNetSol: netSolIfSold - (existing.solSpent || 0) };
                 const res = { ...cPos, [mint]: updated };
                 positionsRef.current = res;
                 return res;
