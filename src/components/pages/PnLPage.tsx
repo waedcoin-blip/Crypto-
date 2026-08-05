@@ -1223,6 +1223,13 @@ export const PnLPage = ({
           !isNaN(pos.solSpent) &&
           pos.solSpent > 0
         ) {
+          // Fix corrupted amounts from older versions (where amount was raw lamports)
+          if (pos.amount * pos.buyPrice > pos.solSpent * 100) {
+             const impliedDecimals = Math.round(Math.log10((pos.amount * pos.buyPrice) / pos.solSpent));
+             if (impliedDecimals >= 2) {
+               pos.amount = pos.amount / Math.pow(10, impliedDecimals);
+             }
+          }
           cleaned[mint] = pos;
         }
       }
@@ -3884,7 +3891,11 @@ const checkTokenCriteria = (mint: string): {
           if (quote && Number(quote.outAmount) > 0) {
             const exactTokenAmount = Number(quote.outAmount);
             const exactMathFallback = solAmount / parsedPrice;
-            const decimals = await resolveDecimals(mint, jupRpcUrlToUse);
+            let decimals = await resolveDecimals(mint, jupRpcUrlToUse);
+            const impliedDecimals = Math.round(Math.log10(exactTokenAmount / exactMathFallback));
+            if (Math.abs(decimals - impliedDecimals) >= 2) {
+               decimals = Math.max(0, impliedDecimals);
+            }
             const normalizedOut = exactTokenAmount / Math.pow(10, decimals);
             if (normalizedOut > 0) {
               const freshPriceFromQuote = solAmount / normalizedOut;
@@ -4034,7 +4045,11 @@ const checkTokenCriteria = (mint: string): {
            
            const exactMathFallback = solAmount / parsedPrice;
            if (outAmountRaw > 0) {
-             const estimatedDecimals = await resolveDecimals(mint, rpcUrl);
+             let estimatedDecimals = await resolveDecimals(mint, rpcUrl);
+             const impliedDecimals = Math.round(Math.log10(outAmountRaw / exactMathFallback));
+             if (Math.abs(estimatedDecimals - impliedDecimals) >= 2) {
+               estimatedDecimals = Math.max(0, impliedDecimals);
+             }
              tokenAmount = outAmountRaw / Math.pow(10, estimatedDecimals);
              parsedPrice = solAmount / tokenAmount;
            } else {
@@ -4723,9 +4738,6 @@ const checkTokenCriteria = (mint: string): {
           const scalpStopLoss = 8.0 / 100; // Tight 8% stop for scalps
 
           let tokenAmount = pos.amount || 0;
-          if (pos.decimals && tokenAmount > Math.pow(10, pos.decimals)) {
-            tokenAmount = tokenAmount / Math.pow(10, pos.decimals);
-          }
 
           // Calculate "rough" PnL based on current oracle/metric price for basic guards
           const currentGrossValueSol = currentPrice * tokenAmount;

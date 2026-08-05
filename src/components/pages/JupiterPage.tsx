@@ -1335,6 +1335,13 @@ export const JupiterPage = ({
           !isNaN(pos.solSpent) &&
           pos.solSpent > 0
         ) {
+          // Fix corrupted amounts from older versions (where amount was raw lamports)
+          if (pos.amount * pos.buyPrice > pos.solSpent * 100) {
+             const impliedDecimals = Math.round(Math.log10((pos.amount * pos.buyPrice) / pos.solSpent));
+             if (impliedDecimals >= 2) {
+               pos.amount = pos.amount / Math.pow(10, impliedDecimals);
+             }
+          }
           cleaned[mint] = pos;
         }
       }
@@ -4419,7 +4426,11 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
           if (quote && Number(quote.outAmount) > 0) {
             const exactTokenAmount = Number(quote.outAmount);
             const exactMathFallback = solAmount / parsedPrice;
-            const decimals = await resolveDecimals(mint, jupRpcUrlToUse);
+            let decimals = await resolveDecimals(mint, jupRpcUrlToUse);
+            const impliedDecimals = Math.round(Math.log10(exactTokenAmount / exactMathFallback));
+            if (Math.abs(decimals - impliedDecimals) >= 2) {
+               decimals = Math.max(0, impliedDecimals);
+            }
             const normalizedOut = exactTokenAmount / Math.pow(10, decimals);
             if (normalizedOut > 0) {
               const freshPriceFromQuote = solAmount / normalizedOut;
@@ -4571,7 +4582,13 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
            
            const exactMathFallback = solAmount / parsedPrice;
            if (outAmountRaw > 0) {
-             const estimatedDecimals = await resolveDecimals(mint, rpcUrl);
+             let estimatedDecimals = await resolveDecimals(mint, rpcUrl);
+             // Verify if the decimals seem completely wrong by comparing against expected math logic
+             const impliedDecimals = Math.round(Math.log10(outAmountRaw / exactMathFallback));
+             if (Math.abs(estimatedDecimals - impliedDecimals) >= 2) {
+               // Use implied if the network/cache estimate is wildly off to prevent +10 billion % PnL bugs
+               estimatedDecimals = Math.max(0, impliedDecimals);
+             }
              tokenAmount = outAmountRaw / Math.pow(10, estimatedDecimals);
              parsedPrice = solAmount / tokenAmount;
            } else {
@@ -5415,9 +5432,6 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
           let executeReason = '';
 
           let tokenAmount = pos.amount || 0;
-          if (pos.decimals && tokenAmount > Math.pow(10, pos.decimals)) {
-            tokenAmount = tokenAmount / Math.pow(10, pos.decimals);
-          }
 
           const currentGrossValueSol = currentPrice * tokenAmount;
           const roughNetPnL = (pos.solSpent > 0.000001) ? (currentGrossValueSol - pos.solSpent) / pos.solSpent : 0;
