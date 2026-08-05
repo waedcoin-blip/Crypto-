@@ -3799,6 +3799,7 @@ export const JupiterPage = ({
           txid = await executeTxWithRPCFallback(transaction, connection);
         }
         let actualOutAmountRaw = Number(quoteResponse.outAmount);
+        let actualOutputConfirmed = false;
         try {
           let txInfo = null;
           for (let i = 0; i < 5; i++) {
@@ -3815,7 +3816,10 @@ export const JupiterPage = ({
                 const postBal = txInfo.meta.postBalances[accountIndex];
                 const fee = txInfo.meta.fee || 0;
                 const solReceived = postBal - preBal + fee;
-                if (solReceived > 0) actualOutAmountRaw = solReceived;
+                if (solReceived > 0) {
+                  actualOutAmountRaw = solReceived;
+                  actualOutputConfirmed = true;
+                }
               }
             } else {
               const preBalances = txInfo.meta.preTokenBalances || [];
@@ -3827,7 +3831,10 @@ export const JupiterPage = ({
               const pre = getBalance(preBalances);
               const post = getBalance(postBalances);
               const received = post - pre;
-              if (received > 0) actualOutAmountRaw = received;
+              if (received > 0) {
+                actualOutAmountRaw = received;
+                actualOutputConfirmed = true;
+              }
             }
           }
         } catch (parseErr) {
@@ -3838,6 +3845,7 @@ export const JupiterPage = ({
           txid, 
           outputAmount: actualOutAmountRaw, 
           actualOutputAmountRaw: actualOutAmountRaw,
+          actualOutputConfirmed,
           quotedOutputAmountRaw: Number(quoteResponse.outAmount),
           quoteOutAmountRaw: quoteResponse.outAmount, 
           estimatedPriceSol: parseFloat(quoteResponse.inAmount) / parseFloat(quoteResponse.outAmount) 
@@ -3964,6 +3972,8 @@ export const JupiterPage = ({
               txid: res2.txid,
               outputAmount: res2.outputAmount,
               quoteOutAmountRaw: res2.quoteOutAmountRaw,
+              actualOutputAmountRaw: res2.actualOutputAmountRaw,
+              actualOutputConfirmed: res2.actualOutputConfirmed,
               estimatedPriceSol: (amount / 1e9) / (res2.outputAmount || 1)
             };
           } else {
@@ -3984,6 +3994,8 @@ export const JupiterPage = ({
               txid: res2.txid,
               outputAmount: res2.outputAmount,
               quoteOutAmountRaw: res2.quoteOutAmountRaw,
+              actualOutputAmountRaw: res2.actualOutputAmountRaw,
+              actualOutputConfirmed: res2.actualOutputConfirmed,
               estimatedPriceSol: res1.estimatedPriceSol
             };
           }
@@ -3996,6 +4008,7 @@ export const JupiterPage = ({
   const pendingBuysRef = useRef(0);
   const pendingBuyMintsRef = useRef<Set<string>>(new Set());
   const pendingSellMintsRef = useRef<Set<string>>(new Set());
+  const lastTradedTimeRef = useRef<Record<string, number>>({});
 
 const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): { 
   pass: boolean; 
@@ -4018,7 +4031,7 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
       const pending = localStorage.getItem('pnl_profitable_token_addresses');
       if (pending) {
         const parsed = JSON.parse(pending);
-        if (Array.isArray(parsed)) profitableTokens = [...profitableTokens, ...parsed];
+        if (Array.isArray(parsed)) profitableTokens = [...new Set([...profitableTokens, ...parsed])];
       }
     } catch(e) {}
     
@@ -4287,6 +4300,11 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
       return;
     }
 
+    if (lastTradedTimeRef.current[mint] && Date.now() - lastTradedTimeRef.current[mint] < 60000) {
+      addLog(`⏳ [COOLDOWN] Token ${symbol} already traded recently (${Math.round((Date.now() - lastTradedTimeRef.current[mint]) / 1000)}s ago), skipping`, 'warn');
+      return;
+    }
+
     // Auto-fetch missing token metrics if not present before evaluating hardened criteria
     if (!tokenMetricsRef.current[mint] && mint && !mint.toLowerCase().startsWith('sim')) {
       try {
@@ -4320,11 +4338,11 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
               percentageIncrease: bestPair.priceChange?.m5 !== undefined ? parseFloat(String(bestPair.priceChange.m5)) : (bestPair.priceChange?.h1 !== undefined ? parseFloat(String(bestPair.priceChange.h1)) / 12 : 0),
               recentBuysTimeline: [],
               category: mint.toLowerCase().endsWith('pump') ? 'PUMP_FUN' : 'RAYDIUM',
-              isRugSafe: true,
-              mintAuthorityRevoked: true,
-              freezeAuthorityRevoked: true,
-              liquidityBurned: true,
-              top10Percentage: 8.5
+              isRugSafe: false,
+              mintAuthorityRevoked: false,
+              freezeAuthorityRevoked: false,
+              liquidityBurned: false,
+              top10Percentage: 99.9
             };
 
             tokenMetricsRef.current[mint] = fetchedMetric;
@@ -4365,6 +4383,13 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
     // MANDATORY Latency Guard
     if (enableLatencyGuard && rpcLatency !== null && rpcLatency !== undefined && (rpcLatency < (hardenedMinLatency || 0) || rpcLatency > (hardenedMaxLatency || 250))) {
       addLog(`❌ [LATENCY BLOCK] Skipped buy of ${symbol}: RPC Latency ${rpcLatency.toFixed(1)}ms is outside allowed range (${hardenedMinLatency || 0}-${hardenedMaxLatency || 250}ms).`, 'warn');
+      return;
+    }
+
+    const metricForAgeCheck = tokenMetricsRef.current[mint];
+    const priceAge = Date.now() - (metricForAgeCheck?.lastUpdated || 0);
+    if (!isManualDirectBuy && priceAge > 30000) {
+      addLog(`❌ [STALE PRICE BLOCK] Price data for ${symbol} is stale (${Math.round(priceAge/1000)}s old), rejecting trade for safety`, 'warn');
       return;
     }
 
@@ -4427,6 +4452,7 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
     }
 
     pendingBuyMintsRef.current.add(mint);
+    lastTradedTimeRef.current[mint] = Date.now();
 
     // Check limit proactively
     const activePositionsCount = Object.keys(positionsRef.current).filter(k => {
@@ -4589,12 +4615,20 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
     
     try {
       const isGraduated = !mint.toLowerCase().endsWith('pump');
+      
+      if (jupiterBalance !== null && jupiterBalance < (solAmount * 1.01)) {
+        addLog(`❌ Insufficient on-chain SOL: ${jupiterBalance.toFixed(4)} SOL < ${(solAmount * 1.01).toFixed(4)} SOL required for trade+fees`, 'err');
+        pendingBuysRef.current--;
+        pendingBuyMintsRef.current.delete(mint);
+        return;
+      }
+      
       addLog(`🟢 [BUY TRIGGER] All required criteria & buy limits verified for ${symbol} (${isGraduated ? 'Raydium' : 'Pump.fun'}) | Pos Limit: ${activePositionsCount + 1}/${maxPositions || '∞'}, Rebuy Limit: ${totalTradedCount + 1}/${activeMaxRebuyTimes}, Amount: ${solAmount} SOL. Placing real on-chain order...`, 'buy');
       addLog(`Ordering ${solAmount} SOL → ${symbol}...`, 'buy');
       const amountLamports = Math.floor(solAmount * 1_000_000_000);
       const result = await executeJupiterSwap(SOL_MINT, mint, amountLamports);
       if (result.txid) {
-        const passedOutputAmount = typeof result.outputAmount === 'number' && !isNaN(result.outputAmount) ? result.outputAmount : 0;
+        const passedOutputAmount = result.actualOutputConfirmed ? result.actualOutputAmountRaw : 0;
         
         let exactTokenAmount = solAmount / parsedPrice;
         if (result.quoteOutAmountRaw && passedOutputAmount > 0) {
@@ -4620,7 +4654,7 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
                currentPrice: parsedPrice,
                solSpent: newSolSpent,
                amount: newAmount,
-               amountLamports: existing ? (existing.amountLamports || 0) + (passedOutputAmount || 0) : (passedOutputAmount || 0),
+               amountLamports: existing ? (existing.amountLamports || 0) + (result.actualOutputConfirmed ? result.actualOutputAmountRaw : 0) : (result.actualOutputConfirmed ? result.actualOutputAmountRaw : 0),
                entryTime: existing?.entryTime || Date.now(),
                txid: result.txid,
              }
@@ -4630,7 +4664,6 @@ const checkTokenCriteria = (mint: string, bypassCriteria: boolean = false): {
       }
     } catch (e: any) {
       addLog(`Buy error for ${symbol}: ${e.message}`, 'err');
-      setSimWalletBalance(prev => prev + solAmount); // Refund simulation balance when real on-chain swap fails
       if (e.message.includes('Route not found') || e.message.includes('NO_ROUTES_FOUND') || e.message.includes('Not Found') || e.message.includes('No route') || e.message.includes('TOKEN_NOT_TRADABLE')) {
         addLog(`❌ [BLACKLIST] ${symbol} added to blacklist due to unroutable liquidity/dead token.`, 'warn');
         if (!blacklistedMintsRef.current.includes(mint)) {
