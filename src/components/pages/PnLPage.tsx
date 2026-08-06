@@ -2671,68 +2671,6 @@ export const PnLPage = ({
     });
   }, [tokenMetrics]);
 
-  // Independent Live Price Polling for Active Positions (1s interval)
-  useEffect(() => {
-    const activeMintsList = Object.keys(positions).filter(k => {
-      const p = positions[k];
-      return p && typeof p === 'object' && p.symbol && typeof p.amount === 'number' && p.amount > 0;
-    });
-    if (activeMintsList.length === 0) return;
-    
-    const interval = setInterval(async () => {
-      const livePrices = await getTokenPrices(activeMintsList);
-      
-      setPositions(prev => {
-        const next = { ...prev };
-        let changed = false;
-        activeMintsList.forEach(mint => {
-          if (next[mint]) {
-            const priceInfo = livePrices[mint];
-            if (priceInfo && typeof priceInfo.price === 'number' && priceInfo.price > 0) {
-              const newPrice = priceInfo.price;
-              const isStale = !!priceInfo.isStale;
-
-              const currentGrossSol = newPrice * (next[mint].amount || 0);
-              let netSolIfSold = currentGrossSol;
-              if (!privateKey) {
-                const slippageFee = currentGrossSol * (slippage / 100);
-                const opFees = getDynamicOperationalFeeSol(next[mint].recoveryMode, next[mint].solSpent);
-                netSolIfSold = Math.max(0, currentGrossSol - slippageFee - opFees);
-              }
-              const calcNetPnlPct = (next[mint].solSpent && next[mint].solSpent > 0) ? (netSolIfSold - next[mint].solSpent) / next[mint].solSpent : 0;
-              const calcNetSol = netSolIfSold - (next[mint].solSpent || 0);
-
-              if (
-                next[mint].currentPrice !== newPrice ||
-                next[mint].isStale !== isStale ||
-                next[mint].realNetPnl !== calcNetPnlPct ||
-                next[mint].realNetSol !== calcNetSol
-              ) {
-                next[mint] = {
-                  ...next[mint],
-                  currentPrice: newPrice,
-                  isStale,
-                  realNetPnl: calcNetPnlPct,
-                  realNetSol: calcNetSol
-                };
-                changed = true;
-              }
-            }
-          }
-        });
-        if (changed) {
-          positionsRef.current = next;
-          useAppStore.getState().updateActivePositions(() => next);
-        }
-        return changed ? next : prev;
-      });
-    }, 1000); // 1s sync for positions
-    return () => clearInterval(interval);
-  }, [Object.keys(positions).filter(k => {
-    const p = positions[k];
-    return p && typeof p === 'object' && p.symbol && typeof p.amount === 'number' && p.amount > 0;
-  }).join(','), getTokenPrices]);
-
   useEffect(() => {
     fetchWalletTokens();
 
@@ -3753,7 +3691,7 @@ const checkTokenCriteria = (mint: string): {
     return { pass: false, reason: "Missing token metrics or metadata required for hardened criteria evaluation." };
   };
   
-  const executeBuy = async (mint: string, symbol: string, price: any, solAmount: number, isManualDirectBuy = false) => {
+  const _executeBuyInternal = async (mint: string, symbol: string, price: any, solAmount: number, isManualDirectBuy = false) => {
     const { maxPositions, privateKey, slippage } = configRef.current;
     // Block any token starting with 'sim' if privateKey is active
     if (privateKey && (mint.toLowerCase().startsWith('sim') || (symbol && symbol.toLowerCase().startsWith('sim')))) {
@@ -3923,12 +3861,6 @@ const checkTokenCriteria = (mint: string): {
       }
     }
 
-    if (positionsRef.current[mint] || pendingBuyMintsRef.current.has(mint)) {
-      return;
-    }
-
-    pendingBuyMintsRef.current.add(mint);
-
     // Check limit proactively
     const activePositionsCount = Object.keys(positionsRef.current).filter(k => {
       const p = positionsRef.current[k];
@@ -4064,7 +3996,7 @@ const checkTokenCriteria = (mint: string): {
           const newSolSpent = existing ? (existing.solSpent || 0) + solAmount : solAmount;
           const newAmount = existing ? (existing.amount || 0) + tokenAmount : tokenAmount;
           
-          return {
+          const next = {
             ...prev,
             [mint]: {
               symbol,
@@ -4077,6 +4009,8 @@ const checkTokenCriteria = (mint: string): {
               txid: `sim-${Date.now()}`,
             }
           };
+          positionsRef.current = next;
+          return next;
         });
         addLog(`✅ [SIM] Bought ${symbol} @ ${parsedPrice.toFixed(8)} SOL (${tokenAmount.toFixed(2)} tokens)`, 'buy');
       } catch (e: any) {
@@ -4116,7 +4050,7 @@ const checkTokenCriteria = (mint: string): {
            const newSolSpent = existing ? (existing.solSpent || 0) + solAmount : solAmount;
            const newAmount = existing ? (existing.amount || 0) + tokenAmount : tokenAmount;
            
-           return {
+           const next = {
              ...prev,
              [mint]: {
                symbol,
@@ -4129,6 +4063,8 @@ const checkTokenCriteria = (mint: string): {
                txid: result.txid,
              }
            };
+           positionsRef.current = next;
+           return next;
         });
         addLog(`✅ Bought ${symbol} @ ${parsedPrice.toFixed(6)} SOL | tx: ${result.txid.slice(0, 12)}...`, 'buy');
       }
@@ -4147,8 +4083,17 @@ const checkTokenCriteria = (mint: string): {
     }
   };
 
+  const executeBuy = async (mint: string, symbol: string, price: any, solAmount: number, isManualDirectBuy = false) => {
+    if (positionsRef.current[mint] || pendingBuyMintsRef.current.has(mint)) return;
+    pendingBuyMintsRef.current.add(mint);
+    try {
+      await _executeBuyInternal(mint, symbol, price, solAmount, isManualDirectBuy);
+    } finally {
+      pendingBuyMintsRef.current.delete(mint);
+    }
+  };
+
   const handleQuickTradeFromLogs = useCallback(async (mint: string, symbol = 'TOKEN') => {
-    if (!mint) return;
     const metric = tokenMetricsRef.current[mint];
     const dexId = metric?.dexId || (mint.toLowerCase().endsWith('pump') ? 'pumpfun' : 'raydium');
 
@@ -4706,6 +4651,20 @@ const checkTokenCriteria = (mint: string): {
       let batchedPrices: Record<string, any> = {};
       if (mintsToFetch.length > 0) {
         batchedPrices = await getTokenPrices(mintsToFetch);
+        useAppStore.getState().setTokenMetrics(prev => {
+          let changed = false;
+          const next = { ...prev };
+          for (const [m, p] of Object.entries(batchedPrices)) {
+            if (p && p.price) {
+              const newPrice = typeof p.price === 'number' ? p.price : parseFloat(p.price as string);
+              if (next[m] && next[m].priceNative !== newPrice) {
+                next[m] = { ...next[m], priceNative: newPrice, lastUpdated: Date.now() };
+                changed = true;
+              }
+            }
+          }
+          return changed ? next : prev;
+        });
       }
 
       for (const mint of activeMints) {

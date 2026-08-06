@@ -26,7 +26,7 @@ const searchCache = new SwrCache<DexTokenResponse>({
 
 const tokenCache = new SwrCache<DexTokenResponse>({
   name: 'dex-token',
-  softTtl: 15000,
+  softTtl: 2000,
   hardTtl: 60000,
   maxSize: 2000,
 });
@@ -159,9 +159,13 @@ router.get('/tokens/trending', asyncHandler(async (req, res) => {
 
 
 // GET /api/dex/tokens/:mint
+// Query param `fresh=1` bypasses the soft-TTL for the listed mints so callers that
+// need up-to-date pricing (active-position PnL sync, stop-loss/take-profit checks)
+// don't silently serve a stale snapshot.
 router.get('/tokens/:mint', asyncHandler(async (req, res) => {
   const mintParam = req.params.mint;
   const mintList = Array.from(new Set(mintParam.split(',').map((m) => m.trim()).filter(Boolean)));
+  const forceFresh = req.query.fresh === '1' || req.query.fresh === 'true';
 
   if (mintList.length === 0) {
     return res.json({ schemaVersion: '1.0.0', pairs: [] });
@@ -173,7 +177,7 @@ router.get('/tokens/:mint', asyncHandler(async (req, res) => {
   // Check cache for each mint
   for (const mint of mintList) {
     const cached = tokenCache.get(mint);
-    if (cached && !cached.isStale) {
+    if (cached && !cached.isStale && !forceFresh) {
       if (cached.data?.pairs) {
         pairs.push(...cached.data.pairs);
       }
