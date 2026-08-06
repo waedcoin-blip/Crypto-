@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { 
   Search, 
@@ -48,7 +48,6 @@ import {
 } from 'firebase/firestore';
 import { Trash2, Plus, LogOut, LogIn, Scan } from 'lucide-react';
 import { useAppStore } from './store/appStore';
-import JupiterPage from './components/pages/JupiterPage';
 import { SystemCheckPage } from './components/pages/SystemCheckPage';
 import { SafetyPage } from './components/pages/SafetyPage';
 import { PredictionPage } from './components/pages/PredictionPage';
@@ -354,18 +353,16 @@ const categorizeToken = (symbol: string | undefined, address: string | undefined
 
 function App() {
   const [user, setUser] = useState<User | null>(null);
-  const [currentPage, setCurrentPage] = useState<'dashboard' | 'high-buy' | 'portfolio' | 'system-check' | 'discovery' | 'jupiter'>('dashboard');
+  const [currentPage, setCurrentPage] = useState<'dashboard' | 'high-buy' | 'portfolio' | 'system-check' | 'discovery'>('dashboard');
   const [alphaSubTab, setAlphaSubTab] = useState<'high-buy' | 'safety' | 'prediction' | 'intel'>('high-buy');
   const [viewMode, setViewMode] = useState<'responsive' | 'mobile' | 'laptop'>('responsive');
-  const [alphaProtocol, setAlphaProtocol] = useState<'ALL' | 'HIGH_PROFIT' | 'WHALE_BUY' | 'NEW_DISCOVERY' | 'SNIPER' | 'GEMS_100X' | 'JUPITER_AUTO' | 'MIGRATED'>('JUPITER_AUTO');
+  const [alphaProtocol, setAlphaProtocol] = useState<'ALL' | 'HIGH_PROFIT' | 'WHALE_BUY' | 'NEW_DISCOVERY' | 'SNIPER' | 'GEMS_100X' | 'MIGRATED'>('ALL');
   
   const location = useLocation();
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (location.pathname === '/jupiter') {
-      setCurrentPage('jupiter');
-    } else if (location.pathname === '/portfolio') {
+    if (location.pathname === '/portfolio') {
       setCurrentPage('portfolio');
     }
   }, [location.pathname]);
@@ -783,7 +780,6 @@ function App() {
   // ... (find the return block and look for currentPage rendering) ...
   const [isExportingKey, setIsExportingKey] = useState(false);
   const [tradingStatus, setTradingStatus] = useState<string | null>(null);
-  const [jupiterConnected, setJupiterConnected] = useState<boolean | null>(null);
   const [highProfitAlert, setHighProfitAlert] = useState<{ symbol: string, address: string, profit: number } | null>(null);
   const [isAutoExecutionPending, setIsAutoExecutionPending] = useState(false);
 
@@ -867,15 +863,6 @@ function App() {
     }
   }, []); 
 
-  // New Effect to trigger the search when manualGemInput is set via deep link
-  useEffect(() => {
-    const urlAddressMatch = manualGemInput ? manualGemInput.match(/\/([1-9A-HJ-NP-Za-km-z]{32,44})/) : null;
-    const resolvedInput = urlAddressMatch ? urlAddressMatch[1] : manualGemInput;
-    if (resolvedInput && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(resolvedInput) && currentPage === 'portfolio') {
-      handleManualAddGem();
-    }
-  }, [manualGemInput, currentPage]);
-
   const [savedGems, setSavedGems] = useState<Record<string, SavedGem>>(() => {
     const saved = localStorage.getItem('arina_saved_gems');
     if (!saved || saved === 'null') return {};
@@ -941,92 +928,7 @@ function App() {
     setSectorFilter('ALL');
   }, [currentPage]);
 
-  const handleManualAddGem = async () => {
-    let input = manualGemInput.trim();
-    if (!input) {
-      addNotification('Please enter a valid token address or name');
-      return;
-    }
-    
-    // Extract Solana address if they pasted a URL
-    const urlAddressMatch = input.match(/\/([1-9A-HJ-NP-Za-km-z]{32,44})/);
-    const resolvedInput = urlAddressMatch ? urlAddressMatch[1] : input;
-    
-    let address = resolvedInput;
-    let targetSymbol = savedGems[address]?.symbol;
-    const isAddress = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(resolvedInput);
-
-    setIsAddingGem(true);
-    addNotification(isAddress ? 'Scanning token security data...' : 'Searching for token...');
-    
-    try {
-      if (!isAddress) {
-        // Search by name/symbol
-        const res = await fetch(`/api/dex/search?q=${encodeURIComponent(input)}`);
-        if (res.ok) {
-          const data = await res.json();
-          const solPairs = data.pairs?.filter((p: any) => p.chainId === 'solana') || [];
-          if (solPairs.length > 0) {
-            // Pick the best match (highest liquidity or exact symbol match)
-            const bestPair = solPairs[0];
-            address = bestPair.baseToken?.address;
-            targetSymbol = bestPair.baseToken?.symbol;
-            input = address; // Update input to be the address for the rest of the flow
-            addNotification(`Found ${targetSymbol} (${address.slice(0,6)}...)`);
-          } else {
-            addNotification('No Solana token found for that search query');
-            setIsAddingGem(false);
-            return;
-          }
-        } else {
-          addNotification('Search API failed');
-          setIsAddingGem(false);
-          return;
-        }
-      }
-
-      if (!savedGems[address]) {
-        const security = await fetchTokenSecurityData(address);
-        if (security && security.symbol) {
-          targetSymbol = security.symbol;
-          const fakeMetric = { address, symbol: targetSymbol, priceUsd: security.priceUsd };
-          toggleSaveGem({ ...fakeMetric } as any);
-          addNotification(`Added ${targetSymbol} to Matrix`);
-        } else {
-          targetSymbol = targetSymbol || 'UNKNOWN';
-          addNotification('Metadata unavailable. Adding by address.');
-          toggleSaveGem({ address, symbol: targetSymbol, priceUsd: security?.priceUsd || 0 } as any);
-        }
-      } else {
-        targetSymbol = savedGems[address].symbol;
-        addNotification(`${targetSymbol} is already in the Matrix`);
-      }
-    } catch (e) {
-      console.error(e);
-      addNotification('Matrix scan failed');
-    } finally {
-      setIsAddingGem(false);
-    }
-
-    // Auto Execution Logic
-    if (isAutoExecutionPending && targetSymbol && address) {
-      setIsAutoExecutionPending(false);
-      setManualGemInput('');
-      
-      const hasPosition = activePositions[address];
-      if (hasPosition) {
-        setTradingStatus(`⚡ Direct Auto-Sell Triggered for ${targetSymbol}`);
-        handleManualSell(address, targetSymbol);
-      } else {
-        setTradingStatus(`⚡ Direct Auto-Buy Triggered for ${targetSymbol}`);
-        handleManualBuy(address, targetSymbol);
-      }
-    } else {
-      setManualGemInput('');
-    }
-  };
-
-  const toggleSaveGem = (item: TokenMetric | string) => {
+  const toggleSaveGem = useCallback((item: TokenMetric | string) => {
     const address = typeof item === 'string' ? item : item.address;
     
     setSavedGems(prev => {
@@ -1052,37 +954,101 @@ function App() {
         }
       } as Record<string, SavedGem>;
     });
-  };
-
-  // Ping Jupiter V6 API on startup to confirm connection
-  useEffect(() => {
-    let mounted = true;
-    const pingJupiter = async () => {
-      try {
-        const quote = await getJupiterQuote(
-          'So11111111111111111111111111111111111111112', // SOL
-          'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
-          100000,
-          0
-        );
-        if (mounted) {
-          if (quote) {
-            setJupiterConnected(true);
-          } else {
-            setJupiterConnected(false);
-          }
-        }
-      } catch (err) {
-        if (mounted) setJupiterConnected(false);
-      }
-    };
-    pingJupiter();
-    const interval = setInterval(pingJupiter, 60000);
-    return () => {
-      mounted = false;
-      clearInterval(interval);
-    };
   }, []);
+
+  const handleManualAddGem = useCallback(async () => {
+    let input = manualGemInput.trim();
+    if (!input) {
+      addNotification('Please enter a valid token address or name');
+      return;
+    }
+    
+    // Clear input synchronously to avoid re-triggering due to stale closure if it fails
+    setManualGemInput('');
+
+    // Extract Solana address if they pasted a URL
+    const urlAddressMatch = input.match(/\/([1-9A-HJ-NP-Za-km-z]{32,44})/);
+    const resolvedInput = urlAddressMatch ? urlAddressMatch[1] : input;
+    
+    let targetAddress = resolvedInput;
+    let targetSymbol = savedGems[targetAddress]?.symbol;
+    const isAddress = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(resolvedInput);
+
+    setIsAddingGem(true);
+    addNotification(isAddress ? 'Scanning token security data...' : 'Searching for token...');
+    
+    try {
+      if (!isAddress) {
+        // Search by name/symbol
+        const res = await fetch(`/api/dex/search?q=${encodeURIComponent(input)}`);
+        if (res.ok) {
+          const data = await res.json();
+          const solPairs = data.pairs?.filter((p: any) => p.chainId === 'solana') || [];
+          if (solPairs.length > 0) {
+            // Pick the best match (highest liquidity or exact symbol match)
+            const bestPair = solPairs[0];
+            targetAddress = bestPair.baseToken?.address;
+            targetSymbol = bestPair.baseToken?.symbol;
+            input = targetAddress; // Update input to be the address for the rest of the flow
+            addNotification(`Found ${targetSymbol} (${targetAddress.slice(0,6)}...)`);
+          } else {
+            addNotification('No Solana token found for that search query');
+            setIsAddingGem(false);
+            return;
+          }
+        } else {
+          addNotification('Search API failed');
+          setIsAddingGem(false);
+          return;
+        }
+      }
+
+      if (!savedGems[targetAddress]) {
+        const security = await fetchTokenSecurityData(targetAddress);
+        if (security && security.symbol) {
+          targetSymbol = security.symbol;
+          const fakeMetric = { address: targetAddress, symbol: targetSymbol, priceUsd: security.priceUsd };
+          toggleSaveGem({ ...fakeMetric } as any);
+          addNotification(`Added ${targetSymbol} to Matrix`);
+        } else {
+          targetSymbol = targetSymbol || 'UNKNOWN';
+          addNotification('Metadata unavailable. Adding by address.');
+          toggleSaveGem({ address: targetAddress, symbol: targetSymbol, priceUsd: security?.priceUsd || 0 } as any);
+        }
+      } else {
+        targetSymbol = savedGems[targetAddress].symbol;
+        addNotification(`${targetSymbol} is already in the Matrix`);
+      }
+    } catch (e) {
+      console.error(e);
+      addNotification('Matrix scan failed');
+    } finally {
+      setIsAddingGem(false);
+    }
+
+    // Auto Execution Logic
+    if (isAutoExecutionPending && targetSymbol && targetAddress) {
+      setIsAutoExecutionPending(false);
+      
+      const hasPosition = activePositions[targetAddress];
+      if (hasPosition) {
+        setTradingStatus(`⚡ Direct Auto-Sell Triggered for ${targetSymbol}`);
+        handleManualSell(targetAddress, targetSymbol);
+      } else {
+        setTradingStatus(`⚡ Direct Auto-Buy Triggered for ${targetSymbol}`);
+        handleManualBuy(targetAddress, targetSymbol);
+      }
+    }
+  }, [manualGemInput, savedGems, activePositions, isAutoExecutionPending, toggleSaveGem]);
+
+  // New Effect to trigger the search when manualGemInput is set via deep link
+  useEffect(() => {
+    const urlAddressMatch = manualGemInput ? manualGemInput.match(/\/([1-9A-HJ-NP-Za-km-z]{32,44})/) : null;
+    const resolvedInput = urlAddressMatch ? urlAddressMatch[1] : manualGemInput;
+    if (resolvedInput && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(resolvedInput) && currentPage === 'portfolio') {
+      handleManualAddGem();
+    }
+  }, [manualGemInput, currentPage, handleManualAddGem]);
 
   // Dynamic RPC latency monitor + multi-RPC pool health tracking
   useEffect(() => {
@@ -1224,13 +1190,13 @@ function App() {
   }, [tokenMetrics]);
 
   const latestState = useRef({ 
-    tokenMetrics, autoSniperEnabled, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, unknownStopLoss, activePositions, maxPositions, slippage, moonbagStrategy, telegramBotToken, telegramChatId, mySniperTrades,
+    tokenMetrics, autoSniperEnabled, isLiveTrading, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, unknownStopLoss, activePositions, maxPositions, slippage, moonbagStrategy, telegramBotToken, telegramChatId, mySniperTrades,
     hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax, hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore, hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s, hardenedMinBuyCount30s, hardenedMaxBuyCount30s, hardenedMinBuySellRatio, hardenedMaxBuySellRatio, hardenedMaxPriceChange1m,
     hardenedMinBondingProgress, hardenedMaxBondingProgress, hardenedMinAge, hardenedMaxAge,
     hardenedMinLatency, hardenedMaxLatency, hardenedMatchRequirement, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown, hardenedMinProfit5m, enableLatencyGuard, maxRebuyTimes,
   });
   latestState.current = { 
-    tokenMetrics, autoSniperEnabled, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, unknownStopLoss, activePositions, maxPositions, slippage, moonbagStrategy, telegramBotToken, telegramChatId, mySniperTrades,
+    tokenMetrics, autoSniperEnabled, isLiveTrading, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, unknownStopLoss, activePositions, maxPositions, slippage, moonbagStrategy, telegramBotToken, telegramChatId, mySniperTrades,
     hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax, hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore, hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s, hardenedMinBuyCount30s, hardenedMaxBuyCount30s, hardenedMinBuySellRatio, hardenedMaxBuySellRatio, hardenedMaxPriceChange1m,
     hardenedMinBondingProgress, hardenedMaxBondingProgress, hardenedMinAge, hardenedMaxAge,
     hardenedMinLatency, hardenedMaxLatency, hardenedMatchRequirement, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown, hardenedMinProfit5m, enableLatencyGuard, maxRebuyTimes,
@@ -1528,7 +1494,9 @@ function App() {
   // Global Discovery Scanner (Feeds candidate tokens to the bot)
   useEffect(() => {
     const discoveryInterval = setInterval(async () => {
-      if (!isLiveTrading && !autoSniperEnabled) return; // Only scan if bot is active or simulated
+      const isLive = latestState.current.isLiveTrading;
+      const isAuto = latestState.current.autoSniperEnabled;
+      if (!isLive && !isAuto) return; // Only scan if bot is active or simulated
       
       try {
         const res = await fetch('/api/dex/tokens/So11111111111111111111111111111111111111112'); // Get trending SOL pairs via proxy
@@ -1547,8 +1515,9 @@ function App() {
             const mint = pair.baseToken?.address === 'So11111111111111111111111111111111111111112' ? pair.quoteToken?.address : pair.baseToken?.address;
             if (!mint) continue;
             
+            const currentMetrics = useAppStore.getState().tokenMetrics;
             // Only feed to bot if we don't have fresh metrics
-            if (!tokenMetrics[mint] || (Date.now() - tokenMetrics[mint].lastUpdated > 30000)) {
+            if (!currentMetrics[mint] || (Date.now() - currentMetrics[mint].lastUpdated > 30000)) {
                fetchTokenSecurityData(mint).then(security => {
                  if (security) {
                    setTokenMetrics(prev => ({
@@ -1602,7 +1571,7 @@ function App() {
     }, 20000); // Scan every 20s to ensure fresh candidates
     
     return () => clearInterval(discoveryInterval);
-  }, [isLiveTrading, autoSniperEnabled, tokenMetrics]);
+  }, []);
 
 
 
@@ -1624,9 +1593,11 @@ function App() {
       if (!isMounted) return;
       
       for (const mint of allMints) {
+        if (!isMounted) break;
         // Force refresh price for held or saved tokens
         try {
           const security = await fetchTokenSecurityData(mint);
+          if (!isMounted) break;
           if (security && security.priceChange !== undefined) {
             setTokenMetrics(prev => {
               const current = prev[mint];
@@ -2510,7 +2481,7 @@ function App() {
     };
   }, []);
 
-  const priceFetchLocks = useRef<Set<string>>(new Set());
+  const priceFetchLocks = useRef<Map<string, Promise<any>>>(new Map());
   const lastFetchTimes = useRef<Map<string, number>>(new Map());
   const hasPlayedDiscoverySound = useRef<Set<string>>(new Set());
 
@@ -2589,18 +2560,28 @@ function App() {
   };
 
   // Fetch token stats and security from DEXScreener
-  const fetchTokenSecurityData = async (mint: string, retries = 3, backoff = 1000, isRetry = false) => {
-    // Client-side throttling: Don't fetch the same mint more than once every 60 seconds
+  const fetchTokenSecurityData = (mint: string, retries = 3, backoff = 1000): Promise<any> => {
     const lastFetch = lastFetchTimes.current.get(mint) || 0;
-    if (Date.now() - lastFetch < 2000 && !isRetry) return null;
+    if (Date.now() - lastFetch < 2000) return Promise.resolve(null);
     
-    if (!isRetry && priceFetchLocks.current.has(mint)) return null;
-    
-    if (!isRetry) {
-      priceFetchLocks.current.add(mint);
-      lastFetchTimes.current.set(mint, Date.now());
+    if (priceFetchLocks.current.has(mint)) {
+      return priceFetchLocks.current.get(mint)!;
     }
     
+    const promise = (async () => {
+      lastFetchTimes.current.set(mint, Date.now());
+      try {
+        return await fetchTokenSecurityDataInner(mint, retries, backoff);
+      } finally {
+        priceFetchLocks.current.delete(mint);
+      }
+    })();
+    
+    priceFetchLocks.current.set(mint, promise);
+    return promise;
+  };
+
+  const fetchTokenSecurityDataInner = async (mint: string, retries = 3, backoff = 1000, isRetry = false): Promise<any> => {
     try {
       // Use the server-side proxy to benefit from caching and shared rate limits
       const response = await fetch(`/api/dex/tokens/${mint}`);
@@ -2610,7 +2591,7 @@ function App() {
           console.warn(`DexScreener Rate Limit for ${mint}. Retrying after ${backoff}ms...`);
           // Exponential backoff for rate limits
           await new Promise(res => setTimeout(res, backoff));
-          return await fetchTokenSecurityData(mint, retries - 1, backoff * 2, true);
+          return await fetchTokenSecurityDataInner(mint, retries - 1, backoff * 2, true);
         }
         return null;
       }
@@ -2819,10 +2800,6 @@ function App() {
       }
     } catch (e) {
       // console.error('DexScreener fetch failed', e);
-    } finally {
-      if (!isRetry) {
-        priceFetchLocks.current.delete(mint);
-      }
     }
     return null;
   };
@@ -2830,14 +2807,10 @@ function App() {
   const processedSigs = useRef<Set<string>>(new Set());
   const pendingDiscovery = useRef<Set<string>>(new Set());
 
-  useEffect(() => {
-    // Process all new trades for metrics and alerts
-    const newTrades = trades.filter(t => !processedSigs.current.has(t.signature));
+  const processIncomingTrade = (trade: Trade) => {
+    if (processedSigs.current.has(trade.signature)) return;
+    processedSigs.current.add(trade.signature);
     
-    if (newTrades.length > 0) {
-      newTrades.forEach(trade => {
-        processedSigs.current.add(trade.signature);
-        
         // Update Token Metrics for BOTH buys and sells
         setTokenMetrics(prev => {
           const isNew = !prev[trade.tokenAddress];
@@ -2926,7 +2899,7 @@ function App() {
                           `<a href="${buyLink}">🎯 QUICK BUY IN MATRIX</a>\n` +
                           `<a href="${sellLink}">🔴 QUICK SELL / VIEW PORTFOLIO</a>\n\n` +
                           `<a href="https://dexscreener.com/solana/${trade.tokenAddress}">📊 View on DexScreener</a>`;
-              sendTelegramAlert(msg, true).catch(err => console.warn('Telegram alert failed:', err));
+              fns.current.sendTelegramAlert(msg, true).catch(err => console.warn('Telegram alert failed:', err));
               
               if (alertType === 'WHALE_BUY' || alertType === 'HIGH_BUY') {
                 setTelemetryAlerts(prev => [
@@ -3066,7 +3039,7 @@ function App() {
                               `<a href="${buyLinkX}">🎯 BUY ON JUPITER</a>\n` +
                               `<a href="${sellLinkX}">🔴 SELL ON JUPITER</a>\n\n` +
                               `<a href="https://dexscreener.com/solana/${trade.tokenAddress}">📊 View on DexScreener</a>`;
-                  sendTelegramAlert(msg, true).catch(err => console.warn('Telegram alert failed:', err));
+                  fns.current.sendTelegramAlert(msg, true).catch(err => console.warn('Telegram alert failed:', err));
                 }
 
                 // TRIGGER AUTO-SNIPE (High-Frequency Scalper Mode)
@@ -3110,8 +3083,8 @@ function App() {
                                           top10Percent < 14.0 &&
                                           marketCap >= 70000 && marketCap <= 1500000;
 
-                if (autoSniperEnabled && isRugSafe && security.security.isOrganic && isMassiveStrength) {
-                  executeAutoTrade(trade.tokenAddress, trade.token);
+                if (latestState.current.autoSniperEnabled && isRugSafe && security.security.isOrganic && isMassiveStrength) {
+                  fns.current.executeAutoTrade(trade.tokenAddress, trade.token);
                 }
 
                 return { ...m, [trade.tokenAddress]: updated };
@@ -3119,9 +3092,7 @@ function App() {
             });
           }
         }
-      });
-    }
-  }, [trades, autoSniperEnabled, buyAmountSol, telegramBotToken, telegramChatId]);
+  };
 
   const connectionRef = useRef<Connection | null>(null);
   const subscriptionIds = useRef<Record<string, number>>({});
@@ -3864,10 +3835,11 @@ function App() {
               }
               
               setTrades(prev => {
-                // Deduplicate by signature first
                 if (prev.some(t => t.signature === signature)) return prev;
                 
-                // Allow multiple trades of the same token to show a real feed 
+                // Process enrichment immediately inside the pipeline
+                processIncomingTrade(newTrade);
+                
                 return [newTrade, ...prev].slice(0, 50);
               });
               
@@ -4033,19 +4005,6 @@ function App() {
           <Wallet className={cn("w-5 h-5", currentPage === 'portfolio' && "animate-pulse")} />
           <span className="text-[10px] font-bold uppercase tracking-tighter">PnL</span>
         </button>
-        <button 
-          onClick={() => {
-            setCurrentPage('jupiter');
-            navigate('/jupiter');
-          }}
-          className={cn(
-            "flex shrink-0 flex-col items-center gap-1 transition-all px-3 py-2 rounded-xl",
-            currentPage === 'jupiter' ? "text-indigo-400" : "text-slate-500"
-          )}
-        >
-          <Rocket className={cn("w-5 h-5", currentPage === 'jupiter' && "animate-pulse")} />
-          <span className="text-[10px] font-bold uppercase tracking-tighter">Jupiter</span>
-        </button>
         <div className="w-px h-8 bg-slate-800 mx-1 shrink-0" />
         <button 
           onClick={() => user ? signOut(auth) : handleLogin()}
@@ -4174,18 +4133,6 @@ function App() {
                 PORTFOLIO / PNL
               </button>
               <button 
-                onClick={() => {
-                  setCurrentPage('jupiter');
-                  navigate('/jupiter');
-                }}
-                className={cn(
-                  "px-5 py-2 rounded-full transition-all text-[10px] font-black flex items-center gap-1.5",
-                  currentPage === 'jupiter' ? "bg-indigo-600 text-white shadow-lg" : "text-slate-500 hover:text-slate-300"
-                )}
-              >
-                <Rocket className="w-3 h-3" /> JUPITER
-              </button>
-              <button 
                 onClick={() => setCurrentPage('system-check')}
                 className={cn(
                   "px-5 py-2 rounded-full transition-all text-[10px] font-black flex items-center gap-1",
@@ -4251,7 +4198,6 @@ function App() {
             <div className="flex flex-col lg:flex-row items-center gap-4 w-full lg:w-auto">
               <div className="flex items-center gap-2 p-1 bg-slate-950/80 rounded-2xl border border-slate-800 overflow-x-auto scrollbar-none w-full lg:w-auto">
                 {[
-                  { id: 'JUPITER_AUTO', label: 'Jupiter Auto', icon: Zap, desc: 'Profit >50%, Secure' },
                   { id: 'MIGRATED', label: 'Migrations', icon: Rocket, desc: 'Raydium Graduations' },
                   { id: 'SNIPER', label: 'Sniper / Flash', icon: Target, desc: 'Early Momentum' },
                   { id: 'GEMS_100X', label: 'Prediction App', icon: BrainCircuit, desc: 'AI Sentiment & Momentum' },
@@ -5360,15 +5306,6 @@ function App() {
             <div className="w-full py-2 rounded-xl text-[10px] font-black uppercase tracking-[0.1em] transition-all flex items-center justify-center gap-2 border border-slate-800 text-slate-500 bg-slate-900/40">
               Trading Mode: Simulated
             </div>
-            <div className="flex items-center justify-center gap-2 mt-2">
-              <div className={cn(
-                "w-2 h-2 rounded-full",
-                jupiterConnected === true ? "bg-emerald-500 animate-pulse" : jupiterConnected === false ? "bg-red-500" : "bg-slate-500"
-              )} />
-              <span className="text-[10px] uppercase font-bold tracking-widest text-slate-400">
-                Jupiter API: {jupiterConnected === true ? 'Connected' : jupiterConnected === false ? 'Disconnected' : 'Checking...'}
-              </span>
-            </div>
             {tradingStatus && (
               <div className="flex items-center gap-2 justify-center py-2 bg-indigo-950/30 rounded-lg border border-indigo-900/50">
                 <RefreshCw className="w-3 h-3 text-indigo-400 animate-spin" />
@@ -5992,78 +5929,6 @@ function App() {
     <section className={cn("col-span-12 flex-col h-full overflow-auto", currentPage === 'system-check' ? "flex" : "hidden")}>
       <SystemCheckPage rpcUrl={rpcUrl} />
     </section>
-    <section className={cn("col-span-12 flex-col h-full overflow-hidden", currentPage === 'jupiter' ? "flex" : "hidden")}>
-      <JupiterPage 
-        externalSettings={{
-          buyAmountSol,
-          setBuyAmountSol,
-          minTakeProfit,
-          setMinTakeProfit,
-          maxTakeProfit,
-          setMaxTakeProfit,
-          bondingCurveTakeProfit,
-          setBondingCurveTakeProfit,
-          stopLoss,
-          setStopLoss,
-          bondingCurveStopLoss,
-          setBondingCurveStopLoss,
-          pumpSwapStopLoss,
-          setPumpSwapStopLoss,
-          unknownStopLoss,
-          setUnknownStopLoss,
-          maxPositions,
-          setMaxPositions,
-          slippage,
-          setSlippage,
-          hardenedMinBondingProgress,
-          setHardenedMinBondingProgress,
-          hardenedMaxBondingProgress,
-          setHardenedMaxBondingProgress,
-          hardenedMinAge,
-          setHardenedMinAge,
-          hardenedMaxAge,
-          setHardenedMaxAge,
-          hardenedMinLatency,
-          setHardenedMinLatency,
-          hardenedMaxLatency,
-          setHardenedMaxLatency,
-          hardenedMatchRequirement,
-          setHardenedMatchRequirement,
-          rpcUrl,
-          setRpcUrl,
-          rpcUrl2,
-          setRpcUrl2,
-          isSecondaryActive,
-          setIsSecondaryActive,
-          customWsUrl,
-          setCustomWsUrl,
-          telemetryWhaleBuyMin,
-          setTelemetryWhaleBuyMin,
-          telemetryHighBuyMin,
-          setTelemetryHighBuyMin,
-          telemetryVolumeSpikeMin,
-          setTelemetryVolumeSpikeMin,
-          telemetryAllowWhaleBuy,
-          setTelemetryAllowWhaleBuy,
-          telemetryAllowHighBuy,
-          setTelemetryAllowHighBuy,
-          telemetryAllowVolumeSpike,
-          setTelemetryAllowVolumeSpike,
-          telemetryAllowMigrated,
-          setTelemetryAllowMigrated,
-          telemetryAllowGoldenCross,
-          setTelemetryAllowGoldenCross,
-          maxRebuyTimes,
-          setMaxRebuyTimes,
-          apiKey,
-          setApiKey,
-          jupiterRpcUrl,
-          setJupiterRpcUrl,
-          privateKey,
-          setPrivateKey,
-        }}
-      />
-    </section>
     {currentPage === 'high-buy' && alphaSubTab === 'intel' ? (
       <section className="col-span-12 flex flex-col gap-6 lg:overflow-hidden">
         {renderAlphaHeader()}
@@ -6208,18 +6073,6 @@ function App() {
                           const safeDev = true;
                           const hasVelocity = true;
                           return isMcValid && isVolValid && isLiqValid && buySellRatio >= 0 && hasHolders && safeDev && m.isRugSafe !== false && hasVelocity;
-                        }
-
-                        if (alphaProtocol === 'JUPITER_AUTO') { 
-                          const tokenAgeMs = Date.now() - (m.discoveredAt || Date.now());
-                          const isAgeValid = tokenAgeMs > 300000;
-                          const hasVol = (m.volume24h || 0) >= 5000;
-                          const hasLiq = (m.liquidity || 0) >= 2000;
-                          const isBondingCurve = (m.marketCap || 0) < 100000;
-                          const progressPass = !isBondingCurve || (m.marketCap || 0) >= 62000;
-
-                          const hasMomentum = (m.percentageIncrease || 0) >= 20 || ((m.buyCount || 0) / (m.sellCount || 1) >= 1.5);
-                          return isAgeValid && hasVol && hasLiq && progressPass && hasMomentum && m.isRugSafe !== false;
                         }
 
                         if (alphaProtocol === 'MIGRATED') {
@@ -6471,18 +6324,6 @@ function App() {
                         return isMcValid && isVolValid && isLiqValid && buySellRatio >= 0 && hasHolders && safeDev && m.isRugSafe !== false && hasVelocity;
                       }
 
-                      if (alphaProtocol === 'JUPITER_AUTO') { 
-                        const tokenAgeMs = Date.now() - (m.discoveredAt || Date.now());
-                        const isAgeValid = tokenAgeMs > 300000;
-                        const hasVol = (m.volume24h || 0) >= 5000;
-                        const hasLiq = (m.liquidity || 0) >= 2000;
-                        const isBondingCurve = (m.marketCap || 0) < 100000;
-                        const progressPass = !isBondingCurve || (m.marketCap || 0) >= 62000;
-
-                        const hasMomentum = (m.percentageIncrease || 0) >= 20 || ((m.buyCount || 0) / (m.sellCount || 1) >= 1.5);
-                        return isAgeValid && hasVol && hasLiq && progressPass && hasMomentum && m.isRugSafe !== false;
-                      }
-
                       if (alphaProtocol === 'MIGRATED') {
                         return m.latestAlert === 'MIGRATED' || (m.bondingCurveProgress || 0) >= 99.5 || !(m.address && m.address.toLowerCase().endsWith('pump'));
                       }
@@ -6538,18 +6379,6 @@ function App() {
                       const safeDev = true;
                       const hasVelocity = true;
                       return isMcValid && isVolValid && isLiqValid && buySellRatio >= 0 && hasHolders && safeDev && m.isRugSafe !== false && hasVelocity;
-                    }
-
-                    if (alphaProtocol === 'JUPITER_AUTO') { 
-                      const tokenAgeMs = Date.now() - (m.discoveredAt || Date.now());
-                      const isAgeValid = tokenAgeMs > 300000;
-                      const hasVol = (m.volume24h || 0) >= 5000;
-                      const hasLiq = (m.liquidity || 0) >= 2000;
-                      const isBondingCurve = (m.marketCap || 0) < 100000;
-                      const progressPass = !isBondingCurve || (m.marketCap || 0) >= 62000;
-
-                      const hasMomentum = (m.percentageIncrease || 0) >= 20 || ((m.buyCount || 0) / (m.sellCount || 1) >= 1.5);
-                      return isAgeValid && hasVol && hasLiq && progressPass && hasMomentum && m.isRugSafe !== false;
                     }
 
                     if (alphaProtocol === 'MIGRATED') {
@@ -6692,11 +6521,6 @@ function App() {
                 
                 {(Object.values(tokenMetrics) as TokenMetric[]).filter(m => {
                   const baseFilter = (m.buyCount || 0) >= 2;
-                  if (alphaProtocol === 'JUPITER_AUTO') { 
-                    const isEarly = (Date.now() - (m.discoveredAt || Date.now())) <= 5 * 60 * 1000;
-                    const hasMomentum = (m.percentageIncrease || 0) >= 20 || ((m.buyCount || 0) / (m.sellCount || 1) >= 1.5);
-                    return isEarly && hasMomentum && m.isRugSafe !== false;
-                  }
                   if (!baseFilter) return false;
                   if (alphaProtocol === 'HIGH_PROFIT') return (m.percentageIncrease || 0) >= 60 && m.isRugSafe !== false && ((m.volume24h || 0) / (m.marketCap || 1)) >= 1.0;
                   if (alphaProtocol === 'WHALE_BUY') return m.latestAlert === 'WHALE_BUY' || m.latestAlert === 'HIGH_BUY';

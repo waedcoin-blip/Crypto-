@@ -1591,7 +1591,7 @@ export const PnLPage = ({
     tradeHistoryRef.current = tradeHistory;
   }, [tradeHistory]);
 
-  // Auto-update ONLY profitable trade history token addresses to localStorage & dispatch event to JupiterPage
+  // Auto-update ONLY profitable trade history token addresses to localStorage
   useEffect(() => {
     const profitablePnlTokens = [
       ...new Set(

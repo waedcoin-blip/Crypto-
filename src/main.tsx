@@ -123,10 +123,10 @@ export const WS_URLS = RPC_URLS.map((rpc, index) => {
 const OriginalWebSocket = window.WebSocket;
 if (OriginalWebSocket) {
   const CustomWebSocket = function (this: any, url: string | URL, protocols?: string | string[]) {
-    let targetUrl = url.toString();
+    let targetUrl = url ? url.toString() : '';
     
     // Normalize to handle trailing slashes or query arguments
-    if (WS_URLS.length > 1) {
+    if (WS_URLS.length > 1 && targetUrl) {
       const ws1 = WS_URLS[0].replace(/\/$/, '');
       const ws2 = WS_URLS[1].replace(/\/$/, '');
       
@@ -166,6 +166,8 @@ window.fetch = async (...args) => {
   let url = '';
   if (typeof args[0] === 'string') {
     url = args[0];
+  } else if (args[0] instanceof URL) {
+    url = args[0].toString();
   } else if (args[0] && typeof args[0] === 'object' && 'url' in (args[0] as any)) {
     url = (args[0] as Request).url;
   }
@@ -178,24 +180,21 @@ window.fetch = async (...args) => {
     if (url.startsWith(rpc1) || url.startsWith(rpc2)) {
       const selectedRpc = RPC_URLS[rpcCounter % RPC_URLS.length].replace(/\/$/, '');
       rpcCounter++;
-      let newUrl = url;
-      if (url.startsWith(rpc1)) {
-        newUrl = url.replace(rpc1, selectedRpc);
-      } else if (url.startsWith(rpc2)) {
-        newUrl = url.replace(rpc2, selectedRpc);
-      }
-      
-      let newArgs = [...args] as any;
-      if (typeof newArgs[0] === 'string') {
-        newArgs[0] = newUrl;
-      } else if (newArgs[0] && typeof newArgs[0] === 'object' && 'url' in newArgs[0]) {
+      const targetRpc = url.startsWith(rpc1) ? rpc1 : rpc2;
+      const newUrl = url.replace(targetRpc, selectedRpc);
+
+      if (typeof args[0] === 'string') {
+        return originalFetch(newUrl, args[1]);
+      } else if (args[0] instanceof URL) {
+        return originalFetch(new URL(newUrl), args[1]);
+      } else if (args[0] && typeof args[0] === 'object' && 'url' in (args[0] as any)) {
         try {
-          newArgs[0] = new Request(newUrl, newArgs[0] as any);
+          const newReq = new Request(newUrl, args[0] as Request);
+          return originalFetch(newReq, args[1]);
         } catch {
-          newArgs[0] = newUrl;
+          return originalFetch(args[0], args[1]);
         }
       }
-      return originalFetch(newArgs[0], newArgs[1]);
     }
   }
 

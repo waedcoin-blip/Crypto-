@@ -3,6 +3,7 @@ import { createJupiterApiClient, QuoteResponse } from '@jup-ag/api';
 import { useAppStore } from '../store/appStore';
 import { detectTokenStage } from '../lib/utils';
 import { DEFAULT_HELIUS_RPC } from '../constants/solana';
+import { telemetryService } from './telemetryService';
 
 // ─── RPC POOL: Smart multi-endpoint with health tracking ───────────────────
 export interface RpcEndpoint {
@@ -31,10 +32,13 @@ class RpcPool {
       const ms = performance.now() - start;
       const ep = this.endpoints.get(url);
       if (ep) { ep.latencyMs = ms; ep.healthy = true; ep.failCount = 0; ep.lastChecked = Date.now(); }
+      telemetryService.recordApiRequest(url, 'getSlot', 200, ms);
       return ms;
-    } catch {
+    } catch (err: any) {
+      const ms = performance.now() - start;
       const ep = this.endpoints.get(url);
       if (ep) { ep.failCount++; ep.healthy = ep.failCount < 3; ep.lastChecked = Date.now(); }
+      telemetryService.recordApiRequest(url, 'getSlot', 500, ms, err.message || 'RPC Failure');
       return 9999;
     }
   }
@@ -75,6 +79,7 @@ export const pingJupiterApi = async (): Promise<{ healthy: boolean; pingMs: numb
   const customApiKey = localStorage.getItem('jupiter_auto_apiKey') || localStorage.getItem('juipter_auto_apiKey') || '';
   const isCustom = !!customApiKey;
   const start = performance.now();
+  const span = telemetryService.startSpan('jupiter.ping', { 'api.custom': isCustom });
   try {
     const res = await getJupiterApiClient().quoteGet({
       inputMint: 'So11111111111111111111111111111111111111112',
@@ -82,14 +87,24 @@ export const pingJupiterApi = async (): Promise<{ healthy: boolean; pingMs: numb
       amount: 1000000,
       slippageBps: 50
     });
+    const ms = Math.round(performance.now() - start);
     if (res && res.outAmount) {
-      return { healthy: true, pingMs: Math.round(performance.now() - start), isCustom };
+      telemetryService.endSpan(span, 'OK', { 'http.status_code': 200, 'ping.ms': ms });
+      telemetryService.recordApiRequest('Jupiter API', 'ping', 200, ms, undefined, span.traceId);
+      return { healthy: true, pingMs: ms, isCustom };
     }
+    telemetryService.endSpan(span, 'ERROR', { 'http.status_code': 500 }, 'Empty response');
+    telemetryService.recordApiRequest('Jupiter API', 'ping', 500, ms, 'Empty response', span.traceId);
     return { healthy: false, pingMs: 0, isCustom, error: "Empty response" };
   } catch (e: any) {
+    const ms = Math.round(performance.now() - start);
     let errorMsg = e.message || "API Error";
-    if (e.status === 429) errorMsg = "Rate Limited (429)";
-    else if (e.status === 401) errorMsg = "Unauthorized API Key";
+    let statusCode = e.status || 500;
+    if (e.status === 429) { errorMsg = "Rate Limited (429)"; statusCode = 429; }
+    else if (e.status === 401) { errorMsg = "Unauthorized API Key"; statusCode = 401; }
+    
+    telemetryService.endSpan(span, 'ERROR', { 'http.status_code': statusCode }, errorMsg);
+    telemetryService.recordApiRequest('Jupiter API', 'ping', statusCode, ms, errorMsg, span.traceId);
     return { healthy: false, pingMs: 0, isCustom, error: errorMsg };
   }
 };
