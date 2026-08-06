@@ -1287,7 +1287,7 @@ export const processActiveTrackingFrame = async (
 
     const defaultTP = config?.takeProfit ?? 45.0;
     const rawSL = config?.stopLoss ?? -30.0;
-    const defaultSL = -Math.abs(rawSL); // ensure negative percentage e.g. -55
+    const defaultSL = config?.stopLoss !== undefined ? config.stopLoss : -Math.abs(rawSL);
     const flashCrashThreshold = defaultSL - 10.0;
 
     const isFlashCrash = netPnL <= flashCrashThreshold;

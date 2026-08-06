@@ -29,7 +29,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { cn, detectTokenStage } from './lib/utils';
-import { setSolPriceUsd, getSolPriceUsd } from './utils/pnlCalculator';
+import { setSolPriceUsd, getSolPriceUsd, calcNetPnl } from './utils/pnlCalculator';
 import { DEFAULT_HELIUS_RPC, HELIUS_API_KEY } from './constants/solana';
 import { encryptPrivateKey, decryptPrivateKey } from './lib/crypto';
 import { auth, db, signInWithGoogle, signInWithEmailAndPassword, createUserWithEmailAndPassword } from './lib/firebase';
@@ -1313,9 +1313,8 @@ function App() {
           // e.g. up 50% → stop at 35%; up 100% → stop at 75%
           const currentPriceSol = (token.priceNative || 0);
           const posTokensQty = position.amount || 0;
-          const currentPnLPct = realCostBasis > 0 
-            ? (((currentPriceSol * posTokensQty) - realCostBasis) / realCostBasis) * 100 
-            : 0;
+          const netPnlResult = calcNetPnl(currentPriceSol, posTokensQty, realCostBasis, state.slippage, position.recoveryMode, isLiveTrading);
+          const currentPnLPct = netPnlResult.netPnlPct;
 
           // Track peak PnL in position metadata
           if (!position.peakPnLPct || currentPnLPct > position.peakPnLPct) {

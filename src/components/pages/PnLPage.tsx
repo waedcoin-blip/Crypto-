@@ -16,7 +16,7 @@ import { detectTokenStage } from '../../lib/utils';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { checkTokenInProfitLast2Seconds, clearPriceHistories } from '../../services/priceTracker';
 import { encryptPrivateKey, decryptPrivateKey } from '../../lib/crypto';
-import { getSolPriceUsd, setSolPriceUsd } from '../../utils/pnlCalculator';
+import { getSolPriceUsd, setSolPriceUsd, calcNetPnl } from '../../utils/pnlCalculator';
 
 import { DEFAULT_HELIUS_RPC, DEFAULT_HELIUS_WS, HELIUS_API_KEY } from '../../constants/solana';
 
@@ -6772,17 +6772,10 @@ const checkTokenCriteria = (mint: string): {
                     }
 
                     const token = tokenMetrics[mint];
-                    const displayPrice = pos.currentPrice || (token?.priceNative ? parseFloat(String(token.priceNative)) : 0) || pos.buyPrice || 0;
-                    const currentGrossSol = displayPrice * (pos.amount || 0);
-                    
-                    let netSolIfSold = currentGrossSol;
-                    if (!privateKey) {
-                       const slippageFee = currentGrossSol * (slippage / 100);
-                       const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent);
-                       netSolIfSold = Math.max(0, currentGrossSol - slippageFee - opFees);
-                    }
-                    
-                    let pnlPct = (pos.solSpent > 0) ? ((netSolIfSold - pos.solSpent) / pos.solSpent) : 0;
+                    const displayPrice = (token?.priceNative ? parseFloat(String(token.priceNative)) : 0) || pos.currentPrice || pos.buyPrice || 0;
+                    const netCalc = calcNetPnl(displayPrice, pos.amount || 0, pos.solSpent || 0, slippage, pos.recoveryMode, !!privateKey);
+                    let netSolIfSold = netCalc.netSol;
+                    let pnlPct = netCalc.netPnlPct / 100;
                     if (displayPrice === 0 && pos.realNetPnl !== undefined) {
                       pnlPct = pos.realNetPnl;
                     }
@@ -6792,17 +6785,10 @@ const checkTokenCriteria = (mint: string): {
                     return !isNaN(pnlPct) && isFinite(pnlPct);
                   }).map(([mint, pos]: [string, Position]) => {
                     const token = tokenMetrics[mint];
-                    const displayPrice = pos.currentPrice || (token?.priceNative ? parseFloat(String(token.priceNative)) : 0) || pos.buyPrice || 0;
-                    const currentGrossSol = displayPrice * (pos.amount || 0);
-                    
-                    let netSolIfSold = currentGrossSol;
-                    if (!privateKey) {
-                       const slippageFee = currentGrossSol * (slippage / 100);
-                       const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent);
-                       netSolIfSold = Math.max(0, currentGrossSol - slippageFee - opFees);
-                    }
-                    
-                    let pnlPct = (pos.solSpent > 0) ? ((netSolIfSold - pos.solSpent) / pos.solSpent) : 0;
+                    const displayPrice = (token?.priceNative ? parseFloat(String(token.priceNative)) : 0) || pos.currentPrice || pos.buyPrice || 0;
+                    const netCalc = calcNetPnl(displayPrice, pos.amount || 0, pos.solSpent || 0, slippage, pos.recoveryMode, !!privateKey);
+                    let netSolIfSold = netCalc.netSol;
+                    let pnlPct = netCalc.netPnlPct / 100;
                     if (displayPrice === 0 && pos.realNetPnl !== undefined) {
                       pnlPct = pos.realNetPnl;
                     }

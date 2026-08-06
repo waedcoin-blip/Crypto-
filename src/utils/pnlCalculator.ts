@@ -21,3 +21,35 @@ export const getDynamicOperationalFeeSol = (isRecovery: boolean = false, tradeAm
   return baseGasAndComputeSol + jitoTip;
 };
 
+export function calcNetPnl(
+  priceNative: number,
+  tokenQty: number,
+  solSpent: number,
+  slippagePct: number = 1.0,
+  isRecovery: boolean = false,
+  isLiveTrading: boolean = false
+) {
+  const currentGrossSol = priceNative * tokenQty;
+  if (isLiveTrading) {
+    const grossPnlSol = currentGrossSol - solSpent;
+    const grossPnlPct = solSpent > 0 ? (grossPnlSol / solSpent) * 100 : 0;
+    return {
+      grossSol: currentGrossSol,
+      netSol: currentGrossSol,
+      netPnlSol: grossPnlSol,
+      netPnlPct: grossPnlPct
+    };
+  }
+  const slippageFee = currentGrossSol * (slippagePct / 100);
+  const opFees = getDynamicOperationalFeeSol(isRecovery, solSpent);
+  const netSolIfSold = Math.max(0, currentGrossSol - slippageFee - opFees);
+  const netPnlSol = netSolIfSold - solSpent;
+  const netPnlPct = solSpent > 0 ? (netPnlSol / solSpent) * 100 : 0;
+  return {
+    grossSol: currentGrossSol,
+    netSol: netSolIfSold,
+    netPnlSol,
+    netPnlPct
+  };
+}
+
