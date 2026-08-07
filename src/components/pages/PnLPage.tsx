@@ -18,6 +18,7 @@ import { checkTokenInProfitLast2Seconds, clearPriceHistories } from '../../servi
 import { encryptPrivateKey, decryptPrivateKey } from '../../lib/crypto';
 import { getSolPriceUsd, setSolPriceUsd, calcNetPnl } from '../../utils/pnlCalculator';
 import { TradeModeToggle } from '../TradeModeToggle';
+import { TradingSettings } from '../TradingSettings';
 
 import { DEFAULT_HELIUS_RPC, DEFAULT_HELIUS_WS, HELIUS_API_KEY } from '../../constants/solana';
 
@@ -5821,6 +5822,17 @@ const checkTokenCriteria = (mint: string): {
                     <input type="number" step="0.1" value={slippage} onChange={(e) => setSlippage(Number(e.target.value))} className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-2 text-[13px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors" />
                   </div>
                 </div>
+              </div>
+
+              {/* Secure Trading Configuration Panel */}
+              <div className="pt-3 border-t border-[#1f212e]/60">
+                <div className="mb-3">
+                  <span className="text-[11px] text-[#94a3b8] uppercase font-bold tracking-wider flex items-center gap-1.5 mb-1">
+                    <span>🔐</span> Secure Key Encryption & Trading Settings
+                  </span>
+                  <p className="text-[10px] text-[#64748b]">AES-GCM client-side encryption for Jupiter API Keys & Private Keys</p>
+                </div>
+                <TradingSettings />
               </div>
 
               {/* FluxRPC Provider & MEV Shield Sub-panel */}
