@@ -76,7 +76,7 @@ interface AppState {
 
 export const useAppStore = create<AppState>((set) => ({
   autoSniperEnabled: false,
-  isLiveTrading: false,
+  isLiveTrading: localStorage.getItem('trade_mode') === 'real' || localStorage.getItem('is_live_trading') === 'true',
   buyAmountSol: Number(localStorage.getItem('app_buyAmountSol')) || 0.1,
   minTakeProfit: Number(localStorage.getItem('app_minTakeProfit')) || 25,
   maxTakeProfit: Number(localStorage.getItem('app_maxTakeProfit')) || 45,

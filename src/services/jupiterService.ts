@@ -367,40 +367,8 @@ export const executeTxWithRPCFallback = async (
     ...FALLBACK_RPCS
   ].filter((url, index, self) => url && url.trim() !== "" && self.indexOf(url) === index);
 
-  // Robust parallel broadcaster: broadcasts to all RPCs + Jito endpoints + FluxRPC MEV Shield immediately
+  // Robust parallel broadcaster: broadcasts to all RPCs + Jito endpoints immediately
   const broadcastTransaction = async () => {
-    // Broadcast via FluxRPC MEV Shield if configured
-    const fluxRpc = localStorage.getItem('flux_rpc_url') || '';
-    const fluxShieldKey = localStorage.getItem('flux_shield_key') || '';
-    const fluxApiKey = localStorage.getItem('flux_api_key') || '';
-
-    if (fluxRpc || fluxShieldKey) {
-      try {
-        let endpoint = fluxRpc.trim() || 'https://eu.fluxrpc.com';
-        if (fluxApiKey && !endpoint.includes('api-key')) {
-          endpoint += (endpoint.includes('?') ? '&' : '?') + `api-key=${encodeURIComponent(fluxApiKey)}`;
-        }
-        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-        if (fluxShieldKey) {
-          headers['x-flux-shield-key'] = fluxShieldKey;
-          headers['x-shield-key'] = fluxShieldKey;
-        }
-        if (fluxApiKey) {
-          headers['x-api-key'] = fluxApiKey;
-        }
-
-        fetch(endpoint, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            jsonrpc: '2.0',
-            id: Date.now().toString(),
-            method: 'sendTransaction',
-            params: [serializedTx, { encoding: 'base64', skipPreflight: true, maxRetries: 0 }]
-          })
-        }).catch(() => {});
-      } catch (e) {}
-    }
 
     // Broadcast via Jito in parallel
     try {
