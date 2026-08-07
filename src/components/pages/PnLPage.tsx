@@ -17,6 +17,7 @@ import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { checkTokenInProfitLast2Seconds, clearPriceHistories } from '../../services/priceTracker';
 import { encryptPrivateKey, decryptPrivateKey } from '../../lib/crypto';
 import { getSolPriceUsd, setSolPriceUsd, calcNetPnl } from '../../utils/pnlCalculator';
+import { TradeModeToggle } from '../TradeModeToggle';
 
 import { DEFAULT_HELIUS_RPC, DEFAULT_HELIUS_WS, HELIUS_API_KEY } from '../../constants/solana';
 
@@ -5650,6 +5651,7 @@ const checkTokenCriteria = (mint: string): {
           <span>⚡</span> JUPITER.AUTO
         </h1>
         <div className="flex items-center gap-3">
+          <TradeModeToggle />
           <div className="flex items-center gap-1.5 border border-[#2d2e3d] bg-[#1a1b26] px-2 py-1 rounded-full text-[10px] lg:text-[11px]">
             <div className={`w-1.5 h-1.5 rounded-full ${jupApiStatus === 'HEALTHY' ? 'bg-[#c7f284]' : jupApiStatus === 'DEGRADED' ? 'bg-amber-400 animate-pulse' : jupApiStatus === 'ERROR' ? 'bg-rose-500' : 'bg-slate-500'}`} />
             <span className={`font-bold uppercase tracking-widest ${jupApiStatus === 'HEALTHY' ? 'text-[#c7f284]' : jupApiStatus === 'DEGRADED' ? 'text-amber-400' : jupApiStatus === 'ERROR' ? 'text-rose-500' : 'text-slate-500'}`}>

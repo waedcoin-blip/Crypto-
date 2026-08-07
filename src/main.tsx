@@ -14,6 +14,8 @@ import '@solana/wallet-adapter-react-ui/styles.css';
 import { DEFAULT_HELIUS_RPC } from './constants/solana';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { startAlertManager } from './engines';
+import { TradeManager, TradeMode } from './services/TradeManager';
+import { TradeModeProvider } from './context/TradeModeContext';
 
 window.Buffer = Buffer;
 
@@ -210,6 +212,21 @@ function Root() {
     new SolflareWalletAdapter(),
   ], []);
 
+  const tradeManager = useMemo(() => new TradeManager({
+    mode: (localStorage.getItem('trade_mode') as TradeMode) || 'paper',
+    paperConfig: {
+      jupiterEndpoint: 'https://api.jup.ag/swap/v1',
+      jupiterApiKey: localStorage.getItem('jupiter_api_key') || '',
+      initialSolBalance: 10,
+      failureRate: 0.03,
+      latencyRange: [250, 900],
+      priorityFeeMicroLamports: 10_000,
+    },
+    realConfig: {
+      hybridEngine: null as any,
+    },
+  }), []);
+
   useEffect(() => {
     startAlertManager();
   }, []);
@@ -218,9 +235,11 @@ function Root() {
     <ConnectionProvider endpoint={endpoint}>
       <WalletProvider wallets={wallets} autoConnect>
         <WalletModalProvider>
-          <BrowserRouter>
-            <App />
-          </BrowserRouter>
+          <TradeModeProvider manager={tradeManager}>
+            <BrowserRouter>
+              <App />
+            </BrowserRouter>
+          </TradeModeProvider>
         </WalletModalProvider>
       </WalletProvider>
     </ConnectionProvider>
