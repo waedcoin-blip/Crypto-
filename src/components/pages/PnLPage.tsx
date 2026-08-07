@@ -961,6 +961,14 @@ export const PnLPage = ({
     setMaxRebuyTimes?: (v: number) => void;
     apiKey?: string;
     setApiKey?: (v: string) => void;
+    fluxApiKey?: string;
+    setFluxApiKey?: (v: string) => void;
+    fluxRpcUrl?: string;
+    setFluxRpcUrl?: (v: string) => void;
+    fluxShieldKey?: string;
+    setFluxShieldKey?: (v: string) => void;
+    fluxWsUrl?: string;
+    setFluxWsUrl?: (v: string) => void;
     jupiterRpcUrl?: string;
     setJupiterRpcUrl?: (v: string) => void;
     privateKey?: string;
@@ -1026,6 +1034,14 @@ export const PnLPage = ({
     setMaxRebuyTimes = () => {},
     apiKey = '',
     setApiKey = () => {},
+    fluxApiKey = '',
+    setFluxApiKey = () => {},
+    fluxRpcUrl = 'https://eu.fluxrpc.com',
+    setFluxRpcUrl = () => {},
+    fluxShieldKey = '',
+    setFluxShieldKey = () => {},
+    fluxWsUrl = 'wss://eu.fluxrpc.com',
+    setFluxWsUrl = () => {},
     jupiterRpcUrl = '',
     setJupiterRpcUrl = () => {},
     privateKey = '',
@@ -1746,6 +1762,10 @@ export const PnLPage = ({
           }
           if (data.customWsUrl) setCustomWsUrl(data.customWsUrl);
           if (data.apiKey) setApiKey(data.apiKey);
+          if (data.fluxApiKey !== undefined) setFluxApiKey(String(data.fluxApiKey));
+          if (data.fluxRpcUrl !== undefined) setFluxRpcUrl(String(data.fluxRpcUrl));
+          if (data.fluxShieldKey !== undefined) setFluxShieldKey(String(data.fluxShieldKey));
+          if (data.fluxWsUrl !== undefined) setFluxWsUrl(String(data.fluxWsUrl));
           if (data.privateKey) {
             const decrypted = await decryptPrivateKey(data.privateKey, user.uid);
             setPrivateKey(decrypted);
@@ -1944,6 +1964,10 @@ export const PnLPage = ({
           rpcUrl2,
           customWsUrl,
           apiKey,
+          fluxApiKey,
+          fluxRpcUrl,
+          fluxShieldKey,
+          fluxWsUrl,
           privateKey: encryptedKey,
           senderEnabled,
           senderApiKey,
@@ -5794,6 +5818,109 @@ const checkTokenCriteria = (mint: string): {
                     <label className="text-[11px] text-[#64748b] mb-1.5 uppercase font-medium block">Slippage (%)</label>
                     <input type="number" step="0.1" value={slippage} onChange={(e) => setSlippage(Number(e.target.value))} className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-2 text-[13px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors" />
                   </div>
+                </div>
+              </div>
+
+              {/* FluxRPC Provider & MEV Shield Sub-panel */}
+              <div id="fluxrpc-config-panel" className="pt-3 border-t border-[#1f212e]/60">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex flex-col">
+                    <span className="text-[11px] text-[#94a3b8] uppercase font-bold tracking-wider flex items-center gap-1.5">
+                      <span>🛡️</span> FluxRPC Node & MEV Shield
+                    </span>
+                    <span className="text-[9px] text-[#64748b]">eu.fluxrpc.com - Low-latency RPC & anti-sandwich protection</span>
+                  </div>
+                  {(fluxApiKey || fluxShieldKey || (fluxRpcUrl && fluxRpcUrl !== 'https://eu.fluxrpc.com')) ? (
+                    <span className="text-[9px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full font-bold flex items-center gap-1">
+                      ● FLUX ACTIVE
+                    </span>
+                  ) : (
+                    <span className="text-[9px] text-[#64748b] bg-[#1f212e] px-2 py-0.5 rounded-full font-mono">FLUX PROVIDER</span>
+                  )}
+                </div>
+
+                <div className="space-y-3 mt-3 bg-[#08080f]/50 border border-[#1f212e]/80 rounded-xl p-3 transition-all">
+                  <div>
+                    <div className="flex justify-between text-[10px] text-[#64748b] mb-1 uppercase font-medium">
+                      <span>FluxRPC API Key</span>
+                      <span className="text-[9px] text-[#475569]">Authentication & High Limits</span>
+                    </div>
+                    <input 
+                      type="password" 
+                      value={fluxApiKey} 
+                      onChange={(e) => setFluxApiKey(e.target.value)} 
+                      placeholder="API Key from eu.fluxrpc.com" 
+                      className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-1.5 text-[12px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors" 
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between text-[10px] text-[#64748b] mb-1 uppercase font-medium">
+                      <span>FluxRPC Endpoint (RPC)</span>
+                      <span className="text-[9px] text-[#475569]">EU Low-Latency Node</span>
+                    </div>
+                    <input 
+                      type="text" 
+                      value={fluxRpcUrl} 
+                      onChange={(e) => setFluxRpcUrl(e.target.value)} 
+                      placeholder="https://eu.fluxrpc.com" 
+                      className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-1.5 text-[12px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors" 
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between text-[10px] text-[#64748b] mb-1 uppercase font-medium">
+                      <span>Shield Key (MEV Protection)</span>
+                      <span className="text-[9px] text-emerald-400/80 font-bold">Anti-Sandwich / Private Relay</span>
+                    </div>
+                    <input 
+                      type="password" 
+                      value={fluxShieldKey} 
+                      onChange={(e) => setFluxShieldKey(e.target.value)} 
+                      placeholder="Shield Key for private MEV transaction routing" 
+                      className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-1.5 text-[12px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors" 
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between text-[10px] text-[#64748b] mb-1 uppercase font-medium">
+                      <span>WebSocket Endpoint (WSS)</span>
+                      <span className="text-[9px] text-[#475569]">Sub-ms Event Feed</span>
+                    </div>
+                    <input 
+                      type="text" 
+                      value={fluxWsUrl} 
+                      onChange={(e) => setFluxWsUrl(e.target.value)} 
+                      placeholder="wss://eu.fluxrpc.com" 
+                      className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-1.5 text-[12px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors" 
+                    />
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      let activeRpc = fluxRpcUrl.trim() || 'https://eu.fluxrpc.com';
+                      if (fluxApiKey && !activeRpc.includes('api-key')) {
+                        activeRpc += (activeRpc.includes('?') ? '&' : '?') + `api-key=${encodeURIComponent(fluxApiKey)}`;
+                      }
+                      let activeWs = fluxWsUrl.trim() || 'wss://eu.fluxrpc.com';
+                      if (fluxApiKey && !activeWs.includes('api-key')) {
+                        activeWs += (activeWs.includes('?') ? '&' : '?') + `api-key=${encodeURIComponent(fluxApiKey)}`;
+                      }
+                      setRpcUrl(activeRpc);
+                      setCustomWsUrl(activeWs);
+                      addLog({
+                        id: 'flux-applied-' + Date.now(),
+                        time: new Date().toLocaleTimeString(),
+                        timestamp: Date.now(),
+                        msg: `⚡ Applied FluxRPC as Primary RPC & WSS Node. MEV Shield Key: ${fluxShieldKey ? 'ACTIVE (Private Channel Enabled)' : 'NOT SET'}.`,
+                        type: 'success'
+                      });
+                    }}
+                    className="w-full mt-2 bg-[#c7f284]/15 hover:bg-[#c7f284]/25 text-[#c7f284] border border-[#c7f284]/30 rounded-lg py-2 px-3 text-[11px] font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all cursor-pointer"
+                  >
+                    <span>⚡</span> Apply FluxRPC as Active Primary Node
+                  </button>
                 </div>
               </div>
 

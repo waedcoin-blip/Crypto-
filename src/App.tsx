@@ -650,6 +650,11 @@ function App() {
   const [customWsUrl, setCustomWsUrl] = useState(() => localStorage.getItem('juipter_auto_wsUrl') || '');
   const [isSecondaryActive, setIsSecondaryActive] = useState(() => localStorage.getItem('juipter_rpc_secondary_active') === 'true');
 
+  const [fluxApiKey, setFluxApiKey] = useState(() => localStorage.getItem('flux_api_key') || '');
+  const [fluxRpcUrl, setFluxRpcUrl] = useState(() => localStorage.getItem('flux_rpc_url') || 'https://eu.fluxrpc.com');
+  const [fluxShieldKey, setFluxShieldKey] = useState(() => localStorage.getItem('flux_shield_key') || '');
+  const [fluxWsUrl, setFluxWsUrl] = useState(() => localStorage.getItem('flux_ws_url') || 'wss://eu.fluxrpc.com');
+
   useEffect(() => {
     localStorage.setItem('juipter_auto_rpcUrl', rpcUrl);
   }, [rpcUrl]);
@@ -661,6 +666,22 @@ function App() {
   useEffect(() => {
     localStorage.setItem('juipter_auto_wsUrl', customWsUrl);
   }, [customWsUrl]);
+
+  useEffect(() => {
+    localStorage.setItem('flux_api_key', fluxApiKey);
+  }, [fluxApiKey]);
+
+  useEffect(() => {
+    localStorage.setItem('flux_rpc_url', fluxRpcUrl);
+  }, [fluxRpcUrl]);
+
+  useEffect(() => {
+    localStorage.setItem('flux_shield_key', fluxShieldKey);
+  }, [fluxShieldKey]);
+
+  useEffect(() => {
+    localStorage.setItem('flux_ws_url', fluxWsUrl);
+  }, [fluxWsUrl]);
   const [isHardenedCriteriaExpanded, setIsHardenedCriteriaExpanded] = useState(false);
   const [activePreset, setActivePreset] = useState<string>(() => localStorage.getItem('app_active_preset') || 'custom');
 
@@ -3204,6 +3225,10 @@ function App() {
           if (data.customWsUrl !== undefined) setCustomWsUrl(String(data.customWsUrl));
           if (data.apiKey !== undefined) setApiKey(String(data.apiKey));
           if (data.jupiterRpcUrl !== undefined) setJupiterRpcUrl(String(data.jupiterRpcUrl));
+          if (data.fluxApiKey !== undefined) setFluxApiKey(String(data.fluxApiKey));
+          if (data.fluxRpcUrl !== undefined) setFluxRpcUrl(String(data.fluxRpcUrl));
+          if (data.fluxShieldKey !== undefined) setFluxShieldKey(String(data.fluxShieldKey));
+          if (data.fluxWsUrl !== undefined) setFluxWsUrl(String(data.fluxWsUrl));
         }
       } catch (err) {
         console.error('Error loading settings from Firestore in App.tsx:', err);
@@ -3275,6 +3300,10 @@ function App() {
           customWsUrl,
           apiKey,
           jupiterRpcUrl,
+          fluxApiKey,
+          fluxRpcUrl,
+          fluxShieldKey,
+          fluxWsUrl,
           privateKey: privateKey ? await encryptPrivateKey(privateKey, user.uid) : undefined,
           updatedAt: new Date().toISOString()
         }, { merge: true });
@@ -3298,7 +3327,7 @@ function App() {
     hardenedMatchRequirement, enableLatencyGuard, telemetryWhaleBuyMin, telemetryHighBuyMin,
     telemetryVolumeSpikeMin, telemetryAllowWhaleBuy, telemetryAllowHighBuy, telemetryAllowVolumeSpike,
     telemetryAllowMigrated, telemetryAllowGoldenCross, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown, hardenedMinProfit5m, maxRebuyTimes,
-    rpcUrl, rpcUrl2, customWsUrl, apiKey, jupiterRpcUrl
+    rpcUrl, rpcUrl2, customWsUrl, apiKey, jupiterRpcUrl, fluxApiKey, fluxRpcUrl, fluxShieldKey, fluxWsUrl
   ]);
 
   const safePublicKey = (addr: string) => {
@@ -5857,6 +5886,10 @@ function App() {
           setIsSecondaryActive,
           customWsUrl,
           setCustomWsUrl,
+          fluxApiKey, setFluxApiKey,
+          fluxRpcUrl, setFluxRpcUrl,
+          fluxShieldKey, setFluxShieldKey,
+          fluxWsUrl, setFluxWsUrl,
           hardenedMcapMinPump,
           setHardenedMcapMinPump,
           hardenedMcapMinRaydium,
