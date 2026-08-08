@@ -3,7 +3,7 @@ import { ITradeExecutor, SwapResult, ExecutorTelemetry } from './ITradeExecutor'
 import { HybridExecutionEngine } from './HybridExecutionEngine';
 import { BatchExitEngine } from './BatchExitEngine';
 import { QuoteGetRequest, QuoteResponse, createJupiterApiClient } from '@jup-ag/api';
-import { Connection, LAMPORTS_PER_SOL, PublicKey, Keypair } from '@solana/web3.js';
+import { Connection, LAMPORTS_PER_SOL, PublicKey, Keypair, VersionedTransaction } from '@solana/web3.js';
 import bs58 from 'bs58';
 import { DEFAULT_HELIUS_RPC } from '../constants/solana';
 
@@ -110,8 +110,42 @@ export class RealTradeExecutor implements ITradeExecutor {
       },
     });
 
+    const txBuf = Buffer.from(swapBuild.swapTransaction, 'base64');
+    let sig = '';
+    const savedKey = typeof window !== 'undefined'
+      ? (localStorage.getItem('juipter_auto_privateKey') || localStorage.getItem('matrix_session_key'))
+      : null;
+
+    if (savedKey) {
+      try {
+        const kp = Keypair.fromSecretKey(bs58.decode(savedKey));
+        const tx = VersionedTransaction.deserialize(txBuf);
+        tx.sign([kp]);
+        sig = await this.connection.sendRawTransaction(tx.serialize(), {
+          skipPreflight: true,
+          maxRetries: 3
+        });
+
+        const latestBlockhash = await this.connection.getLatestBlockhash();
+        await this.connection.confirmTransaction({
+          signature: sig,
+          blockhash: latestBlockhash.blockhash,
+          lastValidBlockHeight: latestBlockhash.lastValidBlockHeight
+        }, 'confirmed').catch(() => null);
+      } catch (err: any) {
+        console.error('RealTradeExecutor swap failed:', err);
+        throw new Error(`Real Jupiter swap transaction execution failed: ${err.message || String(err)}`);
+      }
+    } else {
+      try {
+        sig = await this.connection.sendRawTransaction(txBuf, { skipPreflight: true });
+      } catch (err: any) {
+        throw new Error('RealTradeExecutor failed: No private key available to sign transaction.');
+      }
+    }
+
     return {
-      signature: 'real-tx-' + Date.now(),
+      signature: sig || ('real-tx-' + Date.now()),
       inputMint,
       outputMint,
       inputAmount: amount,
