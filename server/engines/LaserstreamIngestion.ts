@@ -119,12 +119,22 @@ function isFreeOrDefaultKey(key?: string): boolean {
   );
 }
 
-function isPlanError(errorMsg: string): boolean {
+function isPlanError(errorMsg?: string): boolean {
+  if (!errorMsg || !errorMsg.trim()) return true;
+  const lower = errorMsg.toLowerCase();
   return (
-    errorMsg.includes('Unsupported plan type') ||
-    errorMsg.includes('unauthorized') ||
-    errorMsg.includes('permission') ||
-    errorMsg.includes('payment')
+    lower.includes('unsupported plan') ||
+    lower.includes('unauthorized') ||
+    lower.includes('permission') ||
+    lower.includes('payment') ||
+    lower.includes('unauthenticated') ||
+    lower.includes('connection failed') ||
+    lower.includes('transport error') ||
+    lower.includes('grpc') ||
+    lower.includes('failed to connect') ||
+    lower.includes('403') ||
+    lower.includes('401') ||
+    lower.includes('400')
   );
 }
 
@@ -373,7 +383,7 @@ export async function runLaserstreamWorker(): Promise<void> {
       (error: unknown) => {
         const errorMsg = error instanceof Error ? error.message : String(error);
         if (process.send) {
-          process.send({ type: 'ERROR', errDetails: errorMsg });
+          process.send({ type: 'ERROR', error: errorMsg, errDetails: errorMsg });
         }
       }
     );
@@ -399,7 +409,7 @@ export async function runLaserstreamWorker(): Promise<void> {
   } catch (error: unknown) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     if (process.send) {
-      process.send({ type: 'ERROR', errDetails: errorMsg });
+      process.send({ type: 'ERROR', error: errorMsg, errDetails: errorMsg });
     }
     process.exit(1);
   }
@@ -513,22 +523,16 @@ export async function startLaserStream(
     });
 
     // Handle messages
-    state.childProcess.on('message', (msg: { type: string; event?: SseEvent; error?: string }) => {
+    state.childProcess.on('message', (msg: { type: string; event?: SseEvent; error?: string; errDetails?: string }) => {
       if (msg.type === 'EVENT' && msg.event) {
         state.lastEventTime = Date.now();
         state.consecutiveSilentPeriods = 0;
         msg.event.endpoint = state.activeEndpoint;
         eventBusCallback(msg.event);
-      } else if (msg.type === 'ERROR' && msg.error) {
-        if (
-          msg.error.includes('permission') ||
-          msg.error.includes('Unsupported plan type') ||
-          msg.error.includes('unauthorized') ||
-          msg.error.includes('Connection failed') ||
-          msg.error.includes('transport error')
-        ) {
-          handleFallback(msg.error);
-        }
+      } else if (msg.type === 'ERROR') {
+        const errStr = msg.error || msg.errDetails || 'gRPC worker stream error';
+        laserLogger.warn({ errDetails: errStr }, 'gRPC worker process reported stream error, triggering fallback');
+        handleFallback(errStr);
       } else if (msg.type === 'READY') {
         laserLogger.info('Worker reported successful gRPC stream creation');
       }
