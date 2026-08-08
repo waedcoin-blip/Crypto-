@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { CheckCircle2, XCircle, Loader2, Play, Activity, Gauge, Server, Wifi, Network, Send, RefreshCw, AlertTriangle, ShieldCheck, Database } from 'lucide-react';
 import { Connection } from '@solana/web3.js';
 import { telemetryService, TelemetrySpan } from '../../services/telemetryService';
+import { marketDataManager } from '../../services/marketDataManager';
 
 export const SystemCheckPage = ({
   rpcUrl
@@ -27,12 +28,20 @@ export const SystemCheckPage = ({
     dexscreener: { status: 'idle', details: '' },
   });
 
+  const [marketStats, setMarketStats] = useState(() => marketDataManager.getStats());
+
   useEffect(() => {
     const unsubscribe = telemetryService.subscribe(() => {
       setTelemetryMetrics(telemetryService.getMetricsSummary());
       setRecentSpans(telemetryService.getSpans().slice(0, 30));
     });
-    return unsubscribe;
+    const interval = setInterval(() => {
+      setMarketStats(marketDataManager.getStats());
+    }, 2000);
+    return () => {
+      unsubscribe();
+      clearInterval(interval);
+    };
   }, []);
 
   const runTests = async () => {
@@ -270,6 +279,68 @@ export const SystemCheckPage = ({
               </div>
               <div className="mt-2 text-[11px] text-slate-400">
                 Disconnects: {telemetryMetrics?.wsHealth?.wsDisconnects ?? 0} in last 30 events
+              </div>
+            </div>
+          </div>
+
+          {/* Market Data Infrastructure Traffic & Caching Matrix */}
+          <div className="bg-[#12131a] border border-[#1f212e] rounded-xl p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold text-white text-sm flex items-center gap-2">
+                <Database className="w-4 h-4 text-emerald-400" />
+                Market Data Manager Traffic & Cache Efficiency
+              </h3>
+              <div className="flex items-center gap-2 font-mono text-xs">
+                <span className="text-slate-400">Circuit Breaker:</span>
+                <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                  marketStats.circuitBreakerState === 'CLOSED' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30' :
+                  marketStats.circuitBreakerState === 'HALF_OPEN' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/30' :
+                  'bg-rose-500/10 text-rose-400 border border-rose-500/30'
+                }`}>
+                  {marketStats.circuitBreakerState}
+                </span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+              <div className="bg-[#181a26] border border-[#26293b] rounded-lg p-3">
+                <div className="text-slate-400 text-[11px]">Total Requests</div>
+                <div className="text-xl font-extrabold text-white font-mono mt-1">{marketStats.requests}</div>
+                <div className="text-[10px] text-slate-500 mt-1">Total API calls</div>
+              </div>
+
+              <div className="bg-[#181a26] border border-[#26293b] rounded-lg p-3">
+                <div className="text-slate-400 text-[11px]">Cache Hit Ratio</div>
+                <div className="text-xl font-extrabold text-emerald-400 font-mono mt-1">
+                  {(marketStats.cacheHits + marketStats.cacheMisses) > 0 ? ((marketStats.cacheHits / (marketStats.cacheHits + marketStats.cacheMisses)) * 100).toFixed(1) : 0}%
+                </div>
+                <div className="text-[10px] text-slate-500 mt-1">{marketStats.cacheHits} Hits / {marketStats.cacheMisses} Misses</div>
+              </div>
+
+              <div className="bg-[#181a26] border border-[#26293b] rounded-lg p-3">
+                <div className="text-slate-400 text-[11px]">In-Flight Deduplications</div>
+                <div className="text-xl font-extrabold text-indigo-400 font-mono mt-1">{marketStats.deduplicated}</div>
+                <div className="text-[10px] text-slate-500 mt-1">Saved Duplicate Calls</div>
+              </div>
+
+              <div className="bg-[#181a26] border border-[#26293b] rounded-lg p-3">
+                <div className="text-slate-400 text-[11px]">Batched Requests</div>
+                <div className="text-xl font-extrabold text-cyan-400 font-mono mt-1">{marketStats.batched}</div>
+                <div className="text-[10px] text-slate-500 mt-1">30 Mints/Chunk</div>
+              </div>
+
+              <div className="bg-[#181a26] border border-[#26293b] rounded-lg p-3">
+                <div className="text-slate-400 text-[11px]">429 Backoff Events</div>
+                <div className={`text-xl font-extrabold font-mono mt-1 ${marketStats.rateLimited > 0 ? 'text-amber-400' : 'text-slate-300'}`}>
+                  {marketStats.rateLimited}
+                </div>
+                <div className="text-[10px] text-slate-500 mt-1">Retry-After Guarded</div>
+              </div>
+
+              <div className="bg-[#181a26] border border-[#26293b] rounded-lg p-3">
+                <div className="text-slate-400 text-[11px]">Active Cached Mints</div>
+                <div className="text-xl font-extrabold text-amber-400 font-mono mt-1">{marketStats.activeTokens}</div>
+                <div className="text-[10px] text-slate-500 mt-1">Avg Latency: {(marketStats.averageLatencyMs || 0).toFixed(0)}ms</div>
               </div>
             </div>
           </div>

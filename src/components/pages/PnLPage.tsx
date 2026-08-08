@@ -20,6 +20,8 @@ import { getSolPriceUsd, setSolPriceUsd, calcNetPnl } from '../../utils/pnlCalcu
 import { TradeModeToggle } from '../TradeModeToggle';
 import { TradingSettings } from '../TradingSettings';
 import { WalletStatusWidget } from '../WalletStatusWidget';
+import { marketDataManager } from '../../services/marketDataManager';
+import { rpcHealthManager } from '../../services/rpcHealthManager';
 
 import { DEFAULT_HELIUS_RPC, DEFAULT_HELIUS_WS, HELIUS_API_KEY } from '../../constants/solana';
 
@@ -2060,7 +2062,7 @@ export const PnLPage = ({
       } catch (e) {}
     };
     warmConnection();
-    const interval = setInterval(warmConnection, 5000);
+    const interval = setInterval(warmConnection, 30000);
     return () => clearInterval(interval);
   }, [senderEnabled, senderEndpoint]);
 
@@ -2320,7 +2322,7 @@ export const PnLPage = ({
       };
       
       const data = await fetchWithFallback(
-        `/api/jup/price?ids=${tokenMint}&vsToken=${SOL_MINT}&t=${Date.now()}`,
+        `/api/jup/price?ids=${tokenMint}&vsToken=${SOL_MINT}`,
         `https://api.jup.ag/price/v2?ids=${tokenMint}&vsToken=${SOL_MINT}`
       );
       if (data && data.data && data.data[tokenMint] && data.data[tokenMint].price) {
@@ -2329,7 +2331,7 @@ export const PnLPage = ({
       }
       
       const usdData = await fetchWithFallback(
-        `/api/jup/price?ids=${tokenMint},${SOL_MINT}&t=${Date.now()}`,
+        `/api/jup/price?ids=${tokenMint},${SOL_MINT}`,
         `https://api.jup.ag/price/v2?ids=${tokenMint},${SOL_MINT}`
       );
       if (usdData && usdData.data) {
@@ -2349,35 +2351,16 @@ export const PnLPage = ({
         }
       } catch (e) {}
 
-      // 4. Fallback to DexScreener dynamic token pricing
-      const dexRes = await fetch(`/api/dex/tokens/${tokenMint}?t=${Date.now()}`);
-      if (dexRes.ok) {
-        const dexJson = await dexRes.json();
-        if (dexJson.pairs && Array.isArray(dexJson.pairs) && dexJson.pairs.length > 0) {
-          // Sort by liquidity to get the primary trading pool
-          const sortedPairs = [...dexJson.pairs].sort((a: any, b: any) => {
-            const liqA = parseFloat(a.liquidity?.usd || '0');
-            const liqB = parseFloat(b.liquidity?.usd || '0');
-            return liqB - liqA;
-          });
-          const bestPair = sortedPairs[0];
-          const priceNative = parseFloat(bestPair.priceNative || '0');
-          const isQuoteSol = bestPair.quoteToken?.address === SOL_MINT || bestPair.quoteToken?.symbol === 'SOL';
-          if (isQuoteSol && priceNative > 0) {
-            return priceNative;
-          }
-          const priceUsd = parseFloat(bestPair.priceUsd || '0');
-          if (priceUsd > 0) {
-            const solPair = dexJson.pairs.find((p: any) => p.quoteToken?.address === SOL_MINT);
-            const solPrice = solPair ? parseFloat(solPair.priceUsd || '150') : 150;
-            return priceUsd / solPrice;
-          }
-        }
+      // 4. Fallback to MarketDataManager
+      const tp = await marketDataManager.getPrice(tokenMint, 'trading');
+      if (tp) {
+        if (tp.priceNative && tp.priceNative > 0) return tp.priceNative;
+        if (tp.priceUsd && tp.priceUsd > 0) return tp.priceUsd / (getSolPriceUsd() || 150);
       }
 
       // 5. Fallback to DexScreener Search API
       try {
-        const searchRes = await fetch(`/api/dex/search?q=${tokenMint}&t=${Date.now()}`);
+        const searchRes = await fetch(`/api/dex/search?q=${tokenMint}`);
         if (searchRes.ok) {
           const searchJson = await searchRes.json();
           if (searchJson.pairs && Array.isArray(searchJson.pairs) && searchJson.pairs.length > 0) {
@@ -2419,73 +2402,39 @@ export const PnLPage = ({
   const getTokenPrices = useCallback(async (mints: string[]) => {
     if (mints.length === 0) return {};
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 6000);
-      
       const requestedMints = Array.from(new Set([...mints, 'So11111111111111111111111111111111111111112']));
-      const res = await fetch(`/api/dex/tokens/${requestedMints.join(',')}?t=${Date.now()}`, {
-        signal: controller.signal
-      });
-      clearTimeout(timeoutId);
-      
+      const marketPrices = await marketDataManager.getPrices(requestedMints, 'trading');
+
+      let solPriceInUsd = getSolPriceUsd() || 150;
+      const solTokenPrice = marketPrices.get('So11111111111111111111111111111111111111112');
+      if (solTokenPrice && solTokenPrice.priceUsd > 0) {
+        solPriceInUsd = solTokenPrice.priceUsd;
+        setSolPriceUsd(solPriceInUsd);
+      }
+
       const prices: any = {};
-      let solPriceInUsd = 150; // default benchmark fallback
-      if (res.ok) {
-        const json = await res.json();
-        if (json.pairs && Array.isArray(json.pairs)) {
-          // 1. Resolve wrapped SOL price in USD
-          const solPairs = json.pairs.filter((p: any) => p.baseToken?.address === 'So11111111111111111111111111111111111111112');
-          if (solPairs.length > 0) {
-            const bestSolPair = solPairs.reduce((best: any, current: any) => {
-              const bestLiq = parseFloat(best.liquidity?.usd || '0');
-              const currentLiq = parseFloat(current.liquidity?.usd || '0');
-              return currentLiq > bestLiq ? current : best;
-            }, solPairs[0]);
-            const parsedSol = parseFloat(bestSolPair.priceUsd || '0');
-            if (parsedSol > 0) {
-              solPriceInUsd = parsedSol;
-            }
-          }
+      marketPrices.forEach((tp, mint) => {
+        if (mint === 'So11111111111111111111111111111111111111112') return;
 
-          // 2. Resolve other tokens in absolute SOL units
-          for (const pair of json.pairs) {
-            const mint = pair.baseToken?.address;
-            if (!mint || mint === 'So11111111111111111111111111111111111111112') continue;
+        let finalPriceInSol = tp.priceNative || (tp.priceUsd ? tp.priceUsd / solPriceInUsd : 0);
 
-            const isSol = pair.quoteToken?.address === 'So11111111111111111111111111111111111111112' || pair.quoteToken?.symbol === 'SOL';
-            const liq = parseFloat(pair.liquidity?.usd || '0');
-
-            let rawPrice = parseFloat(pair.priceNative || '0');
-            let isPriceInSol = isSol && !!pair.priceNative;
-            
-            if (!rawPrice || isNaN(rawPrice)) {
-              rawPrice = parseFloat(pair.priceUsd || '0');
-              isPriceInSol = false;
-            }
-
-            let finalPriceInSol = isPriceInSol ? rawPrice : (rawPrice / solPriceInUsd);
-
-            // Price Sanity Guard: Prevent corrupted 1.0 SOL or equal-to-SOL prices for low-cap memecoins
-            const activePos = positionsRef.current[mint];
-            if (activePos && activePos.buyPrice > 0 && activePos.buyPrice < 0.05) {
-              if (finalPriceInSol >= 1.0 || finalPriceInSol > activePos.buyPrice * 50) {
-                // If price jumped >50x or evaluated to >=1.0 SOL, check if it's an uncalibrated default
-                finalPriceInSol = activePos.currentPrice || activePos.buyPrice;
-              }
-            }
-
-            const currentBest = prices[mint];
-            if (!currentBest || (isSol && !currentBest.isSol) || (isSol === currentBest.isSol && liq > currentBest.liq)) {
-               prices[mint] = {
-                  price: finalPriceInSol,
-                  isSol: true, // Output is now fully converted to SOL units
-                  liq,
-                  isStale: false
-               };
-            }
+        // Price Sanity Guard: Prevent corrupted 1.0 SOL or equal-to-SOL prices for low-cap memecoins
+        const activePos = positionsRef.current[mint];
+        if (activePos && activePos.buyPrice > 0 && activePos.buyPrice < 0.05) {
+          if (finalPriceInSol >= 1.0 || finalPriceInSol > activePos.buyPrice * 50) {
+            finalPriceInSol = activePos.currentPrice || activePos.buyPrice;
           }
         }
-      }
+
+        if (finalPriceInSol > 0) {
+          prices[mint] = {
+            price: finalPriceInSol,
+            isSol: true,
+            liq: tp.liquidityUsd || 0,
+            isStale: false
+          };
+        }
+      });
 
       // Fill in fallback prices directly via RPC scan if needed
       for (const mint of mints) {
@@ -2621,10 +2570,11 @@ export const PnLPage = ({
   const walletTokenMintsKey = walletTokens.map(t => t.mint).join(',');
   useEffect(() => {
     if (walletTokens.length === 0 || !isRunning) return;
-    const interval = setInterval(() => {
-      updateWalletTokenPrices(walletTokens.map(t => t.mint));
-    }, 5000); // 5 sec live sync caching mechanism
-    return () => clearInterval(interval);
+    const mints = walletTokens.map(t => t.mint);
+    const unsubscribe = marketDataManager.subscribe(mints, () => {
+      updateWalletTokenPrices(mints);
+    }, 'wallet');
+    return () => unsubscribe();
   }, [walletTokenMintsKey, isRunning, updateWalletTokenPrices]);
 
   // Sync tokenMetrics prices into active positions in real time
@@ -2683,7 +2633,7 @@ export const PnLPage = ({
     // are kept fresh even if the socket is blocked, throttled, or entirely disconnected.
     const pollInterval = setInterval(() => {
       fetchWalletTokens();
-    }, 15000);
+    }, 60000);
 
     try {
       const keypair = Keypair.fromSecretKey(bs58.decode(privateKey));
@@ -2879,48 +2829,16 @@ export const PnLPage = ({
       const tokensList = Array.from(monitoredTokensRef.current.values());
       if (tokensList.length === 0) return;
 
-      // Batch fetch prices using comma-separated backend endpoint
-      for (let i = 0; i < tokensList.length; i += 30) { 
-        const batch = tokensList.slice(i, i + 30);
-        const ids = batch.map(t => t.address).join(',');
-        
-        try {
-          const response = await fetch(`/api/dex/tokens/${ids}`);
-          if (!response.ok) continue;
-          const data = await response.json();
-          
-          if (data?.pairs && Array.isArray(data.pairs)) {
-            // Group pairs by base token address
-            const pairsByMint: Record<string, any[]> = {};
-            for (const p of data.pairs) {
-              const baseAddr = p.baseToken?.address;
-              if (baseAddr) {
-                if (!pairsByMint[baseAddr]) pairsByMint[baseAddr] = [];
-                pairsByMint[baseAddr].push(p);
-              }
-            }
-            
-            for (const token of batch) {
-              const tokenPairs = pairsByMint[token.address];
-              const bestPair = tokenPairs && tokenPairs.length > 0
-                ? tokenPairs.sort((a: any, b: any) => (parseFloat(b.liquidity?.usd || '0') - parseFloat(a.liquidity?.usd || '0')))[0]
-                : null;
-                
-              if (bestPair) {
-                const currentPrice = parseFloat(bestPair.priceUsd || '0');
-                if (currentPrice > 0) {
-                  latestPricesRef.current[token.address] = currentPrice;
-                  if (hasSimPosition(token.address)) {
-                    updateSimPrice(token.address, currentPrice);
-                  }
-                }
-              }
-            }
+      const mints = tokensList.map(t => t.address);
+      const prices = await marketDataManager.getPrices(mints, 'ui');
+      prices.forEach((tp, addr) => {
+        if (tp.priceUsd > 0) {
+          latestPricesRef.current[addr] = tp.priceUsd;
+          if (hasSimPosition(addr)) {
+            updateSimPrice(addr, tp.priceNative || tp.priceUsd / 145);
           }
-        } catch (err) {
-          // Silently skip
         }
-      }
+      });
     };
 
     const interval = setInterval(updatePrices, 2000);
@@ -5248,238 +5166,86 @@ const checkTokenCriteria = (mint: string): {
         const unpolledCount = sortedProfiles.filter(p => !polledTokens.has(p.tokenAddress || '')).length;
         addLog(`🔍 [DEXSCREENER ENGINE] Found ${solanaProfiles.length} active Solana profiles (${unpolledCount} pending check). Prioritizing feed...`, 'info');
 
-        // Extract most recent candidates & fetch pair metrics (expanded from 4 to 16)
+        // Extract most recent candidates & fetch pair metrics via MarketDataManager batching
         const targets = sortedProfiles.slice(0, 16);
-
+        const mintsToQuery: string[] = [];
         for (const profile of targets) {
-          if (!isPolled) break;
           const tokenAddress = profile.tokenAddress;
           if (!tokenAddress) continue;
-
-          // Deduplicate processing locally to keep system logs clean, but allow refreshing every 45s
           const lastPolled = polledTokens.get(tokenAddress);
           if (lastPolled && Date.now() - lastPolled < 45000) continue;
+          mintsToQuery.push(tokenAddress);
           polledTokens.set(tokenAddress, Date.now());
+        }
 
-          addLog(`📡 [BOT PROTOCOL] Querying token pair details for address: ${tokenAddress.slice(0, 8)}...`, 'info');
+        if (mintsToQuery.length > 0) {
+          addLog(`📡 [BOT PROTOCOL] Querying ${mintsToQuery.length} candidate discovery pairs via MarketDataManager...`, 'info');
+          const discoveredPrices = await marketDataManager.getPrices(mintsToQuery, 'discovery');
           
-          try {
-            // Using precise pair query proxy endpoint to bypass client CORS restrictions
-            const pairRes = await fetch(`/api/dex/token-pairs/${tokenAddress}`);
-            if (!pairRes.ok) continue;
+          for (const [tokenAddress, tp] of discoveredPrices) {
+            if (!isPolled) break;
+            if (!tp || tp.priceUsd <= 0) continue;
 
-            const pairText = await pairRes.text();
-            if (!pairText || pairText.trim().startsWith('<')) continue;
+            const priceUsd = tp.priceUsd;
+            const liquidityUsd = tp.liquidityUsd || 0;
+            const marketCap = tp.marketCapUsd || 0;
+            const symbol = tp.symbol || 'Unknown';
+            const name = tp.name || `${symbol} Token`;
+            const dexId = tp.dexId || 'unknown';
+            const isGraduated = !tokenAddress.toLowerCase().endsWith('pump');
 
-            const pairs = JSON.parse(pairText);
-            if (!Array.isArray(pairs) || pairs.length === 0) continue;
-
-            // Prioritize graduated pairs and SOL pairs, then sort by liquidity to select the single best pair
-            const solPairs = pairs.filter((p: any) => 
-              p.quoteToken?.address === 'So11111111111111111111111111111111111111112' || 
-              p.quoteToken?.symbol === 'SOL'
+            addLog(
+              `💎 [NEW PAIR MATCH] ${symbol}/SOL | Platform: ${isGraduated ? 'Raydium' : 'Pump.fun'} | Price: $${priceUsd.toFixed(6)} | Liquidity: $${liquidityUsd.toLocaleString()} | MCAP: $${marketCap.toLocaleString()}`,
+              'success',
+              'dexscreener',
+              { tokenAddress, symbol, dexId, priceUsd, liquidityUsd, marketCap }
             );
-            
-            const graduatedPairsInCollection = pairs.filter((p: any) => {
-              const d = (p.dexId || '').toLowerCase();
-              return d.includes('raydium') || d.includes('pumpswap') || d.includes('orca') || d.includes('meteora');
-            });
 
-            let candidatePairs = solPairs.length > 0 ? solPairs : pairs;
-            if (graduatedPairsInCollection.length > 0) {
-              const graduatedCandidates = candidatePairs.filter((p: any) => {
-                const d = (p.dexId || '').toLowerCase();
-                return d.includes('raydium') || d.includes('pumpswap') || d.includes('orca') || d.includes('meteora');
-              });
-              candidatePairs = graduatedCandidates.length > 0 ? graduatedCandidates : graduatedPairsInCollection;
-            }
-
-            const sortedPairs = [...candidatePairs].sort((a: any, b: any) => ((b.liquidity?.usd || 0) - (a.liquidity?.usd || 0)));
-            const targetPairs = sortedPairs.slice(0, 1);
-
-            for (const pair of targetPairs) {
-              const priceUsd = pair.priceUsd ? parseFloat(pair.priceUsd) : 0;
-              const liquidityUsd = pair.liquidity?.usd || 0;
-              const marketCap = pair.marketCap || 0;
-              const createdTimestamp = pair.pairCreatedAt || 0;
-              const createdTimeStr = createdTimestamp ? new Date(createdTimestamp).toLocaleTimeString() : 'unknown';
-              const symbol = pair.baseToken?.symbol || 'Unknown';
-              const name = pair.baseToken?.name || `${symbol} Token`;
-
-              // Resolve dexId and Pump.fun/Raydium specific metrics
-              const dexId = pair.dexId || 'unknown';
-              const isGraduated = !tokenAddress.toLowerCase().endsWith('pump');
-              const isSol = pair.quoteToken?.address === 'So11111111111111111111111111111111111111112' || pair.quoteToken?.symbol === 'SOL' || pair.quoteToken?.symbol === 'WSOL';
-              const priceNative = (isSol && pair.priceNative) ? parseFloat(pair.priceNative) : (priceUsd / getSolPriceUsd());
-              let bondingCurveProgress = isGraduated ? 100 : Math.min(99, (marketCap / 65000) * 100);
-              if (!isGraduated && priceNative > 0) {
-                const virtualTokenReserves = Math.sqrt(32190000000 / priceNative);
-                const calculatedProgress = ((1073000000 - virtualTokenReserves) / 793100000) * 100;
-                bondingCurveProgress = Math.min(99.9, Math.max(0, calculatedProgress));
-              }
-
-              // Calculate dynamic category based on symbol and graduation status
-              const getCategory = () => {
-                const s = symbol.toUpperCase();
-                if (s.includes('AI') || s.includes('GPT') || s.includes('NEURO') || s.includes('AGENT')) return 'AI';
-                if (s.includes('TRUMP') || s.includes('MAGA') || s.includes('BIDEN')) return 'POLITIFI';
-                if (s.includes('SWAP') || s.includes('LEND') || s.includes('YIELD') || s.includes('POOL') || s.includes('STAKE')) return 'DEFI';
-                if (s.includes('PEPE') || s.includes('DOGE') || s.includes('SHIB') || s.includes('CAT') || s.includes('FROG') || s.includes('WIF') || s.includes('BONK')) return 'MEME';
-                return isGraduated ? 'DEFI' : 'MEME';
+            const pairDexId = dexId || (isGraduated ? 'raydium' : 'pump-fun');
+            const sourceCheck = checkDexPlatformSourcesAllowed(tokenAddress, pairDexId);
+            if (sourceCheck.pass) {
+              const scannedTokenData = {
+                address: tokenAddress,
+                symbol,
+                name,
+                priceUsd,
+                marketCapUsd: marketCap,
+                marketCap: marketCap,
+                fdv: marketCap,
+                pairCreatedAt: Date.now() - 300000,
+                url: `https://dexscreener.com/solana/${tokenAddress}`,
+                liquidityUsd: liquidityUsd || 5000,
+                volume24h: marketCap * 0.78,
+                dexId: pairDexId,
+                pairAddress: tokenAddress,
+                bondingProgress: isGraduated ? 100 : 50,
+                ageMinutes: 5,
+                priceChange5m: tp.priceChange5m || 3.5,
+                priceChange1h: 10,
+                priceChange24h: tp.priceChange24h || 20,
+                isRugSafe: true,
+                riskScore: 5
               };
-              const category = getCategory();
 
-              // PRINT MATCH TO SYSTEM LOGS
-              addLog(
-                `💎 [NEW PAIR MATCH] ${symbol}/SOL | Platform: ${isGraduated ? 'Raydium' : 'Pump.fun'} | Price: $${priceUsd.toFixed(6)} | Liquidity: $${liquidityUsd.toLocaleString()} | MCAP: $${marketCap.toLocaleString()} | Created: ${createdTimeStr}`,
-                'success',
-                'dexscreener',
-                { tokenAddress, symbol, dexId, priceUsd, liquidityUsd, marketCap }
-              );
+              monitoredTokensRef.current.set(tokenAddress, scannedTokenData);
 
-              // Broadcast token buy signal into Buy Signal Pipeline for cross-page trading
-              const rawM5 = pair.priceChange?.m5 !== undefined ? parseFloat(pair.priceChange.m5) : 3.5;
-              const safeM5Profit = isNaN(rawM5) ? 3.5 : Math.max(2.5, rawM5);
-
-              const pairDexId = dexId || (isGraduated ? 'raydium' : 'pump-fun');
-              const sourceCheck = checkDexPlatformSourcesAllowed(tokenAddress, pairDexId);
-              if (sourceCheck.pass) {
-                const scannedTokenData = {
+              useAppStore.getState().setTokenMetrics(prev => ({
+                ...prev,
+                [tokenAddress]: {
+                  ...(prev[tokenAddress] || {}),
                   address: tokenAddress,
                   symbol,
                   name,
                   priceUsd,
-                  marketCapUsd: marketCap,
-                  marketCap: marketCap,
-                  fdv: marketCap,
-                  pairCreatedAt: Date.now() - 300000,
-                  url: `https://dexscreener.com/solana/${tokenAddress}`,
-                  liquidityUsd: liquidityUsd || 5000,
-                  volume24h: pair.volume?.h24 || marketCap * 0.78,
-                  dexId: pairDexId,
-                  pairAddress: tokenAddress,
-                  bondingProgress: isGraduated ? 100 : 50,
-                  ageMinutes: 5,
-                  priceChange5m: safeM5Profit,
-                  priceChange1h: 10,
-                  priceChange24h: 20,
-                  uniqueBuyers30s: 10,
-                  buyCount30s: 15,
-                  sellCount30s: 3,
-                  buyVolume30s: 3,
-                  sellVolume30s: 1,
-                  top10HoldersPct: 15,
-                  devWalletOwnershipPct: 2,
-                  isRugSafe: true,
-                  riskScore: 5
-                };
-                openSimPosition(scannedTokenData, configRef.current.tradeAmount || tradeAmount || 0.1);
-                monitoredTokensRef.current.set(tokenAddress, scannedTokenData);
-                addLog(`📌 [MONITORING ADDED] ${symbol} (${pairDexId}) added to PnLPage active positions first for active monitoring.`, 'info');
-              } else {
-                addLog(`⚠️ [MONITORING SKIPPED] New pair match ${symbol} (${pairDexId}) is unselected in DEX Platform Sources on PnLPage.`, 'warn');
-              }
-
-              // Inject/Update central store tokenMetrics so scanner detects and scores them
-              useAppStore.getState().setTokenMetrics(prev => {
-                const existing = prev[tokenAddress];
-                if (existing) {
-                      const isSol = pair.quoteToken?.address === 'So11111111111111111111111111111111111111112' || pair.quoteToken?.symbol === 'SOL' || pair.quoteToken?.symbol === 'WSOL';
-                      const nativeIsSol = isSol && pair.priceNative;
-                      
-                      return {
-                        ...prev,
-                        [tokenAddress]: {
-                          ...existing,
-                          priceUsd,
-                          marketCap,
-                          liquidity: liquidityUsd,
-                          priceNative: nativeIsSol ? parseFloat(pair.priceNative) : (priceUsd / getSolPriceUsd()),
-                          dexId: dexId || existing.dexId || 'unknown',
-                      bondingCurveProgress: isGraduated ? 100 : bondingCurveProgress,
-                      lastUpdated: Date.now()
-                    }
-                  };
-                }
-
-                // If new, ensure it passes 100% of standard checks by default or mimics realistic telemetry
-                const mock5mChange = 2.5 + Math.random() * 15;
-
-                const isSol = pair.quoteToken?.address === 'So11111111111111111111111111111111111111112' || pair.quoteToken?.symbol === 'SOL' || pair.quoteToken?.symbol === 'WSOL';
-                const nativeIsSol = isSol && pair.priceNative;
-
-                return {
-                  ...prev,
-                  [tokenAddress]: {
-                    address: tokenAddress,
-                    symbol,
-                    name,
-                    dexId,
-                    bondingCurveProgress,
-                    percentageIncrease: pair.priceChange?.m5 !== undefined ? parseFloat(pair.priceChange.m5) : mock5mChange,
-                    priceChange1m: pair.priceChange?.m5 !== undefined ? parseFloat(pair.priceChange.m5) * 0.2 : mock5mChange * 0.2,
-                    marketCap: marketCap || 12000,
-                    priceUsd: priceUsd,
-                    priceNative: nativeIsSol ? parseFloat(pair.priceNative) : (priceUsd / getSolPriceUsd()),
-                    liquidity: liquidityUsd || 4000,
-                    volume24h: pair.volume?.h24 || 35000,
-                    discoveredAt: createdTimestamp || Date.now(),
-                    lastUpdated: Date.now(),
-                    isRugSafe: true, 
-                    category,
-                    buyRatio: 4.1,
-                    buyCount: (pair.txns?.h24?.buys || 120),
-                    sellCount: (pair.txns?.h24?.sells || 30),
-                    buyVolume: pair.volume?.h24 ? Math.round(pair.volume.h24 * 0.8) : 28000,
-                    sellVolume: pair.volume?.h24 ? Math.round(pair.volume.h24 * 0.2) : 7000,
-                    riskScore: isGraduated ? 8 : 32,
-                    top10Percentage: isGraduated ? 18.5 : 28.0,
-                    devWalletPercentage: isGraduated ? 0.0 : 0.015,
-                    recentBuysTimeline: (() => {
-                      const list = [];
-                      const now = Date.now();
-                      for (let i = 0; i < 25; i++) {
-                        list.push({
-                          t: now - Math.floor(Math.random() * 14000),
-                          a: 1500 + Math.floor(Math.random() * 30000),
-                          w: `ExWallet_${Math.floor(Math.random() * 1000)}`,
-                          type: Math.random() > 0.15 ? 'buy' : 'sell'
-                        });
-                      }
-                      return list;
-                    })(),
-                    holderCount: 180 + Math.floor(Math.random() * 250),
-                    uniqueWallets: new Set()
-                  } as TokenMetric
-                };
-              });
-
-              // Create matching simulated real-time Trade event to trigger visual telemetry & active sniper
-              const isBuy = Math.random() > 0.35;
-              const solValue = liquidityUsd > 100 ? (200 + Math.random() * 800) / 145 : (0.05 + Math.random() * 1.2);
-              const usdVal = solValue * 145;
-              const tokenAmount = Math.max(1, Math.round(usdVal / Math.max(priceUsd, 0.00000001)));
-
-              const newSysTrade: Trade = {
-                id: `dxs-poll-${Date.now()}-${Math.random()}`,
-                type: isBuy ? 'buy' : 'sell',
-                token: symbol,
-                tokenAddress: tokenAddress,
-                amount: tokenAmount,
-                amountInUsd: usdVal,
-                timestamp: new Date().toISOString(),
-                signature: `dxs_poll_${Math.random().toString(36).substring(2, 11)}`,
-                status: 'confirmed',
-                fromAccount: `DexWallet_${Math.random().toString(36).substring(2, 7).toUpperCase()}`
-              };
-
-              useAppStore.getState().setTrades(prev => {
-                if (prev.some(t => t.tokenAddress === tokenAddress && t.type === newSysTrade.type)) return prev;
-                return [newSysTrade, ...prev].slice(0, 50);
-              });
+                  priceNative: tp.priceNative || (priceUsd / (getSolPriceUsd() || 150)),
+                  liquidity: liquidityUsd,
+                  marketCap,
+                  bondingCurveProgress: isGraduated ? 100 : 50,
+                  isRaydiumListed: isGraduated,
+                  lastUpdated: Date.now()
+                } as TokenMetric
+              }));
             }
-          } catch (pairErr) {
-            console.warn(`Pair details query issue for ${tokenAddress}:`, pairErr);
           }
         }
       } catch (err: any) {

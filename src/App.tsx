@@ -53,6 +53,8 @@ import { SafetyPage } from './components/pages/SafetyPage';
 import { PredictionPage } from './components/pages/PredictionPage';
 import { PnLPage } from './components/pages/PnLPage';
 import { WalletStatusWidget } from './components/WalletStatusWidget';
+import { marketDataManager } from './services/marketDataManager';
+import { rpcHealthManager } from './services/rpcHealthManager';
 
 
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
@@ -1053,71 +1055,14 @@ function App() {
 
   // Dynamic RPC latency monitor + multi-RPC pool health tracking
   useEffect(() => {
-    let active = true;
-
-    // Register primary RPC into the pool
-    rpcPool.addEndpoint(rpcUrl);
-    if (rpcUrl2 && rpcUrl2 !== rpcUrl) rpcPool.addEndpoint(rpcUrl2);
-    rpcPool.startHealthChecks(15000);
-
-    const pingUrl = async (url: string): Promise<number> => {
-      try {
-        const conn = new Connection(url, 'confirmed');
-        const start = performance.now();
-        await conn.getSlot("confirmed");
-        return performance.now() - start;
-      } catch (err) {
-        return 9999;
-      }
-    };
-
-    const pingRpc = async () => {
-      if (!rpcUrl) return;
-      
-      const currentLatency = await pingUrl(rpcUrl);
-      if (!active) return;
-      
-      setRpcLatency(currentLatency < 9999 ? currentLatency : null);
-
-      // Latency is high if it is above hardenedMaxLatency (or default 400ms if not configured)
-      const threshold = Math.max(hardenedMaxLatency || 400, 300);
-      
-      if (currentLatency > threshold) {
-        console.warn(`[RPC LATENCY HIGH] Current active RPC (${isSecondaryActive ? 'Secondary' : 'Primary'}) latency is ${currentLatency.toFixed(0)}ms (Threshold: ${threshold}ms)`);
-        
-        if (rpcUrl2 && rpcUrl2 !== rpcUrl) {
-          const fallbackLatency = await pingUrl(rpcUrl2);
-          if (!active) return;
-          
-          if (fallbackLatency < currentLatency) {
-            // Switch! Swap rpcUrl and rpcUrl2 in state
-            const temp = rpcUrl;
-            setRpcUrl(rpcUrl2);
-            setRpcUrl2(temp);
-            
-            const newSecondaryActive = !isSecondaryActive;
-            setIsSecondaryActive(newSecondaryActive);
-            localStorage.setItem('juipter_rpc_secondary_active', String(newSecondaryActive));
-            
-            const msg = newSecondaryActive 
-              ? `⚠️ [RPC FAILOVER]: Primary RPC latency is high (${currentLatency === 9999 ? 'Offline' : currentLatency.toFixed(0) + 'ms'} > ${threshold}ms). Switched to Secondary RPC Node!`
-              : `🔄 [RPC RECOVERY]: Secondary RPC latency is high (${currentLatency === 9999 ? 'Offline' : currentLatency.toFixed(0) + 'ms'} > ${threshold}ms). Switched back to Primary RPC Node!`;
-            
-            console.log(msg);
-            addNotification(msg);
-          }
-        }
-      }
-    };
-
-    pingRpc();
-    const interval = setInterval(pingRpc, 5000);
+    rpcHealthManager.setEndpoints(rpcUrl, rpcUrl2 || undefined);
+    const unsubscribe = rpcHealthManager.onChange((status) => {
+      setRpcLatency(status.latency);
+    });
     return () => {
-      active = false;
-      clearInterval(interval);
-      rpcPool.stopHealthChecks();
+      unsubscribe();
     };
-  }, [rpcUrl, rpcUrl2, isSecondaryActive, hardenedMaxLatency]);
+  }, [rpcUrl, rpcUrl2]);
 
   // Load or generate session wallet, syncing with auth/user logout state
   useEffect(() => {
@@ -2441,43 +2386,35 @@ function App() {
         return changed ? next : prev;
       });
     }, 10000);
-    // Advanced Price Synchronization for Active Positions
-    const positionSyncInterval = setInterval(async () => {
-      const state = useAppStore.getState();
-      const positions = state.activePositions;
-      if (Object.keys(positions).length === 0) return;
-      
-      const mints = Object.keys(positions).join(',');
-      try {
-         const res = await fetch(`/api/dex/tokens/${mints}`);
-         if (!res.ok) return;
-         const data = await res.json();
-         if (data && data.pairs) {
-            useAppStore.getState().setTokenMetrics(prev => {
-               const next = { ...prev };
-               data.pairs.forEach((p: any) => {
-                  const addr = p.baseToken?.address;
-                  if (addr && positions[addr]) {
-                     next[addr] = {
-                        ...next[addr],
-                        address: addr,
-                        priceUsd: Number(p.priceUsd || 0),
-                        priceNative: Number(p.priceNative || 0),
-                        lastUpdated: Date.now()
-                     };
-                  }
-               });
-               return next;
-            });
-         }
-      } catch (e) {
-         console.warn("[SYNC ERROR] Failed to sync active positions", e);
-      }
-    }, 3000);
-     
+    // Advanced Price Synchronization for Active Positions via MarketDataManager
+    const state = useAppStore.getState();
+    const positions = state.activePositions;
+    const activeMints = Object.keys(positions);
+    
+    let unsubscribe: (() => void) | null = null;
+    if (activeMints.length > 0) {
+      unsubscribe = marketDataManager.subscribe(activeMints, (prices) => {
+        useAppStore.getState().setTokenMetrics(prev => {
+          const next = { ...prev };
+          prices.forEach((tp, addr) => {
+            if (positions[addr]) {
+              next[addr] = {
+                ...next[addr],
+                address: addr,
+                priceUsd: tp.priceUsd,
+                priceNative: tp.priceNative || 0,
+                lastUpdated: Date.now()
+              };
+            }
+          });
+          return next;
+        });
+      }, 'activePosition');
+    }
+
     return () => {
       clearInterval(interval);
-      clearInterval(positionSyncInterval);
+      if (unsubscribe) unsubscribe();
     };
   }, []);
 
