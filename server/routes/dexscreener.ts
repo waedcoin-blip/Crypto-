@@ -125,34 +125,175 @@ router.get('/search', asyncHandler(async (req, res) => {
 }));
 
 // GET /api/dex/tokens/trending
+// Real discovery feed — no hard-coded token list.
 router.get('/tokens/trending', asyncHandler(async (req, res) => {
   try {
-    const data = await trendingCache.fetch('trending_tokens', async () => {
-      const ids = TRENDING_MINTS.join(',');
-      const { response, text } = await fetchWithRetry(
-        `https://api.dexscreener.com/latest/dex/tokens/${ids}`,
-        { headers: { 'User-Agent': 'Mozilla/5.0' } },
-        3,
-        2000
+    const data = await trendingCache.fetch('trending_tokens_v2', async () => {
+      const discoveryEndpoints = [
+        'https://api.dexscreener.com/token-profiles/latest/v1',
+        'https://api.dexscreener.com/token-profiles/recent-updates/v1',
+      ];
+
+      const discovered = new Map<string, any>();
+
+      // Fetch discovery feeds concurrently.
+      const responses = await Promise.allSettled(
+        discoveryEndpoints.map(async (url) => {
+          const { response, text } = await fetchWithRetry(
+            url,
+            {
+              headers: {
+                'User-Agent': 'Mozilla/5.0',
+                'Accept': 'application/json',
+              },
+            },
+            2,
+            500
+          );
+
+          if (!response.ok) {
+            throw new Error(`${url}: HTTP ${response.status}`);
+          }
+
+          const json = JSON.parse(text);
+
+          if (Array.isArray(json)) return json;
+          if (Array.isArray(json?.data)) return json.data;
+
+          return [];
+        })
       );
 
-      if (!response.ok) {
-        throw new Error(`DexScreener API status: ${response.status}`);
+      for (const result of responses) {
+        if (result.status !== 'fulfilled') continue;
+
+        for (const item of result.value) {
+          const chainId = item?.chainId || item?.chain;
+
+          if (chainId && chainId !== 'solana') continue;
+
+          const address =
+            item?.tokenAddress ||
+            item?.address ||
+            item?.baseToken?.address;
+
+          if (!address) continue;
+
+          // Solana mint addresses are normally 32–44 chars.
+          if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address)) {
+            continue;
+          }
+
+          discovered.set(address, {
+            ...item,
+            address,
+          });
+        }
       }
 
-      const parsed = JSON.parse(text);
-      if (!parsed?.pairs?.length) {
-        throw new Error('Empty pairs from DexScreener');
+      const mints = Array.from(discovered.keys());
+
+      if (mints.length === 0) {
+        return { pairs: [] };
       }
 
-      return parsed;
+      // DexScreener supports batches of up to 30 token addresses.
+      const pairs: any[] = [];
+
+      for (let i = 0; i < mints.length; i += 30) {
+        const chunk = mints.slice(i, i + 30);
+
+        try {
+          const { response, text } = await fetchWithRetry(
+            `https://api.dexscreener.com/latest/dex/tokens/${chunk.join(',')}`,
+            {
+              headers: {
+                'User-Agent': 'Mozilla/5.0',
+                'Accept': 'application/json',
+              },
+            },
+            2,
+            500
+          );
+
+          if (!response.ok) continue;
+
+          const parsed = JSON.parse(text);
+
+          if (Array.isArray(parsed?.pairs)) {
+            pairs.push(...parsed.pairs);
+          }
+        } catch (error) {
+          dexLogger.warn(
+            { error },
+            'Discovery batch failed'
+          );
+        }
+      }
+
+      // Only Solana pairs.
+      const solanaPairs = pairs.filter(
+        (pair) => pair?.chainId === 'solana'
+      );
+
+      // Deduplicate pair addresses.
+      const uniquePairs = new Map<string, any>();
+
+      for (const pair of solanaPairs) {
+        const key =
+          pair.pairAddress ||
+          `${pair.baseToken?.address}:${pair.quoteToken?.address}`;
+
+        if (!uniquePairs.has(key)) {
+          uniquePairs.set(key, pair);
+        }
+      }
+
+      // Rank candidates by liquidity + recent volume + momentum.
+      const ranked = Array.from(uniquePairs.values())
+        .filter((pair) => {
+          const liquidity = Number(pair.liquidity?.usd || 0);
+          const volume5m = Number(pair.volume?.m5 || 0);
+
+          return liquidity >= 1000 || volume5m >= 500;
+        })
+        .sort((a, b) => {
+          const score = (pair: any) => {
+            const liquidity = Number(pair.liquidity?.usd || 0);
+            const volume5m = Number(pair.volume?.m5 || 0);
+            const momentum = Number(pair.priceChange?.m5 || 0);
+
+            return (
+              Math.log10(Math.max(liquidity, 1)) * 2 +
+              Math.log10(Math.max(volume5m, 1)) +
+              momentum
+            );
+          };
+
+          return score(b) - score(a);
+        });
+
+      return {
+        schemaVersion: '2.0.0',
+        pairs: ranked.slice(0, 100),
+        discoveredAt: Date.now(),
+      };
     });
 
     res.json(data);
-  } catch (e: any) {
-    dexLogger.warn({ errDetails: e.message }, 'Trending fetch failed, using simulation');
-    const pairs = TRENDING_MINTS.map((m) => generateSimulatedPair(m));
-    res.json({ pairs });
+  } catch (error: any) {
+    dexLogger.error(
+      { error: error.message },
+      'Real token discovery failed'
+    );
+
+    // IMPORTANT:
+    // Do NOT inject simulated tokens into live discovery.
+    res.status(503).json({
+      schemaVersion: '2.0.0',
+      pairs: [],
+      error: 'DISCOVERY_UNAVAILABLE',
+    });
   }
 }));
 

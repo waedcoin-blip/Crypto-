@@ -60,6 +60,8 @@ const SUPPRESSED_LOG_PATTERNS = [
   'WebSocket',
   'websocket',
   'SUPPRESSED EXCEPTION',
+  'Invalid API key',
+  'valid authentication credentials',
 ] as const;
 
 // ─── State ───
@@ -125,6 +127,9 @@ function isPlanError(errorMsg?: string): boolean {
   return (
     lower.includes('unsupported plan') ||
     lower.includes('unauthorized') ||
+    lower.includes('invalid api key') ||
+    lower.includes('authentication credentials') ||
+    lower.includes('credentials') ||
     lower.includes('permission') ||
     lower.includes('payment') ||
     lower.includes('unauthenticated') ||
@@ -531,7 +536,11 @@ export async function startLaserStream(
         eventBusCallback(msg.event);
       } else if (msg.type === 'ERROR') {
         const errStr = msg.error || msg.errDetails || 'gRPC worker stream error';
-        laserLogger.warn({ errDetails: errStr }, 'gRPC worker process reported stream error, triggering fallback');
+        if (isPlanError(errStr)) {
+          laserLogger.info({ errDetails: errStr }, 'gRPC stream credentials invalid or plan unsupported, triggering fallback');
+        } else {
+          laserLogger.warn({ errDetails: errStr }, 'gRPC worker process reported stream error, triggering fallback');
+        }
         handleFallback(errStr);
       } else if (msg.type === 'READY') {
         laserLogger.info('Worker reported successful gRPC stream creation');

@@ -1536,96 +1536,132 @@ function App() {
     
     const syncLoop = async () => {
       if (!isMounted) return;
-      
-      for (const mint of allMints) {
-        if (!isMounted) break;
-        // Force refresh price for held or saved tokens
-        try {
-          const security = await fetchTokenSecurityData(mint);
-          if (!isMounted) break;
-          if (security && security.priceChange !== undefined) {
-            setTokenMetrics(prev => {
-              const current = prev[mint];
-              
-              // If it doesn't exist, create a baseline metric from saved data or active position
-              if (!current) {
-                const saved = savedGemsRef.current[mint];
-                const active = useAppStore.getState().activePositions[mint];
-                if (!saved && !active) return prev; 
-                
-                const currentSymbol = saved?.symbol || active?.symbol || "UNKNOWN";
-                
-                // Categorize if missing
-                let category = saved?.category || categorizeToken(currentSymbol, mint);
-                
-                return {
-                  ...prev,
-                  [mint]: {
-                    address: mint,
-                    symbol: currentSymbol,
-                    percentageIncrease: security.priceChange,
-                    marketCap: security.marketCap,
-                    priceUsd: security.priceUsd,
-                    priceNative: security.priceNative,
-                    supply: security.supply,
-                    liquidity: security.liquidity,
-                    volume24h: security.volume24h,
-                    category: category,
-                    dexId: security.dexId || "unknown",
-                    bondingCurveProgress: security.bondingCurveProgress,
-                    riskScore: security.riskScore,
-                    isRugSafe: true, 
-                    lastUpdated: Date.now(),
-                    discoveredAt: saved?.savedAt || active?.boughtAt || Date.now(),
-                    buyCount: 0,
-                    sellCount: 0,
-                    buyVolume: 0,
-                    sellVolume: 0,
-                    recentBuysTimeline: (() => {
-                      const timeline = [];
-                      const now = Date.now();
-                      // Generate 12 to 22 random transactions (buys & sells) in the last 60 seconds
-                      const tradeCount = 12 + Math.floor(Math.random() * 10);
-                      for (let i = 0; i < tradeCount; i++) {
-                        const isBuy = Math.random() > 0.3; // 70% buys to ensure blockVelocityRatio >= 2.0-3.0
-                        timeline.push({
-                          t: now - Math.floor(Math.random() * 45000), // spread out in last 45 secs
-                          a: 5000 + Math.floor(Math.random() * 100000),
-                          w: `SimWallet_${Math.floor(Math.random() * 1000)}`,
-                          type: isBuy ? 'buy' : 'sell'
-                        });
-                      }
-                      return timeline;
-                    })()
-                  } as TokenMetric
-                };
-              }
 
-              return {
-                ...prev,
-                [mint]: {
-                  ...current,
-                  percentageIncrease: security.priceChange,
-                  marketCap: security.marketCap,
-                  priceUsd: security.priceUsd,
-                  priceNative: security.priceNative,
-                  supply: security.supply,
-                  liquidity: security.liquidity,
-                  dexId: security.dexId || current.dexId,
-                  bondingCurveProgress: security.bondingCurveProgress !== undefined ? security.bondingCurveProgress : current.bondingCurveProgress,
-                  riskScore: security.riskScore !== undefined ? security.riskScore : current.riskScore,
-                  lastUpdated: Date.now()
-                }
-              };
-            });
+      try {
+        const freshData =
+          await fetchTokenSecurityDataBatch(allMints);
+
+        if (!isMounted) return;
+
+        setTokenMetrics(prev => {
+          const next = { ...prev };
+
+          for (const [mint, security] of freshData) {
+            const current = next[mint];
+
+            const saved =
+              savedGemsRef.current[mint];
+
+            const active =
+              useAppStore.getState().activePositions[mint];
+
+            if (!current && !saved && !active) {
+              continue;
+            }
+
+            if (!current) {
+              const symbol =
+                saved?.symbol ||
+                active?.symbol ||
+                security.symbol ||
+                'UNKNOWN';
+
+              next[mint] = {
+                address: mint,
+                symbol,
+
+                percentageIncrease:
+                  security.priceChange,
+
+                marketCap:
+                  security.marketCap,
+
+                priceUsd:
+                  security.priceUsd,
+
+                priceNative:
+                  security.priceNative,
+
+                liquidity:
+                  security.liquidity,
+
+                volume24h:
+                  security.volume24h,
+
+                category:
+                  saved?.category ||
+                  categorizeToken(symbol, mint),
+
+                dexId:
+                  security.dexId,
+
+                bondingCurveProgress:
+                  security.bondingCurveProgress,
+
+                riskScore:
+                  security.riskScore,
+
+                isRugSafe: true,
+
+                discoveredAt:
+                  saved?.savedAt ||
+                  active?.boughtAt ||
+                  security.pairCreatedAt ||
+                  Date.now(),
+
+                lastUpdated: Date.now(),
+
+                buyCount: 0,
+                sellCount: 0,
+                buyVolume: 0,
+                sellVolume: 0,
+
+                recentBuysTimeline: [],
+              } as TokenMetric;
+
+              continue;
+            }
+
+            next[mint] = {
+              ...current,
+
+              percentageIncrease:
+                security.priceChange,
+
+              marketCap:
+                security.marketCap,
+
+              priceUsd:
+                security.priceUsd,
+
+              priceNative:
+                security.priceNative,
+
+              liquidity:
+                security.liquidity,
+
+              volume24h:
+                security.volume24h,
+
+              dexId:
+                security.dexId || current.dexId,
+
+              lastUpdated:
+                Date.now(),
+            };
           }
-        } catch (e) {
-          console.warn("Error background sync:", e);
-        }
+
+          return next;
+        });
+      } catch (error) {
+        console.warn(
+          '[MarketData] Active position sync failed:',
+          error
+        );
       }
-      
+
       if (isMounted) {
-        timeoutId = setTimeout(syncLoop, 5000);
+        timeoutId = setTimeout(syncLoop, 2000);
       }
     };
     
@@ -2494,6 +2530,141 @@ function App() {
     } catch (e) {
       // Browsers often block audio until user interaction
     }
+  };
+
+  const fetchTokenSecurityDataBatch = async (
+    mints: string[]
+  ): Promise<Map<string, any>> => {
+    const uniqueMints = Array.from(
+      new Set(mints.filter(Boolean))
+    );
+
+    const result = new Map<string, any>();
+
+    if (uniqueMints.length === 0) {
+      return result;
+    }
+
+    // Server/DexScreener supports batches of 30.
+    for (let i = 0; i < uniqueMints.length; i += 30) {
+      const chunk = uniqueMints.slice(i, i + 30);
+
+      try {
+        const response = await fetch(
+          `/api/dex/tokens/${chunk.join(',')}`
+        );
+
+        if (!response.ok) {
+          console.warn(
+            `[MarketData] Batch request failed: ${response.status}`
+          );
+          continue;
+        }
+
+        const text = await response.text();
+
+        if (!text || text.trim().startsWith('<')) {
+          continue;
+        }
+
+        const data = JSON.parse(text);
+
+        if (!Array.isArray(data?.pairs)) {
+          continue;
+        }
+
+        // Group pairs by mint.
+        const pairsByMint = new Map<string, any[]>();
+
+        for (const pair of data.pairs) {
+          const mint = pair?.baseToken?.address;
+
+          if (!mint) continue;
+
+          if (!pairsByMint.has(mint)) {
+            pairsByMint.set(mint, []);
+          }
+
+          pairsByMint.get(mint)!.push(pair);
+        }
+
+        for (const mint of chunk) {
+          const pairs = pairsByMint.get(mint);
+
+          if (!pairs || pairs.length === 0) {
+            continue;
+          }
+
+          // Prefer SOL pairs.
+          const solPairs = pairs.filter(
+            (p: any) =>
+              p.quoteToken?.address ===
+                'So11111111111111111111111111111111111111112' ||
+              p.quoteToken?.symbol === 'SOL'
+          );
+
+          const candidates =
+            solPairs.length > 0 ? solPairs : pairs;
+
+          const pair = [...candidates].sort(
+            (a: any, b: any) =>
+              Number(b.liquidity?.usd || 0) -
+              Number(a.liquidity?.usd || 0)
+          )[0];
+
+          if (!pair) continue;
+
+          result.set(mint, {
+            mint,
+
+            symbol: pair.baseToken?.symbol || 'UNKNOWN',
+            name: pair.baseToken?.name || 'Unknown',
+
+            priceUsd: Number(pair.priceUsd || 0),
+            priceNative: Number(pair.priceNative || 0),
+
+            priceChange:
+              Number(pair.priceChange?.m5 || 0),
+
+            priceChange5m:
+              Number(pair.priceChange?.m5 || 0),
+
+            priceChange1h:
+              Number(pair.priceChange?.h1 || 0),
+
+            marketCap:
+              Number(pair.marketCap || pair.fdv || 0),
+
+            liquidity:
+              Number(pair.liquidity?.usd || 0),
+
+            volume24h:
+              Number(pair.volume?.h24 || 0),
+
+            dexId:
+              pair.dexId || 'unknown',
+
+            pairAddress:
+              pair.pairAddress || '',
+
+            pairCreatedAt:
+              Number(pair.pairCreatedAt || 0),
+
+            url:
+              pair.url || '',
+
+            rawPair: pair,
+          });
+        }
+      } catch (error) {
+        console.warn(
+          '[MarketData] Batch fetch error:',
+          error
+        );
+      }
+    }
+
+    return result;
   };
 
   // Fetch token stats and security from DEXScreener
