@@ -7,8 +7,8 @@
 
 export interface TokenPrice {
   mint: string;
-  priceUsd: number;
-  priceNative?: number;
+  priceUsd: number | null;
+  priceNative?: number | null;
   priceChange24h?: number;
   priceChange5m?: number;
   volume24h?: number;
@@ -19,7 +19,9 @@ export interface TokenPrice {
   pairAddress?: string;
   dexId?: string;
   updatedAt: number;
-  source?: 'dexscreener' | 'jupiter' | 'simulation';
+  source?: 'dexscreener' | 'jupiter' | 'simulation' | 'failed';
+  isStale?: boolean;
+  error?: string;
   rawPair?: any;
 }
 
@@ -289,7 +291,21 @@ export class MarketDataManager {
             if (!result.has(m)) {
               const cached = this.cache.get(m);
               if (cached) {
-                result.set(m, cached.price);
+                result.set(m, {
+                  ...cached.price,
+                  isStale: true,
+                });
+              } else {
+                result.set(m, {
+                  mint: m,
+                  priceUsd: null,
+                  priceNative: null,
+                  priceChange24h: 0,
+                  updatedAt: now,
+                  source: 'failed',
+                  isStale: true,
+                  error: 'Market data unavailable',
+                });
               }
             }
           }
@@ -452,16 +468,20 @@ export class MarketDataManager {
     for (const mint of mints) {
       const cached = this.cache.get(mint);
       if (cached) {
-        result.set(mint, cached.price);
+        result.set(mint, {
+          ...cached.price,
+          isStale: true,
+        });
       } else {
-        // Fallback placeholder price
         const fallbackPrice: TokenPrice = {
           mint,
-          priceUsd: 0.0001,
-          priceNative: 0.000001,
+          priceUsd: null,
+          priceNative: null,
           priceChange24h: 0,
           updatedAt: now,
-          source: 'simulation',
+          source: 'failed',
+          isStale: true, // CRITICAL: mark as stale so exit engine skips it
+          error: 'Market data unavailable',
         };
         result.set(mint, fallbackPrice);
       }

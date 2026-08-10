@@ -1438,84 +1438,150 @@ function App() {
 
   // Global Discovery Scanner (Feeds candidate tokens to the bot)
   useEffect(() => {
-    const discoveryInterval = setInterval(async () => {
-      const isLive = latestState.current.isLiveTrading;
-      const isAuto = latestState.current.autoSniperEnabled;
-      if (!isLive && !isAuto) return; // Only scan if bot is active or simulated
-      
-      try {
-        const res = await fetch('/api/dex/tokens/So11111111111111111111111111111111111111112'); // Get trending SOL pairs via proxy
-        if (!res.ok) return;
-        const text = await res.text();
-        if (!text || text.trim().startsWith('<')) return;
-        const data = JSON.parse(text);
-        
-        if (data.pairs) {
-          // Take top 10 most active pairs, across all Solana DEXs
-          const topPairs = data.pairs
-            .filter((p: any) => p.chainId === 'solana' && (p.quoteToken?.address === 'So11111111111111111111111111111111111111112' || p.baseToken?.address === 'So11111111111111111111111111111111111111112'))
-            .slice(0, 10);
-            
-          for (const pair of topPairs) {
-            const mint = pair.baseToken?.address === 'So11111111111111111111111111111111111111112' ? pair.quoteToken?.address : pair.baseToken?.address;
-            if (!mint) continue;
-            
-            const currentMetrics = useAppStore.getState().tokenMetrics;
-            // Only feed to bot if we don't have fresh metrics
-            if (!currentMetrics[mint] || (Date.now() - currentMetrics[mint].lastUpdated > 30000)) {
-               fetchTokenSecurityData(mint).then(security => {
-                 if (security) {
-                   setTokenMetrics(prev => ({
-                     ...prev,
-                     [mint]: {
-                       address: mint,
-                       symbol: security.symbol,
-                       percentageIncrease: security.priceChange,
-                       marketCap: security.marketCap,
-                       priceUsd: security.priceUsd,
-                       priceNative: security.priceNative,
-                       liquidity: security.liquidity,
-                       volume24h: security.volume24h,
-                       discoveredAt: pair.pairCreatedAt || Date.now(),
-                       lastUpdated: Date.now(),
-                       isRugSafe: true,
-                       category: security.category,
-                       dexId: security.dexId || "unknown",
-                       bondingCurveProgress: security.bondingCurveProgress,
-                       riskScore: security.riskScore,
-                       buyRatio: 3.5, // Mocking high ratio for trending
-                       buyCount: 100, // Mocking activity
-                       sellCount: 20,
-                       socialSentiment: security.socialSentiment,
-                       recentBuysTimeline: (() => {
-                         const timeline = [];
-                         const now = Date.now();
-                         // Generate 12 to 22 random transactions (buys & sells) in the last 60 seconds
-                         const tradeCount = 12 + Math.floor(Math.random() * 10);
-                         for (let i = 0; i < tradeCount; i++) {
-                           const isBuy = Math.random() > 0.3; // 70% buys to ensure blockVelocityRatio >= 2.0-3.0
-                           timeline.push({
-                             t: now - Math.floor(Math.random() * 45000), // spread out in last 45 secs
-                             a: 5000 + Math.floor(Math.random() * 100000),
-                             w: `SimWallet_${Math.floor(Math.random() * 1000)}`,
-                             type: isBuy ? 'buy' : 'sell'
-                           });
-                         }
-                         return timeline;
-                       })()
-                     } as TokenMetric
-                   }));
-                 }
-               });
-            }
-          }
-        }
-      } catch (e) {
-        console.error("Discovery Scan Error:", e);
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const runDiscovery = async () => {
+      if (stopped) return;
+
+      const state = latestState.current;
+
+      if (!state.isLiveTrading && !state.autoSniperEnabled) {
+        timer = setTimeout(runDiscovery, 5000);
+        return;
       }
-    }, 20000); // Scan every 20s to ensure fresh candidates
-    
-    return () => clearInterval(discoveryInterval);
+
+      const startedAt = Date.now();
+
+      try {
+        const response = await fetch(
+          '/api/dex/tokens/trending'
+        );
+
+        if (!response.ok) {
+          throw new Error(
+            `Discovery HTTP ${response.status}`
+          );
+        }
+
+        const data = await response.json();
+
+        const pairs = Array.isArray(data?.pairs)
+          ? data.pairs
+          : [];
+
+        const candidates = pairs
+          .filter(
+            (p: any) =>
+              p.chainId === 'solana'
+          )
+          .slice(0, 100);
+
+        const mints = Array.from(
+          new Set(
+            candidates
+              .map((pair: any) =>
+                pair.baseToken?.address
+              )
+              .filter(Boolean)
+          )
+        );
+
+        // Batch market-data retrieval.
+        const marketData =
+          await fetchTokenSecurityDataBatch(mints as string[]);
+
+        if (!stopped) {
+          setTokenMetrics(prev => {
+            const next = { ...prev };
+
+            for (const [mint, security] of marketData) {
+              const existing = next[mint];
+
+              next[mint] = {
+                ...existing,
+
+                address: mint,
+
+                symbol:
+                  security.symbol ||
+                  existing?.symbol ||
+                  'UNKNOWN',
+
+                percentageIncrease:
+                  security.priceChange,
+
+                marketCap:
+                  security.marketCap,
+
+                priceUsd:
+                  security.priceUsd,
+
+                priceNative:
+                  security.priceNative,
+
+                liquidity:
+                  security.liquidity,
+
+                volume24h:
+                  security.volume24h,
+
+                dexId:
+                  security.dexId ||
+                  existing?.dexId ||
+                  'unknown',
+
+                discoveredAt:
+                  existing?.discoveredAt ||
+                  security.pairCreatedAt ||
+                  Date.now(),
+
+                lastUpdated:
+                  Date.now(),
+
+                // Never fabricate activity.
+                buyRatio: security.buyRatio ?? 0,
+                buyCount: security.buyCount ?? 0,
+                sellCount: security.sellCount ?? 0,
+                buyVolume: security.buyVolume ?? 0,
+                sellVolume: security.sellVolume ?? 0,
+                recentBuysTimeline:
+                  security.recentBuysTimeline ?? [],
+              } as TokenMetric;
+            }
+
+            return next;
+          });
+        }
+
+        console.debug(
+          `[Discovery] ${mints.length} candidates, ` +
+          `${marketData.size} market records, ` +
+          `${Date.now() - startedAt}ms`
+        );
+      } catch (error) {
+        console.warn(
+          '[Discovery] Failed:',
+          error
+        );
+      }
+
+      if (!stopped) {
+        // Discovery can be relatively frequent because
+        // the server has caching/rate-limit protection.
+        timer = setTimeout(runDiscovery, 5000);
+      }
+    };
+
+    runDiscovery();
+
+    return () => {
+      stopped = true;
+
+      if (timer) {
+        clearTimeout(timer);
+      }
+    };
   }, []);
 
 
@@ -1611,12 +1677,13 @@ function App() {
 
                 lastUpdated: Date.now(),
 
-                buyCount: 0,
-                sellCount: 0,
-                buyVolume: 0,
-                sellVolume: 0,
-
-                recentBuysTimeline: [],
+                buyRatio: security.buyRatio ?? 0,
+                buyCount: security.buyCount ?? 0,
+                sellCount: security.sellCount ?? 0,
+                buyVolume: security.buyVolume ?? 0,
+                sellVolume: security.sellVolume ?? 0,
+                recentBuysTimeline:
+                  security.recentBuysTimeline ?? [],
               } as TokenMetric;
 
               continue;
@@ -1645,6 +1712,24 @@ function App() {
 
               dexId:
                 security.dexId || current.dexId,
+
+              buyRatio:
+                security.buyRatio ?? current.buyRatio ?? 0,
+
+              buyCount:
+                security.buyCount ?? current.buyCount ?? 0,
+
+              sellCount:
+                security.sellCount ?? current.sellCount ?? 0,
+
+              buyVolume:
+                security.buyVolume ?? current.buyVolume ?? 0,
+
+              sellVolume:
+                security.sellVolume ?? current.sellVolume ?? 0,
+
+              recentBuysTimeline:
+                security.recentBuysTimeline ?? current.recentBuysTimeline ?? [],
 
               lastUpdated:
                 Date.now(),
@@ -2614,6 +2699,12 @@ function App() {
 
           if (!pair) continue;
 
+          const buys5m = Number(pair.txns?.m5?.buys || pair.txns?.h1?.buys || 0);
+          const sells5m = Number(pair.txns?.m5?.sells || pair.txns?.h1?.sells || 0);
+          const buyVolume = Number(pair.volume?.m5 || pair.volume?.h1 || 0);
+          const sellVolume = 0;
+          const buyRatio = sells5m > 0 ? buys5m / sells5m : (buys5m > 0 ? buys5m : 0);
+
           result.set(mint, {
             mint,
 
@@ -2640,6 +2731,13 @@ function App() {
 
             volume24h:
               Number(pair.volume?.h24 || 0),
+
+            buyRatio,
+            buyCount: buys5m,
+            sellCount: sells5m,
+            buyVolume,
+            sellVolume,
+            recentBuysTimeline: [],
 
             dexId:
               pair.dexId || 'unknown',
@@ -2864,6 +2962,11 @@ function App() {
         const devPctActual = forcePass ? (Math.random() * 4.5) : devPct;
         const top10PctActual = forcePass ? (15 + Math.random() * 10) : top10Pct;
 
+        const buys5m = Number(pair.txns?.m5?.buys || pair.txns?.h1?.buys || 0);
+        const sells5m = Number(pair.txns?.m5?.sells || pair.txns?.h1?.sells || 0);
+        const buyVolume = Number(pair.volume?.m5 || pair.volume?.h1 || 0);
+        const buyRatio = sells5m > 0 ? buys5m / sells5m : (buys5m > 0 ? buys5m : 0);
+
         return {
           liquidity: forcePass ? (marketCapActual * (liquidityRatio / 100)) : liquidity,
           volume24h: volumeActual,
@@ -2882,6 +2985,12 @@ function App() {
           symbol,
           dexId,
           bondingCurveProgress,
+          buyRatio,
+          buyCount: buys5m,
+          sellCount: sells5m,
+          buyVolume,
+          sellVolume: 0,
+          recentBuysTimeline: [],
           socialMentionsGrowth,
           socialSentiment,
           botRisk,

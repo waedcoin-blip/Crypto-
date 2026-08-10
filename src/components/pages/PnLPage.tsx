@@ -2413,16 +2413,35 @@ export const PnLPage = ({
       }
 
       const prices: any = {};
-      marketPrices.forEach((tp, mint) => {
-        if (mint === 'So11111111111111111111111111111111111111112') return;
+      for (const [mint, tp] of marketPrices.entries()) {
+        if (mint === 'So11111111111111111111111111111111111111112') continue;
 
         let finalPriceInSol = tp.priceNative || (tp.priceUsd ? tp.priceUsd / solPriceInUsd : 0);
+        let isStale = false;
 
-        // Price Sanity Guard: Prevent corrupted 1.0 SOL or equal-to-SOL prices for low-cap memecoins
+        // Liquidity-aware sanity check comparing against a fresh Jupiter quote, not a hardcoded multiplier
         const activePos = positionsRef.current[mint];
-        if (activePos && activePos.buyPrice > 0 && activePos.buyPrice < 0.05) {
-          if (finalPriceInSol >= 1.0 || finalPriceInSol > activePos.buyPrice * 50) {
-            finalPriceInSol = activePos.currentPrice || activePos.buyPrice;
+        if (activePos && activePos.buyPrice > 0) {
+          try {
+            const rawAmount = activePos.amountLamports || Math.floor((activePos.amount || 1) * Math.pow(10, activePos.decimals || 6));
+            const validationQuote = await getJupiterQuote(
+              mint,
+              'So11111111111111111111111111111111111111112',
+              rawAmount,
+              activePos.liquidityUsd || 0
+            );
+            if (validationQuote && validationQuote.outAmount && activePos.amount > 0) {
+              const quotedPrice = Number(validationQuote.outAmount) / activePos.amount / 1e9;
+              if (quotedPrice > 0) {
+                // If our price source diverges >10× from Jupiter, use Jupiter's price
+                if (finalPriceInSol > quotedPrice * 10 || finalPriceInSol < quotedPrice / 10) {
+                  finalPriceInSol = quotedPrice;
+                }
+              }
+            }
+          } catch {
+            // If Jupiter fails, keep the price but mark as STALE
+            isStale = true;
           }
         }
 
@@ -2431,10 +2450,10 @@ export const PnLPage = ({
             price: finalPriceInSol,
             isSol: true,
             liq: tp.liquidityUsd || 0,
-            isStale: false
+            isStale
           };
         }
-      });
+      }
 
       // Fill in fallback prices directly via RPC scan if needed
       for (const mint of mints) {
@@ -4615,12 +4634,19 @@ const checkTokenCriteria = (mint: string): {
           let currentPrice = pos.currentPrice;
 
           const metric = tokenMetricsRef.current[mint];
-          if (batchedPrices[mint]?.price) {
-            currentPrice = parseFloat(batchedPrices[mint].price);
+          const batched = batchedPrices[mint];
+
+          if (batched && !batched.isStale && batched.price > 0) {
+            currentPrice = parseFloat(batched.price);
           } else if (metric) {
             currentPrice = metric.priceNative ? parseFloat(String(metric.priceNative)) : (metric.priceUsd ? parseFloat(String(metric.priceUsd)) / getSolPriceUsd() : 0);
           }
-          
+
+          if ((!metric?.priceNative && !batched?.price) && !pos.currentPrice) {
+            // Skip exit evaluation this cycle — don't make decisions on stale data
+            continue;
+          }
+
           if (!currentPrice || currentPrice === 0) continue;
           
           let pnlPct = 0;
@@ -5050,24 +5076,13 @@ const checkTokenCriteria = (mint: string): {
               top10Percentage: isRaydium ? (11 + Math.random() * 7) : (18 + Math.random() * 10),
               devWalletPercentage: isRaydium ? 0.0 : (Math.random() * 0.015),
               category: isRaydium ? 'DEFI' : 'MEME',
-              buyRatio: 5.2,
-              buyCount: 210,
-              sellCount: 18,
-              buyVolume: marketCap * 0.6,
-              sellVolume: marketCap * 0.1,
+              buyRatio: 0,
+              buyCount: 0,
+              sellCount: 0,
+              buyVolume: 0,
+              sellVolume: 0,
               latestAlert: graduationTriggered ? 'MIGRATED' : undefined,
-              recentBuysTimeline: (() => {
-                const list = [];
-                for (let i = 0; i < 25; i++) {
-                  list.push({
-                    t: now - Math.floor(Math.random() * 13000),
-                    a: 500 + Math.floor(Math.random() * 8000),
-                    w: `SimWallet_${Math.floor(Math.random() * 1000)}`,
-                    type: Math.random() > 0.12 ? 'buy' : 'sell'
-                  });
-                }
-                return list;
-              })(),
+              recentBuysTimeline: [],
               holderCount: 320 + Math.floor(Math.random() * 120),
               uniqueWallets: new Set()
             } as TokenMetric

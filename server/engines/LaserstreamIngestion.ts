@@ -62,6 +62,8 @@ const SUPPRESSED_LOG_PATTERNS = [
   'SUPPRESSED EXCEPTION',
   'Invalid API key',
   'valid authentication credentials',
+  'The request does not have valid authentication credentials',
+  'gRPC worker process reported stream error',
 ] as const;
 
 // ─── State ───
@@ -537,7 +539,7 @@ export async function startLaserStream(
       } else if (msg.type === 'ERROR') {
         const errStr = msg.error || msg.errDetails || 'gRPC worker stream error';
         if (isPlanError(errStr)) {
-          laserLogger.info({ errDetails: errStr }, 'gRPC stream credentials invalid or plan unsupported, triggering fallback');
+          laserLogger.info('gRPC stream requires paid credentials; active fallback enabled');
         } else {
           laserLogger.warn({ errDetails: errStr }, 'gRPC worker process reported stream error, triggering fallback');
         }
