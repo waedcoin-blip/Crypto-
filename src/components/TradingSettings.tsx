@@ -2,6 +2,8 @@
 import React, { useState, useEffect } from 'react';
 import { SecureInput } from './SecureInput';
 import { useTradeMode } from '../context/TradeModeContext';
+import { MasterMonitorPanel } from './MasterMonitorPanel';
+import { masterMonitorHealthManager } from '../services/MasterMonitorHealthManager';
 
 // Simple encryption using a user password + AES-GCM via Web Crypto
 export async function encryptData(plaintext: string, password: string): Promise<string> {
@@ -50,6 +52,8 @@ export const TradingSettings: React.FC = () => {
   const [privateKey, setPrivateKey] = useState('');
   const [rpcUrl, setRpcUrl] = useState('');
   const [masterMonitorRpc, setMasterMonitorRpc] = useState('');
+  const [masterMonitorRpc2, setMasterMonitorRpc2] = useState('');
+  const [masterMonitorWs, setMasterMonitorWs] = useState('');
   const [vaultPubkey, setVaultPubkey] = useState('');
   const [password, setPassword] = useState('');
   const [saved, setSaved] = useState(false);
@@ -60,11 +64,15 @@ export const TradingSettings: React.FC = () => {
     const encApiKey = localStorage.getItem('enc_jupiter_api_key');
     const encPrivKey = localStorage.getItem('enc_private_key');
     const savedRpc = localStorage.getItem('rpc_url') || localStorage.getItem('juipter_auto_rpcUrl');
-    const savedMasterRpc = localStorage.getItem('master_monitor_rpc');
+    const savedMasterRpc = localStorage.getItem('master_monitor_rpc') || '';
+    const savedMasterRpc2 = localStorage.getItem('master_monitor_rpc2') || '';
+    const savedMasterWs = localStorage.getItem('master_monitor_ws') || '';
     const savedVault = localStorage.getItem('vault_pubkey');
 
     if (savedRpc) setRpcUrl(savedRpc);
-    if (savedMasterRpc) setMasterMonitorRpc(savedMasterRpc);
+    setMasterMonitorRpc(savedMasterRpc);
+    setMasterMonitorRpc2(savedMasterRpc2);
+    setMasterMonitorWs(savedMasterWs);
     if (savedVault) setVaultPubkey(savedVault);
 
     // Keys remain encrypted until user enters password
@@ -95,9 +103,7 @@ export const TradingSettings: React.FC = () => {
         localStorage.setItem('rpc_url', rpcUrl);
         localStorage.setItem('juipter_auto_rpcUrl', rpcUrl);
       }
-      if (masterMonitorRpc) {
-        localStorage.setItem('master_monitor_rpc', masterMonitorRpc);
-      }
+      masterMonitorHealthManager.setEndpoints(masterMonitorRpc, masterMonitorRpc2, masterMonitorWs);
       if (vaultPubkey) localStorage.setItem('vault_pubkey', vaultPubkey);
 
       setSaved(true);
@@ -207,28 +213,16 @@ export const TradingSettings: React.FC = () => {
         />
       </div>
 
-      {/* Master Monitor RPC URL */}
-      <div className="flex flex-col gap-1.5">
-        <div className="flex items-center justify-between">
-          <label className="text-[12px] font-medium text-sky-300 uppercase tracking-wider flex items-center gap-1.5">
-            <span>📡</span> Master Monitor RPC
-          </label>
-          <span className="text-[10px] text-sky-400/80 font-mono font-semibold">onLogs & Discovery</span>
-        </div>
-        <input
-          type="text"
-          value={masterMonitorRpc}
-          onChange={(e) => setMasterMonitorRpc(e.target.value)}
-          placeholder="https://mainnet.helius-rpc.com/... (Dedicated Node)"
-          className="w-full rounded-[10px] border border-sky-500/30 bg-[#0d1520]
-            px-3 py-2.5 text-[13px] text-white font-mono
-            placeholder:text-gray-600
-            focus:outline-none focus:ring-1 focus:ring-sky-400"
-        />
-        <p className="text-[10px] text-sky-300/70">
-          Independent RPC for onLogs, getParsedTransaction, token discovery & metrics.
-        </p>
-      </div>
+      {/* Master Monitor Section */}
+      <MasterMonitorPanel
+        rpcUrl={rpcUrl}
+        masterMonitorRpc={masterMonitorRpc}
+        setMasterMonitorRpc={setMasterMonitorRpc}
+        masterMonitorRpc2={masterMonitorRpc2}
+        setMasterMonitorRpc2={setMasterMonitorRpc2}
+        masterMonitorWs={masterMonitorWs}
+        setMasterMonitorWs={setMasterMonitorWs}
+      />
 
       {/* Vault Pubkey */}
       <div className="flex flex-col gap-1.5">

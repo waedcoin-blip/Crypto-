@@ -20,6 +20,7 @@ import { getSolPriceUsd, setSolPriceUsd, calcNetPnl } from '../../utils/pnlCalcu
 import { TradeModeToggle } from '../TradeModeToggle';
 import { TradingSettings } from '../TradingSettings';
 import { WalletStatusWidget } from '../WalletStatusWidget';
+import { MasterMonitorPanel } from '../MasterMonitorPanel';
 import { marketDataManager } from '../../services/marketDataManager';
 import { rpcHealthManager } from '../../services/rpcHealthManager';
 
@@ -944,6 +945,10 @@ export const PnLPage = ({
     setRpcUrl2: (v: string) => void;
     masterMonitorRpc?: string;
     setMasterMonitorRpc?: (v: string) => void;
+    masterMonitorRpc2?: string;
+    setMasterMonitorRpc2?: (v: string) => void;
+    masterMonitorWs?: string;
+    setMasterMonitorWs?: (v: string) => void;
     isSecondaryActive?: boolean;
     setIsSecondaryActive?: (v: boolean) => void;
     customWsUrl: string;
@@ -1019,6 +1024,10 @@ export const PnLPage = ({
     rpcUrl2, setRpcUrl2,
     masterMonitorRpc: propMasterMonitorRpc = '',
     setMasterMonitorRpc: propSetMasterMonitorRpc = () => {},
+    masterMonitorRpc2: propMasterMonitorRpc2 = '',
+    setMasterMonitorRpc2: propSetMasterMonitorRpc2 = () => {},
+    masterMonitorWs: propMasterMonitorWs = '',
+    setMasterMonitorWs: propSetMasterMonitorWs = () => {},
     isSecondaryActive = false, setIsSecondaryActive = () => {},
     customWsUrl, setCustomWsUrl,
     telemetryWhaleBuyMin = 500000, setTelemetryWhaleBuyMin = () => {},
@@ -1051,6 +1060,22 @@ export const PnLPage = ({
     setLocalMasterMonitorRpc(val);
     propSetMasterMonitorRpc(val);
     localStorage.setItem('master_monitor_rpc', val);
+  };
+
+  const [localMasterMonitorRpc2, setLocalMasterMonitorRpc2] = useState(() => propMasterMonitorRpc2 || localStorage.getItem('master_monitor_rpc2') || '');
+  const masterMonitorRpc2 = propMasterMonitorRpc2 || localMasterMonitorRpc2;
+  const setMasterMonitorRpc2 = (val: string) => {
+    setLocalMasterMonitorRpc2(val);
+    propSetMasterMonitorRpc2(val);
+    localStorage.setItem('master_monitor_rpc2', val);
+  };
+
+  const [localMasterMonitorWs, setLocalMasterMonitorWs] = useState(() => propMasterMonitorWs || localStorage.getItem('master_monitor_ws') || '');
+  const masterMonitorWs = propMasterMonitorWs || localMasterMonitorWs;
+  const setMasterMonitorWs = (val: string) => {
+    setLocalMasterMonitorWs(val);
+    propSetMasterMonitorWs(val);
+    localStorage.setItem('master_monitor_ws', val);
   };
   
   const signaledPositions = useRef<Set<string>>(new Set());
@@ -5648,41 +5673,16 @@ const checkTokenCriteria = (mint: string): {
                 <input type="text" value={rpcUrl} onChange={(e) => setRpcUrl(e.target.value)} placeholder="https://mainnet.helius-rpc.com/..." className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-2 text-[13px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors" />
               </div>
 
-              {/* MASTER MONITOR RPC NODE */}
-              <div className="p-3 bg-sky-950/20 border border-sky-500/20 rounded-xl space-y-2">
-                <div className="flex justify-between items-center text-[11px] text-sky-400 uppercase font-bold tracking-wider">
-                  <span className="flex items-center gap-1.5">
-                    <span>📡</span> Master Monitor RPC Node
-                  </span>
-                  {masterMonitorRpc && masterMonitorRpc.trim() !== '' ? (
-                    <span className="text-[9px] text-sky-400 bg-sky-500/10 px-1.5 py-0.5 rounded-full font-bold flex items-center gap-1 border border-sky-500/30">
-                      ● MASTER ENGAGED
-                    </span>
-                  ) : (
-                    <span className="text-[9px] text-slate-400 bg-slate-800/60 px-1.5 py-0.5 rounded-full">
-                      SHARED WITH PRIMARY
-                    </span>
-                  )}
-                </div>
-                <input 
-                  type="text" 
-                  value={masterMonitorRpc} 
-                  onChange={(e) => setMasterMonitorRpc(e.target.value)} 
-                  placeholder="https://mainnet.helius-rpc.com/... (Independent RPC for telemetry)" 
-                  className="w-full bg-[#050509] border border-sky-500/30 rounded-lg px-3 py-2 text-[13px] text-white font-mono focus:outline-none focus:border-sky-400 transition-colors placeholder:text-slate-600" 
-                />
-                <div className="pt-1 border-t border-sky-500/10 flex flex-wrap items-center gap-1 text-[9px] font-mono text-sky-300/80">
-                  <span className="bg-sky-500/10 border border-sky-500/20 px-1.5 py-0.5 rounded text-sky-300 font-semibold">onLogs</span>
-                  <span>→</span>
-                  <span className="bg-sky-500/10 border border-sky-500/20 px-1.5 py-0.5 rounded text-sky-300 font-semibold">getParsedTransaction</span>
-                  <span>→</span>
-                  <span className="bg-sky-500/10 border border-sky-500/20 px-1.5 py-0.5 rounded text-sky-300 font-semibold">token discovery</span>
-                  <span>→</span>
-                  <span className="bg-sky-500/10 border border-sky-500/20 px-1.5 py-0.5 rounded text-sky-300 font-semibold">tokenMetrics</span>
-                  <span>→</span>
-                  <span className="bg-sky-500/10 border border-sky-500/20 px-1.5 py-0.5 rounded text-sky-300 font-semibold">Terminal updates</span>
-                </div>
-              </div>
+              {/* MASTER MONITOR PANEL */}
+              <MasterMonitorPanel
+                rpcUrl={rpcUrl}
+                masterMonitorRpc={masterMonitorRpc}
+                setMasterMonitorRpc={setMasterMonitorRpc}
+                masterMonitorRpc2={masterMonitorRpc2}
+                setMasterMonitorRpc2={setMasterMonitorRpc2}
+                masterMonitorWs={masterMonitorWs}
+                setMasterMonitorWs={setMasterMonitorWs}
+              />
               <div>
                 <div className="flex justify-between items-center text-[11px] text-[#64748b] mb-1.5 uppercase font-medium">
                   <span>Secondary RPC Node (Load Balancer)</span>

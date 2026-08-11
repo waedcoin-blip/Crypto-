@@ -113,6 +113,7 @@ if (HELIUS_RPC_2 && HELIUS_RPC_2.trim() !== "") {
 
 let rpcCounter = 0;
 let wsCounter = 0;
+let masterCounter = 0;
 
 export const WS_URLS = RPC_URLS.map((rpc, index) => {
   if (index === 0 && savedWs && savedWs.trim() !== "") {
@@ -127,23 +128,34 @@ if (OriginalWebSocket) {
   const CustomWebSocket = function (this: any, url: string | URL, protocols?: string | string[]) {
     let targetUrl = url ? url.toString() : '';
     
-    // Normalize to handle trailing slashes or query arguments
+    // Check if WS belongs to Master Monitor
+    const masterWs = (localStorage.getItem('master_monitor_ws') || '').trim().replace(/\/$/, '');
+    if (masterWs && targetUrl.startsWith(masterWs)) {
+      // Direct connection to Master Monitor WS - do NOT rewrite to execution WS pool
+      const wsInst = (protocols !== undefined && protocols !== null)
+        ? new OriginalWebSocket(targetUrl, protocols)
+        : new OriginalWebSocket(targetUrl);
+      wsInst.addEventListener('error', () => {});
+      return wsInst;
+    }
+
+    // Normalize to handle trailing slashes or query arguments for execution WS
     if (WS_URLS.length > 1 && targetUrl) {
       const ws1 = WS_URLS[0].replace(/\/$/, '');
       const ws2 = WS_URLS[1].replace(/\/$/, '');
       
-      if (targetUrl.startsWith(ws1) || targetUrl.startsWith(ws2)) {
+      if (ws1 && targetUrl.startsWith(ws1)) {
         const selectedWs = WS_URLS[wsCounter % WS_URLS.length].replace(/\/$/, '');
-        if (targetUrl.startsWith(ws1)) {
-          targetUrl = targetUrl.replace(ws1, selectedWs);
-        } else if (targetUrl.startsWith(ws2)) {
-          targetUrl = targetUrl.replace(ws2, selectedWs);
-        }
+        targetUrl = targetUrl.replace(ws1, selectedWs);
+        wsCounter++;
+      } else if (ws2 && targetUrl.startsWith(ws2)) {
+        const selectedWs = WS_URLS[wsCounter % WS_URLS.length].replace(/\/$/, '');
+        targetUrl = targetUrl.replace(ws2, selectedWs);
         wsCounter++;
       }
     }
     
-    const wsInstance = protocols !== undefined
+    const wsInstance = (protocols !== undefined && protocols !== null)
       ? new OriginalWebSocket(targetUrl, protocols)
       : new OriginalWebSocket(targetUrl);
       
@@ -174,7 +186,37 @@ window.fetch = async (...args) => {
     url = (args[0] as Request).url;
   }
 
-  // Load balancing logic for RPC URL
+  // 1. Check if request belongs to Master Monitor
+  const masterRpc1 = (localStorage.getItem('master_monitor_rpc') || '').trim().replace(/\/$/, '');
+  const masterRpc2 = (localStorage.getItem('master_monitor_rpc2') || '').trim().replace(/\/$/, '');
+
+  if (masterRpc1 && (url.startsWith(masterRpc1) || (masterRpc2 && url.startsWith(masterRpc2)))) {
+    // If master backup exists, load balance between master nodes only
+    if (masterRpc1 && masterRpc2) {
+      const masterUrls = [masterRpc1, masterRpc2];
+      const selectedMaster = masterUrls[masterCounter % masterUrls.length];
+      masterCounter++;
+      const targetMaster = url.startsWith(masterRpc1) ? masterRpc1 : masterRpc2;
+      const newUrl = url.replace(targetMaster, selectedMaster);
+
+      if (typeof args[0] === 'string') {
+        return originalFetch(newUrl, args[1]);
+      } else if (args[0] instanceof URL) {
+        return originalFetch(new URL(newUrl), args[1]);
+      } else if (args[0] && typeof args[0] === 'object' && 'url' in (args[0] as any)) {
+        try {
+          const newReq = new Request(newUrl, args[0] as Request);
+          return originalFetch(newReq, args[1]);
+        } catch {
+          return originalFetch(args[0], args[1]);
+        }
+      }
+    }
+    // Isolated Master Monitor request — bypass execution load balancer
+    return originalFetch(args[0], args[1]);
+  }
+
+  // 2. Load balancing logic for Execution RPC URLs
   if (RPC_URLS.length > 1 && url) {
     const rpc1 = RPC_URLS[0].replace(/\/$/, '');
     const rpc2 = RPC_URLS[1].replace(/\/$/, '');

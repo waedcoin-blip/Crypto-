@@ -55,6 +55,7 @@ import { PnLPage } from './components/pages/PnLPage';
 import { WalletStatusWidget } from './components/WalletStatusWidget';
 import { marketDataManager } from './services/marketDataManager';
 import { rpcHealthManager } from './services/rpcHealthManager';
+import { masterMonitorHealthManager } from './services/MasterMonitorHealthManager';
 
 
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
@@ -655,6 +656,8 @@ function App() {
     const raw = localStorage.getItem('master_monitor_rpc') || '';
     return raw.includes('winter-methodical-river') ? '' : raw;
   });
+  const [masterMonitorRpc2, setMasterMonitorRpc2] = useState(() => localStorage.getItem('master_monitor_rpc2') || '');
+  const [masterMonitorWs, setMasterMonitorWs] = useState(() => localStorage.getItem('master_monitor_ws') || '');
   const [isSecondaryActive, setIsSecondaryActive] = useState(() => localStorage.getItem('juipter_rpc_secondary_active') === 'true');
 
   useEffect(() => {
@@ -670,8 +673,8 @@ function App() {
   }, [customWsUrl]);
 
   useEffect(() => {
-    localStorage.setItem('master_monitor_rpc', masterMonitorRpc);
-  }, [masterMonitorRpc]);
+    masterMonitorHealthManager.setEndpoints(masterMonitorRpc, masterMonitorRpc2, masterMonitorWs);
+  }, [masterMonitorRpc, masterMonitorRpc2, masterMonitorWs, rpcUrl]);
   const [isHardenedCriteriaExpanded, setIsHardenedCriteriaExpanded] = useState(false);
   const [activePreset, setActivePreset] = useState<string>(() => localStorage.getItem('app_active_preset') || 'custom');
 
@@ -4099,8 +4102,8 @@ function App() {
   useEffect(() => {
     // Master Monitor Connection Hook (Independent onLogs, getParsedTransaction, Discovery & Metrics)
     try {
-      const activeMasterRpc = (masterMonitorRpc && masterMonitorRpc.trim() !== "") ? masterMonitorRpc.trim() : rpcUrl;
-      const activeWs = (customWsUrl && customWsUrl.trim() !== "") ? customWsUrl.trim() : activeMasterRpc.replace('https://', 'wss://').replace('http://', 'ws://');
+      const activeMasterRpc = masterMonitorHealthManager.getActiveEndpoint();
+      const activeWs = masterMonitorHealthManager.getActiveWsEndpoint() || undefined;
       masterConnectionRef.current = new Connection(activeMasterRpc, {
         wsEndpoint: activeWs,
         commitment: 'confirmed',
@@ -4115,7 +4118,7 @@ function App() {
     } catch (err) {
       console.error('Failed to initialize Master Monitor Connection', err);
     }
-  }, [masterMonitorRpc, rpcUrl, customWsUrl]);
+  }, [masterMonitorRpc, masterMonitorRpc2, masterMonitorWs, rpcUrl, customWsUrl]);
 
   useEffect(() => {
     // Dynamic execution connection hook reacting to user RPC and WS configuration
@@ -6107,6 +6110,10 @@ function App() {
           setRpcUrl2,
           masterMonitorRpc,
           setMasterMonitorRpc,
+          masterMonitorRpc2,
+          setMasterMonitorRpc2,
+          masterMonitorWs,
+          setMasterMonitorWs,
           isSecondaryActive,
           setIsSecondaryActive,
           customWsUrl,
