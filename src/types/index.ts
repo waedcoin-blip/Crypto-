@@ -63,6 +63,7 @@ export interface TokenMetric {
   bondingCurveProgress?: number;
   dexId?: string;
   isRaydiumListed?: boolean;
+  requiresManualReview?: boolean;
 }
 
 export interface TelemetryAlert {

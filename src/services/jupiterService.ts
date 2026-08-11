@@ -507,50 +507,34 @@ export const executeWithPriceGuard = async (
   connection: Connection,
   guardConfig: PriceGuardConfig
 ): Promise<string> => {
-  const { quoteResponse, maxSlippageFromQuotePct, checkIntervalMs, inputMint, outputMint, amount } = guardConfig;
+  const { quoteResponse, maxSlippageFromQuotePct, inputMint, outputMint, amount } = guardConfig;
   const originalOutAmount = BigInt(quoteResponse.outAmount);
   const maxAcceptableOutAmount = originalOutAmount * BigInt(Math.floor(100 - maxSlippageFromQuotePct)) / BigInt(100);
-  
-  let isAborted = false;
-  let abortReason = '';
-  
-  const priceGuardInterval = setInterval(async () => {
-    if (isAborted) return;
-    try {
-      const freshQuote = await getJupiterQuote(inputMint, outputMint, amount, 0);
-      if (!freshQuote) return;
+
+  // 1. Check price BEFORE signing/broadcasting
+  try {
+    const freshQuote = await getJupiterQuote(inputMint, outputMint, amount, 0);
+    if (freshQuote) {
       const freshOutAmount = BigInt(freshQuote.outAmount);
       if (freshOutAmount < maxAcceptableOutAmount) {
-        isAborted = true;
-        abortReason = `Price dropped too fast. Expected: ${originalOutAmount}, Fresh: ${freshOutAmount}`;
+        const abortReason = `Price dropped below acceptable threshold. Expected: ${originalOutAmount}, Fresh: ${freshOutAmount}`;
         console.warn(`[KILL SWITCH] ${abortReason}`);
         useAppStore.getState().addJupiterLog({
           type: 'ERROR',
-          message: `[KILL SWITCH] Trade aborted: ${abortReason}`
+          message: `[KILL SWITCH] Trade aborted before broadcast: ${abortReason}`
         });
+        throw new Error(`Trade aborted by Price Guard: ${abortReason}`);
       }
-    } catch (e) {}
-  }, checkIntervalMs);
-  
-  try {
-    const result = await Promise.race([
-      executeTxWithRPCFallback(tx, connection),
-      new Promise<string>((_, reject) => {
-        const checkInterval = setInterval(() => {
-          if (isAborted) {
-            clearInterval(checkInterval);
-            clearInterval(priceGuardInterval);
-            reject(new Error(`Trade aborted by Price Guard: ${abortReason}`));
-          }
-        }, 100);
-      })
-    ]);
-    clearInterval(priceGuardInterval);
-    return result;
-  } catch (error) {
-    clearInterval(priceGuardInterval);
-    throw error;
+    }
+  } catch (err: any) {
+    if (err.message?.includes('Trade aborted by Price Guard')) {
+      throw err;
+    }
+    console.warn('Price guard quote check failed, proceeding with caution:', err);
   }
+
+  // 2. Broadcast transaction once verified (no race after broadcast)
+  return await executeTxWithRPCFallback(tx, connection);
 };
 
 export const pollBundleStatus = async (bundleId: string, maxWaitMs = 30000) => {
@@ -678,46 +662,28 @@ export const executeMomentumSell = async (
     const originalOutAmount = BigInt(guardConfig.quoteResponse.outAmount);
     const maxAcceptableOutAmount = originalOutAmount * BigInt(Math.floor(100 - guardConfig.maxSlippageFromQuotePct)) / BigInt(100);
     
-    let isAborted = false;
-    let abortReason = '';
-    
-    const priceGuardInterval = setInterval(async () => {
-      if (isAborted) return;
-      try {
-        const freshQuote = await getJupiterQuote(guardConfig.inputMint, guardConfig.outputMint, guardConfig.amount, 0);
-        if (!freshQuote) return;
+    try {
+      const freshQuote = await getJupiterQuote(guardConfig.inputMint, guardConfig.outputMint, guardConfig.amount, 0);
+      if (freshQuote) {
         const freshOutAmount = BigInt(freshQuote.outAmount);
         if (freshOutAmount < maxAcceptableOutAmount) {
-          isAborted = true;
-          abortReason = `Price guard aborted momentum bundle: dropped below acceptable floor.`;
+          const abortReason = `Price guard aborted momentum bundle: dropped below acceptable floor.`;
           console.warn(`[MOMENTUM KILL SWITCH] ${abortReason}`);
           useAppStore.getState().addJupiterLog({
             type: 'ERROR',
             message: `[MOMENTUM KILL SWITCH] ${abortReason}`
           });
+          throw new Error(abortReason);
         }
-      } catch (e) {}
-    }, guardConfig.checkIntervalMs);
-
-    try {
-      const txid = await Promise.race([
-        executeSellBundle(tx, tipAmountSol, connection, userPublicKeyStr, keypair),
-        new Promise<string>((_, reject) => {
-          const checkInterval = setInterval(() => {
-            if (isAborted) {
-              clearInterval(checkInterval);
-              clearInterval(priceGuardInterval);
-              reject(new Error(abortReason));
-            }
-          }, 100);
-        })
-      ]);
-      clearInterval(priceGuardInterval);
-      return txid;
-    } catch (err) {
-      clearInterval(priceGuardInterval);
-      throw err;
+      }
+    } catch (err: any) {
+      if (err.message?.includes('Price guard aborted momentum bundle')) {
+        throw err;
+      }
+      console.warn('Momentum price guard pre-check failed, proceeding with caution:', err);
     }
+
+    return await executeSellBundle(tx, tipAmountSol, connection, userPublicKeyStr, keypair);
   } else {
     const txWithTip = await addTipInstructionToVersionedTx(connection, tx, new PublicKey(userPublicKeyStr), tipAmountSol);
     txWithTip.sign([keypair]);

@@ -20,10 +20,12 @@ export const SystemCheckPage = ({
 
   const [results, setResults] = useState<{
     rpcUrl: { status: 'idle' | 'testing' | 'success' | 'error', details: string },
+    masterMonitorRpc: { status: 'idle' | 'testing' | 'success' | 'error', details: string },
     laserstream: { status: 'idle' | 'testing' | 'success' | 'error', details: string },
     dexscreener: { status: 'idle' | 'testing' | 'success' | 'error', details: string },
   }>({
     rpcUrl: { status: 'idle', details: '' },
+    masterMonitorRpc: { status: 'idle', details: '' },
     laserstream: { status: 'idle', details: '' },
     dexscreener: { status: 'idle', details: '' },
   });
@@ -48,6 +50,7 @@ export const SystemCheckPage = ({
     setIsTesting(true);
     setResults({
       rpcUrl: { status: 'testing', details: '' },
+      masterMonitorRpc: { status: 'testing', details: '' },
       laserstream: { status: 'testing', details: '' },
       dexscreener: { status: 'testing', details: '' },
     });
@@ -61,7 +64,7 @@ export const SystemCheckPage = ({
       if (blockhash && blockhash.blockhash) {
         setResults(prev => ({
           ...prev,
-          rpcUrl: { status: 'success', details: `Latency: ${rpcDuration.toFixed(2)}ms. Connected to Solana Mainnet.` }
+          rpcUrl: { status: 'success', details: `Latency: ${rpcDuration.toFixed(2)}ms. Connected to Solana Mainnet Execution Node.` }
         }));
         telemetryService.recordApiRequest(rpcUrl, 'getLatestBlockhash', 200, rpcDuration);
       } else {
@@ -73,6 +76,33 @@ export const SystemCheckPage = ({
         rpcUrl: { status: 'error', details: e.message || 'Failed to connect to RPC node.' }
       }));
       telemetryService.recordApiRequest(rpcUrl, 'getLatestBlockhash', 500, 0, e.message);
+    }
+
+    // Test 2: Master Monitor RPC URL
+    const masterRpcToTest = localStorage.getItem('master_monitor_rpc') || rpcUrl;
+    try {
+      const masterConn = new Connection(masterRpcToTest, 'confirmed');
+      const start = performance.now();
+      const blockhash = await masterConn.getLatestBlockhash();
+      const masterDuration = performance.now() - start;
+      const isIndep = !!(localStorage.getItem('master_monitor_rpc') && localStorage.getItem('master_monitor_rpc') !== rpcUrl);
+      if (blockhash && blockhash.blockhash) {
+        setResults(prev => ({
+          ...prev,
+          masterMonitorRpc: { 
+            status: 'success', 
+            details: `Latency: ${masterDuration.toFixed(2)}ms. Connected (${isIndep ? 'Independent Master RPC Node' : 'Shared Primary Endpoint'}). Ready for onLogs, discovery & metrics.` 
+          }
+        }));
+        telemetryService.recordApiRequest(masterRpcToTest, 'getLatestBlockhash', 200, masterDuration);
+      } else {
+        throw new Error("Invalid response from Master Monitor RPC.");
+      }
+    } catch (e: any) {
+      setResults(prev => ({
+        ...prev,
+        masterMonitorRpc: { status: 'error', details: e.message || 'Failed to connect to Master Monitor RPC node.' }
+      }));
     }
 
     // Test 3: Helius LaserStream
@@ -465,7 +495,8 @@ export const SystemCheckPage = ({
           </div>
 
           <div className="grid gap-3">
-            <TestItem title="Solana RPC Connection" result={results.rpcUrl} />
+            <TestItem title="Solana RPC Connection (Execution Node)" result={results.rpcUrl} />
+            <TestItem title="Master Monitor RPC (onLogs, Discovery & Metrics)" result={results.masterMonitorRpc} />
             <TestItem title="Helius LaserStream Ingestion Feed" result={results.laserstream} />
             <TestItem title="DexScreener Market Price Feed" result={results.dexscreener} />
           </div>

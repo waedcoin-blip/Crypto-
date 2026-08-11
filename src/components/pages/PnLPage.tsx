@@ -942,6 +942,8 @@ export const PnLPage = ({
     setRpcUrl: (v: string) => void;
     rpcUrl2: string;
     setRpcUrl2: (v: string) => void;
+    masterMonitorRpc?: string;
+    setMasterMonitorRpc?: (v: string) => void;
     isSecondaryActive?: boolean;
     setIsSecondaryActive?: (v: boolean) => void;
     customWsUrl: string;
@@ -1015,6 +1017,8 @@ export const PnLPage = ({
     enableLatencyGuard = true, setEnableLatencyGuard = () => {},
     rpcUrl, setRpcUrl,
     rpcUrl2, setRpcUrl2,
+    masterMonitorRpc: propMasterMonitorRpc = '',
+    setMasterMonitorRpc: propSetMasterMonitorRpc = () => {},
     isSecondaryActive = false, setIsSecondaryActive = () => {},
     customWsUrl, setCustomWsUrl,
     telemetryWhaleBuyMin = 500000, setTelemetryWhaleBuyMin = () => {},
@@ -1040,6 +1044,14 @@ export const PnLPage = ({
   
   const jupRpcUrlToUse = jupiterRpcUrl && jupiterRpcUrl.trim() !== "" ? jupiterRpcUrl.trim() : rpcUrl;
   const navigate = useNavigate();
+
+  const [localMasterMonitorRpc, setLocalMasterMonitorRpc] = useState(() => propMasterMonitorRpc || localStorage.getItem('master_monitor_rpc') || '');
+  const masterMonitorRpc = propMasterMonitorRpc || localMasterMonitorRpc;
+  const setMasterMonitorRpc = (val: string) => {
+    setLocalMasterMonitorRpc(val);
+    propSetMasterMonitorRpc(val);
+    localStorage.setItem('master_monitor_rpc', val);
+  };
   
   const signaledPositions = useRef<Set<string>>(new Set());
   const latestPricesRef = useRef<Record<string, number>>({});
@@ -1428,11 +1440,12 @@ export const PnLPage = ({
         percentageIncrease: bestPair.priceChange?.m5 !== undefined ? parseFloat(String(bestPair.priceChange.m5)) : (bestPair.priceChange?.h1 !== undefined ? parseFloat(String(bestPair.priceChange.h1)) / 12 : 0),
         recentBuysTimeline: [],
         category: rawAddress.toLowerCase().endsWith('pump') ? 'PUMP_FUN' : 'RAYDIUM',
-        isRugSafe: true,
-        mintAuthorityRevoked: true,
-        freezeAuthorityRevoked: true,
-        liquidityBurned: true,
-        top10Percentage: 8.5
+        isRugSafe: false,
+        mintAuthorityRevoked: false,
+        freezeAuthorityRevoked: false,
+        liquidityBurned: false,
+        top10Percentage: 100,
+        requiresManualReview: true
       };
 
       // Push into AppStore's tokenMetrics so the entire app can identify and load it!
@@ -3245,9 +3258,47 @@ export const PnLPage = ({
       } catch (execErr: any) {
         if (execErr.message?.includes('timed out waiting for confirmation') && attempt < 3) {
           useAppStore.getState().addJupiterLog({
-            type: 'ERROR',
-            message: `Swap timeout detected. Retrying immediately (Attempt ${attempt + 1}/3)...`,
+            type: 'INFO',
+            message: `Swap timeout detected. Checking on-chain status before retrying (Attempt ${attempt}/3)...`,
           });
+
+          const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+          // Wait 5s then check if tx actually landed
+          await sleep(5000);
+
+          try {
+            // Check all recent signatures
+            const sigs = await connection.getSignaturesForAddress(keypair.publicKey, { limit: 5 });
+            const recentTx = sigs.find(s => 
+              s.blockTime && s.blockTime > (Date.now() / 1000 - 60)
+            );
+
+            if (recentTx && !recentTx.err) {
+              // Tx landed! Don't retry
+              console.log('Tx confirmed after timeout:', recentTx.signature);
+              addLog(`✅ Tx confirmed on-chain after timeout! Txid: ${recentTx.signature}`, 'success');
+              return { 
+                signature: recentTx.signature, 
+                txid: recentTx.signature, 
+                outputAmount: Number(quoteResponse?.outAmount || 0), 
+                actualOutputAmountRaw: Number(quoteResponse?.outAmount || 0),
+                quotedOutputAmountRaw: Number(quoteResponse?.outAmount || 0),
+                quoteOutAmountRaw: quoteResponse?.outAmount,
+                confirmed: true 
+              };
+            }
+
+            // Only retry if tx definitely failed
+            if (recentTx?.err) {
+              console.log('Tx failed on-chain, retrying...');
+              return singleSwapInner(inMint, outMint, swapAmt, attempt + 1);
+            }
+          } catch (chkErr) {
+            console.warn('Failed to verify on-chain transaction status after timeout:', chkErr);
+          }
+
+          // Ambiguous — wait longer, don't retry yet
+          await sleep(10000);
           return singleSwapInner(inMint, outMint, swapAmt, attempt + 1);
         }
         throw execErr;
@@ -3446,9 +3497,9 @@ const checkTokenCriteria = (mint: string): {
       const mc = metric.marketCap || 0;
       const liq = metric.liquidity || 0;
       const progress = metric.bondingCurveProgress || 0;
-      const riskScore = metric.riskScore || 0;
-      const devPct = metric.devWalletPercentage || 0;
-      const top10 = metric.top10Percentage || 0;
+      const riskScore = metric.riskScore ?? 100; // Unknown = high risk
+      const devPct = metric.devWalletPercentage ?? 100; // Unknown = assume 100%
+      const top10 = metric.top10Percentage ?? 100; // Unknown = assume concentrated
       
       const breakdown: { name: string; pass: boolean; actual: string; limit: string }[] = [];
 
@@ -3514,7 +3565,7 @@ const checkTokenCriteria = (mint: string): {
       );
 
       // 7. Security Rug Safety (MANDATORY Showstopper)
-      const isRugSafeVal = metric.isRugSafe !== false;
+      const isRugSafeVal = metric.isRugSafe === true; // Must be EXPLICITLY true
       addCheckResult(
         "Rug Safety Audits",
         isRugSafeVal,
@@ -3583,8 +3634,12 @@ const checkTokenCriteria = (mint: string): {
 
       // 11. 5M Profit momentum check
       const minProfitRequired = hardenedMinProfit5m !== undefined ? hardenedMinProfit5m : 1.5;
-      const rawProfit = metric.priceChange5m !== undefined ? metric.priceChange5m : (metric.percentageIncrease !== undefined ? metric.percentageIncrease : (metric.priceChange1m || 0));
-      const profitVal = rawProfit === 0 ? 2.5 : rawProfit; // Assign fresh positive baseline momentum for newly matched tokens in System Logs
+      const rawProfit = metric.priceChange5m ?? metric.percentageIncrease ?? metric.priceChange1m ?? null;
+      const profitVal = rawProfit ?? null;
+      if (profitVal === null) {
+        // Missing momentum data = insufficient information
+        return { pass: false, reason: 'Momentum data unavailable', breakdown };
+      }
       addCheckResult(
         "5M Profit Momentum",
         profitVal >= minProfitRequired,
@@ -3699,11 +3754,12 @@ const checkTokenCriteria = (mint: string): {
               percentageIncrease: bestPair.priceChange?.m5 !== undefined ? parseFloat(String(bestPair.priceChange.m5)) : (bestPair.priceChange?.h1 !== undefined ? parseFloat(String(bestPair.priceChange.h1)) / 12 : 0),
               recentBuysTimeline: [],
               category: mint.toLowerCase().endsWith('pump') ? 'PUMP_FUN' : 'RAYDIUM',
-              isRugSafe: true,
-              mintAuthorityRevoked: true,
-              freezeAuthorityRevoked: true,
-              liquidityBurned: true,
-              top10Percentage: 8.5
+              isRugSafe: false, // Unknown = unsafe
+              mintAuthorityRevoked: false,
+              freezeAuthorityRevoked: false,
+              liquidityBurned: false,
+              top10Percentage: 100, // Unknown = assume worst
+              requiresManualReview: true // Flag for user attention
             };
 
             tokenMetricsRef.current[mint] = fetchedMetric;
@@ -4435,7 +4491,7 @@ const checkTokenCriteria = (mint: string): {
         const blockVelocityRatio = buys15s / Math.max(sells15s, 1);
         const velocityPass = buys15s >= minBuys15s && blockVelocityRatio >= minBlockVelocityRatio && blockVelocityRatio <= maxBlockVelocityRatio;
         const peakPass = isGraduated ? (priceChange1m <= maxPriceChange1m && priceChange1m >= minPriceChange1m) : true;
-        const securityPass = isGraduated ? (metric.isRugSafe !== false && (metric.riskScore || 100) <= maxRiskScore && devPct <= maxDevPct) : true;
+        const securityPass = isGraduated ? (metric.isRugSafe === true && (metric.riskScore ?? 100) <= maxRiskScore && devPct <= maxDevPct) : true;
         const progress = metric.bondingCurveProgress || 0;
         const isProgressValid = isGraduated || (progress >= hardenedMinBondingProgress && progress <= hardenedMaxBondingProgress);
 
@@ -4538,8 +4594,8 @@ const checkTokenCriteria = (mint: string): {
                   const mcMax = hardenedMcapMax || 999999999;
                   if (mc >= mcMin && mc <= mcMax) score++;
                   if (liq >= (isGraduated ? (hardenedLiquidityMin || 0) : Math.min(1000, hardenedLiquidityMin || 0))) score++;
-                  if (metric.isRugSafe !== false) score++;
-                  if ((metric.riskScore || 100) <= hardenedMaxRiskScore) score++;
+                  if (metric.isRugSafe === true) score++;
+                  if ((metric.riskScore ?? 100) <= hardenedMaxRiskScore) score++;
                   const profit5mCheck = metric.priceChange5m !== undefined ? metric.priceChange5m : (metric.percentageIncrease !== undefined ? metric.percentageIncrease : (metric.priceChange1m || 0));
                   if (profit5mCheck >= (hardenedMinProfit5m || 0)) score++;
                   return score;
@@ -5582,7 +5638,7 @@ const checkTokenCriteria = (mint: string): {
             <div className="p-4 space-y-4">
               <div>
                 <div className="flex justify-between items-center text-[11px] text-[#64748b] mb-1.5 uppercase font-medium">
-                  <span>Primary RPC Node URL</span>
+                  <span>Primary RPC Node URL (Execution)</span>
                   {!isSecondaryActive ? (
                     <span className="text-[9px] text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded-full font-bold flex items-center gap-1">● ACTIVE</span>
                   ) : (
@@ -5590,6 +5646,42 @@ const checkTokenCriteria = (mint: string): {
                   )}
                 </div>
                 <input type="text" value={rpcUrl} onChange={(e) => setRpcUrl(e.target.value)} placeholder="https://mainnet.helius-rpc.com/..." className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-2 text-[13px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors" />
+              </div>
+
+              {/* MASTER MONITOR RPC NODE */}
+              <div className="p-3 bg-sky-950/20 border border-sky-500/20 rounded-xl space-y-2">
+                <div className="flex justify-between items-center text-[11px] text-sky-400 uppercase font-bold tracking-wider">
+                  <span className="flex items-center gap-1.5">
+                    <span>📡</span> Master Monitor RPC Node
+                  </span>
+                  {masterMonitorRpc && masterMonitorRpc.trim() !== '' ? (
+                    <span className="text-[9px] text-sky-400 bg-sky-500/10 px-1.5 py-0.5 rounded-full font-bold flex items-center gap-1 border border-sky-500/30">
+                      ● MASTER ENGAGED
+                    </span>
+                  ) : (
+                    <span className="text-[9px] text-slate-400 bg-slate-800/60 px-1.5 py-0.5 rounded-full">
+                      SHARED WITH PRIMARY
+                    </span>
+                  )}
+                </div>
+                <input 
+                  type="text" 
+                  value={masterMonitorRpc} 
+                  onChange={(e) => setMasterMonitorRpc(e.target.value)} 
+                  placeholder="https://mainnet.helius-rpc.com/... (Independent RPC for telemetry)" 
+                  className="w-full bg-[#050509] border border-sky-500/30 rounded-lg px-3 py-2 text-[13px] text-white font-mono focus:outline-none focus:border-sky-400 transition-colors placeholder:text-slate-600" 
+                />
+                <div className="pt-1 border-t border-sky-500/10 flex flex-wrap items-center gap-1 text-[9px] font-mono text-sky-300/80">
+                  <span className="bg-sky-500/10 border border-sky-500/20 px-1.5 py-0.5 rounded text-sky-300 font-semibold">onLogs</span>
+                  <span>→</span>
+                  <span className="bg-sky-500/10 border border-sky-500/20 px-1.5 py-0.5 rounded text-sky-300 font-semibold">getParsedTransaction</span>
+                  <span>→</span>
+                  <span className="bg-sky-500/10 border border-sky-500/20 px-1.5 py-0.5 rounded text-sky-300 font-semibold">token discovery</span>
+                  <span>→</span>
+                  <span className="bg-sky-500/10 border border-sky-500/20 px-1.5 py-0.5 rounded text-sky-300 font-semibold">tokenMetrics</span>
+                  <span>→</span>
+                  <span className="bg-sky-500/10 border border-sky-500/20 px-1.5 py-0.5 rounded text-sky-300 font-semibold">Terminal updates</span>
+                </div>
               </div>
               <div>
                 <div className="flex justify-between items-center text-[11px] text-[#64748b] mb-1.5 uppercase font-medium">
@@ -6970,8 +7062,8 @@ const checkTokenCriteria = (mint: string): {
                         
                         if (mc >= mcMin && mc <= mcMax) score++;
                         if (liq >= (isGraduated ? (hardenedLiquidityMin || 0) : Math.min(1000, hardenedLiquidityMin || 0))) score++;
-                        if (metric.isRugSafe !== false) score++;
-                        if ((metric.riskScore || 100) <= (hardenedMaxRiskScore || 100)) score++;
+                        if (metric.isRugSafe === true) score++;
+                        if ((metric.riskScore ?? 100) <= (hardenedMaxRiskScore || 100)) score++;
                         const profit5mCheck = metric.priceChange5m !== undefined ? metric.priceChange5m : (metric.percentageIncrease !== undefined ? metric.percentageIncrease : (metric.priceChange1m || 0));
                         if (profit5mCheck >= (hardenedMinProfit5m || 0)) score++;
                         return score;
@@ -7007,7 +7099,7 @@ const checkTokenCriteria = (mint: string): {
                         const checks = [
                           { name: '5m Profit Check', pass: profit5mCheck >= (hardenedMinProfit5m || 0), val: `${profit5mCheck.toFixed(1)}%` },
                           { name: 'Market Cap bounds', pass: mc >= mcMin && mc <= mcMax, val: `$${Math.floor(mc/1000)}k` },
-                          { name: 'Contract Security', pass: metric.isRugSafe !== false && (metric.riskScore || 100) <= (hardenedMaxRiskScore || 100), val: `Risk ${metric.riskScore || 0}` },
+                          { name: 'Contract Security', pass: metric.isRugSafe === true && (metric.riskScore ?? 100) <= (hardenedMaxRiskScore || 100), val: `Risk ${metric.riskScore ?? 'N/A'}` },
                           ...(!isRaydium ? [{ name: 'Bonding Progress', pass: progress >= (hardenedMinBondingProgress || 0) && progress <= (hardenedMaxBondingProgress || 100), val: `${progress.toFixed(0)}%` }] : []),
                           { name: 'Holder Consolidation', pass: isRaydium ? (top10 < maxTop10) : true, val: `${top10.toFixed(0)}%` },
                         ];

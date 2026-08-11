@@ -651,6 +651,10 @@ function App() {
     return raw.includes('winter-methodical-river') ? DEFAULT_HELIUS_RPC : raw;
   });
   const [customWsUrl, setCustomWsUrl] = useState(() => localStorage.getItem('juipter_auto_wsUrl') || '');
+  const [masterMonitorRpc, setMasterMonitorRpc] = useState(() => {
+    const raw = localStorage.getItem('master_monitor_rpc') || '';
+    return raw.includes('winter-methodical-river') ? '' : raw;
+  });
   const [isSecondaryActive, setIsSecondaryActive] = useState(() => localStorage.getItem('juipter_rpc_secondary_active') === 'true');
 
   useEffect(() => {
@@ -664,6 +668,10 @@ function App() {
   useEffect(() => {
     localStorage.setItem('juipter_auto_wsUrl', customWsUrl);
   }, [customWsUrl]);
+
+  useEffect(() => {
+    localStorage.setItem('master_monitor_rpc', masterMonitorRpc);
+  }, [masterMonitorRpc]);
   const [isHardenedCriteriaExpanded, setIsHardenedCriteriaExpanded] = useState(false);
   const [activePreset, setActivePreset] = useState<string>(() => localStorage.getItem('app_active_preset') || 'custom');
 
@@ -3312,6 +3320,7 @@ function App() {
   };
 
   const connectionRef = useRef<Connection | null>(null);
+  const masterConnectionRef = useRef<Connection | null>(null);
   const subscriptionIds = useRef<Record<string, number>>({});
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [isMobile, setIsMobile] = useState(false);
@@ -3596,8 +3605,9 @@ function App() {
             }
             
             // Fallback to standard RPC if Helius returns nothing
-            if (connectionRef.current) {
-                const tx = await connectionRef.current.getParsedTransaction(signature, { maxSupportedTransactionVersion: 0, commitment: 'confirmed' });
+            const connToUse = masterConnectionRef.current || connectionRef.current;
+            if (connToUse) {
+                const tx = await connToUse.getParsedTransaction(signature, { maxSupportedTransactionVersion: 0, commitment: 'confirmed' });
                 if (tx) return tx;
             }
 
@@ -3619,8 +3629,8 @@ function App() {
   const xRaySubscriptionId = useRef<number | null>(null);
 
   useEffect(() => {
-    // Global X-Ray Monitor (Telemetry Style)
-    const conn = connectionRef.current;
+    // Global X-Ray Monitor (Telemetry Style - Master Monitor RPC)
+    const conn = masterConnectionRef.current || connectionRef.current;
     if (isXRayEnabled && conn) {
       const RAYDIUM_PROGRAM_ID = safePublicKey('675k1q2AYp74sk2Wym6L6nd56N7Y5D7T6jhpxS22bbe');
       if (!RAYDIUM_PROGRAM_ID) return;
@@ -3931,11 +3941,11 @@ function App() {
         conn.removeOnLogsListener(xRaySubscriptionId.current);
       }
     };
-  }, [isXRayEnabled, monitoredWallets, telegramBotToken, telegramChatId, rpcUrl, customWsUrl]);
+  }, [isXRayEnabled, monitoredWallets, telegramBotToken, telegramChatId, rpcUrl, masterMonitorRpc, customWsUrl]);
 
   useEffect(() => {
-    // Multi-wallet Monitoring Logic
-    const conn = connectionRef.current;
+    // Multi-wallet Monitoring Logic (Master Monitor RPC)
+    const conn = masterConnectionRef.current || connectionRef.current;
     if (isMonitoring && monitoredWallets.length > 0 && conn) {
       // Clear existing subscriptions
       Object.keys(subscriptionIds.current).forEach(addr => {
@@ -4074,7 +4084,7 @@ function App() {
         });
       }
     };
-  }, [isMonitoring, monitoredWallets, rpcUrl, customWsUrl]);
+  }, [isMonitoring, monitoredWallets, rpcUrl, masterMonitorRpc, customWsUrl]);
 
   const copyToClipboard = async (text: string, id: string) => {
     try {
@@ -4087,7 +4097,28 @@ function App() {
   };
 
   useEffect(() => {
-    // Dynamic connection hook reacting to user RPC and WS configuration
+    // Master Monitor Connection Hook (Independent onLogs, getParsedTransaction, Discovery & Metrics)
+    try {
+      const activeMasterRpc = (masterMonitorRpc && masterMonitorRpc.trim() !== "") ? masterMonitorRpc.trim() : rpcUrl;
+      const activeWs = (customWsUrl && customWsUrl.trim() !== "") ? customWsUrl.trim() : activeMasterRpc.replace('https://', 'wss://').replace('http://', 'ws://');
+      masterConnectionRef.current = new Connection(activeMasterRpc, {
+        wsEndpoint: activeWs,
+        commitment: 'confirmed',
+        confirmTransactionInitialTimeout: 90000,
+        disableRetryOnRateLimit: false,
+        httpHeaders: {
+          'Content-Type': 'application/json',
+        },
+      });
+      const isIndependent = !!(masterMonitorRpc && masterMonitorRpc.trim() !== "" && masterMonitorRpc.trim() !== rpcUrl);
+      console.log(`[MASTER MONITOR RPC] ${isIndependent ? 'INDEPENDENT NODE ENGAGED' : 'SHARED NODE'}: ${activeMasterRpc}`);
+    } catch (err) {
+      console.error('Failed to initialize Master Monitor Connection', err);
+    }
+  }, [masterMonitorRpc, rpcUrl, customWsUrl]);
+
+  useEffect(() => {
+    // Dynamic execution connection hook reacting to user RPC and WS configuration
     try {
       const HELIUS_RPC = rpcUrl;
       const HELIUS_WS = (customWsUrl && customWsUrl.trim() !== "") ? customWsUrl.trim() : HELIUS_RPC.replace('https://', 'wss://').replace('http://', 'ws://');
@@ -6074,6 +6105,8 @@ function App() {
           setRpcUrl,
           rpcUrl2,
           setRpcUrl2,
+          masterMonitorRpc,
+          setMasterMonitorRpc,
           isSecondaryActive,
           setIsSecondaryActive,
           customWsUrl,
