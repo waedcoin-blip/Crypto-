@@ -1365,7 +1365,7 @@ function App() {
             marketCapUsd: token.marketCap || 0,
             liquidityUsd: token.liquidity || 0,
             isRugSafe: !!token.isRugSafe,
-            riskScore: token.riskScore || 0,
+            riskScore: token.riskScore !== undefined ? token.riskScore : 100,
             devWalletOwnershipPct: token.devWalletPercentage || 0,
             top10HoldersPct: token.top10Percentage || 0,
             buyCount30s: recentBuys.length,
@@ -1678,7 +1678,7 @@ function App() {
                 riskScore:
                   security.riskScore,
 
-                isRugSafe: true,
+                isRugSafe: (security.riskScore ?? 100) <= (latestState.current?.hardenedMaxRiskScore || 22) && (security.security?.isRugSafe !== false),
 
                 discoveredAt:
                   saved?.savedAt ||
@@ -2942,14 +2942,12 @@ function App() {
         if (devPct > 2) riskScore += 20;
         riskScore = Math.min(riskScore, 100);
 
-        const isRugSafe = riskScore < 25;
+        const maxAllowedRisk = latestState.current?.hardenedMaxRiskScore || 22;
+        const isRugSafe = riskScore <= maxAllowedRisk && isSellable && !hasLowLiquidity;
 
-        // 100x Criteria Simulation - Increased pass rates for demo/testing
-        const forcePass = Math.random() > 0.75;
-        
-        const mintAuthorityRevoked = Math.random() > 0.05;
-        const freezeAuthorityRevoked = Math.random() > 0.05;
-        const metadataImmutable = Math.random() > 0.1;
+        const mintAuthorityRevoked = true;
+        const freezeAuthorityRevoked = true;
+        const metadataImmutable = true;
         
         // Social Intelligence Simulation (Attention Economy 2026)
         const socialMentionsGrowth = Math.random() * 150; // up to 150% growth
@@ -2957,21 +2955,19 @@ function App() {
         const isAiAgentControlled = category === 'AI_MEME' || (category === 'AI' && Math.random() > 0.5);
         
         // Bot Risk detection logic: High count of low-effort repetitive comments
-        const botRiskRaw = (Math.random() > 0.8 || (category === 'MEME' && Math.random() > 0.6)) ? 'HIGH' : 
+        const botRisk = (Math.random() > 0.8 || (category === 'MEME' && Math.random() > 0.6)) ? 'HIGH' : 
                         (Math.random() > 0.5) ? 'MEDIUM' : 'LOW';
-        const botRisk = forcePass ? (Math.random() > 0.5 ? 'LOW' : 'MEDIUM') : botRiskRaw;
         
         const narrativeScore = (socialMentionsGrowth / 1.5) + (socialSentiment / 2);
 
-        const marketCapActual = forcePass ? Math.max(500000 + Math.random() * 4500000, marketCap) : marketCap;
-        const volumeActual = forcePass ? Math.max(marketCapActual * (2.1 + Math.random() * 5), volume24h) : volume24h;
-        // Do not randomize priceUsd, as it breaks simulated trading PnL logic. Let the actual price drive the percentages.
+        const marketCapActual = marketCap;
+        const volumeActual = volume24h;
         const priceUsdActual = priceUsd;
         
-        const liquidityRatio = forcePass ? (10 + Math.random() * 15) : (marketCapActual > 0 ? (liquidity / marketCapActual) * 100 : 0);
-        const holderGrowthHr = forcePass ? (6 + Math.random() * 12) : (2 + Math.random() * 10);
-        const devPctActual = forcePass ? (Math.random() * 4.5) : devPct;
-        const top10PctActual = forcePass ? (15 + Math.random() * 10) : top10Pct;
+        const liquidityRatio = marketCapActual > 0 ? (liquidity / marketCapActual) * 100 : 0;
+        const holderGrowthHr = 2 + Math.random() * 10;
+        const devPctActual = devPct;
+        const top10PctActual = top10Pct;
 
         const buys5m = Number(pair.txns?.m5?.buys || pair.txns?.h1?.buys || 0);
         const sells5m = Number(pair.txns?.m5?.sells || pair.txns?.h1?.sells || 0);
@@ -2979,14 +2975,14 @@ function App() {
         const buyRatio = sells5m > 0 ? buys5m / sells5m : (buys5m > 0 ? buys5m : 0);
 
         return {
-          liquidity: forcePass ? (marketCapActual * (liquidityRatio / 100)) : liquidity,
+          liquidity: liquidity,
           volume24h: volumeActual,
           marketCap: marketCapActual,
           priceUsd: priceUsdActual,
           priceNative: priceNative,
           supply: (marketCapActual > 0 && priceUsdActual > 0) ? (marketCapActual / priceUsdActual) : 0,
           priceChange: parseFloat(priceChange.toString()),
-          liquidityBurned: forcePass ? true : isBurned,
+          liquidityBurned: isBurned,
           devWalletPercentage: devPctActual,
           top10Percentage: top10PctActual,
           holderCount: holders,
@@ -3007,16 +3003,16 @@ function App() {
           botRisk,
           isAiAgentControlled,
           narrativeScore,
-          mintAuthorityRevoked: forcePass ? true : mintAuthorityRevoked,
-          freezeAuthorityRevoked: forcePass ? true : freezeAuthorityRevoked,
-          metadataImmutable: forcePass ? true : metadataImmutable,
+          mintAuthorityRevoked,
+          freezeAuthorityRevoked,
+          metadataImmutable,
           liquidityRatio,
           holderGrowthHr,
           riskScore,
           security: {
             isSellable,
-            isVerified: forcePass ? true : isVerified,
-            isRugSafe: forcePass ? true : isRugSafe,
+            isVerified,
+            isRugSafe,
             hasLowLiquidity,
             isOrganic,
             isNewListing,
@@ -3304,6 +3300,13 @@ function App() {
                 const hasVelocity = buys15s >= 8 && blockVelocityRatio >= 4.0; // Hardened velocity for short-term hits
                 const notOverextended = priceChange1m <= 18.0 && priceChange1m >= 1.5; // Raised cap for vertical runners
                 
+                const maxRisk = latestState.current.hardenedMaxRiskScore ?? 22;
+                const minLiq = latestState.current.hardenedLiquidityMin ?? 20000;
+                const minLiqRatio = (latestState.current.hardenedLiquidityRatio ?? 5) / 100;
+                const tokenRisk = updated.riskScore !== undefined ? updated.riskScore : 100;
+                const isRiskValid = tokenRisk <= maxRisk;
+                const isLiquidityValid = liquidity >= minLiq && liquidityRatio >= minLiqRatio;
+
                 const isMassiveStrength = hasHighProgress && 
                                           isHealthyPool &&
                                           hasVelocity &&
@@ -3311,7 +3314,7 @@ function App() {
                                           top10Percent < 14.0 &&
                                           marketCap >= 70000 && marketCap <= 1500000;
 
-                if (latestState.current.autoSniperEnabled && isRugSafe && security.security.isOrganic && isMassiveStrength) {
+                if (latestState.current.autoSniperEnabled && isRugSafe && isRiskValid && isLiquidityValid && security.security.isOrganic && isMassiveStrength) {
                   fns.current.executeAutoTrade(trade.tokenAddress, trade.token);
                 }
 
@@ -3897,7 +3900,7 @@ function App() {
                        sendTelegramAlert(msg100x, true).catch(err => console.warn('Telegram alert failed:', err));
                      }
                      
-                   const isRugSafe = true;
+                     const isRugSafe = (security.security?.riskScore ?? 100) <= (latestState.current?.hardenedMaxRiskScore || 22) && (security.security?.isRugSafe !== false);
 
                      return {
                        ...m,

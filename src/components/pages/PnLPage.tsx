@@ -3553,7 +3553,7 @@ const checkTokenCriteria = (mint: string): {
       );
 
       // 3. Liquidity Min
-      const liqMin = isGraduated ? (hardenedLiquidityMin || 0) : Math.min(1000, hardenedLiquidityMin || 5000);
+      const liqMin = hardenedLiquidityMin !== undefined ? hardenedLiquidityMin : 20000;
       addCheckResult(
         "Min Liquidity",
         liq >= liqMin,
@@ -3563,7 +3563,7 @@ const checkTokenCriteria = (mint: string): {
 
       // 4. Liquidity to Market Cap Ratio
       const mcRatio = mc > 0 ? (liq / mc) : 0;
-      const liqRatioMin = isGraduated ? ((hardenedLiquidityRatio || 7) / 100) : 0.001;
+      const liqRatioMin = (hardenedLiquidityRatio !== undefined ? hardenedLiquidityRatio : 5) / 100;
       addCheckResult(
         "Liquidity/MC Ratio",
         mcRatio >= liqRatioMin,
@@ -3572,7 +3572,7 @@ const checkTokenCriteria = (mint: string): {
       );
 
       // 5. Top 10 Holders %
-      const maxTop10 = isGraduated ? (hardenedMaxTop10 || 14.0) : 35.0;
+      const maxTop10 = hardenedMaxTop10 !== undefined ? hardenedMaxTop10 : 14.0;
       addCheckResult(
         "Top 10 Holders %",
         top10 <= maxTop10,
@@ -3581,7 +3581,7 @@ const checkTokenCriteria = (mint: string): {
       );
 
       // 6. Dev Ownership %
-      const maxDevPct = isGraduated ? ((hardenedMaxDevOwnership || 80) / 100) : 0.95;
+      const maxDevPct = (hardenedMaxDevOwnership !== undefined ? hardenedMaxDevOwnership : 80) / 100;
       addCheckResult(
         "Dev Wallet Ownership %",
         devPct <= maxDevPct,
@@ -3599,7 +3599,7 @@ const checkTokenCriteria = (mint: string): {
       );
 
       // 8. Risk Score Limit
-      const maxRiskScore = isGraduated ? (hardenedMaxRiskScore || 22) : 100;
+      const maxRiskScore = hardenedMaxRiskScore !== undefined ? hardenedMaxRiskScore : 22;
       addCheckResult(
         "Safety Risk Score",
         riskScore <= maxRiskScore,
@@ -3684,8 +3684,14 @@ const checkTokenCriteria = (mint: string): {
       );
 
       // Check absolute mandatory showstoppers first
-      if (!isRugSafeVal) {
-        return { pass: false, reason: "MANDATORY FAILURE: Token failed active rug safety audit.", breakdown };
+      if (!isRugSafeVal || riskScore > maxRiskScore) {
+        return { pass: false, reason: `MANDATORY FAILURE: Token failed risk audit (Risk Score: ${riskScore} vs Max Allowed: ${maxRiskScore}).`, breakdown };
+      }
+      if (liq < liqMin) {
+        return { pass: false, reason: `MANDATORY FAILURE: Liquidity $${liq.toLocaleString()} is below minimum requirement $${liqMin.toLocaleString()}.`, breakdown };
+      }
+      if (mcRatio < liqRatioMin) {
+        return { pass: false, reason: `MANDATORY FAILURE: Liquidity/MC ratio ${(mcRatio * 100).toFixed(2)}% is below minimum requirement ${(liqRatioMin * 100).toFixed(2)}%.`, breakdown };
       }
       if (!isGraduated && !isBondingProgressValid) {
         return { pass: false, reason: `MANDATORY FAILURE: Pump.fun bonding progress ${progress.toFixed(1)}% is outside required limits (${minProg}%-${maxProg}%).`, breakdown };
@@ -4496,27 +4502,27 @@ const checkTokenCriteria = (mint: string): {
         
         const mcMin = isGraduated ? hardenedMcapMinRaydium : hardenedMcapMinPump;
         const mcMax = hardenedMcapMax;
-        const liqMin = isGraduated ? hardenedLiquidityMin : Math.min(1000, hardenedLiquidityMin);
-        const liqRatioMin = isGraduated ? (hardenedLiquidityRatio / 100) : 0.001;
-        const maxTop10 = isGraduated ? hardenedMaxTop10 : 35.0;
+        const liqMin = hardenedLiquidityMin;
+        const liqRatioMin = (hardenedLiquidityRatio || 5) / 100;
+        const maxTop10 = hardenedMaxTop10;
         const minBuys15s = hardenedMinBuyCount30s !== undefined ? Math.max(1, Math.round((hardenedMinBuyCount30s || 0) * 0.5)) : 1;
         const minBlockVelocityRatio = hardenedMinBuySellRatio !== undefined ? hardenedMinBuySellRatio : 0.5;
         const maxBlockVelocityRatio = hardenedMaxBuySellRatio !== undefined ? hardenedMaxBuySellRatio : 999.0;
-        const maxPriceChange1m = isGraduated ? hardenedMaxPriceChange1m : Math.max(150, hardenedMaxPriceChange1m);
+        const maxPriceChange1m = hardenedMaxPriceChange1m;
         const minPriceChange1m = isGraduated ? 1.5 : -50.0;
-        const maxRiskScore = isGraduated ? hardenedMaxRiskScore : 100;
-        const maxDevPct = isGraduated ? (hardenedMaxDevOwnership / 100) : 0.95;
+        const maxRiskScore = hardenedMaxRiskScore;
+        const maxDevPct = hardenedMaxDevOwnership / 100;
 
         const mcPass = mc >= mcMin && mc <= mcMax;
         const mcRatio = mc > 0 ? (liq / mc) : 0;
-        const liqPass = isGraduated ? (liq >= liqMin && mcRatio >= liqRatioMin) : true; 
-        const top10Pass = isGraduated ? (top10 < maxTop10) : true; 
+        const liqPass = liq >= liqMin && mcRatio >= liqRatioMin; 
+        const top10Pass = top10 <= maxTop10; 
         const buys15s = (metric.recentBuysTimeline || []).filter((t: any) => t && t.t && t.type === 'buy' && (now - t.t < 15000)).length;
         const sells15s = (metric.recentBuysTimeline || []).filter((t: any) => t && t.t && t.type === 'sell' && (now - t.t < 15000)).length;
         const blockVelocityRatio = buys15s / Math.max(sells15s, 1);
         const velocityPass = buys15s >= minBuys15s && blockVelocityRatio >= minBlockVelocityRatio && blockVelocityRatio <= maxBlockVelocityRatio;
         const peakPass = isGraduated ? (priceChange1m <= maxPriceChange1m && priceChange1m >= minPriceChange1m) : true;
-        const securityPass = isGraduated ? (metric.isRugSafe === true && (metric.riskScore ?? 100) <= maxRiskScore && devPct <= maxDevPct) : true;
+        const securityPass = metric.isRugSafe === true && (metric.riskScore ?? 100) <= maxRiskScore && devPct <= maxDevPct;
         const progress = metric.bondingCurveProgress || 0;
         const isProgressValid = isGraduated || (progress >= hardenedMinBondingProgress && progress <= hardenedMaxBondingProgress);
 
@@ -4618,9 +4624,9 @@ const checkTokenCriteria = (mint: string): {
                   const mcMin = isGraduated ? (hardenedMcapMinRaydium || 0) : (hardenedMcapMinPump || 0);
                   const mcMax = hardenedMcapMax || 999999999;
                   if (mc >= mcMin && mc <= mcMax) score++;
-                  if (liq >= (isGraduated ? (hardenedLiquidityMin || 0) : Math.min(1000, hardenedLiquidityMin || 0))) score++;
+                  if (liq >= (hardenedLiquidityMin || 20000)) score++;
                   if (metric.isRugSafe === true) score++;
-                  if ((metric.riskScore ?? 100) <= hardenedMaxRiskScore) score++;
+                  if ((metric.riskScore ?? 100) <= (hardenedMaxRiskScore || 22)) score++;
                   const profit5mCheck = metric.priceChange5m !== undefined ? metric.priceChange5m : (metric.percentageIncrease !== undefined ? metric.percentageIncrease : (metric.priceChange1m || 0));
                   if (profit5mCheck >= (hardenedMinProfit5m || 0)) score++;
                   return score;
@@ -7061,9 +7067,9 @@ const checkTokenCriteria = (mint: string): {
                         const mcMax = hardenedMcapMax || 999999999;
                         
                         if (mc >= mcMin && mc <= mcMax) score++;
-                        if (liq >= (isGraduated ? (hardenedLiquidityMin || 0) : Math.min(1000, hardenedLiquidityMin || 0))) score++;
+                        if (liq >= (hardenedLiquidityMin || 20000)) score++;
                         if (metric.isRugSafe === true) score++;
-                        if ((metric.riskScore ?? 100) <= (hardenedMaxRiskScore || 100)) score++;
+                        if ((metric.riskScore ?? 100) <= (hardenedMaxRiskScore || 22)) score++;
                         const profit5mCheck = metric.priceChange5m !== undefined ? metric.priceChange5m : (metric.percentageIncrease !== undefined ? metric.percentageIncrease : (metric.priceChange1m || 0));
                         if (profit5mCheck >= (hardenedMinProfit5m || 0)) score++;
                         return score;
