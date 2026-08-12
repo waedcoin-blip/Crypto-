@@ -32,7 +32,7 @@ import { cn, detectTokenStage } from './lib/utils';
 import { setSolPriceUsd, getSolPriceUsd, calcNetPnl } from './utils/pnlCalculator';
 import { DEFAULT_HELIUS_RPC, HELIUS_API_KEY } from './constants/solana';
 import { encryptPrivateKey, decryptPrivateKey } from './lib/crypto';
-import { auth, db, signInWithGoogle, signInWithEmailAndPassword, createUserWithEmailAndPassword } from './lib/firebase';
+import { auth, db, signInWithGoogle, signInWithEmailAndPassword, createUserWithEmailAndPassword, signInAnonymously } from './lib/firebase';
 import { onAuthStateChanged, User, signOut } from 'firebase/auth';
 import { 
   collection, 
@@ -3307,6 +3307,14 @@ function App() {
                 const isRiskValid = tokenRisk <= maxRisk;
                 const isLiquidityValid = liquidity >= minLiq && liquidityRatio >= minLiqRatio;
 
+                const createdAtRaw = updated.pairCreatedAt || security.security?.pairCreatedAt;
+                const normCreatedAt = createdAtRaw ? (createdAtRaw < 1000000000000 ? createdAtRaw * 1000 : createdAtRaw) : null;
+                const tokenTime = normCreatedAt || updated.discoveredAt || now;
+                const tokenAgeMin = (now - tokenTime) / 60000;
+                const minAge = latestState.current.hardenedMinAge ?? 0;
+                const maxAge = latestState.current.hardenedMaxAge ?? 120;
+                const isAgeValid = tokenAgeMin >= minAge && tokenAgeMin <= maxAge;
+
                 const isMassiveStrength = hasHighProgress && 
                                           isHealthyPool &&
                                           hasVelocity &&
@@ -3314,7 +3322,7 @@ function App() {
                                           top10Percent < 14.0 &&
                                           marketCap >= 70000 && marketCap <= 1500000;
 
-                if (latestState.current.autoSniperEnabled && isRugSafe && isRiskValid && isLiquidityValid && security.security.isOrganic && isMassiveStrength) {
+                if (latestState.current.autoSniperEnabled && isRugSafe && isRiskValid && isLiquidityValid && isAgeValid && security.security.isOrganic && isMassiveStrength) {
                   fns.current.executeAutoTrade(trade.tokenAddress, trade.token);
                 }
 
@@ -3340,12 +3348,18 @@ function App() {
 
   // Auth & Database Sync
   useEffect(() => {
-    const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
+    const unsubscribeAuth = onAuthStateChanged(auth, async (currentUser) => {
       if (!currentUser) {
+        setUser(null);
         setMonitoredWallets([]);
         setIsMonitoring(false);
+        try {
+          await signInAnonymously(auth);
+        } catch (err) {
+          console.error('Anonymous auth auto-login failed:', err);
+        }
       } else {
+        setUser(currentUser);
         setIsMonitoring(true);
       }
     });

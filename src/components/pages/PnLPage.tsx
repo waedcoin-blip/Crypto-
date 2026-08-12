@@ -1127,7 +1127,7 @@ export const PnLPage = ({
   const [selectedRisk, setSelectedRisk] = useState<keyof typeof RISK_PROFILES>('medium');
   const [isAuditingOpen, setIsAuditingOpen] = useState(false);
   const [showDocsModal, setShowDocsModal] = useState(false);
-  const [isRunning, setIsRunning] = useState(() => localStorage.getItem('juipter_auto_isRunning') === 'true');
+  const [isRunning, setIsRunning] = useState(false);
   const isPausedRef = useRef(false);
   const [isPausedState, setIsPausedState] = useState(false);
   const setPaused = (val: boolean) => {
@@ -3633,34 +3633,25 @@ const checkTokenCriteria = (mint: string): {
         );
       }
 
-      // 10. Token Age limits (only applies to pre-migration tokens)
-      let isAgeValid = true;
-      let tokenAgeMin = 0;
+      // 10. Token Age limits (applies to ALL tokens)
+      const now = Date.now();
+      const createdAtRaw = metric.pairCreatedAt;
+      const discoveredAtRaw = metric.discoveredAt;
+      const normCreatedAt = createdAtRaw ? (createdAtRaw < 1000000000000 ? createdAtRaw * 1000 : createdAtRaw) : null;
+      const normDiscoveredAt = discoveredAtRaw ? (discoveredAtRaw < 1000000000000 ? discoveredAtRaw * 1000 : discoveredAtRaw) : null;
+      const tokenTime = normCreatedAt || normDiscoveredAt || now;
+      const tokenAgeMin = (now - tokenTime) / 60000;
+
       const minAg = hardenedMinAge !== undefined ? hardenedMinAge : 0;
       const maxAg = hardenedMaxAge !== undefined ? hardenedMaxAge : 120;
-      if (!isGraduated) {
-        const now = Date.now();
-        const createdAtRaw = metric.pairCreatedAt;
-        const discoveredAtRaw = metric.discoveredAt;
-        const normCreatedAt = createdAtRaw ? (createdAtRaw < 1000000000000 ? createdAtRaw * 1000 : createdAtRaw) : null;
-        const normDiscoveredAt = discoveredAtRaw ? (discoveredAtRaw < 1000000000000 ? discoveredAtRaw * 1000 : discoveredAtRaw) : null;
-        const tokenTime = normCreatedAt || normDiscoveredAt || now;
-        tokenAgeMin = (now - tokenTime) / 60000;
-        isAgeValid = tokenAgeMin >= minAg && tokenAgeMin <= maxAg;
-        addCheckResult(
-          "Token Age (Minutes)",
-          isAgeValid,
-          `${tokenAgeMin.toFixed(1)}m`,
-          `${minAg}m - ${maxAg}m`
-        );
-      } else {
-        addCheckResult(
-          "Token Age (Minutes)",
-          true,
-          "Graduated",
-          "N/A"
-        );
-      }
+      const isAgeValid = tokenAgeMin >= minAg && tokenAgeMin <= maxAg;
+
+      addCheckResult(
+        "Token Age (Minutes)",
+        isAgeValid,
+        `${tokenAgeMin.toFixed(1)}m`,
+        `${minAg}m - ${maxAg}m`
+      );
 
       // 11. 5M Profit momentum check
       const minProfitRequired = hardenedMinProfit5m !== undefined ? hardenedMinProfit5m : 1.5;
@@ -3701,7 +3692,7 @@ const checkTokenCriteria = (mint: string): {
       if (!isGraduated && !isBondingProgressValid) {
         return { pass: false, reason: `MANDATORY FAILURE: Pump.fun bonding progress ${progress.toFixed(1)}% is outside required limits (${minProg}%-${maxProg}%).`, breakdown };
       }
-      if (!isGraduated && !isAgeValid) {
+      if (!isAgeValid) {
         return { pass: false, reason: `MANDATORY FAILURE: Token age ${tokenAgeMin.toFixed(1)}m is outside required limits (${minAg}m-${maxAg}m).`, breakdown };
       }
 
@@ -4623,7 +4614,11 @@ const checkTokenCriteria = (mint: string): {
         const tokenTime = normCreatedAt || normDiscoveredAt || now;
         const tokenAgeMin = (now - tokenTime) / 60000;
 
-        const isAgeValidForPump = isGraduated || (tokenAgeMin >= hardenedMinAge && tokenAgeMin <= hardenedMaxAge);
+        const isAgeValid = tokenAgeMin >= hardenedMinAge && tokenAgeMin <= hardenedMaxAge;
+        if (!isAgeValid) {
+          addLog(`❌ [ALERT FILTERED] ${alert.token} age (${tokenAgeMin.toFixed(1)}m) exceeds Max Age limit (${hardenedMaxAge}m)`, 'warn');
+          return;
+        }
 
         const criteriaCheck = checkTokenCriteria(alert.address);
         if (!criteriaCheck.pass) {
@@ -5332,7 +5327,7 @@ const checkTokenCriteria = (mint: string): {
     localStorage.setItem('app_simulationBalance_v4', '10.0');
     localStorage.setItem('juipter_auto_simWalletBalance', '10.0');
     localStorage.setItem('app_mySniperTrades', JSON.stringify([]));
-    localStorage.setItem('juipter_auto_isRunning', 'true'); // Auto-start trading on reset
+    localStorage.setItem('juipter_auto_isRunning', 'false'); // Stopped on reset
     localStorage.setItem('app_activePositions', JSON.stringify({}));
     
     localStorage.removeItem('juipter_auto_startTime');

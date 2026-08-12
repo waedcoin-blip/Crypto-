@@ -1194,8 +1194,12 @@ export const verifyHardenedScannerCriteria = (
 
   if (!stage.isMigrated) {
     if (stage.bondingProgress < minBondingProgress || stage.bondingProgress > maxBondingProgress) return false;
-    const ageMinutes = metrics.ageMinutes ?? 0;
-    if (ageMinutes < minAge || ageMinutes > maxAge) return false;
+  }
+
+  // Enforce Token Age limits for ALL tokens (both pre-migration and migrated)
+  const ageMinutes = metrics.ageMinutes ?? 0;
+  if (ageMinutes > 0 && (ageMinutes < minAge || ageMinutes > maxAge)) {
+    return false;
   }
 
   const liquidityRatio = metrics.liquidityUsd / metrics.marketCapUsd;
