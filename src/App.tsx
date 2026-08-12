@@ -2081,7 +2081,7 @@ function App() {
           pendingTrades.current.delete(tokenAddress);
           return;
       }
-      const quote = await getJupiterQuote(
+      const quote = cachedQuote || await getJupiterQuote(
         tokenAddress, 
         'So11111111111111111111111111111111111111112', 
         sellRawAmount, 
@@ -2125,8 +2125,8 @@ function App() {
              }
           }
       } else {
-         // Realistic simulation: variable latency (200ms-2s) to match mainnet execution variance
-         const simLatency = 200 + Math.random() * 1800;
+         // Fast simulation execution (10-50ms) for instant paper trading strategy feedback
+         const simLatency = 10 + Math.random() * 40;
          await new Promise(resolve => setTimeout(resolve, simLatency));
          // Simulate 0.1% chance of slippage failure (realistic for illiquid tokens)
          if (Math.random() < 0.001) {
@@ -3593,7 +3593,14 @@ function App() {
     try {
       for (let i = 0; i < retries; i++) {
           try {
-            // Using Helius Enriched Transactions API if key is present
+            // Prioritize Master Monitor RPC connection first if configured
+            const connToUse = masterConnectionRef.current || connectionRef.current;
+            if (connToUse) {
+                const tx = await connToUse.getParsedTransaction(signature, { maxSupportedTransactionVersion: 0, commitment: 'confirmed' });
+                if (tx) return tx;
+            }
+
+            // Fallback to Helius Enriched Transactions API if key is present
             const heliusKey = HELIUS_API_KEY;
             if (heliusKey) {
               const response = await fetch(`https://api-mainnet.helius-rpc.com/v0/transactions/?api-key=${heliusKey}`, {
@@ -3608,13 +3615,6 @@ function App() {
                       return data[0]; // Return Helius parsed transaction
                   }
               }
-            }
-            
-            // Fallback to standard RPC if Helius returns nothing
-            const connToUse = masterConnectionRef.current || connectionRef.current;
-            if (connToUse) {
-                const tx = await connToUse.getParsedTransaction(signature, { maxSupportedTransactionVersion: 0, commitment: 'confirmed' });
-                if (tx) return tx;
             }
 
             // Polling with capped backoff

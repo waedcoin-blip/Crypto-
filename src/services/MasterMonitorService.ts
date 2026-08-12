@@ -5,84 +5,147 @@ import { PositionExitManager } from './PositionExitManager';
 export interface TokenPriceUpdate {
   mint: string;
   priceNative: number;
-  priceUsd: number;
+  priceUsd?: number;
   timestamp: number;
-  source: 'helius' | 'jupiter' | 'dexscreener';
-  slot: number;
+  source: 'rpc_ws' | 'jupiter' | 'dexscreener' | 'price_tracker';
+  slot?: number;
 }
 
 export class MasterMonitorService {
   private connection: Connection;
   private exitManager: PositionExitManager;
   private subscribedMints = new Set<string>();
-  private activeIntervals = new Map<string, ReturnType<typeof setInterval>>();
+  private batchInterval: ReturnType<typeof setInterval> | null = null;
+  private wsSubscriptionIds = new Map<string, number>();
 
   constructor(rpcEndpoint: string, exitManager: PositionExitManager) {
     this.connection = new Connection(rpcEndpoint || 'https://api.mainnet-beta.solana.com', 'confirmed');
     this.exitManager = exitManager;
   }
 
-  async startMonitoring(mints: string[]): Promise<void> {
-    for (const mint of mints) {
-      if (this.subscribedMints.has(mint)) continue;
-      this.subscribedMints.add(mint);
-      
-      this.startPricePolling(mint);
+  public setRpcEndpoint(rpcEndpoint: string) {
+    if (rpcEndpoint) {
+      this.connection = new Connection(rpcEndpoint, 'confirmed');
     }
   }
 
-  private startPricePolling(mint: string): void {
-    if (this.activeIntervals.has(mint)) return;
+  async startMonitoring(mints: string[]): Promise<void> {
+    for (const mint of mints) {
+      if (mint) this.subscribedMints.add(mint);
+    }
+    
+    this.ensureBatchPolling();
+    this.setupWsSubscriptions();
+  }
 
-    const poll = async () => {
+  // Fast direct push update from RPC parser, WebSocket, or Market Tracker
+  public pushPriceUpdate(mint: string, priceNative: number, timestamp = Date.now(), source: TokenPriceUpdate['source'] = 'jupiter'): void {
+    if (!mint || priceNative <= 0) return;
+    this.subscribedMints.add(mint);
+    
+    // 🔥 INSTANT DIRECT PATH: Price update -> Exit Manager (<1ms evaluation)
+    this.exitManager.onPriceUpdate(mint, priceNative, timestamp);
+  }
+
+  private ensureBatchPolling(): void {
+    if (this.batchInterval) return;
+
+    const pollBatch = async () => {
+      const mints = Array.from(this.subscribedMints).filter(Boolean);
+      if (mints.length === 0) return;
+
       try {
-        const response = await fetch(`https://api.jup.ag/price/v2?ids=${mint}`);
+        // Single BATCH HTTP call for ALL subscribed tokens instead of N requests
+        const idsParam = mints.join(',');
+        const response = await fetch(`https://api.jup.ag/price/v2?ids=${idsParam}`);
+        
         if (response.ok) {
           const data = await response.json();
-          const priceData = data.data?.[mint];
-          
-          if (priceData?.price) {
-            const priceNative = parseFloat(priceData.price);
-            const update: TokenPriceUpdate = {
-              mint,
-              priceNative,
-              priceUsd: priceNative * 150,
-              timestamp: Date.now(),
-              source: 'jupiter',
-              slot: 0,
-            };
-            
-            // 🔥 DIRECT PATH: Price update → Exit Manager (no polling delay)
-            this.exitManager.onPriceUpdate(mint, update.priceNative, update.timestamp);
+          const priceMap = data.data || {};
+          const now = Date.now();
+
+          for (const mint of mints) {
+            const priceInfo = priceMap[mint];
+            if (priceInfo?.price) {
+              const priceNative = parseFloat(priceInfo.price);
+              if (priceNative > 0) {
+                this.exitManager.onPriceUpdate(mint, priceNative, now);
+              }
+            }
           }
         }
-      } catch {
-        // Silently handle polling errors
+      } catch (err) {
+        // Silently handle batch polling fallback
       }
     };
-    
+
     // Initial poll
-    poll();
-    
-    // Poll every 250ms for active tokens
-    const interval = setInterval(poll, 250);
-    this.activeIntervals.set(mint, interval);
+    pollBatch();
+
+    // Single unified ticker for ALL active tokens (250ms)
+    this.batchInterval = setInterval(pollBatch, 250);
+  }
+
+  private setupWsSubscriptions(): void {
+    // Attempt WebSocket onLogs / onAccountChange subscriptions via Master Monitor RPC connection
+    for (const mint of this.subscribedMints) {
+      if (this.wsSubscriptionIds.has(mint)) continue;
+
+      try {
+        // Subscribe to transaction logs touching active mint token accounts on-chain
+        const subId = this.connection.onLogs(
+          { mentions: [mint] } as any,
+          (_logs, ctx) => {
+            // High priority on-chain activity detected for mint — trigger instant quote / price recheck
+            this.triggerInstantPriceCheck(mint, ctx?.slot);
+          },
+          'confirmed'
+        );
+        this.wsSubscriptionIds.set(mint, subId);
+      } catch {
+        // WS subscription fallback to batch polling
+      }
+    }
+  }
+
+  private async triggerInstantPriceCheck(mint: string, slot?: number): Promise<void> {
+    try {
+      const res = await fetch(`https://api.jup.ag/price/v2?ids=${mint}`);
+      if (res.ok) {
+        const data = await res.json();
+        const priceStr = data.data?.[mint]?.price;
+        if (priceStr) {
+          const priceNative = parseFloat(priceStr);
+          if (priceNative > 0) {
+            this.pushPriceUpdate(mint, priceNative, Date.now(), 'rpc_ws');
+          }
+        }
+      }
+    } catch {
+      // Fallback handled by batch ticker
+    }
   }
 
   stopMonitoring(mint?: string): void {
     if (mint) {
       this.subscribedMints.delete(mint);
-      const interval = this.activeIntervals.get(mint);
-      if (interval) {
-        clearInterval(interval);
-        this.activeIntervals.delete(mint);
+      const subId = this.wsSubscriptionIds.get(mint);
+      if (subId !== undefined) {
+        try { this.connection.removeOnLogsListener(subId); } catch {}
+        this.wsSubscriptionIds.delete(mint);
       }
     } else {
-      for (const interval of this.activeIntervals.values()) {
-        clearInterval(interval);
+      for (const subId of this.wsSubscriptionIds.values()) {
+        try { this.connection.removeOnLogsListener(subId); } catch {}
       }
-      this.activeIntervals.clear();
+      this.wsSubscriptionIds.clear();
       this.subscribedMints.clear();
+
+      if (this.batchInterval) {
+        clearInterval(this.batchInterval);
+        this.batchInterval = null;
+      }
     }
   }
 }
+

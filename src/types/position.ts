@@ -34,15 +34,15 @@ export interface Position {
   };
   
   // Safety metrics
-  riskScore: number;
-  isRugSafe: boolean;
-  devWalletPercentage: number;
-  top10Percentage: number;
+  riskScore?: number;
+  isRugSafe?: boolean;
+  devWalletPercentage?: number;
+  top10Percentage?: number;
   
   // User settings
-  tpPct: number;
-  slPct: number;
-  recoveryMode: boolean;
+  tpPct?: number;
+  slPct?: number;
+  recoveryMode?: boolean;
 }
 
 export interface PositionTransition {

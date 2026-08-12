@@ -370,14 +370,19 @@ export const executeTxWithRPCFallback = async (
   // Robust parallel broadcaster: broadcasts to all RPCs + Jito endpoints immediately
   const broadcastTransaction = async () => {
 
-    // Broadcast via Jito in parallel
+    // Broadcast via Jito in parallel using valid JSON-RPC 2.0 format
     try {
       Promise.any(
         jitoEndpoints.map(endpoint =>
           fetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ transactions: [serializedTx] })
+            body: JSON.stringify({
+              jsonrpc: '2.0',
+              id: 1,
+              method: 'sendTransaction',
+              params: [serializedTx]
+            })
           }).then(res => { if (res.ok) return endpoint; throw new Error("Jito failed"); })
         )
       ).catch(() => {});
@@ -1221,23 +1226,26 @@ export const processActiveTrackingFrame = async (
   position: ActivePosition & { symbol?: string; isManualSellTriggered?: boolean },
   livePoolLiquidityUsd: number,
   walletPublicKey: string,
-  config?: { takeProfit: number; stopLoss: number }
+  config?: { takeProfit: number; stopLoss: number },
+  prefetchedQuote?: any
 ): Promise<{ shouldExit: boolean; reason?: string; quote?: any }> => {
   const tokenAddress = position.tokenAddress;
 
   try {
     const startTime = Date.now();
-    let quote = null;
+    let quote = prefetchedQuote || null;
 
-    try {
-      quote = await getJupiterQuote(
-        tokenAddress,
-        "So11111111111111111111111111111111111111112",
-        Number(position.currentTokenBalance),
-        livePoolLiquidityUsd
-      );
-    } catch (e: any) {
-      console.warn(`[EVAL]: getJupiterQuote failed: ${e.message}`);
+    if (!quote) {
+      try {
+        quote = await getJupiterQuote(
+          tokenAddress,
+          "So11111111111111111111111111111111111111112",
+          Number(position.currentTokenBalance),
+          livePoolLiquidityUsd
+        );
+      } catch (e: any) {
+        console.warn(`[EVAL]: getJupiterQuote failed: ${e.message}`);
+      }
     }
 
     if (!quote) return { shouldExit: false };

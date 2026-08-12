@@ -161,7 +161,26 @@ export class RealTradeExecutor implements ITradeExecutor {
     swaps: Array<{ inputMint: string; outputMint: string; amount: number; slippageBps: number }>
   ): Promise<SwapResult[]> {
     if (!this.batch) throw new Error('Batch engine not configured');
-    return [];
+    
+    const positions = swaps.map(s => ({
+      mint: s.inputMint,
+      amount: s.amount,
+      solSpent: 0,
+    }));
+    
+    const results = await this.batch.batchExit(positions as any);
+    
+    return results.map(r => ({
+      signature: r.signature || ('batch-tx-' + Date.now()),
+      inputMint: r.failedMints[0] || (swaps[0]?.inputMint || ''),
+      outputMint: 'So11111111111111111111111111111111111111112',
+      inputAmount: 0,
+      outputAmount: r.netSolReceived * 1e9,
+      feeSol: r.totalFeesSol,
+      slot: r.slot || 0,
+      landingTimeMs: r.landingTimeMs || 0,
+      method: 'rpc',
+    }));
   }
 
   async getSolBalance(): Promise<number> {

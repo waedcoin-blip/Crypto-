@@ -181,6 +181,7 @@ export class PositionExitManager {
       pos.state = 'SELL_CONFIRMED';
       
       console.log(`[ExitManager] ✅ SOLD ${mint} | Sig: ${result.signature} | Output: ${result.outputAmount}`);
+      this.onExitCallback?.(mint, side, result.signature, triggerPnLPct);
 
       // Final state
       pos.state = 'CLOSED';
@@ -203,21 +204,31 @@ export class PositionExitManager {
   // QUOTE MANAGEMENT (pre-fetch + cache)
   // ═══════════════════════════════════════════════════════════════════════
 
+  private onExitCallback?: (mint: string, side: string, signature: string, pnlPct: number) => void;
+
+  public setOnExitCallback(cb: (mint: string, side: string, signature: string, pnlPct: number) => void) {
+    this.onExitCallback = cb;
+  }
+
   private async prefetchSellQuotes(): Promise<void> {
     for (const pos of this.positions.values()) {
       if (!this.isMonitorable(pos.state)) continue;
       
-      // Skip if we have a fresh cached quote
-      if (pos.cachedSellQuote && Date.now() - pos.cachedSellQuote.fetchedAt < QUOTE_CACHE_TTL_MS) {
+      // Skip if we have a fresh cached quote (< 1500ms old)
+      if (pos.cachedSellQuote && Date.now() - pos.cachedSellQuote.fetchedAt < 1500) {
         continue;
       }
 
       try {
+        const currentPnLPct = this.calculatePnLPct(pos);
+        // Use SL slippage if position is dropping/negative, TP slippage if in profit
+        const slippageBps = currentPnLPct <= 0 ? this.config.slippageBpsSl : this.config.slippageBpsTp;
+
         const quote = await this.jupiterApi.quoteGet({
           inputMint: pos.mint,
           outputMint: 'So11111111111111111111111111111111111111112',
           amount: Math.floor(pos.amount),
-          slippageBps: this.config.slippageBpsTp,
+          slippageBps,
           restrictIntermediateTokens: true,
         });
 
@@ -236,8 +247,8 @@ export class PositionExitManager {
   }
 
   private async getFreshSellQuote(pos: Position): Promise<any | null> {
-    // Use cached quote if fresh (< 500ms old)
-    if (pos.cachedSellQuote && Date.now() - pos.cachedSellQuote.fetchedAt < 500) {
+    // Use cached quote if fresh (< 1500ms old)
+    if (pos.cachedSellQuote && Date.now() - pos.cachedSellQuote.fetchedAt < 1500) {
       return pos.cachedSellQuote.quoteResponse;
     }
 
@@ -266,8 +277,16 @@ export class PositionExitManager {
   // POSITION LIFECYCLE
   // ═══════════════════════════════════════════════════════════════════════
 
-  addPosition(pos: Omit<Position, 'state' | 'peakPnLPct'>): Position {
+  addPosition(pos: Partial<Position> & { mint: string; amount: number; buyPrice: number; solSpent: number }): Position {
     const fullPos: Position = {
+      symbol: pos.symbol || pos.mint.slice(0, 6),
+      currentPrice: pos.buyPrice,
+      riskScore: pos.riskScore ?? 0,
+      isRugSafe: pos.isRugSafe ?? true,
+      devWalletPercentage: pos.devWalletPercentage ?? 0,
+      top10Percentage: pos.top10Percentage ?? 0,
+      tpPct: pos.tpPct ?? this.config.tpPct,
+      slPct: pos.slPct ?? this.config.slPct,
       ...pos,
       state: 'BUY_PENDING',
       peakPnLPct: 0,

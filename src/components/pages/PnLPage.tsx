@@ -23,6 +23,11 @@ import { WalletStatusWidget } from '../WalletStatusWidget';
 import { MasterMonitorPanel } from '../MasterMonitorPanel';
 import { marketDataManager } from '../../services/marketDataManager';
 import { rpcHealthManager } from '../../services/rpcHealthManager';
+import { PositionExitManager } from '../../services/PositionExitManager';
+import { MasterMonitorService } from '../../services/MasterMonitorService';
+import { PaperTradeExecutor } from '../../services/PaperTradeExecutor';
+import { RealTradeExecutor } from '../../services/RealTradeExecutor';
+import { ITradeExecutor } from '../../services/ITradeExecutor';
 
 import { DEFAULT_HELIUS_RPC, DEFAULT_HELIUS_WS, HELIUS_API_KEY } from '../../constants/solana';
 
@@ -4109,7 +4114,9 @@ const checkTokenCriteria = (mint: string): {
       }
     } catch (e: any) {
       addLog(`Buy error for ${symbol}: ${e.message}`, 'err');
-      setSimWalletBalance(prev => prev + solAmount); // Refund simulation balance when real on-chain swap fails
+      if (!privateKey) {
+        setSimWalletBalance(prev => prev + solAmount); // Refund simulation balance in paper mode
+      }
       if (e.message.includes('Route not found') || e.message.includes('NO_ROUTES_FOUND') || e.message.includes('Not Found') || e.message.includes('No route') || e.message.includes('TOKEN_NOT_TRADABLE')) {
         addLog(`❌ [BLACKLIST] ${symbol} added to blacklist due to unroutable liquidity/dead token.`, 'warn');
         if (!blacklistedMintsRef.current.includes(mint)) {
@@ -4418,6 +4425,89 @@ const checkTokenCriteria = (mint: string): {
     positionsRef.current = positions;
   }, [positions]);
 
+  const positionExitManagerRef = useRef<PositionExitManager | null>(null);
+  const masterMonitorRef = useRef<MasterMonitorService | null>(null);
+
+  useEffect(() => {
+    const isRealMode = !!configRef.current.privateKey;
+    const currentRpc = (configRef.current as any).masterMonitorRpc || rpcUrl || DEFAULT_HELIUS_RPC;
+    const currentJup = jupiterRpcUrl || 'https://api.jup.ag/swap/v1';
+
+    let executor: ITradeExecutor;
+    if (isRealMode && configRef.current.privateKey) {
+      executor = new RealTradeExecutor({ verbose: true });
+    } else {
+      executor = new PaperTradeExecutor({
+        jupiterEndpoint: currentJup,
+        jupiterApiKey: '',
+        initialSolBalance: simWalletBalance,
+        latencyRange: [10, 50],
+      });
+    }
+
+    const exitMgr = new PositionExitManager(
+      executor,
+      currentJup,
+      currentRpc,
+      {
+        tpPct: configRef.current.minTakeProfit || 25,
+        slPct: configRef.current.stopLossPct || 15,
+        slippageBpsTp: Math.floor((configRef.current.slippage || 2.5) * 100),
+        slippageBpsSl: Math.floor((configRef.current.slippage || 10.0) * 100),
+      }
+    );
+
+    exitMgr.setOnExitCallback((mint, side, signature, pnlPct) => {
+      addLog(`⚡ [FAST EXIT ENGINE] ${side.toUpperCase()} triggered for ${mint} at ${pnlPct.toFixed(2)}% | Tx: ${signature}`, 'sell');
+      const pos = positionsRef.current[mint];
+      if (pos) {
+        executeSell(mint, pos.currentPrice || pos.buyPrice, pnlPct, `FAST EXIT: ${side.toUpperCase()}`);
+      }
+    });
+
+    exitMgr.start();
+    positionExitManagerRef.current = exitMgr;
+
+    const masterMon = new MasterMonitorService(currentRpc, exitMgr);
+    masterMonitorRef.current = masterMon;
+
+    return () => {
+      exitMgr.stop();
+      masterMon.stopMonitoring();
+    };
+  }, [rpcUrl, jupiterRpcUrl, isRunning]);
+
+  // Sync active positions to PositionExitManager & MasterMonitorService
+  useEffect(() => {
+    if (!isRunning) return;
+
+    const activeMints = Object.keys(positionsRef.current).filter(k => {
+      const p = positionsRef.current[k];
+      return p && p.amount > 0;
+    });
+
+    if (positionExitManagerRef.current) {
+      for (const mint of activeMints) {
+        const pos = positionsRef.current[mint];
+        if (pos && !positionExitManagerRef.current.getPosition(mint)) {
+          positionExitManagerRef.current.addPosition({
+            mint,
+            amount: pos.amountLamports || Math.floor((pos.amount || 0) * 1e6),
+            buyPrice: pos.buyPrice || 0,
+            solSpent: pos.solSpent || 0.1,
+            tpPct: configRef.current.minTakeProfit || 25,
+            slPct: configRef.current.stopLossPct || 15,
+          });
+          positionExitManagerRef.current.confirmBuy(mint, pos.txid || 'init-sig', 0);
+        }
+      }
+    }
+
+    if (masterMonitorRef.current && activeMints.length > 0) {
+      masterMonitorRef.current.startMonitoring(activeMints);
+    }
+  }, [positions, isRunning]);
+
   const processedAlerts = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!isRunning || !telemetryAlerts) return;
@@ -4688,6 +4778,15 @@ const checkTokenCriteria = (mint: string): {
       const mintsToFetch = activeMints;
       if (mintsToFetch.length > 0) {
         const batchedPrices = await getTokenPrices(mintsToFetch);
+        for (const [m, item] of Object.entries(batchedPrices)) {
+          const p = item as { price?: number | string };
+          if (p && p.price !== undefined) {
+            const newPrice = typeof p.price === 'number' ? p.price : parseFloat(p.price);
+            if (newPrice > 0 && masterMonitorRef.current) {
+              masterMonitorRef.current.pushPriceUpdate(m, newPrice, Date.now(), 'price_tracker');
+            }
+          }
+        }
         useAppStore.getState().setTokenMetrics(prev => {
           let changed = false;
           const next = { ...prev };
