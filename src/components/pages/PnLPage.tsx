@@ -28,6 +28,7 @@ import { MasterMonitorService } from '../../services/MasterMonitorService';
 import { PaperTradeExecutor } from '../../services/PaperTradeExecutor';
 import { RealTradeExecutor } from '../../services/RealTradeExecutor';
 import { ITradeExecutor } from '../../services/ITradeExecutor';
+import { masterMonitorHealthManager } from '../../services/MasterMonitorHealthManager';
 
 import { DEFAULT_HELIUS_RPC, DEFAULT_HELIUS_WS, HELIUS_API_KEY } from '../../constants/solana';
 
@@ -4429,13 +4430,31 @@ const checkTokenCriteria = (mint: string): {
     positionsRef.current = positions;
   }, [positions]);
 
+  const [monitorStatus, setMonitorStatus] = useState(() => masterMonitorHealthManager.getStatus());
+
+  useEffect(() => {
+    const unsub = masterMonitorHealthManager.onChange((newStatus) => {
+      setMonitorStatus(newStatus);
+    });
+    return unsub;
+  }, []);
+
   const positionExitManagerRef = useRef<PositionExitManager | null>(null);
   const masterMonitorRef = useRef<MasterMonitorService | null>(null);
 
   useEffect(() => {
+    if (!isRunning) return;
+
+    const currentRpc = masterMonitorHealthManager.getActiveEndpoint();
+    const status = monitorStatus.status;
+
+    if (status === 'OFFLINE') {
+      addLog(`❌ [MASTER MONITOR] Service offline: Waiting for healthy dedicated RPC connection.`, 'warn');
+      return;
+    }
+
     const tradeModeFromStorage = (typeof localStorage !== 'undefined' ? localStorage.getItem('trade_mode') : null) || (typeof localStorage !== 'undefined' && localStorage.getItem('is_live_trading') === 'true' ? 'real' : 'paper');
     const isRealMode = tradeModeFromStorage === 'real' && !!configRef.current.privateKey;
-    const currentRpc = (configRef.current as any).masterMonitorRpc || rpcUrl || DEFAULT_HELIUS_RPC;
     const currentJup = jupiterRpcUrl || 'https://api.jup.ag/swap/v1';
 
     let executor: ITradeExecutor;
@@ -4508,6 +4527,7 @@ const checkTokenCriteria = (mint: string): {
     exitMgr.start();
     positionExitManagerRef.current = exitMgr;
 
+    addLog(`📡 [MASTER MONITOR] Starting monitor services on: ${currentRpc} [Mode: ${status}]`, 'info');
     const masterMon = new MasterMonitorService(currentRpc, exitMgr);
     masterMonitorRef.current = masterMon;
 
@@ -4515,7 +4535,7 @@ const checkTokenCriteria = (mint: string): {
       exitMgr.stop();
       masterMon.stopMonitoring();
     };
-  }, [isRunning]);
+  }, [isRunning, monitorStatus.status, monitorStatus.activeUrl]);
 
   // Sync active positions to PositionExitManager & MasterMonitorService
   useEffect(() => {

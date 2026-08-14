@@ -7,10 +7,11 @@ export interface MasterMonitorStatus {
   backupUrl: string | null;
   wsUrl: string | null;
   activeUrl: string;
-  status: 'connected' | 'degraded' | 'disconnected';
+  status: 'CONNECTING' | 'LIVE' | 'DEGRADED' | 'BACKUP' | 'OFFLINE' | 'SHARED_MODE';
   latencyMs: number | null;
   slot: number | null;
   lastUpdated: number | null; // Timestamp
+  isSharedMode: boolean;
 }
 
 export class MasterMonitorHealthManager {
@@ -19,7 +20,7 @@ export class MasterMonitorHealthManager {
   private wsUrl: string | null = null;
   private activeUrl: string = '';
   
-  private currentStatus: 'connected' | 'degraded' | 'disconnected' = 'disconnected';
+  private currentStatus: 'CONNECTING' | 'LIVE' | 'DEGRADED' | 'BACKUP' | 'OFFLINE' | 'SHARED_MODE' = 'OFFLINE';
   private latencyMs: number | null = null;
   private slot: number | null = null;
   private lastUpdated: number | null = null;
@@ -42,8 +43,13 @@ export class MasterMonitorHealthManager {
     this.backupUrl = storedBackup.trim() ? storedBackup.trim() : null;
     this.wsUrl = storedWs.trim() ? storedWs.trim() : null;
 
-    // Use master_monitor_rpc if specified; otherwise fallback to execution RPC for read-only monitoring
-    this.activeUrl = this.primaryUrl || fallbackExecutionRpc;
+    if (this.primaryUrl) {
+      this.activeUrl = this.primaryUrl;
+      this.currentStatus = 'CONNECTING';
+    } else {
+      this.activeUrl = fallbackExecutionRpc;
+      this.currentStatus = 'SHARED_MODE';
+    }
   }
 
   public setEndpoints(primary: string, backup?: string, ws?: string) {
@@ -70,7 +76,14 @@ export class MasterMonitorHealthManager {
     }
 
     const fallbackExecutionRpc = localStorage.getItem('juipter_auto_rpcUrl') || 'https://mainnet.helius-rpc.com/?api-key=7c978051-50e8-46d4-a82f-2c35f295b9c0';
-    this.activeUrl = this.primaryUrl || fallbackExecutionRpc;
+    
+    if (this.primaryUrl) {
+      this.activeUrl = this.primaryUrl;
+      this.currentStatus = 'CONNECTING';
+    } else {
+      this.activeUrl = fallbackExecutionRpc;
+      this.currentStatus = 'SHARED_MODE';
+    }
 
     this.checkHealth().catch(() => {});
   }
@@ -85,6 +98,7 @@ export class MasterMonitorHealthManager {
       latencyMs: this.latencyMs,
       slot: this.slot,
       lastUpdated: this.lastUpdated,
+      isSharedMode: !this.primaryUrl,
     };
   }
 
@@ -114,9 +128,15 @@ export class MasterMonitorHealthManager {
 
   public async checkHealth(): Promise<void> {
     const targetUrl = this.activeUrl;
-    if (!targetUrl) return;
+    if (!targetUrl) {
+      this.currentStatus = 'OFFLINE';
+      this.notifyListeners();
+      return;
+    }
 
+    const hasDedicatedMonitor = !!this.primaryUrl;
     const start = performance.now();
+
     try {
       const conn = new Connection(targetUrl, 'confirmed');
       const currentSlot = await conn.getSlot('confirmed');
@@ -125,33 +145,48 @@ export class MasterMonitorHealthManager {
       this.latencyMs = duration;
       this.slot = currentSlot;
       this.lastUpdated = Date.now();
-      this.currentStatus = duration > 500 ? 'degraded' : 'connected';
+      
+      if (hasDedicatedMonitor) {
+        if (targetUrl === this.backupUrl) {
+          this.currentStatus = 'BACKUP';
+        } else {
+          this.currentStatus = duration > 500 ? 'DEGRADED' : 'LIVE';
+        }
+      } else {
+        this.currentStatus = 'SHARED_MODE';
+      }
 
       telemetryService.recordApiRequest(targetUrl, 'getSlot', 200, duration);
     } catch (err: any) {
       const duration = Math.round(performance.now() - start);
       console.warn(`[MasterMonitorHealthManager] Check failed on ${targetUrl}:`, err.message || err);
       
-      // If primary fails and backup exists, failover to backup without touching execution RPCs
-      if (this.backupUrl && this.activeUrl === this.primaryUrl) {
-        console.log(`[MasterMonitorHealthManager] Switching to backup Master RPC: ${this.backupUrl}`);
-        this.activeUrl = this.backupUrl;
-        // Re-check backup
-        try {
-          const connBackup = new Connection(this.backupUrl, 'confirmed');
-          const backupSlot = await connBackup.getSlot('confirmed');
-          const backupDuration = Math.round(performance.now() - start);
+      if (hasDedicatedMonitor) {
+        // Failover only to master_monitor_rpc2 (backupUrl), NEVER to execution fallback
+        if (this.backupUrl && this.activeUrl === this.primaryUrl) {
+          console.log(`[MasterMonitorHealthManager] Switching to backup Master RPC: ${this.backupUrl}`);
+          this.activeUrl = this.backupUrl;
+          this.currentStatus = 'BACKUP';
+          
+          try {
+            const connBackup = new Connection(this.backupUrl, 'confirmed');
+            const backupSlot = await connBackup.getSlot('confirmed');
+            const backupDuration = Math.round(performance.now() - start);
 
-          this.latencyMs = backupDuration;
-          this.slot = backupSlot;
-          this.lastUpdated = Date.now();
-          this.currentStatus = 'degraded';
-        } catch {
-          this.currentStatus = 'disconnected';
+            this.latencyMs = backupDuration;
+            this.slot = backupSlot;
+            this.lastUpdated = Date.now();
+            this.currentStatus = 'BACKUP';
+          } catch {
+            this.currentStatus = 'OFFLINE';
+            this.latencyMs = null;
+          }
+        } else {
+          this.currentStatus = 'OFFLINE';
           this.latencyMs = null;
         }
       } else {
-        this.currentStatus = 'disconnected';
+        this.currentStatus = 'OFFLINE';
         this.latencyMs = null;
       }
 

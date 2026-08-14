@@ -3,6 +3,7 @@ import { Connection } from '@solana/web3.js';
 import { createJupiterApiClient } from '@jup-ag/api';
 import { Position, PositionState } from '../types/position';
 import { ITradeExecutor } from './ITradeExecutor';
+import { masterMonitorHealthManager } from './MasterMonitorHealthManager';
 
 const QUOTE_CACHE_TTL_MS = 2000;      // Sell quote valid for 2s
 const PENDING_TIMEOUT_MS = 60000;     // 60s timeout for stuck txs
@@ -69,6 +70,13 @@ export class PositionExitManager {
   // ═══════════════════════════════════════════════════════════════════════
 
   onPriceUpdate(mint: string, priceNative: number, _timestamp: number): void {
+    // Prevent TP/SL execution from continuing when the monitor is stale/offline
+    const monitorStatus = masterMonitorHealthManager.getStatus();
+    if (monitorStatus.status === 'OFFLINE') {
+      console.warn(`[ExitManager] TP/SL evaluation paused: Master Monitor is OFFLINE.`);
+      return;
+    }
+
     const pos = this.positions.get(mint);
     if (!pos) return;
 

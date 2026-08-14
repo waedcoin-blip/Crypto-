@@ -525,7 +525,7 @@ function App() {
 
   const [sessionWallet, setSessionWallet] = useState<Keypair | null>(null);
   
-  const [isMonitoring, setIsMonitoring] = useState(true);
+  const [isMonitoring, setIsMonitoring] = useState(false);
 
   // Hardened Entry Scanner Criteria state values (customizable by user)
   const [hardenedMcapMinPump, setHardenedMcapMinPump] = useState(() => Number(localStorage.getItem('hd_mcap_min_pump')) || 40000);
@@ -3338,7 +3338,7 @@ function App() {
           setIsMonitoring(false);
         } else {
           setUser(currentUser);
-          setIsMonitoring(true);
+          setIsMonitoring(false);
         }
         setAuthLoaded(true);
       });

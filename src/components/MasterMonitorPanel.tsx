@@ -44,11 +44,14 @@ export const MasterMonitorPanel: React.FC<MasterMonitorPanelProps> = ({
     return new Date(ts).toLocaleTimeString();
   };
 
-  const getStatusColor = (st: 'connected' | 'degraded' | 'disconnected') => {
+  const getStatusColor = (st: MasterMonitorStatus['status']) => {
     switch (st) {
-      case 'connected': return 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30';
-      case 'degraded': return 'text-amber-400 bg-amber-500/10 border-amber-500/30';
-      case 'disconnected': return 'text-rose-400 bg-rose-500/10 border-rose-500/30';
+      case 'LIVE': return 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30';
+      case 'CONNECTING': return 'text-sky-400 bg-sky-500/10 border-sky-500/30';
+      case 'DEGRADED': return 'text-amber-400 bg-amber-500/10 border-amber-500/30';
+      case 'BACKUP': return 'text-indigo-400 bg-indigo-500/10 border-indigo-500/30';
+      case 'SHARED_MODE': return 'text-teal-400 bg-teal-500/10 border-teal-500/30';
+      case 'OFFLINE': return 'text-rose-400 bg-rose-500/10 border-rose-500/30';
     }
   };
 
@@ -56,6 +59,12 @@ export const MasterMonitorPanel: React.FC<MasterMonitorPanelProps> = ({
 
   return (
     <div className="p-4 bg-sky-950/20 border border-sky-500/30 rounded-2xl space-y-3.5 shadow-lg relative overflow-hidden">
+      {status.status === 'OFFLINE' && isCustomEngaged && (
+        <div className="text-[10px] text-rose-400 font-semibold bg-rose-950/25 border border-rose-500/30 p-2 rounded-xl text-center">
+          ⚠️ DEDICATED MONITOR OFFLINE — NOT USING EXECUTION RPC
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex items-center justify-between border-b border-sky-500/20 pb-2.5">
         <div className="flex items-center gap-2">

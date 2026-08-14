@@ -1,6 +1,7 @@
 // src/services/MasterMonitorService.ts
 import { Connection } from '@solana/web3.js';
 import { PositionExitManager } from './PositionExitManager';
+import { masterMonitorHealthManager } from './MasterMonitorHealthManager';
 
 export interface TokenPriceUpdate {
   mint: string;
@@ -17,15 +18,33 @@ export class MasterMonitorService {
   private subscribedMints = new Set<string>();
   private batchInterval: ReturnType<typeof setInterval> | null = null;
   private wsSubscriptionIds = new Map<string, number>();
+  private lastCheckTime = new Map<string, number>();
 
   constructor(rpcEndpoint: string, exitManager: PositionExitManager) {
-    this.connection = new Connection(rpcEndpoint || 'https://api.mainnet-beta.solana.com', 'confirmed');
+    const wsEndpoint = masterMonitorHealthManager.getActiveWsEndpoint() || undefined;
+    this.connection = new Connection(rpcEndpoint || 'https://api.mainnet-beta.solana.com', {
+      commitment: 'confirmed',
+      wsEndpoint,
+    });
     this.exitManager = exitManager;
   }
 
   public setRpcEndpoint(rpcEndpoint: string) {
     if (rpcEndpoint) {
-      this.connection = new Connection(rpcEndpoint, 'confirmed');
+      // Unsubscribe existing WS logs
+      for (const subId of this.wsSubscriptionIds.values()) {
+        try { this.connection.removeOnLogsListener(subId); } catch {}
+      }
+      this.wsSubscriptionIds.clear();
+
+      const wsEndpoint = masterMonitorHealthManager.getActiveWsEndpoint() || undefined;
+      this.connection = new Connection(rpcEndpoint, {
+        commitment: 'confirmed',
+        wsEndpoint,
+      });
+
+      // Restart subscriptions on the new connection
+      this.setupWsSubscriptions();
     }
   }
 
@@ -82,8 +101,8 @@ export class MasterMonitorService {
     // Initial poll
     pollBatch();
 
-    // Single unified ticker for ALL active tokens (250ms)
-    this.batchInterval = setInterval(pollBatch, 250);
+    // Single relaxed unified ticker for ALL active tokens (4000ms)
+    this.batchInterval = setInterval(pollBatch, 4000);
   }
 
   private setupWsSubscriptions(): void {
@@ -109,6 +128,14 @@ export class MasterMonitorService {
   }
 
   private async triggerInstantPriceCheck(mint: string, slot?: number): Promise<void> {
+    const now = Date.now();
+    const lastTime = this.lastCheckTime.get(mint) || 0;
+    if (now - lastTime < 1500) {
+      // Throttle instant checks to max once every 1.5 seconds per mint to avoid polling storms
+      return;
+    }
+    this.lastCheckTime.set(mint, now);
+
     try {
       const res = await fetch(`https://api.jup.ag/price/v2?ids=${mint}`);
       if (res.ok) {
