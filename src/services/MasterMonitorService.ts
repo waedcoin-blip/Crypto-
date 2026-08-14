@@ -12,6 +12,13 @@ export interface TokenPriceUpdate {
   slot?: number;
 }
 
+export interface PriceState {
+  priceNative: number;
+  source: 'rpc_ws' | 'jupiter' | 'dexscreener' | 'price_tracker';
+  isStale: boolean;
+  updatedAt: number;
+}
+
 export class MasterMonitorService {
   private connection: Connection;
   private exitManager: PositionExitManager;
@@ -19,6 +26,7 @@ export class MasterMonitorService {
   private batchInterval: ReturnType<typeof setInterval> | null = null;
   private wsSubscriptionIds = new Map<string, number>();
   private lastCheckTime = new Map<string, number>();
+  private priceEngine = new Map<string, PriceState>();
 
   constructor(rpcEndpoint: string, exitManager: PositionExitManager) {
     const wsEndpoint = masterMonitorHealthManager.getActiveWsEndpoint() || undefined;
@@ -27,6 +35,17 @@ export class MasterMonitorService {
       wsEndpoint,
     });
     this.exitManager = exitManager;
+  }
+
+  public getPriceState(mint: string): PriceState | undefined {
+    const state = this.priceEngine.get(mint);
+    if (!state) return undefined;
+    // Mark as stale if updatedAt is older than 15 seconds
+    const isStale = (Date.now() - state.updatedAt) > 15000;
+    return {
+      ...state,
+      isStale,
+    };
   }
 
   public setRpcEndpoint(rpcEndpoint: string) {
@@ -62,6 +81,13 @@ export class MasterMonitorService {
     if (!mint || priceNative <= 0) return;
     this.subscribedMints.add(mint);
     
+    this.priceEngine.set(mint, {
+      priceNative,
+      source,
+      isStale: false,
+      updatedAt: timestamp,
+    });
+
     // 🔥 INSTANT DIRECT PATH: Price update -> Exit Manager (<1ms evaluation)
     this.exitManager.onPriceUpdate(mint, priceNative, timestamp);
   }
@@ -88,13 +114,24 @@ export class MasterMonitorService {
             if (priceInfo?.price) {
               const priceNative = parseFloat(priceInfo.price);
               if (priceNative > 0) {
-                this.exitManager.onPriceUpdate(mint, priceNative, now);
+                this.pushPriceUpdate(mint, priceNative, now, 'jupiter');
               }
             }
           }
         }
       } catch (err) {
-        // Silently handle batch polling fallback
+        // Handle failure by marking existing prices as stale rather than purging them
+        const now = Date.now();
+        for (const mint of mints) {
+          const existing = this.priceEngine.get(mint);
+          if (existing) {
+            this.priceEngine.set(mint, {
+              ...existing,
+              isStale: true,
+              updatedAt: now,
+            });
+          }
+        }
       }
     };
 

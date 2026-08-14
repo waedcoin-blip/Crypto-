@@ -47,8 +47,8 @@ export class MasterMonitorHealthManager {
       this.activeUrl = this.primaryUrl;
       this.currentStatus = 'CONNECTING';
     } else {
-      this.activeUrl = fallbackExecutionRpc;
-      this.currentStatus = 'SHARED_MODE';
+      this.activeUrl = '';
+      this.currentStatus = 'OFFLINE';
     }
   }
 
@@ -81,8 +81,8 @@ export class MasterMonitorHealthManager {
       this.activeUrl = this.primaryUrl;
       this.currentStatus = 'CONNECTING';
     } else {
-      this.activeUrl = fallbackExecutionRpc;
-      this.currentStatus = 'SHARED_MODE';
+      this.activeUrl = '';
+      this.currentStatus = 'OFFLINE';
     }
 
     this.checkHealth().catch(() => {});
@@ -153,7 +153,7 @@ export class MasterMonitorHealthManager {
           this.currentStatus = duration > 500 ? 'DEGRADED' : 'LIVE';
         }
       } else {
-        this.currentStatus = 'SHARED_MODE';
+        this.currentStatus = 'OFFLINE';
       }
 
       telemetryService.recordApiRequest(targetUrl, 'getSlot', 200, duration);

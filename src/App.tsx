@@ -4034,17 +4034,8 @@ function App() {
             }
 
             if (!parsedTrade) {
-              const looksLikeBuy = logs.logs?.some(l => l.toLowerCase().includes('buy') || l.toLowerCase().includes('swap'));
-              parsedTrade = {
-                id: uniqueId,
-                type: looksLikeBuy ? 'buy' : 'sell',
-                token: 'SOL/TOKEN',
-                tokenAddress: 'Loading...',
-                amount: 0,
-                timestamp: new Date().toISOString(),
-                signature: signature,
-                status: 'confirmed'
-              };
+              console.warn(`[MASTER MONITOR] Ignoring unparseable transaction ${signature}`);
+              return;
             }
             const newTrade: Trade = parsedTrade;
 
