@@ -5,6 +5,8 @@ import { Position, PositionState } from '../types/position';
 import { ITradeExecutor } from './ITradeExecutor';
 import { masterMonitorHealthManager } from './MasterMonitorHealthManager';
 
+import { DEFAULT_HELIUS_RPC } from '../constants/solana';
+
 const QUOTE_CACHE_TTL_MS = 2000;      // Sell quote valid for 2s
 const PENDING_TIMEOUT_MS = 60000;     // 60s timeout for stuck txs
 const QUOTE_PREFETCH_INTERVAL_MS = 500; // Refresh cached quote every 500ms
@@ -40,7 +42,8 @@ export class PositionExitManager {
   ) {
     this.executor = executor;
     this.jupiterApi = createJupiterApiClient({ basePath: jupiterEndpoint });
-    this.connection = new Connection(rpcEndpoint || 'https://api.mainnet-beta.solana.com', 'confirmed');
+    const effectiveRpc = (rpcEndpoint && rpcEndpoint.trim()) ? rpcEndpoint.trim() : (typeof localStorage !== 'undefined' ? localStorage.getItem('juipter_auto_rpcUrl') : null) || DEFAULT_HELIUS_RPC;
+    this.connection = new Connection(effectiveRpc, 'confirmed');
     this.config = {
       tpPct: 25,
       slPct: 15,

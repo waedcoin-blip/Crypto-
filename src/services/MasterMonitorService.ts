@@ -29,8 +29,11 @@ export class MasterMonitorService {
   private priceEngine = new Map<string, PriceState>();
 
   constructor(rpcEndpoint: string, exitManager: PositionExitManager) {
+    if (!rpcEndpoint || !rpcEndpoint.trim()) {
+      throw new Error('[MasterMonitorService] Dedicated Master Monitor RPC endpoint is required. Fallback to public beta RPC is disallowed.');
+    }
     const wsEndpoint = masterMonitorHealthManager.getActiveWsEndpoint() || undefined;
-    this.connection = new Connection(rpcEndpoint || 'https://api.mainnet-beta.solana.com', {
+    this.connection = new Connection(rpcEndpoint.trim(), {
       commitment: 'confirmed',
       wsEndpoint,
     });
@@ -49,7 +52,7 @@ export class MasterMonitorService {
   }
 
   public setRpcEndpoint(rpcEndpoint: string) {
-    if (rpcEndpoint) {
+    if (rpcEndpoint && rpcEndpoint.trim()) {
       // Unsubscribe existing WS logs
       for (const subId of this.wsSubscriptionIds.values()) {
         try { this.connection.removeOnLogsListener(subId); } catch {}
@@ -57,7 +60,7 @@ export class MasterMonitorService {
       this.wsSubscriptionIds.clear();
 
       const wsEndpoint = masterMonitorHealthManager.getActiveWsEndpoint() || undefined;
-      this.connection = new Connection(rpcEndpoint, {
+      this.connection = new Connection(rpcEndpoint.trim(), {
         commitment: 'confirmed',
         wsEndpoint,
       });

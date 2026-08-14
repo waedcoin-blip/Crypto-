@@ -106,6 +106,94 @@
           "type": "number",
           "description": "Hardened max dev ownership percentage."
         },
+        "hardenedMcapMinPump": {
+          "type": "number",
+          "description": "Hardened minimum market cap for pump.fun tokens."
+        },
+        "hardenedMcapMinRaydium": {
+          "type": "number",
+          "description": "Hardened minimum market cap for raydium tokens."
+        },
+        "hardenedMcapMax": {
+          "type": "number",
+          "description": "Hardened maximum market cap."
+        },
+        "hardenedLiquidityMin": {
+          "type": "number",
+          "description": "Hardened minimum liquidity."
+        },
+        "hardenedMaxTop10": {
+          "type": "number",
+          "description": "Hardened max top 10 holders percentage."
+        },
+        "hardenedMinUniqueBuyers30s": {
+          "type": "number",
+          "description": "Hardened min unique buyers in last 30s."
+        },
+        "hardenedMinBuyCount30s": {
+          "type": "number",
+          "description": "Hardened min buy count in last 30s."
+        },
+        "hardenedMaxBuyCount30s": {
+          "type": "number",
+          "description": "Hardened max buy count in last 30s."
+        },
+        "hardenedMinBuySellRatio": {
+          "type": "number",
+          "description": "Hardened min buy/sell ratio."
+        },
+        "hardenedMaxBuySellRatio": {
+          "type": "number",
+          "description": "Hardened max buy/sell ratio."
+        },
+        "hardenedMaxPriceChange1m": {
+          "type": "number",
+          "description": "Hardened max price change in 1m."
+        },
+        "hardenedMinBondingProgress": {
+          "type": "number",
+          "description": "Hardened min bonding progress percentage."
+        },
+        "hardenedMaxBondingProgress": {
+          "type": "number",
+          "description": "Hardened max bonding progress percentage."
+        },
+        "hardenedMinAge": {
+          "type": "number",
+          "description": "Hardened min token age in seconds."
+        },
+        "hardenedMaxAge": {
+          "type": "number",
+          "description": "Hardened max token age in seconds."
+        },
+        "hardenedMinLatency": {
+          "type": "number",
+          "description": "Hardened min network latency."
+        },
+        "hardenedMaxLatency": {
+          "type": "number",
+          "description": "Hardened max network latency."
+        },
+        "hardenedMatchRequirement": {
+          "type": "number",
+          "description": "Hardened match requirement percentage."
+        },
+        "enableLatencyGuard": {
+          "type": "boolean",
+          "description": "Whether latency guard is active."
+        },
+        "hardenedMinProfit5m": {
+          "type": "number",
+          "description": "Hardened min profit in 5m."
+        },
+        "maxRebuyTimes": {
+          "type": "number",
+          "description": "Max rebuy attempts allowed."
+        },
+        "activePreset": {
+          "type": "string",
+          "description": "Active safety criteria preset."
+        },
         "senderEnabled": {
           "type": "boolean",
           "description": "Whether Helius Sender is enabled."

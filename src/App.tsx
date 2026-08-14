@@ -56,6 +56,7 @@ import { WalletStatusWidget } from './components/WalletStatusWidget';
 import { marketDataManager } from './services/marketDataManager';
 import { rpcHealthManager } from './services/rpcHealthManager';
 import { masterMonitorHealthManager } from './services/MasterMonitorHealthManager';
+import { syncManager } from './services/SyncService';
 
 
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
@@ -3448,78 +3449,66 @@ function App() {
   }, [user]);
 
   useEffect(() => {
-    if (!user || isFirestoreLoading.current) return;
+    if (isFirestoreLoading.current) return;
 
-    const saveSettings = async () => {
-      try {
-        const docRef = doc(db, 'settings', user.uid);
-        await setDoc(docRef, {
-          userId: user.uid,
-          buyAmountSol,
-          minTakeProfit,
-          maxTakeProfit,
-          bondingCurveTakeProfit,
-          stopLoss,
-          bondingCurveStopLoss,
-          pumpSwapStopLoss,
-          unknownStopLoss,
-          maxPositions,
-          telegramBotToken,
-          telegramChatId,
-          hardenedMcapMinPump,
-          hardenedMcapMinRaydium,
-          hardenedMcapMax,
-          hardenedLiquidityMin,
-          hardenedLiquidityRatio,
-          hardenedMaxRiskScore,
-          hardenedMaxDevOwnership,
-          hardenedMaxTop10,
-          hardenedMinUniqueBuyers30s,
-          hardenedMinBuyCount30s,
-          hardenedMaxBuyCount30s,
-          hardenedMinBuySellRatio,
-          hardenedMaxBuySellRatio,
-          hardenedMaxPriceChange1m,
-          hardenedMinBondingProgress,
-          hardenedMaxBondingProgress,
-          hardenedMinAge,
-          hardenedMaxAge,
-          hardenedMinLatency,
-          hardenedMaxLatency,
-          hardenedMatchRequirement,
-          enableLatencyGuard,
-          telemetryWhaleBuyMin,
-          telemetryHighBuyMin,
-          telemetryVolumeSpikeMin,
-          telemetryAllowWhaleBuy,
-          telemetryAllowHighBuy,
-          telemetryAllowVolumeSpike,
-          telemetryAllowMigrated,
-          telemetryAllowGoldenCross,
-          tradePumpFun,
-          tradeRaydium,
-          tradeBonding,
-          tradeUnknown,
-          hardenedMinProfit5m,
-          maxRebuyTimes,
-          rpcUrl,
-          rpcUrl2,
-          customWsUrl,
-          apiKey,
-          jupiterRpcUrl,
-          privateKey: privateKey ? await encryptPrivateKey(privateKey, user.uid) : undefined,
-          updatedAt: new Date().toISOString()
-        }, { merge: true });
-      } catch (err: any) {
-        console.error('Error saving settings to Firestore in App.tsx:', err);
-      }
+    const payload = {
+      buyAmountSol,
+      minTakeProfit,
+      maxTakeProfit,
+      bondingCurveTakeProfit,
+      stopLoss,
+      bondingCurveStopLoss,
+      pumpSwapStopLoss,
+      unknownStopLoss,
+      maxPositions,
+      telegramBotToken,
+      telegramChatId,
+      hardenedMcapMinPump,
+      hardenedMcapMinRaydium,
+      hardenedMcapMax,
+      hardenedLiquidityMin,
+      hardenedLiquidityRatio,
+      hardenedMaxRiskScore,
+      hardenedMaxDevOwnership,
+      hardenedMaxTop10,
+      hardenedMinUniqueBuyers30s,
+      hardenedMinBuyCount30s,
+      hardenedMaxBuyCount30s,
+      hardenedMinBuySellRatio,
+      hardenedMaxBuySellRatio,
+      hardenedMaxPriceChange1m,
+      hardenedMinBondingProgress,
+      hardenedMaxBondingProgress,
+      hardenedMinAge,
+      hardenedMaxAge,
+      hardenedMinLatency,
+      hardenedMaxLatency,
+      hardenedMatchRequirement,
+      enableLatencyGuard,
+      telemetryWhaleBuyMin,
+      telemetryHighBuyMin,
+      telemetryVolumeSpikeMin,
+      telemetryAllowWhaleBuy,
+      telemetryAllowHighBuy,
+      telemetryAllowVolumeSpike,
+      telemetryAllowMigrated,
+      telemetryAllowGoldenCross,
+      tradePumpFun,
+      tradeRaydium,
+      tradeBonding,
+      tradeUnknown,
+      hardenedMinProfit5m,
+      maxRebuyTimes,
+      rpcUrl,
+      rpcUrl2,
+      customWsUrl,
+      apiKey,
+      jupiterRpcUrl,
+      updatedAt: new Date().toISOString()
     };
 
-    const timer = setTimeout(() => {
-      saveSettings();
-    }, 1000);
-
-    return () => clearTimeout(timer);
+    // Immediately sync to Render and Firebase database
+    syncManager.triggerSync(payload, user?.uid, false);
   }, [
     user, buyAmountSol, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, unknownStopLoss, maxPositions,
     telegramBotToken, telegramChatId, hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax,

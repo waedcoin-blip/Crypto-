@@ -7,7 +7,7 @@ export interface MasterMonitorStatus {
   backupUrl: string | null;
   wsUrl: string | null;
   activeUrl: string;
-  status: 'CONNECTING' | 'LIVE' | 'DEGRADED' | 'BACKUP' | 'OFFLINE' | 'SHARED_MODE';
+  status: 'CONNECTING' | 'LIVE' | 'DEGRADED' | 'BACKUP' | 'OFFLINE';
   latencyMs: number | null;
   slot: number | null;
   lastUpdated: number | null; // Timestamp
@@ -20,7 +20,7 @@ export class MasterMonitorHealthManager {
   private wsUrl: string | null = null;
   private activeUrl: string = '';
   
-  private currentStatus: 'CONNECTING' | 'LIVE' | 'DEGRADED' | 'BACKUP' | 'OFFLINE' | 'SHARED_MODE' = 'OFFLINE';
+  private currentStatus: 'CONNECTING' | 'LIVE' | 'DEGRADED' | 'BACKUP' | 'OFFLINE' = 'OFFLINE';
   private latencyMs: number | null = null;
   private slot: number | null = null;
   private lastUpdated: number | null = null;
@@ -37,7 +37,6 @@ export class MasterMonitorHealthManager {
     const storedPrimary = localStorage.getItem('master_monitor_rpc') || '';
     const storedBackup = localStorage.getItem('master_monitor_rpc2') || '';
     const storedWs = localStorage.getItem('master_monitor_ws') || '';
-    const fallbackExecutionRpc = localStorage.getItem('juipter_auto_rpcUrl') || 'https://mainnet.helius-rpc.com/?api-key=7c978051-50e8-46d4-a82f-2c35f295b9c0';
 
     this.primaryUrl = storedPrimary.trim();
     this.backupUrl = storedBackup.trim() ? storedBackup.trim() : null;
@@ -75,8 +74,6 @@ export class MasterMonitorHealthManager {
       localStorage.removeItem('master_monitor_ws');
     }
 
-    const fallbackExecutionRpc = localStorage.getItem('juipter_auto_rpcUrl') || 'https://mainnet.helius-rpc.com/?api-key=7c978051-50e8-46d4-a82f-2c35f295b9c0';
-    
     if (this.primaryUrl) {
       this.activeUrl = this.primaryUrl;
       this.currentStatus = 'CONNECTING';
@@ -98,7 +95,7 @@ export class MasterMonitorHealthManager {
       latencyMs: this.latencyMs,
       slot: this.slot,
       lastUpdated: this.lastUpdated,
-      isSharedMode: !this.primaryUrl,
+      isSharedMode: false,
     };
   }
 

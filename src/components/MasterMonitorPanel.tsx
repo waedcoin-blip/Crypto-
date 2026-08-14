@@ -50,7 +50,6 @@ export const MasterMonitorPanel: React.FC<MasterMonitorPanelProps> = ({
       case 'CONNECTING': return 'text-sky-400 bg-sky-500/10 border-sky-500/30';
       case 'DEGRADED': return 'text-amber-400 bg-amber-500/10 border-amber-500/30';
       case 'BACKUP': return 'text-indigo-400 bg-indigo-500/10 border-indigo-500/30';
-      case 'SHARED_MODE': return 'text-teal-400 bg-teal-500/10 border-teal-500/30';
       case 'OFFLINE': return 'text-rose-400 bg-rose-500/10 border-rose-500/30';
     }
   };
@@ -89,7 +88,7 @@ export const MasterMonitorPanel: React.FC<MasterMonitorPanelProps> = ({
         <div className="flex items-center justify-between text-[11px]">
           <label className="font-semibold text-sky-200">RPC Endpoint</label>
           <span className="text-[10px] text-sky-400/80 font-mono">
-            {isCustomEngaged ? '● DEDICATED MONITOR NODE' : '⚡ SHARED READ FALLBACK'}
+            {isCustomEngaged ? '● DEDICATED MONITOR NODE' : '○ NOT CONFIGURED (OFFLINE)'}
           </span>
         </div>
         <input
@@ -99,7 +98,7 @@ export const MasterMonitorPanel: React.FC<MasterMonitorPanelProps> = ({
             setMasterMonitorRpc(e.target.value);
             masterMonitorHealthManager.setEndpoints(e.target.value, masterMonitorRpc2, masterMonitorWs);
           }}
-          placeholder={rpcUrl ? `Fallback: ${rpcUrl}` : "https://mainnet.helius-rpc.com/..."}
+          placeholder="https://mainnet.helius-rpc.com/?api-key=..."
           className="w-full bg-[#050b14] border border-sky-500/30 rounded-xl px-3 py-2 text-[12px] text-white font-mono focus:outline-none focus:border-sky-400 transition-colors placeholder:text-slate-600"
         />
       </div>

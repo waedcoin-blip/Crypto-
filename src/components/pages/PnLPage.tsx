@@ -29,6 +29,8 @@ import { PaperTradeExecutor } from '../../services/PaperTradeExecutor';
 import { RealTradeExecutor } from '../../services/RealTradeExecutor';
 import { ITradeExecutor } from '../../services/ITradeExecutor';
 import { masterMonitorHealthManager } from '../../services/MasterMonitorHealthManager';
+import { syncManager } from '../../services/SyncService';
+import { SyncStatusBadge } from '../SyncStatusBadge';
 
 import { DEFAULT_HELIUS_RPC, DEFAULT_HELIUS_WS, HELIUS_API_KEY } from '../../constants/solana';
 
@@ -3086,6 +3088,46 @@ export const PnLPage = ({
           addLog(`⏸️ [MAX POSITIONS REACHED] Limit set to ${currentValues.maxPositions} (Active: ${currentActiveCount}). Stopped searching new tokens.`, 'warn');
         }
       }
+
+      // Immediately sync criteria & trade size to Render and Firebase
+      syncManager.triggerSync({
+        buyAmountSol: tradeAmount,
+        minTakeProfit,
+        maxTakeProfit: takeProfitPct,
+        bondingCurveTakeProfit,
+        stopLoss,
+        maxPositions,
+        slippage,
+        hardenedMcapMinPump,
+        hardenedMcapMinRaydium,
+        hardenedMcapMax,
+        hardenedLiquidityMin,
+        hardenedLiquidityRatio,
+        hardenedMaxRiskScore,
+        hardenedMaxDevOwnership,
+        hardenedMaxTop10,
+        hardenedMinUniqueBuyers30s,
+        hardenedMinBuyCount30s,
+        hardenedMaxBuyCount30s,
+        hardenedMinBuySellRatio,
+        hardenedMaxBuySellRatio,
+        hardenedMaxPriceChange1m,
+        hardenedMinBondingProgress,
+        hardenedMaxBondingProgress,
+        hardenedMinAge,
+        hardenedMaxAge,
+        hardenedMinLatency,
+        hardenedMaxLatency,
+        tradePumpFun,
+        tradeRaydium,
+        tradeBonding,
+        tradeUnknown,
+        hardenedMinProfit5m,
+        maxRebuyTimes,
+        enableLatencyGuard,
+        updatedAt: new Date().toISOString()
+      }, undefined, false);
+
       lastLoggedCriteria.current = currentValues;
     }
   }, [
@@ -5963,8 +6005,9 @@ const checkTokenCriteria = (mint: string): {
               onClick={() => setIsAuditingOpen(!isAuditingOpen)}
               className="p-4 flex items-center justify-between text-left select-none focus:outline-none w-full"
             >
-              <h2 className="text-[12px] uppercase tracking-[1px] text-[#94a3b8] font-bold flex items-center gap-1.5">
+              <h2 className="text-[12px] uppercase tracking-[1px] text-[#94a3b8] font-bold flex items-center gap-2">
                 <span>🔐</span> Strict Auditing Criteria
+                <SyncStatusBadge className="ml-2 scale-90 origin-left" />
               </h2>
               {isAuditingOpen ? (
                 <ChevronUp className="w-4 h-4 text-[#94a3b8]" />

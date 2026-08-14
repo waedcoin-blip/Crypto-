@@ -298,4 +298,24 @@ router.post('/swap', asyncHandler(async (req, res) => {
   res.status(response.status).send(text);
 }));
 
+// GET /api/jup/config or /api/jup/criteria
+router.get(['/config', '/criteria'], asyncHandler(async (req, res) => {
+  res.json({
+    status: 'success',
+    timestamp: Date.now()
+  });
+}));
+
+// POST /api/jup/config or /api/jup/criteria
+router.post(['/config', '/criteria'], asyncHandler(async (req, res) => {
+  const incoming = req.body || {};
+  jupiterLogger.info({ incoming }, 'Jupiter criteria/config updated');
+  res.json({
+    status: 'success',
+    message: 'Configuration updated',
+    config: incoming,
+    timestamp: Date.now()
+  });
+}));
+
 export default router;

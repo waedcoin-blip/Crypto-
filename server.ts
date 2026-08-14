@@ -55,6 +55,7 @@ import dexscreenerRouter from "./server/routes/dexscreener.js";
 import ftpRouter from "./server/routes/ftp.js";
 import telegramRouter from "./server/routes/telegram.js";
 import laserstreamRouter from "./server/routes/laserstream.js";
+import criteriaRouter from "./server/routes/criteria.js";
 
 // Process level crash guard for benign connection glitches
 process.on("uncaughtException", (err) => {
@@ -119,6 +120,8 @@ async function startServer() {
   app.use("/api/ftp", ftpRouter);
   app.use("/api/telegram", telegramRouter);
   app.use("/api/laserstream", laserstreamRouter);
+  app.use("/api/criteria", criteriaRouter);
+  app.use("/api/config", criteriaRouter);
 
   // API Catch-all 404 Handler
   app.all("/api/*", (req, res) => {
