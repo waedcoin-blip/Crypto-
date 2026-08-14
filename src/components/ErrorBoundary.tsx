@@ -132,26 +132,10 @@ export class ErrorBoundary extends Component<Props, State> {
               <button 
                 onClick={() => {
                   this.handleReset();
-                  window.location.reload();
                 }} 
                 className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium text-xs transition-colors cursor-pointer"
               >
-                Reload App
-              </button>
-              <button 
-                onClick={() => {
-                  try {
-                    localStorage.clear();
-                    sessionStorage.clear();
-                  } catch (e) {
-                    console.error('Failed to clear storage:', e);
-                  }
-                  this.handleReset();
-                  window.location.reload();
-                }} 
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg font-medium text-xs transition-colors cursor-pointer"
-              >
-                Reset Storage & Reload
+                Reset UI
               </button>
             </div>
           </div>

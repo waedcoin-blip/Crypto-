@@ -84,6 +84,8 @@ export class BatchExitEngine {
 
     const atasToClose: { ata: PublicKey; mint: string }[] = [];
 
+    let expectedSolReceived = 0;
+
     for (const pos of positions) {
       try {
         const quote = await this.jupiterApi.quoteGet({
@@ -100,6 +102,8 @@ export class BatchExitEngine {
             userPublicKey: this.wallet.publicKey.toBase58(),
           },
         });
+
+        expectedSolReceived += Number(quote.outAmount) / 1e9;
 
         const ixs = this.decodeInstructions(swapInstructions);
         allInstructions.push(...ixs);
@@ -187,7 +191,7 @@ export class BatchExitEngine {
       positionsExited: positions.length - failedMints.length,
       totalFeesSol,
       rentReclaimedSol,
-      netSolReceived: 0,
+      netSolReceived: expectedSolReceived,
       failedMints,
       landingTimeMs,
     };

@@ -72,6 +72,11 @@ export class PositionExitManager {
     const pos = this.positions.get(mint);
     if (!pos) return;
 
+    if (Date.now() - _timestamp > this.config.maxPriceAgeMs) {
+      // Stale price, discard
+      return;
+    }
+
     // Skip if position is not in monitorable state
     if (!this.isMonitorable(pos.state)) return;
 
@@ -157,9 +162,16 @@ export class PositionExitManager {
       // Even if executable PnL is lower, still execute if still profitable (for TP)
       // or if SL condition worsened (for SL)
       const slPct = pos.slPct ?? this.config.slPct;
-      const shouldExecute = side === 'tp' 
-        ? executablePnLPct > 0  // Still profitable
-        : executablePnLPct <= -Math.abs(slPct); // SL condition still valid
+      let shouldExecute = false;
+      
+      if (side === 'tp') {
+         shouldExecute = executablePnLPct > 0;
+      } else if (side === 'trailing_sl') {
+         const trailingThreshold = pos.peakPnLPct - this.config.trailingSlOffset;
+         shouldExecute = executablePnLPct <= trailingThreshold;
+      } else {
+         shouldExecute = executablePnLPct <= -Math.abs(slPct);
+      }
 
       if (!shouldExecute) {
         console.log(`[ExitManager] Exit condition no longer valid, releasing lock`);

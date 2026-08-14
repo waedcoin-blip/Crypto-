@@ -20,8 +20,18 @@ function sanitizeHtml(input: string): string {
 }
 
 router.post('/', asyncHandler(async (req, res) => {
+  // SSRF/Proxy Protection: Only allow requests originating from the same browser context 
+  // or explicit authorized origins, or require server-configured token.
+  // Using an open proxy for user-supplied Telegram tokens is dangerous.
   const envToken = process.env.TELEGRAM_BOT_TOKEN || process.env.VITE_TELEGRAM_BOT_TOKEN;
   const token = envToken || (req.body.token && typeof req.body.token === 'string' ? req.body.token.trim() : '');
+  
+  if (!envToken && (!req.headers.origin || !req.headers.origin.includes(req.hostname))) {
+     // If not using server token, block cURL/external requests that don't pass Origin matching hostname
+     // This mitigates the worst of the open proxy abuse.
+     throw new BadGatewayError('Telegram proxying of arbitrary tokens requires valid CORS origin');
+  }
+
   if (!token) {
     throw new BadGatewayError('Telegram bot token not configured');
   }

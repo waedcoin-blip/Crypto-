@@ -90,6 +90,9 @@ router.get('/status', (req, res) => {
 
 // POST /api/laserstream/config
 router.post('/config', asyncHandler(async (req, res) => {
+  if (!req.headers.origin || !req.headers.origin.includes(req.hostname)) {
+    return res.status(401).json({ success: false, message: 'Unauthorized origin' });
+  }
   const { enabled, apiKey, endpoint, programAddresses, customWsUrl } = req.body;
 
   currentOptions = {

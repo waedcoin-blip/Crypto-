@@ -30,7 +30,26 @@ const quoteCache = new SwrCache<{ status: number; text: string }>({
 });
 
 // ─── Helpers ───
+const ALLOWED_JUPITER_HOSTS = [
+  'api.jup.ag',
+  'lite-api.jup.ag',
+  'quote-api.jup.ag',
+  'public.jupiterapi.com'
+];
+
+function isAllowedHost(urlStr: string): boolean {
+  try {
+    const url = new URL(urlStr.startsWith('http') ? urlStr : `https://${urlStr}`);
+    return ALLOWED_JUPITER_HOSTS.some(h => url.hostname === h || url.hostname.endsWith(`.${h}`));
+  } catch {
+    return false;
+  }
+}
+
 function normalizeJupiterBase(base: string): string {
+  if (!isAllowedHost(base)) {
+    throw new Error('Invalid or unapproved Jupiter base URL');
+  }
   let normalized = base.endsWith('/') ? base.slice(0, -1) : base;
 
   // Only replace quote-api with api.jup.ag

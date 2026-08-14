@@ -62,6 +62,11 @@ export const swapRateLimiter = rateLimit({
 
 // Request logging middleware
 export function requestLogger(req: Request, res: Response, next: NextFunction): void {
+  // Only log API requests to avoid noisy logs for Vite internal files and static assets
+  if (!req.path.startsWith('/api')) {
+    return next();
+  }
+
   const start = Date.now();
 
   res.on('finish', () => {

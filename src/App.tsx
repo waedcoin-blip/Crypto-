@@ -32,7 +32,7 @@ import { cn, detectTokenStage } from './lib/utils';
 import { setSolPriceUsd, getSolPriceUsd, calcNetPnl } from './utils/pnlCalculator';
 import { DEFAULT_HELIUS_RPC, HELIUS_API_KEY } from './constants/solana';
 import { encryptPrivateKey, decryptPrivateKey } from './lib/crypto';
-import { auth, db, signInWithGoogle, signInWithEmailAndPassword, createUserWithEmailAndPassword, signInAnonymously } from './lib/firebase';
+import { auth, db, signInWithGoogle, signInWithEmailAndPassword, createUserWithEmailAndPassword, signInAnonymously, authPersistencePromise } from './lib/firebase';
 import { onAuthStateChanged, User, signOut } from 'firebase/auth';
 import { 
   collection, 
@@ -615,31 +615,7 @@ function App() {
   });
 
   useEffect(() => {
-    if (!localStorage.getItem('expert_criteria_v3')) {
-      setMinTakeProfit(20);
-      setMaxTakeProfit(50);
-      setStopLoss(-15);
-      setBondingCurveStopLoss(-15);
-      setHardenedMcapMinPump(40000);
-      setHardenedMcapMinRaydium(80000);
-      setHardenedMcapMax(2000000);
-      setHardenedLiquidityMin(25000);
-      setHardenedLiquidityRatio(7);
-      setHardenedMaxRiskScore(15);
-      setHardenedMaxDevOwnership(10);
-      setHardenedMaxTop10(20);
-      setHardenedMinUniqueBuyers30s(5);
-      setHardenedMinBuyCount30s(5);
-      setHardenedMaxBuyCount30s(25);
-      setHardenedMinBuySellRatio(2.0);
-      setHardenedMaxBuySellRatio(5.0);
-      setHardenedMaxPriceChange1m(15.0);
-      setHardenedMinBondingProgress(70);
-      setHardenedMaxBondingProgress(95);
-      setHardenedMinAge(10);
-      setHardenedMaxAge(300);
-      localStorage.setItem('expert_criteria_v3', 'true');
-    }
+    // Legacy expert_criteria_v3 initializer removed to prevent destructive resets
   }, []);
 
   const [rpcLatency, setRpcLatency] = useState<number | null>(null);
@@ -3349,25 +3325,31 @@ function App() {
     return () => window.removeEventListener('resize', checkMobile);
   }, []);
 
+  const [authLoaded, setAuthLoaded] = useState(false);
+
   // Auth & Database Sync
   useEffect(() => {
-    const unsubscribeAuth = onAuthStateChanged(auth, async (currentUser) => {
-      if (!currentUser) {
-        setUser(null);
-        setMonitoredWallets([]);
-        setIsMonitoring(false);
-        try {
-          await signInAnonymously(auth);
-        } catch (err) {
-          console.error('Anonymous auth auto-login failed:', err);
+    let unsubscribeAuth: () => void;
+    authPersistencePromise.then(() => {
+      unsubscribeAuth = onAuthStateChanged(auth, async (currentUser) => {
+        if (!currentUser) {
+          setUser(null);
+          setMonitoredWallets([]);
+          setIsMonitoring(false);
+        } else {
+          setUser(currentUser);
+          setIsMonitoring(true);
         }
-      } else {
-        setUser(currentUser);
-        setIsMonitoring(true);
-      }
+        setAuthLoaded(true);
+      });
+    }).catch((err) => {
+      console.error(err);
+      setAuthLoaded(true); // Ensure app unblocks if auth fails
     });
 
-    return () => unsubscribeAuth();
+    return () => {
+      if (unsubscribeAuth) unsubscribeAuth();
+    };
   }, []);
 
   useEffect(() => {

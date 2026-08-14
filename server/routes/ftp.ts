@@ -13,7 +13,11 @@ import type { BackupData } from '../services/ftpService.js';
 const router = Router();
 
 function checkFtpAllowlist(host: string): void {
-  if (config.ALLOWED_FTP_HOSTS.length > 0 && !config.ALLOWED_FTP_HOSTS.includes(host)) {
+  if (config.ALLOWED_FTP_HOSTS.length === 0) {
+    ftpLogger.warn({ host }, 'FTP host rejected: ALLOWED_FTP_HOSTS is empty');
+    throw new UnauthorizedError('FTP deployment is disabled on this server (allowlist is empty)');
+  }
+  if (!config.ALLOWED_FTP_HOSTS.includes(host)) {
     ftpLogger.warn({ host }, 'FTP host not in allowlist');
     throw new UnauthorizedError('Host not in allowlist');
   }

@@ -85,7 +85,30 @@ export class RealTradeExecutor implements ITradeExecutor {
       });
 
       const txBuf = Buffer.from(swapBuild.swapTransaction, 'base64');
-      const sig = await this.hybrid.connection.sendRawTransaction(txBuf, { skipPreflight: true });
+      
+      const savedKey = typeof window !== 'undefined' ? localStorage.getItem('matrix_session_key') : null;
+      if (!savedKey) {
+        throw new Error('Hybrid execution failed: No private key available to sign transaction.');
+      }
+      
+      const kp = Keypair.fromSecretKey(bs58.decode(savedKey));
+      const tx = VersionedTransaction.deserialize(txBuf);
+      tx.sign([kp]);
+      
+      const sig = await this.hybrid.connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
+      
+      const confirmation = await this.hybrid.connection.confirmTransaction({
+        signature: sig,
+        blockhash: tx.message.recentBlockhash,
+        lastValidBlockHeight: swapBuild.lastValidBlockHeight || (await this.hybrid.connection.getLatestBlockhash()).lastValidBlockHeight
+      }, 'confirmed');
+
+      if (confirmation.value.err) {
+         throw new Error(`Hybrid transaction failed to confirm: ${JSON.stringify(confirmation.value.err)}`);
+      }
+
+      // Also get actual slot instead of 0
+      const slot = confirmation.context.slot;
 
       return {
         signature: sig || 'real-tx-sig',
@@ -94,7 +117,7 @@ export class RealTradeExecutor implements ITradeExecutor {
         inputAmount: amount,
         outputAmount: Number(quote.outAmount),
         feeSol: 0.000005 + (10_000 * 140_000 / 1e15),
-        slot: 0,
+        slot: slot || 0,
         landingTimeMs: Date.now() - start,
         method: 'rpc',
       };
@@ -113,35 +136,34 @@ export class RealTradeExecutor implements ITradeExecutor {
     const txBuf = Buffer.from(swapBuild.swapTransaction, 'base64');
     let sig = '';
     const savedKey = typeof window !== 'undefined'
-      ? (localStorage.getItem('juipter_auto_privateKey') || localStorage.getItem('matrix_session_key'))
+      ? localStorage.getItem('matrix_session_key')
       : null;
 
-    if (savedKey) {
-      try {
-        const kp = Keypair.fromSecretKey(bs58.decode(savedKey));
-        const tx = VersionedTransaction.deserialize(txBuf);
-        tx.sign([kp]);
-        sig = await this.connection.sendRawTransaction(tx.serialize(), {
-          skipPreflight: true,
-          maxRetries: 3
-        });
+    if (!savedKey) {
+      throw new Error('RealTradeExecutor failed: No private key available to sign transaction.');
+    }
 
-        const latestBlockhash = await this.connection.getLatestBlockhash();
-        await this.connection.confirmTransaction({
-          signature: sig,
-          blockhash: latestBlockhash.blockhash,
-          lastValidBlockHeight: latestBlockhash.lastValidBlockHeight
-        }, 'confirmed').catch(() => null);
-      } catch (err: any) {
-        console.error('RealTradeExecutor swap failed:', err);
-        throw new Error(`Real Jupiter swap transaction execution failed: ${err.message || String(err)}`);
+    try {
+      const kp = Keypair.fromSecretKey(bs58.decode(savedKey));
+      const tx = VersionedTransaction.deserialize(txBuf);
+      tx.sign([kp]);
+      sig = await this.connection.sendRawTransaction(tx.serialize(), {
+        skipPreflight: true,
+        maxRetries: 3
+      });
+
+      const confirmation = await this.connection.confirmTransaction({
+        signature: sig,
+        blockhash: tx.message.recentBlockhash,
+        lastValidBlockHeight: swapBuild.lastValidBlockHeight || (await this.connection.getLatestBlockhash()).lastValidBlockHeight
+      }, 'confirmed');
+
+      if (confirmation.value.err) {
+         throw new Error(`Transaction failed to confirm: ${JSON.stringify(confirmation.value.err)}`);
       }
-    } else {
-      try {
-        sig = await this.connection.sendRawTransaction(txBuf, { skipPreflight: true });
-      } catch (err: any) {
-        throw new Error('RealTradeExecutor failed: No private key available to sign transaction.');
-      }
+    } catch (err: any) {
+      console.error('RealTradeExecutor swap failed:', err);
+      throw new Error(`Real Jupiter swap transaction execution failed: ${err.message || String(err)}`);
     }
 
     return {

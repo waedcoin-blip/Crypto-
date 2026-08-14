@@ -1741,8 +1741,21 @@ export const PnLPage = ({
     localStorage.setItem('juipter_auto_apiKey', apiKey);
   }, [apiKey]);
   useEffect(() => {
-    localStorage.setItem('juipter_auto_privateKey', privateKey);
-  }, [privateKey]);
+    if (!privateKey) {
+      localStorage.removeItem('juipter_auto_privateKey');
+      return;
+    }
+    let active = true;
+    const encryptAndStore = async () => {
+      const uid = user?.uid || 'default_app_offline_salt';
+      const encrypted = await encryptPrivateKey(privateKey, uid);
+      if (active) {
+        localStorage.setItem('juipter_auto_privateKey', encrypted);
+      }
+    };
+    encryptAndStore();
+    return () => { active = false; };
+  }, [privateKey, user?.uid]);
 
   const isFirestoreLoading = useRef(false);
   const lastLoadedSettingsRef = useRef<{
@@ -4405,7 +4418,7 @@ const checkTokenCriteria = (mint: string): {
       if (!currentPos) return next;
 
       if (isMainSold) {
-        delete next[mint];
+        delete next[mint]; positionExitManagerRef.current?.removePosition(mint); masterMonitorRef.current?.stopMonitoring(mint);
       }
       return next;
     });
@@ -4420,12 +4433,13 @@ const checkTokenCriteria = (mint: string): {
   const masterMonitorRef = useRef<MasterMonitorService | null>(null);
 
   useEffect(() => {
-    const isRealMode = !!configRef.current.privateKey;
+    const tradeModeFromStorage = (typeof localStorage !== 'undefined' ? localStorage.getItem('trade_mode') : null) || (typeof localStorage !== 'undefined' && localStorage.getItem('is_live_trading') === 'true' ? 'real' : 'paper');
+    const isRealMode = tradeModeFromStorage === 'real' && !!configRef.current.privateKey;
     const currentRpc = (configRef.current as any).masterMonitorRpc || rpcUrl || DEFAULT_HELIUS_RPC;
     const currentJup = jupiterRpcUrl || 'https://api.jup.ag/swap/v1';
 
     let executor: ITradeExecutor;
-    if (isRealMode && configRef.current.privateKey) {
+    if (isRealMode) {
       executor = new RealTradeExecutor({ verbose: true });
     } else {
       executor = new PaperTradeExecutor({
@@ -4452,7 +4466,42 @@ const checkTokenCriteria = (mint: string): {
       addLog(`⚡ [FAST EXIT ENGINE] ${side.toUpperCase()} triggered for ${mint} at ${pnlPct.toFixed(2)}% | Tx: ${signature}`, 'sell');
       const pos = positionsRef.current[mint];
       if (pos) {
-        executeSell(mint, pos.currentPrice || pos.buyPrice, pnlPct, `FAST EXIT: ${side.toUpperCase()}`);
+        // Remove from UI position state
+        setPositions(prev => {
+          const next = { ...prev };
+          delete next[mint]; positionExitManagerRef.current?.removePosition(mint); masterMonitorRef.current?.stopMonitoring(mint);
+          return next;
+        });
+        // Stop price monitoring
+        masterMonitorRef.current?.stopMonitoring(mint);
+
+        // Update trade history and stats
+        const costBasisSol = pos.solSpent || 0;
+        const actualPnlSOL = costBasisSol > 0 ? (costBasisSol * pnlPct / 100) : 0;
+        const actualSolReceived = costBasisSol + actualPnlSOL;
+
+        setStats((s) => ({
+          ...s,
+          trades: s.trades + 1,
+          wins: s.wins + (pnlPct > 0 ? 1 : 0),
+          losses: s.losses + (pnlPct <= 0 ? 1 : 0),
+          pnl: s.pnl + actualPnlSOL,
+          bestTrade: (pnlPct > 0 && (!s.bestTrade || (pnlPct/100) > s.bestTrade)) ? (pnlPct/100) : s.bestTrade
+        }));
+
+        setTradeHistory(th => [{
+          id: `trade-${Date.now()}`,
+          mint: mint,
+          buyTime: pos.entryTime,
+          sellTime: Date.now(),
+          buyAmountSol: costBasisSol,
+          sellAmountSol: actualSolReceived,
+          pnlPct: Math.max(-100, pnlPct)
+        }, ...th]);
+
+        if (pnlPct < 0) {
+          setBlacklistedMints(prev => Array.from(new Set([...prev, mint])));
+        }
       }
     });
 
@@ -4466,7 +4515,7 @@ const checkTokenCriteria = (mint: string): {
       exitMgr.stop();
       masterMon.stopMonitoring();
     };
-  }, [rpcUrl, jupiterRpcUrl, isRunning]);
+  }, [isRunning]);
 
   // Sync active positions to PositionExitManager & MasterMonitorService
   useEffect(() => {
@@ -5558,8 +5607,7 @@ const checkTokenCriteria = (mint: string): {
                 </div>
                 <input type="text" value={rpcUrl2} onChange={(e) => {
                   setRpcUrl2(e.target.value);
-                  setTimeout(() => window.location.reload(), 1000); // Reload required to apply load balancer via main.tsx fetch override
-                }} placeholder="https://mainnet.helius-rpc.com/... (Requires Refresh)" className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-2 text-[13px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors" />
+                }} placeholder="https://mainnet.helius-rpc.com/... (Dynamic Fallback)" className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-2 text-[13px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors" />
               </div>
               <div>
                 <div className="flex justify-between text-[11px] text-[#64748b] mb-1.5 uppercase font-medium"><span>Custom WSS (Websocket) URL</span></div>
