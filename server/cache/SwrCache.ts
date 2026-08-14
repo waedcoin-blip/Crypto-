@@ -58,8 +58,10 @@ export class SwrCache<T> {
     // LRU eviction: remove oldest entry if at capacity
     if (this.cache.size >= this.maxSize && !this.cache.has(key)) {
       const firstKey = this.cache.keys().next().value;
-      this.cache.delete(firstKey);
-      logger.debug({ cache: this.name, evicted: firstKey }, 'LRU eviction');
+      if (firstKey !== undefined) {
+        this.cache.delete(firstKey);
+        logger.debug({ cache: this.name, evicted: firstKey }, 'LRU eviction');
+      }
     }
 
     this.cache.set(key, { data, timestamp: Date.now() });

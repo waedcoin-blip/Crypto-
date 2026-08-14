@@ -103,8 +103,11 @@ export class PositionExitManager {
   // ═══════════════════════════════════════════════════════════════════════
 
   private evaluateExit(pos: Position, currentPnLPct: number): 'tp' | 'sl' | 'trailing_sl' | null {
+    const tpPct = pos.tpPct ?? this.config.tpPct;
+    const slPct = pos.slPct ?? this.config.slPct;
+    
     // Take Profit
-    if (currentPnLPct >= pos.tpPct) return 'tp';
+    if (currentPnLPct >= tpPct) return 'tp';
 
     // Trailing Stop Loss
     if (pos.peakPnLPct > this.config.trailingSlMinRally) {
@@ -113,7 +116,7 @@ export class PositionExitManager {
     }
 
     // Hard Stop Loss
-    if (currentPnLPct <= -Math.abs(pos.slPct)) return 'sl';
+    if (currentPnLPct <= -Math.abs(slPct)) return 'sl';
 
     return null;
   }
@@ -153,9 +156,10 @@ export class PositionExitManager {
 
       // Even if executable PnL is lower, still execute if still profitable (for TP)
       // or if SL condition worsened (for SL)
+      const slPct = pos.slPct ?? this.config.slPct;
       const shouldExecute = side === 'tp' 
         ? executablePnLPct > 0  // Still profitable
-        : executablePnLPct <= -Math.abs(pos.slPct); // SL condition still valid
+        : executablePnLPct <= -Math.abs(slPct); // SL condition still valid
 
       if (!shouldExecute) {
         console.log(`[ExitManager] Exit condition no longer valid, releasing lock`);

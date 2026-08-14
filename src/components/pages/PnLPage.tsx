@@ -2450,7 +2450,7 @@ export const PnLPage = ({
 
       let solPriceInUsd = getSolPriceUsd() || 150;
       const solTokenPrice = marketPrices.get('So11111111111111111111111111111111111111112');
-      if (solTokenPrice && solTokenPrice.priceUsd > 0) {
+      if (solTokenPrice && solTokenPrice.priceUsd != null && solTokenPrice.priceUsd > 0) {
         solPriceInUsd = solTokenPrice.priceUsd;
         setSolPriceUsd(solPriceInUsd);
       }
@@ -2894,7 +2894,7 @@ export const PnLPage = ({
       const mints = tokensList.map(t => t.address);
       const prices = await marketDataManager.getPrices(mints, 'ui');
       prices.forEach((tp, addr) => {
-        if (tp.priceUsd > 0) {
+        if (tp.priceUsd != null && tp.priceUsd > 0) {
           latestPricesRef.current[addr] = tp.priceUsd;
           if (hasSimPosition(addr)) {
             updateSimPrice(addr, tp.priceNative || tp.priceUsd / 145);
@@ -5156,7 +5156,7 @@ const checkTokenCriteria = (mint: string): {
           
           for (const [tokenAddress, tp] of discoveredPrices) {
             if (!isPolled) break;
-            if (!tp || tp.priceUsd <= 0) continue;
+            if (!tp || tp.priceUsd == null || tp.priceUsd <= 0) continue;
 
             const priceUsd = tp.priceUsd;
             const liquidityUsd = tp.liquidityUsd || 0;

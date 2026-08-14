@@ -802,7 +802,7 @@ function App() {
     fetch('/api/health')
       .then(r => r.json())
       .then(data => console.log('✅ Matrix Backend Connected:', data))
-      .catch(err => console.error('❌ Matrix Backend Connectivity Issue:', err));
+      .catch((err: any) => console.error('❌ Matrix Backend Connectivity Issue:', err));
   }, []);
 
   const sendTelegramAlert = async (msg: string, silent = false) => {
@@ -851,7 +851,7 @@ function App() {
         `Time: <b>${new Date().toLocaleTimeString()}</b>\n\n` +
         `<i>Matrix Dashboard status: ACTIVE</i>`,
         true
-      ).catch(err => console.warn('Telegram wallet connection alert failed:', err));
+      ).catch((err: any) => console.warn('Telegram wallet connection alert failed:', err));
     }
   }, [publicKey]);
 
@@ -1349,7 +1349,7 @@ function App() {
           if (state.activePositions[token.address] || pendingTrades.current.has(token.address)) continue;
           
           const now = Date.now();
-          const recentBuys = (token.recentBuysTimeline || []).filter(t => t && t.t && (now - t.t < 30000));
+          const recentBuys = (token.recentBuysTimeline || []).filter((t: any) => t && t.t && (now - t.t < 30000));
           
           const tokenTime = token.pairCreatedAt 
             ? (token.pairCreatedAt < 1000000000000 ? token.pairCreatedAt * 1000 : token.pairCreatedAt) 
@@ -1863,15 +1863,16 @@ function App() {
       };
       
       setMySniperTrades(prev => [newTrade, ...prev]);
-      if (sendTelegramAlert) sendTelegramAlert(`🟢 <b>BUY Execution</b>\nToken: ${symbol}\nAmount: ${buyAmountSol} SOL`).catch(err => console.warn('Telegram buy alert failed:', err));
+      if (sendTelegramAlert) sendTelegramAlert(`🟢 <b>BUY Execution</b>\nToken: ${symbol}\nAmount: ${buyAmountSol} SOL`).catch((err: any) => console.warn('Telegram buy alert failed:', err));
       setActivePositions(prev => {
         const existing = prev[tokenAddress];
-        const newAmount = existing ? existing.amount + entryAmountTokens : entryAmountTokens;
+        const existingAmount = existing?.amount ?? 0;
+        const newAmount = existing ? existingAmount + entryAmountTokens : entryAmountTokens;
         const newEntryPriceSol = existing ? (existing.entryPriceSol || 0) + entryCost : entryCost;
         
         let newEntryPriceUsd = currentPriceUsd;
-        if (existing && existing.amount > 0 && currentPriceUsd > 0) {
-           const existingTotalUsd = (existing.entryPrice || 0) * existing.amount;
+        if (existing && existingAmount > 0 && currentPriceUsd > 0) {
+           const existingTotalUsd = (existing.entryPrice || 0) * existingAmount;
            const newTotalUsd = currentPriceUsd * entryAmountTokens;
            newEntryPriceUsd = (existingTotalUsd + newTotalUsd) / newAmount;
         }
@@ -1987,14 +1988,15 @@ function App() {
         }
         const currentRatio = (metric?.priceUsd && metric?.priceUsd > 0 ? metric.priceUsd : entryRatio);
         
-        const simulatedGross = (position.amount * percent) * (currentRatio / entryRatio);
+        const posAmount = position.amount ?? 0;
+        const simulatedGross = (posAmount * percent) * (currentRatio / entryRatio);
         const slippageFeeCalc = simulatedGross * (slippage / 100);
         const swapFeeBaseCalc = simulatedGross * 0.01; 
         const simulatedNet = Math.max(0, simulatedGross - slippageFeeCalc - swapFeeBaseCalc);
         
-        let initialSolCost = position.amount * percent;
+        let initialSolCost = posAmount * percent;
         if (slippage && slippage < 100) {
-           initialSolCost = (position.amount * percent) / (1 - (slippage / 100)); 
+           initialSolCost = (posAmount * percent) / (1 - (slippage / 100)); 
         }
         
         const realNetProfitPct = ((simulatedNet / initialSolCost) - 1) * 100;
@@ -2018,7 +2020,7 @@ function App() {
           ...prev,
           [tokenAddress]: {
             ...p,
-            amount: p.amount * (1 - percent),
+            amount: (p.amount ?? 0) * (1 - percent),
             entryPriceSol: p.entryPriceSol ? p.entryPriceSol * (1 - percent) : undefined,
             solSpent: p.solSpent ? p.solSpent * (1 - percent) : undefined,
             entryFeesSol: p.entryFeesSol ? p.entryFeesSol * (1 - percent) : undefined,
@@ -2074,7 +2076,7 @@ function App() {
           balanceRaw = await getTokenBalanceRaw(connection, walletAddress, tokenAddress);
           if (balanceRaw === '0') isSimulated = true;
       } else {
-          balanceRaw = position.tokenQuantityRaw || Math.floor(position.amount * 1_000_000);
+          balanceRaw = position.tokenQuantityRaw || Math.floor((position.amount ?? 0) * 1_000_000);
       }
       const sellRawAmount = Math.floor(Number(balanceRaw));
       if (sellRawAmount <= 0) {
@@ -2150,14 +2152,14 @@ function App() {
         `Tx: <a href="https://solscan.io/tx/${signature}">View Tx</a>\n` +
         `<a href="${portLink}">📁 View My Portfolio</a>`,
         true
-      ).catch(err => console.warn('Telegram exit alert failed:', err));
+      ).catch((err: any) => console.warn('Telegram exit alert failed:', err));
       
       const newTrade: SniperTrade = {
         id: `sniped-sell-${Date.now()}`,
         type: 'SELL',
         token: symbol,
         address: tokenAddress,
-        amount: position.amount,
+        amount: position.amount ?? 0,
         timestamp: Date.now(),
         pnl: realizedPnL,
         signature: signature
@@ -2305,12 +2307,13 @@ function App() {
 
       setActivePositions(prev => {
         const existing = prev[tokenAddress];
-        const newAmount = existing ? existing.amount + effectiveEntryAmount : effectiveEntryAmount;
+        const existingAmount = existing?.amount ?? 0;
+        const newAmount = existing ? existingAmount + effectiveEntryAmount : effectiveEntryAmount;
         const newEntryPriceSol = existing ? (existing.entryPriceSol || 0) + actualBuyAmountSol : actualBuyAmountSol;
         
         let newEntryPriceUsd = currentPriceUsd;
-        if (existing && existing.amount > 0 && currentPriceUsd > 0) {
-           const existingTotalUsd = (existing.entryPrice || 0) * existing.amount;
+        if (existing && existingAmount > 0 && currentPriceUsd > 0) {
+           const existingTotalUsd = (existing.entryPrice || 0) * existingAmount;
            const newTotalUsd = currentPriceUsd * effectiveEntryAmount;
            newEntryPriceUsd = (existingTotalUsd + newTotalUsd) / newAmount;
         }
@@ -2353,7 +2356,7 @@ function App() {
         `Tx: <a href="https://solscan.io/tx/${signature}">View Tx</a>\n` +
         `<a href="${sellLink}">🔴 Quick Sell Position</a>`,
         true
-      ).catch(err => console.warn('Telegram snipe alert failed:', err));
+      ).catch((err: any) => console.warn('Telegram snipe alert failed:', err));
       
       setTradingStatus(null);
     } catch (e: any) {
@@ -2533,7 +2536,7 @@ function App() {
               next[addr] = {
                 ...next[addr],
                 address: addr,
-                priceUsd: tp.priceUsd,
+                priceUsd: tp.priceUsd ?? undefined,
                 priceNative: tp.priceNative || 0,
                 lastUpdated: Date.now()
               };
@@ -3080,14 +3083,14 @@ function App() {
             }
 
             // Detect Volume Spike (📈)
-            const buyCount5m = updatedTimeline.filter(t => t.type === 'buy').length;
+            const buyCount5m = updatedTimeline.filter((t: any) => t.type === 'buy').length;
             if (buyCount5m >= 5 && liq >= 30000 && (current.riskScore || 0) < 22) {
               alertType = 'VOLUME_SPIKE';
             }
 
             // Detect High Buy / Whale Buy with strict MC & Liquidity filters
             const calibratedMinMcap = isRaydiumListed ? 65000 : 110000;
-            const buy30s = updatedTimeline.filter(t => t.type === 'buy' && (Date.now() - t.t < 30000)).length;
+            const buy30s = updatedTimeline.filter((t: any) => t.type === 'buy' && (Date.now() - t.t < 30000)).length;
 
             // HIGH_BUY (🔥)
             if (trade.amount > telemetryHighBuyMin || buy30s > 8) {
@@ -3123,7 +3126,7 @@ function App() {
                           `<a href="${buyLink}">🎯 QUICK BUY IN MATRIX</a>\n` +
                           `<a href="${sellLink}">🔴 QUICK SELL / VIEW PORTFOLIO</a>\n\n` +
                           `<a href="https://dexscreener.com/solana/${trade.tokenAddress}">📊 View on DexScreener</a>`;
-              fns.current.sendTelegramAlert(msg, true).catch(err => console.warn('Telegram alert failed:', err));
+              fns.current.sendTelegramAlert(msg, true).catch((err: any) => console.warn('Telegram alert failed:', err));
               
               if (alertType === 'WHALE_BUY' || alertType === 'HIGH_BUY') {
                 setTelemetryAlerts(prev => [
@@ -3263,14 +3266,14 @@ function App() {
                               `<a href="${buyLinkX}">🎯 BUY ON JUPITER</a>\n` +
                               `<a href="${sellLinkX}">🔴 SELL ON JUPITER</a>\n\n` +
                               `<a href="https://dexscreener.com/solana/${trade.tokenAddress}">📊 View on DexScreener</a>`;
-                  fns.current.sendTelegramAlert(msg, true).catch(err => console.warn('Telegram alert failed:', err));
+                  fns.current.sendTelegramAlert(msg, true).catch((err: any) => console.warn('Telegram alert failed:', err));
                 }
 
                 // TRIGGER AUTO-SNIPE (High-Frequency Scalper Mode)
-                const buys15s = (updated.recentBuysTimeline || []).filter(t => t.type === 'buy' && Date.now() - t.t < 15000).length;
-                const sells15s = (updated.recentBuysTimeline || []).filter(t => t.type === 'sell' && Date.now() - t.t < 15000).length;
-                const buy3s = (updated.recentBuysTimeline || []).filter(t => t.type === 'buy' && Date.now() - t.t < 3000).length;
-                const buy30s = (updated.recentBuysTimeline || []).filter(t => t.type === 'buy' && Date.now() - t.t < 30000).length;
+                const buys15s = (updated.recentBuysTimeline || []).filter((t: any) => t.type === 'buy' && Date.now() - t.t < 15000).length;
+                const sells15s = (updated.recentBuysTimeline || []).filter((t: any) => t.type === 'sell' && Date.now() - t.t < 15000).length;
+                const buy3s = (updated.recentBuysTimeline || []).filter((t: any) => t.type === 'buy' && Date.now() - t.t < 3000).length;
+                const buy30s = (updated.recentBuysTimeline || []).filter((t: any) => t.type === 'buy' && Date.now() - t.t < 30000).length;
                 
                 const buyVolume = updated.buyVolume || 0;
                 const sellVolume = updated.sellVolume || 0;
@@ -3704,7 +3707,7 @@ function App() {
             if (postTokenBalances.length > 0) {
               const balance = postTokenBalances[0];
               const preTokenBalances = tx.meta.preTokenBalances || [];
-              const preBalance = preTokenBalances.find(b => b.accountIndex === balance.accountIndex);
+              const preBalance = preTokenBalances.find((b: any) => b.accountIndex === balance.accountIndex);
               const preAmt = preBalance ? Number(preBalance.uiTokenAmount.uiAmount) : 0;
               const postAmt = Number(balance.uiTokenAmount.uiAmount);
               diff = postAmt - preAmt;
@@ -3735,7 +3738,7 @@ function App() {
 
                 let isGoldenCross = false;
                 if (existingMetric && existingMetric.recentBuysTimeline && ageMins > 30) {
-                  const recentBuys = (existingMetric.recentBuysTimeline || []).filter(t => Date.now() - t.t < 30000);
+                  const recentBuys = (existingMetric.recentBuysTimeline || []).filter((t: any) => Date.now() - t.t < 30000);
                   const uniqueBuyers30s = new Set(recentBuys.map(t => t.w).filter(Boolean)).size;
                   const buyFrequency5m = existingMetric.recentBuysTimeline.length;
                   const holdersPerMin = (existingMetric.holdersPerMin || 0);
@@ -3882,7 +3885,7 @@ function App() {
                                  `<a href="${buyLinkXR}">🎯 QUICK BUY IN MATRIX</a>\n` +
                                  `<a href="${sellLinkXR}">🔴 QUICK SELL / VIEW PORTFOLIO</a>\n\n` +
                                  `<a href="https://dexscreener.com/solana/${mint}">📊 View on DexScreener</a>`;
-                     sendTelegramAlert(msg, true).catch(err => console.warn('Telegram alert failed:', err));
+                     sendTelegramAlert(msg, true).catch((err: any) => console.warn('Telegram alert failed:', err));
                    }
 
                    setTokenMetrics(m => {
@@ -3911,7 +3914,7 @@ function App() {
                                        `<b>ACTIONS:</b>\n` +
                                        `<a href="${buyLink100}">🎯 QUICK BUY IN MATRIX</a>\n` +
                                        `<a href="${sellLink100}">🔴 QUICK SELL / VIEW PORTFOLIO</a>`;
-                       sendTelegramAlert(msg100x, true).catch(err => console.warn('Telegram alert failed:', err));
+                       sendTelegramAlert(msg100x, true).catch((err: any) => console.warn('Telegram alert failed:', err));
                      }
                      
                      const isRugSafe = (security.security?.riskScore ?? 100) <= (latestState.current?.hardenedMaxRiskScore || 22) && (security.security?.isRugSafe !== false);
@@ -3993,7 +3996,7 @@ function App() {
                 if (postTokenBalances.length > 0) {
                   const balance = postTokenBalances[0];
                   const preTokenBalances = tx.meta.preTokenBalances || [];
-                  const preBalance = preTokenBalances.find(b => b.accountIndex === balance.accountIndex);
+                  const preBalance = preTokenBalances.find((b: any) => b.accountIndex === balance.accountIndex);
                   const preAmt = preBalance ? Number(preBalance.uiTokenAmount.uiAmount) : 0;
                   const postAmt = Number(balance.uiTokenAmount.uiAmount);
                   const diff = postAmt - preAmt;
@@ -5557,7 +5560,7 @@ function App() {
                   />
                 </div>
                 <button
-                  onClick={() => sendTelegramAlert('🔔 <b>Matrix Test Alert</b>\nYour Telegram bot is successfully connected!').catch(err => console.warn('Telegram test alert failed:', err))}
+                  onClick={() => sendTelegramAlert('🔔 <b>Matrix Test Alert</b>\nYour Telegram bot is successfully connected!').catch((err: any) => console.warn('Telegram test alert failed:', err))}
                   className="w-full bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 font-black uppercase text-[9px] tracking-widest py-2 rounded-lg transition-colors"
                 >
                   Test Connection
@@ -5705,7 +5708,7 @@ function App() {
               const conditionA = (buyCount / 5) > 1.0; 
               const conditionB = (m.percentageIncrease || 0) >= 20 && (m.percentageIncrease || 0) <= 50;
               
-              const buy30sCount = (m.recentBuysTimeline || []).filter(t => t && t.t && (now - t.t < 30000)).length;
+              const buy30sCount = (m.recentBuysTimeline || []).filter((t: any) => t && t.t && (now - t.t < 30000)).length;
               const conditionCSprinting = buy30sCount > 8; 
               const conditionCMetrics = buySellRatio >= 1.5 && buyCount >= 2;
               const conditionC = conditionCSprinting && conditionCMetrics;
@@ -5744,8 +5747,8 @@ function App() {
                 return bTime - aTime;
               }
               
-              const a30sCount = (a.recentBuysTimeline || []).filter(t => t && t.t && (Date.now() - t.t < 30000)).length;
-              const b30sCount = (b.recentBuysTimeline || []).filter(t => t && t.t && (Date.now() - t.t < 30000)).length;
+              const a30sCount = (a.recentBuysTimeline || []).filter((t: any) => t && t.t && (Date.now() - t.t < 30000)).length;
+              const b30sCount = (b.recentBuysTimeline || []).filter((t: any) => t && t.t && (Date.now() - t.t < 30000)).length;
               
               if (b30sCount !== a30sCount) return b30sCount - a30sCount;
               return (a.marketCap || 999999999) - (b.marketCap || 999999999);
@@ -5753,8 +5756,8 @@ function App() {
 
             // In sniper mode, sort by buy velocity first
             if (alphaProtocol === 'SNIPER') {
-              const a30sCount = (a.recentBuysTimeline || []).filter(t => t && t.t && (Date.now() - t.t < 30000)).length;
-              const b30sCount = (b.recentBuysTimeline || []).filter(t => t && t.t && (Date.now() - t.t < 30000)).length;
+              const a30sCount = (a.recentBuysTimeline || []).filter((t: any) => t && t.t && (Date.now() - t.t < 30000)).length;
+              const b30sCount = (b.recentBuysTimeline || []).filter((t: any) => t && t.t && (Date.now() - t.t < 30000)).length;
               if (b30sCount !== a30sCount) return b30sCount - a30sCount;
             }
 
@@ -5762,13 +5765,13 @@ function App() {
             const bRatio = (b.buyCount || 0) / (b.sellCount || 1);
             if (Math.abs(bRatio - aRatio) > 0.5) return bRatio - aRatio;
 
-            const a30s = (a.recentBuysTimeline || []).filter(t => t && t.t && (Date.now() - t.t < 30000)).reduce((acc, curr) => acc + (curr.a || 0), 0);
-            const b30s = (b.recentBuysTimeline || []).filter(t => t && t.t && (Date.now() - t.t < 30000)).reduce((acc, curr) => acc + (curr.a || 0), 0);
+            const a30s = (a.recentBuysTimeline || []).filter((t: any) => t && t.t && (Date.now() - t.t < 30000)).reduce((acc, curr) => acc + (curr.a || 0), 0);
+            const b30s = (b.recentBuysTimeline || []).filter((t: any) => t && t.t && (Date.now() - t.t < 30000)).reduce((acc, curr) => acc + (curr.a || 0), 0);
             if (b30s !== a30s) return b30s - a30s;
             return (b.whaleEntranceTime || b.lastUpdated || 0) - (a.whaleEntranceTime || a.lastUpdated || 0);
           })
             .slice(0, 30).map((metric) => {
-              const last30sVol = (metric.recentBuysTimeline || []).filter(t => t && t.t && (Date.now() - t.t < 30000)).reduce((acc, curr) => acc + (curr.a || 0), 0);
+              const last30sVol = (metric.recentBuysTimeline || []).filter((t: any) => t && t.t && (Date.now() - t.t < 30000)).reduce((acc, curr) => acc + (curr.a || 0), 0);
               const isHeated = last30sVol > 50000;
 
               return (
@@ -6329,7 +6332,7 @@ function App() {
                     {(Object.values(tokenMetrics || {}) as TokenMetric[])
                       .filter(m => {
                         if (!m || !m.address) return false;
-                        const buy30s = (m.recentBuysTimeline || []).filter(t => t && Date.now() - t.t < 30000).length;
+                        const buy30s = (m.recentBuysTimeline || []).filter((t: any) => t && Date.now() - t.t < 30000).length;
                         
                         const saved = savedGems ? savedGems[m.address] : undefined;
                         if (saved) {
@@ -6374,8 +6377,8 @@ function App() {
                       .sort((a, b) => {
                         if (!a || !b) return 0;
                         if (alphaProtocol === 'SNIPER' || alphaProtocol === 'GEMS_100X') {
-                          const a30sCount = (a.recentBuysTimeline || []).filter(t => t && Date.now() - t.t < 30000).length;
-                          const b30sCount = (b.recentBuysTimeline || []).filter(t => t && Date.now() - t.t < 30000).length;
+                          const a30sCount = (a.recentBuysTimeline || []).filter((t: any) => t && Date.now() - t.t < 30000).length;
+                          const b30sCount = (b.recentBuysTimeline || []).filter((t: any) => t && Date.now() - t.t < 30000).length;
                           
                           if (alphaProtocol === 'GEMS_100X') {
                             if (b30sCount !== a30sCount) return b30sCount - a30sCount;
@@ -6391,7 +6394,7 @@ function App() {
                       })
                       .slice(0, 30).map((metric: TokenMetric) => {
                         if (!metric || !metric.address) return null;
-                        const buyFreq30s = (metric.recentBuysTimeline || []).filter(t => t && Date.now() - t.t < 30000).length;
+                        const buyFreq30s = (metric.recentBuysTimeline || []).filter((t: any) => t && Date.now() - t.t < 30000).length;
                         const isSprinting = buyFreq30s > 8;
                         const alphaScore = Math.min(100, Math.floor(
                           (((metric.liquidity || 0) / 8000) * 30) + 
@@ -6578,7 +6581,7 @@ function App() {
                     })}
                     {(Object.values(tokenMetrics || {}) as TokenMetric[]).filter(m => {
                       if (!m || !m.address) return false;
-                      const buy30s = (m.recentBuysTimeline || []).filter(t => t && Date.now() - t.t < 30000).length;
+                      const buy30s = (m.recentBuysTimeline || []).filter((t: any) => t && Date.now() - t.t < 30000).length;
                       
                       const saved = savedGems ? savedGems[m.address] : undefined;
                       if (saved) {
@@ -6635,7 +6638,7 @@ function App() {
                 {(Object.values(tokenMetrics || {}) as TokenMetric[])
                   .filter(m => {
                     if (!m || !m.address) return false;
-                    const buy30s = (m.recentBuysTimeline || []).filter(t => t && Date.now() - t.t < 30000).length;
+                    const buy30s = (m.recentBuysTimeline || []).filter((t: any) => t && Date.now() - t.t < 30000).length;
                     
                     const saved = savedGems ? savedGems[m.address] : undefined;
                     if (saved) {
@@ -6679,8 +6682,8 @@ function App() {
                   .sort((a, b) => {
                     if (!a || !b) return 0;
                     if (alphaProtocol === 'SNIPER' || alphaProtocol === 'GEMS_100X') {
-                      const a30sCount = (a.recentBuysTimeline || []).filter(t => t && Date.now() - t.t < 30000).length;
-                      const b30sCount = (b.recentBuysTimeline || []).filter(t => t && Date.now() - t.t < 30000).length;
+                      const a30sCount = (a.recentBuysTimeline || []).filter((t: any) => t && Date.now() - t.t < 30000).length;
+                      const b30sCount = (b.recentBuysTimeline || []).filter((t: any) => t && Date.now() - t.t < 30000).length;
                       
                       if (alphaProtocol === 'GEMS_100X') {
                         if (b30sCount !== a30sCount) return b30sCount - a30sCount;
