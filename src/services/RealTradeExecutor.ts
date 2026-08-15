@@ -21,6 +21,12 @@ export class RealTradeExecutor implements ITradeExecutor {
   private batch?: BatchExitEngine | null;
   private jupiterApi: ReturnType<typeof createJupiterApiClient>;
   private connection: Connection;
+  
+  // Telemetry state
+  private telemetryTotalSwaps = 0;
+  private telemetryTotalFeesPaidSol = 0;
+  private telemetryLandingTimeTotalMs = 0;
+  private telemetryFailedSwaps = 0;
 
   constructor(config: RealTradeConfig) {
     this.hybrid = config.hybridEngine || null;
@@ -36,7 +42,7 @@ export class RealTradeExecutor implements ITradeExecutor {
     if (this.hybrid && this.hybrid.wallet) {
       this.publicKey = this.hybrid.wallet.publicKey.toBase58();
     } else {
-      const savedKey = typeof window !== 'undefined' ? localStorage.getItem('matrix_session_key') : null;
+      const savedKey = typeof window !== 'undefined' ? sessionStorage.getItem('matrix_session_key') : null;
       if (savedKey) {
         try {
           const kp = Keypair.fromSecretKey(bs58.decode(savedKey));
@@ -65,50 +71,89 @@ export class RealTradeExecutor implements ITradeExecutor {
     label: 'entry' | 'exit_tp' | 'exit_sl' = 'entry'
   ): Promise<SwapResult> {
     const start = Date.now();
+    this.telemetryTotalSwaps++;
 
-    const quote = await this.getQuote({
-      inputMint,
-      outputMint,
-      amount,
-      slippageBps,
-      restrictIntermediateTokens: true,
-    });
-
-    if (this.hybrid) {
-      const swapBuild = await this.hybrid.jupiterApi.swapPost({
-        swapRequest: {
-          quoteResponse: quote,
-          userPublicKey: this.publicKey,
-          dynamicComputeUnitLimit: true,
-          prioritizationFeeLamports: 10_000 as any,
-        },
+    try {
+      const quote = await this.getQuote({
+        inputMint,
+        outputMint,
+        amount,
+        slippageBps,
+        restrictIntermediateTokens: true,
       });
 
-      const txBuf = Buffer.from(swapBuild.swapTransaction, 'base64');
-      
-      const savedKey = typeof window !== 'undefined' ? localStorage.getItem('matrix_session_key') : null;
-      if (!savedKey) {
-        throw new Error('Hybrid execution failed: No private key available to sign transaction.');
-      }
-      
-      const kp = Keypair.fromSecretKey(bs58.decode(savedKey));
-      const tx = VersionedTransaction.deserialize(txBuf);
-      tx.sign([kp]);
-      
-      const sig = await this.hybrid.connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
-      
-      const confirmation = await this.hybrid.connection.confirmTransaction({
-        signature: sig,
-        blockhash: tx.message.recentBlockhash,
-        lastValidBlockHeight: swapBuild.lastValidBlockHeight || (await this.hybrid.connection.getLatestBlockhash()).lastValidBlockHeight
-      }, 'confirmed');
+      let sig = '';
+      let slot = 0;
+      let actualFee = 0.000005;
 
-      if (confirmation.value.err) {
-         throw new Error(`Hybrid transaction failed to confirm: ${JSON.stringify(confirmation.value.err)}`);
+      if (this.hybrid) {
+        const swapBuild = await this.hybrid.jupiterApi.swapPost({
+          swapRequest: {
+            quoteResponse: quote,
+            userPublicKey: this.publicKey,
+            dynamicComputeUnitLimit: true,
+            prioritizationFeeLamports: 10_000 as any,
+          },
+        });
+
+        const txBuf = Buffer.from(swapBuild.swapTransaction, 'base64');
+        
+        const savedKey = typeof window !== 'undefined' ? sessionStorage.getItem('matrix_session_key') : null;
+        if (!savedKey) throw new Error('Hybrid execution failed: No private key available to sign transaction.');
+        
+        const kp = Keypair.fromSecretKey(bs58.decode(savedKey));
+        const tx = VersionedTransaction.deserialize(txBuf);
+        tx.sign([kp]);
+        
+        sig = await this.hybrid.connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
+        
+        const confirmation = await this.hybrid.connection.confirmTransaction({
+          signature: sig,
+          blockhash: tx.message.recentBlockhash,
+          lastValidBlockHeight: swapBuild.lastValidBlockHeight || (await this.hybrid.connection.getLatestBlockhash()).lastValidBlockHeight
+        }, 'confirmed');
+
+        if (confirmation.value.err) throw new Error(`Hybrid transaction failed to confirm: ${JSON.stringify(confirmation.value.err)}`);
+
+        slot = confirmation.context.slot;
+        actualFee = 0.000005 + (10_000 * 140_000 / 1e15);
+
+      } else {
+        const swapBuild = await this.jupiterApi.swapPost({
+          swapRequest: {
+            quoteResponse: quote,
+            userPublicKey: this.publicKey || '11111111111111111111111111111111',
+            dynamicComputeUnitLimit: true,
+            prioritizationFeeLamports: 10_000 as any,
+          },
+        });
+
+        const txBuf = Buffer.from(swapBuild.swapTransaction, 'base64');
+        const savedKey = typeof window !== 'undefined' ? sessionStorage.getItem('matrix_session_key') : null;
+        if (!savedKey) throw new Error('RealTradeExecutor failed: No private key available to sign transaction.');
+
+        const kp = Keypair.fromSecretKey(bs58.decode(savedKey));
+        const tx = VersionedTransaction.deserialize(txBuf);
+        tx.sign([kp]);
+        sig = await this.connection.sendRawTransaction(tx.serialize(), {
+          skipPreflight: false,
+          maxRetries: 3
+        });
+
+        const confirmation = await this.connection.confirmTransaction({
+          signature: sig,
+          blockhash: tx.message.recentBlockhash,
+          lastValidBlockHeight: swapBuild.lastValidBlockHeight || (await this.connection.getLatestBlockhash()).lastValidBlockHeight
+        }, 'confirmed');
+
+        if (confirmation.value.err) throw new Error(`Transaction failed to confirm: ${JSON.stringify(confirmation.value.err)}`);
+        
+        slot = confirmation.context.slot;
       }
 
-      // Also get actual slot instead of 0
-      const slot = confirmation.context.slot;
+      const landingTimeMs = Date.now() - start;
+      this.telemetryTotalFeesPaidSol += actualFee;
+      this.telemetryLandingTimeTotalMs += landingTimeMs;
 
       return {
         signature: sig || 'real-tx-sig',
@@ -116,67 +161,16 @@ export class RealTradeExecutor implements ITradeExecutor {
         outputMint,
         inputAmount: amount,
         outputAmount: Number(quote.outAmount),
-        feeSol: 0.000005 + (10_000 * 140_000 / 1e15),
-        slot: slot || 0,
-        landingTimeMs: Date.now() - start,
+        feeSol: actualFee,
+        slot,
+        landingTimeMs,
         method: 'rpc',
       };
-    }
-
-    // Direct RPC swap via stored keypair or wallet
-    const swapBuild = await this.jupiterApi.swapPost({
-      swapRequest: {
-        quoteResponse: quote,
-        userPublicKey: this.publicKey || '11111111111111111111111111111111',
-        dynamicComputeUnitLimit: true,
-        prioritizationFeeLamports: 10_000 as any,
-      },
-    });
-
-    const txBuf = Buffer.from(swapBuild.swapTransaction, 'base64');
-    let sig = '';
-    const savedKey = typeof window !== 'undefined'
-      ? localStorage.getItem('matrix_session_key')
-      : null;
-
-    if (!savedKey) {
-      throw new Error('RealTradeExecutor failed: No private key available to sign transaction.');
-    }
-
-    try {
-      const kp = Keypair.fromSecretKey(bs58.decode(savedKey));
-      const tx = VersionedTransaction.deserialize(txBuf);
-      tx.sign([kp]);
-      sig = await this.connection.sendRawTransaction(tx.serialize(), {
-        skipPreflight: true,
-        maxRetries: 3
-      });
-
-      const confirmation = await this.connection.confirmTransaction({
-        signature: sig,
-        blockhash: tx.message.recentBlockhash,
-        lastValidBlockHeight: swapBuild.lastValidBlockHeight || (await this.connection.getLatestBlockhash()).lastValidBlockHeight
-      }, 'confirmed');
-
-      if (confirmation.value.err) {
-         throw new Error(`Transaction failed to confirm: ${JSON.stringify(confirmation.value.err)}`);
-      }
     } catch (err: any) {
+      this.telemetryFailedSwaps++;
       console.error('RealTradeExecutor swap failed:', err);
       throw new Error(`Real Jupiter swap transaction execution failed: ${err.message || String(err)}`);
     }
-
-    return {
-      signature: sig || ('real-tx-' + Date.now()),
-      inputMint,
-      outputMint,
-      inputAmount: amount,
-      outputAmount: Number(quote.outAmount),
-      feeSol: 0.000005,
-      slot: 0,
-      landingTimeMs: Date.now() - start,
-      method: 'rpc',
-    };
   }
 
   async batchSwap(
@@ -190,19 +184,50 @@ export class RealTradeExecutor implements ITradeExecutor {
       solSpent: 0,
     }));
     
+    this.telemetryTotalSwaps += swaps.length;
     const results = await this.batch.batchExit(positions as any);
     
-    return results.map(r => ({
-      signature: r.signature || ('batch-tx-' + Date.now()),
-      inputMint: r.failedMints[0] || (swaps[0]?.inputMint || ''),
-      outputMint: 'So11111111111111111111111111111111111111112',
-      inputAmount: 0,
-      outputAmount: r.netSolReceived * 1e9,
-      feeSol: r.totalFeesSol,
-      slot: r.slot || 0,
-      landingTimeMs: r.landingTimeMs || 0,
-      method: 'rpc',
-    }));
+    const mappedResults: SwapResult[] = [];
+    
+    for (const batchRes of results) {
+       this.telemetryLandingTimeTotalMs += batchRes.landingTimeMs;
+       this.telemetryTotalFeesPaidSol += batchRes.totalFeesSol;
+       this.telemetryFailedSwaps += batchRes.failedMints.length;
+       
+       for (const posRes of batchRes.perPositionResults) {
+          const originalSwap = swaps.find(s => s.inputMint === posRes.mint);
+          if (!originalSwap) continue;
+          
+          if (!posRes.success) {
+            mappedResults.push({
+              signature: batchRes.signature || ('failed-batch-' + Date.now()),
+              inputMint: posRes.mint,
+              outputMint: 'So11111111111111111111111111111111111111112',
+              inputAmount: originalSwap.amount,
+              outputAmount: 0,
+              feeSol: 0,
+              slot: batchRes.slot || 0,
+              landingTimeMs: batchRes.landingTimeMs,
+              method: 'rpc',
+              error: 'Position failed to swap in batch'
+            });
+          } else {
+            mappedResults.push({
+              signature: batchRes.signature,
+              inputMint: posRes.mint,
+              outputMint: 'So11111111111111111111111111111111111111112',
+              inputAmount: originalSwap.amount,
+              outputAmount: (posRes.amountReceivedSol || 0) * 1e9,
+              feeSol: batchRes.totalFeesSol / batchRes.perPositionResults.filter(p => p.success).length, // approximate fee share
+              slot: batchRes.slot,
+              landingTimeMs: batchRes.landingTimeMs,
+              method: 'rpc',
+            });
+          }
+       }
+    }
+    
+    return mappedResults;
   }
 
   async getSolBalance(): Promise<number> {
@@ -243,7 +268,12 @@ export class RealTradeExecutor implements ITradeExecutor {
   }
 
   getTelemetry(): ExecutorTelemetry {
-    return { totalSwaps: 0, totalFeesPaidSol: 0, avgLandingTimeMs: 0, failureRate: 0 };
+    return {
+      totalSwaps: this.telemetryTotalSwaps,
+      totalFeesPaidSol: this.telemetryTotalFeesPaidSol,
+      avgLandingTimeMs: this.telemetryTotalSwaps > 0 ? this.telemetryLandingTimeTotalMs / this.telemetryTotalSwaps : 0,
+      failureRate: this.telemetryTotalSwaps > 0 ? this.telemetryFailedSwaps / this.telemetryTotalSwaps : 0,
+    };
   }
 }
 

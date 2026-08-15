@@ -12,30 +12,42 @@ import type { BackupData } from '../services/ftpService.js';
 
 const router = Router();
 
-function checkFtpAllowlist(host: string): void {
+function getCredentials() {
+  const credentials = {
+    host: process.env.FTP_HOST || '',
+    user: process.env.FTP_USER || '',
+    pass: process.env.FTP_PASS || '',
+    dir: process.env.FTP_DIR || '/htdocs',
+    secure: process.env.FTP_SECURE === 'true'
+  };
+
+  if (!credentials.host || !credentials.user || !credentials.pass) {
+    throw new UnauthorizedError('FTP credentials are not configured on the server');
+  }
+  
   if (config.ALLOWED_FTP_HOSTS.length === 0) {
-    ftpLogger.warn({ host }, 'FTP host rejected: ALLOWED_FTP_HOSTS is empty');
+    ftpLogger.warn({ host: credentials.host }, 'FTP host rejected: ALLOWED_FTP_HOSTS is empty');
     throw new UnauthorizedError('FTP deployment is disabled on this server (allowlist is empty)');
   }
-  if (!config.ALLOWED_FTP_HOSTS.includes(host)) {
-    ftpLogger.warn({ host }, 'FTP host not in allowlist');
+  
+  if (!config.ALLOWED_FTP_HOSTS.includes(credentials.host)) {
+    ftpLogger.warn({ host: credentials.host }, 'FTP host not in allowlist');
     throw new UnauthorizedError('Host not in allowlist');
   }
+
+  return credentials;
 }
 
 // POST /api/hosting/test
 router.post('/test', asyncHandler(async (req, res) => {
-  const credentials = validateFtpCredentials(req.body);
-  checkFtpAllowlist(credentials.host);
-
+  const credentials = getCredentials();
   const response = await testFtpConnection(credentials);
   res.json(response);
 }));
 
 // POST /api/hosting/backup
 router.post('/backup', asyncHandler(async (req, res) => {
-  const credentials = validateFtpCredentials(req.body);
-  checkFtpAllowlist(credentials.host);
+  const credentials = getCredentials();
 
   const { data } = req.body;
   if (!data) {
@@ -55,8 +67,7 @@ router.post('/backup', asyncHandler(async (req, res) => {
 
 // POST /api/hosting/deploy
 router.post('/deploy', asyncHandler(async (req, res) => {
-  const credentials = validateFtpCredentials(req.body);
-  checkFtpAllowlist(credentials.host);
+  const credentials = getCredentials();
 
   const response = await deployFtpDist(credentials, (status, progress) => {
     ftpLogger.info({ status, progress }, 'Deploy progress');

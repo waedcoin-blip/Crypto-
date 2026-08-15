@@ -1,0 +1,19 @@
+--- src/services/PositionExitManager.ts
++++ src/services/PositionExitManager.ts
+@@ -216,9 +216,14 @@
+ 
+     } catch (err: any) {
+       console.error(`[ExitManager] ❌ Exit failed for ${mint}:`, err?.message || err);
+       
++      // Check if we actually still hold the token before retrying.
++      const hasToken = await this.executor.hasTokenAccount(mint).catch(() => true);
++      if (!hasToken) {
++        console.log(`[ExitManager] Token account for ${mint} empty, exit might have succeeded on-chain. Marking CLOSED.`);
++        pos.state = 'CLOSED';
++        this.exitingMints.delete(mint);
++        return;
++      }
++
+       // Reset to OPEN for retry (unless max retries exceeded)
+       pos.state = 'OPEN';
+       pos.pendingSince = undefined;

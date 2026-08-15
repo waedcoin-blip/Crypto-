@@ -68,13 +68,13 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
   const handleGenerateSessionWallet = () => {
     const kp = Keypair.generate();
     const encoded = bs58.encode(kp.secretKey);
-    localStorage.setItem('matrix_session_key', encoded);
+    sessionStorage.setItem('matrix_session_key', encoded);
     setSessionWallet(kp);
     fetchBalance();
   };
 
   const handleDisconnectSession = () => {
-    localStorage.removeItem('matrix_session_key');
+    sessionStorage.removeItem('matrix_session_key');
     setSessionWallet(null);
     setRealSolBalance(null);
   };

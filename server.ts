@@ -57,34 +57,14 @@ import telegramRouter from "./server/routes/telegram.js";
 import laserstreamRouter from "./server/routes/laserstream.js";
 import criteriaRouter from "./server/routes/criteria.js";
 
-// Process level crash guard for benign connection glitches
+// Process level crash guard
 process.on("uncaughtException", (err) => {
-  let msg = err?.message || String(err);
-  if (err && typeof err === 'object') {
-    try { msg += ' ' + JSON.stringify(err); } catch {}
-  }
-  const benign = [
-    "ECONNRESET", "ENOTFOUND", "socket hang up", "read ECONNRESET", "write ECONNRESET",
-    "Ping timeout", "Unexpected server response", "429", "ws error", "WebSocket", "websocket"
-  ];
-  if (benign.some((s) => msg.includes(s) || msg.toLowerCase().includes(s.toLowerCase()))) {
-    return;
-  }
   console.error("[UNCAUGHT EXCEPTION]", err);
+  // Perform safe shutdown here if needed, then exit
+  process.exit(1);
 });
 
 process.on("unhandledRejection", (reason: any) => {
-  let msg = reason?.message || String(reason) || "";
-  if (reason && typeof reason === 'object') {
-    try { msg += ' ' + JSON.stringify(reason); } catch {}
-  }
-  const benign = [
-    "NO_ROUTES_FOUND", "No liquidity", "ECONNRESET", "socket hang up", "AbortError",
-    "fetch failed", "Unexpected server response", "429", "ws error", "WebSocket", "websocket"
-  ];
-  if (benign.some((s) => msg.includes(s) || msg.toLowerCase().includes(s.toLowerCase()))) {
-    return;
-  }
   console.error("[UNHANDLED REJECTION]", reason);
 });
 
@@ -100,6 +80,9 @@ async function startServer() {
   }
 
   const app = express();
+  
+  // Trust proxy for rate limiter to get correct req.ip
+  app.set("trust proxy", 1);
 
   // Basic Middlewares
   app.use(securityHeaders);

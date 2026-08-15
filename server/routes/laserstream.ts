@@ -5,7 +5,9 @@ import { Router } from 'express';
 import { config } from '../config/index.js';
 import { laserLogger } from '../utils/logger.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
+import { isAllowedOrigin } from '../middleware/security.js';
 import type { SseClient, LaserStreamOptions, LaserStreamStatus, SseEvent } from '../types/index.js';
+import { z } from 'zod';
 import {
   startLaserStream,
   stopLaserStream,
@@ -60,6 +62,8 @@ const heartbeatInterval = setInterval(() => {
 // ─── Broadcast helper ───
 export function broadcastToClients(event: SseEvent): void {
   const dataString = JSON.stringify(event);
+  const deadClients: string[] = [];
+  
   clients.forEach((client) => {
     try {
       client.res.write(`data: ${dataString}\n\n`);
@@ -67,33 +71,60 @@ export function broadcastToClients(event: SseEvent): void {
         (client.res as any).flush();
       }
     } catch {
-      // Client disconnected
+      deadClients.push(client.id);
     }
   });
+
+  if (deadClients.length > 0) {
+    for (let i = clients.length - 1; i >= 0; i--) {
+      if (deadClients.includes(clients[i].id)) {
+        clients.splice(i, 1);
+      }
+    }
+  }
+}
+
+function getSafeStatus(): LaserStreamStatus {
+  return {
+    active: isActive,
+    options: {
+      ...currentOptions,
+      apiKey: currentOptions.apiKey ? '***' : '',
+    },
+    clientsCount: clients.length,
+    isFallback: isLaserStreamUsingFallback(),
+    isSimulated: isLaserStreamSimulated(),
+    activeEndpoint: getActiveLaserStreamEndpoint(),
+  };
 }
 
 // ─── Routes ───
 
 // GET /api/laserstream/status
 router.get('/status', (req, res) => {
-  const status: LaserStreamStatus = {
-    active: isActive,
-    options: currentOptions,
-    clientsCount: clients.length,
-    isFallback: isLaserStreamUsingFallback(),
-    isSimulated: isLaserStreamSimulated(),
-    activeEndpoint: getActiveLaserStreamEndpoint(),
-  };
+  res.json(getSafeStatus());
+});
 
-  res.json(status);
+const ConfigSchema = z.object({
+  enabled: z.boolean().optional(),
+  apiKey: z.string().optional(),
+  endpoint: z.enum(['auto', 'primary', 'fallback', 'custom']).optional(),
+  programAddresses: z.array(z.string()).max(10).optional(),
+  customWsUrl: z.string().url().optional().or(z.literal('')),
 });
 
 // POST /api/laserstream/config
 router.post('/config', asyncHandler(async (req, res) => {
-  if (!req.headers.origin || !req.headers.origin.includes(req.hostname)) {
+  if (req.headers.origin && !isAllowedOrigin(req.headers.origin)) {
     return res.status(401).json({ success: false, message: 'Unauthorized origin' });
   }
-  const { enabled, apiKey, endpoint, programAddresses, customWsUrl } = req.body;
+
+  const parsed = ConfigSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ success: false, message: 'Invalid config payload', errors: parsed.error.issues });
+  }
+
+  const { enabled, apiKey, endpoint, programAddresses, customWsUrl } = parsed.data;
 
   currentOptions = {
     apiKey: apiKey || currentOptions.apiKey,
@@ -107,7 +138,7 @@ router.post('/config', asyncHandler(async (req, res) => {
     return res.json({
       success: true,
       active: enabled,
-      options: currentOptions,
+      options: { ...currentOptions, apiKey: currentOptions.apiKey ? '***' : '' },
       clientsCount: 0,
       isFallback: true,
       isSimulated: false,
@@ -126,14 +157,7 @@ router.post('/config', asyncHandler(async (req, res) => {
     laserLogger.info('LaserStream stopped');
   }
 
-  const status: LaserStreamStatus = {
-    active: isActive,
-    options: currentOptions,
-    clientsCount: clients.length,
-    isFallback: isLaserStreamUsingFallback(),
-    isSimulated: isLaserStreamSimulated(),
-    activeEndpoint: getActiveLaserStreamEndpoint(),
-  };
+  const status = getSafeStatus();
 
   broadcastToClients({
     type: 'STATUS',

@@ -1139,9 +1139,9 @@ export const PnLPage = ({
   };
 
   // Cloud FTP Hosting State Variables
-  const [ftpHost, setFtpHost] = useState(() => localStorage.getItem('ftp_host') || '');
-  const [ftpUser, setFtpUser] = useState(() => localStorage.getItem('ftp_user') || '');
-  const [ftpPass, setFtpPass] = useState(() => localStorage.getItem('ftp_pass') || '');
+  const [ftpHost, setFtpHost] = useState(() => '');
+  const [ftpUser, setFtpUser] = useState(() => '');
+  const [ftpPass, setFtpPass] = useState(() => '');
   const [ftpDir, setFtpDir] = useState(() => localStorage.getItem('ftp_dir') || '/htdocs');
   const [ftpWebUrl, setFtpWebUrl] = useState(() => localStorage.getItem('ftp_web_url') || '');
   const [ftpSecure, setFtpSecure] = useState(() => localStorage.getItem('ftp_secure') === 'true');
@@ -1164,7 +1164,7 @@ export const PnLPage = ({
       const res = await fetch('/api/hosting/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host: ftpHost, user: ftpUser, pass: ftpPass, dir: ftpDir, secure: ftpSecure })
+        body: JSON.stringify({})
       });
       const data = await res.json();
       if (data.success) {
@@ -1204,11 +1204,6 @@ export const PnLPage = ({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: ftpHost,
-          user: ftpUser,
-          pass: ftpPass,
-          dir: ftpDir,
-          secure: ftpSecure,
           data: snapshot
         })
       });
@@ -1234,7 +1229,7 @@ export const PnLPage = ({
       const res = await fetch('/api/hosting/deploy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host: ftpHost, user: ftpUser, pass: ftpPass, dir: ftpDir, secure: ftpSecure })
+        body: JSON.stringify({})
       });
       const data = await res.json();
       if (data.success) {
@@ -7155,7 +7150,7 @@ const checkTokenCriteria = (mint: string): {
                             value={ftpHost} 
                             onChange={(e) => {
                               setFtpHost(e.target.value);
-                              localStorage.setItem('ftp_host', e.target.value);
+                              
                             }}
                             placeholder="ftpupload.net"
                             className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-2.5 py-1.5 text-white font-mono focus:outline-none focus:border-[#c7f284]" 
@@ -7168,7 +7163,7 @@ const checkTokenCriteria = (mint: string): {
                             value={ftpUser} 
                             onChange={(e) => {
                               setFtpUser(e.target.value);
-                              localStorage.setItem('ftp_user', e.target.value);
+                              
                             }}
                             placeholder="your_ftp_username"
                             className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-2.5 py-1.5 text-white font-mono focus:outline-none focus:border-[#c7f284]" 
@@ -7182,7 +7177,7 @@ const checkTokenCriteria = (mint: string): {
                               value={ftpPass} 
                               onChange={(e) => {
                                 setFtpPass(e.target.value);
-                                localStorage.setItem('ftp_pass', e.target.value);
+                                
                               }}
                               placeholder="••••••••"
                               className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg pl-2.5 pr-8 py-1.5 text-white font-mono focus:outline-none focus:border-[#c7f284]" 

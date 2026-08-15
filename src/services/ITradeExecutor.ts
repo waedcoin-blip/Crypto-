@@ -12,6 +12,7 @@ export interface SwapResult {
   landingTimeMs: number;
   method: 'jito' | 'helius' | 'rpc';
   simulated?: boolean;
+  error?: string;
 }
 
 export interface ITradeExecutor {

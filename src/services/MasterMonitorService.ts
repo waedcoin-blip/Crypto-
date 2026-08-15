@@ -27,6 +27,7 @@ export class MasterMonitorService {
   private wsSubscriptionIds = new Map<string, number>();
   private lastCheckTime = new Map<string, number>();
   private priceEngine = new Map<string, PriceState>();
+  private connectionGeneration = 0;
 
   constructor(rpcEndpoint: string, exitManager: PositionExitManager) {
     if (!rpcEndpoint || !rpcEndpoint.trim()) {
@@ -53,9 +54,11 @@ export class MasterMonitorService {
 
   public setRpcEndpoint(rpcEndpoint: string) {
     if (rpcEndpoint && rpcEndpoint.trim()) {
+      this.connectionGeneration++;
+      
       // Unsubscribe existing WS logs
       for (const subId of this.wsSubscriptionIds.values()) {
-        try { this.connection.removeOnLogsListener(subId); } catch {}
+        try { this.connection.removeOnLogsListener(subId).catch(() => {}); } catch {}
       }
       this.wsSubscriptionIds.clear();
 
@@ -124,14 +127,13 @@ export class MasterMonitorService {
         }
       } catch (err) {
         // Handle failure by marking existing prices as stale rather than purging them
-        const now = Date.now();
         for (const mint of mints) {
           const existing = this.priceEngine.get(mint);
           if (existing) {
             this.priceEngine.set(mint, {
               ...existing,
               isStale: true,
-              updatedAt: now,
+              // Bug 6 Fix: DO NOT refresh updatedAt to Date.now() when marking stale
             });
           }
         }
@@ -146,6 +148,7 @@ export class MasterMonitorService {
   }
 
   private setupWsSubscriptions(): void {
+    const currentGeneration = this.connectionGeneration;
     // Attempt WebSocket onLogs / onAccountChange subscriptions via Master Monitor RPC connection
     for (const mint of this.subscribedMints) {
       if (this.wsSubscriptionIds.has(mint)) continue;
@@ -155,6 +158,8 @@ export class MasterMonitorService {
         const subId = this.connection.onLogs(
           { mentions: [mint] } as any,
           (_logs, ctx) => {
+            // Bug 8 Fix: Ensure callback applies to current connection generation
+            if (this.connectionGeneration !== currentGeneration) return;
             // High priority on-chain activity detected for mint — trigger instant quote / price recheck
             this.triggerInstantPriceCheck(mint, ctx?.slot);
           },
@@ -198,12 +203,12 @@ export class MasterMonitorService {
       this.subscribedMints.delete(mint);
       const subId = this.wsSubscriptionIds.get(mint);
       if (subId !== undefined) {
-        try { this.connection.removeOnLogsListener(subId); } catch {}
+        try { this.connection.removeOnLogsListener(subId).catch(() => {}); } catch {}
         this.wsSubscriptionIds.delete(mint);
       }
     } else {
       for (const subId of this.wsSubscriptionIds.values()) {
-        try { this.connection.removeOnLogsListener(subId); } catch {}
+        try { this.connection.removeOnLogsListener(subId).catch(() => {}); } catch {}
       }
       this.wsSubscriptionIds.clear();
       this.subscribedMints.clear();

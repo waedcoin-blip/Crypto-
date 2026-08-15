@@ -67,6 +67,13 @@ const BENIGN_PATTERNS = [
   'failed: WebSocket is closed',
   'connection to',
   'Unexpected server response',
+  'Not allowed by CORS',
+  'CORS',
+  'VALIDATION_ERROR',
+  'RATE_LIMIT_EXCEEDED',
+  'UNAUTHORIZED',
+  'NOT_FOUND',
+  'DISCOVERY_UNAVAILABLE',
 ];
 
 export function isBenignError(error: unknown): boolean {

@@ -1056,18 +1056,18 @@ function App() {
   useEffect(() => {
     if (!user) {
       setSessionWallet(null);
-      localStorage.removeItem('matrix_session_key');
+      sessionStorage.removeItem('matrix_session_key');
       return;
     }
 
-    const savedKey = localStorage.getItem('matrix_session_key');
+    const savedKey = sessionStorage.getItem('matrix_session_key');
     if (savedKey) {
       try {
         const decoded = bs58.decode(savedKey);
         setSessionWallet(Keypair.fromSecretKey(decoded));
       } catch (e) {
         console.error('Failed to load session wallet');
-        localStorage.removeItem('matrix_session_key');
+        sessionStorage.removeItem('matrix_session_key');
       }
     }
   }, [user]);
@@ -1075,7 +1075,7 @@ function App() {
   const generateSessionWallet = () => {
     const kp = Keypair.generate();
     const encoded = bs58.encode(kp.secretKey);
-    localStorage.setItem('matrix_session_key', encoded);
+    sessionStorage.setItem('matrix_session_key', encoded);
     setSessionWallet(kp);
     addNotification('New Session Wallet Generated. Deposit SOL to start auto-trading.');
   };

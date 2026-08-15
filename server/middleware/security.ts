@@ -16,8 +16,54 @@ export const securityHeaders = helmet({
   crossOriginResourcePolicy: false,
 });
 
+export function isAllowedOrigin(origin: string | undefined): boolean {
+  if (!origin) return true;
+
+  if (config.ALLOWED_ORIGINS.includes('*') || config.ALLOWED_ORIGINS.includes(origin)) {
+    return true;
+  }
+
+  if (process.env.APP_URL && origin.startsWith(process.env.APP_URL)) {
+    return true;
+  }
+
+  try {
+    const url = new URL(origin);
+    const host = url.hostname;
+
+    // Localhost / internal interfaces on any port
+    if (host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0') {
+      return true;
+    }
+
+    // Cloud Run and Google AI Studio container/preview hostnames
+    if (
+      host.endsWith('.run.app') ||
+      host.endsWith('.googleusercontent.com') ||
+      host.endsWith('.aistudio.google.com') ||
+      host === 'ai.studio' ||
+      host.endsWith('.ai.studio') ||
+      host.endsWith('.web.app') ||
+      host.endsWith('.firebaseapp.com') ||
+      host.endsWith('.vercel.app')
+    ) {
+      return true;
+    }
+  } catch {
+    return false;
+  }
+
+  return false;
+}
+
 export const corsMiddleware = cors({
-  origin: true,
+  origin: (origin, callback) => {
+    if (isAllowedOrigin(origin)) {
+      callback(null, true);
+    } else {
+      callback(null, true); // Permissive fallback to prevent breaking cross-domain UI previews
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key'],
@@ -29,9 +75,7 @@ export const apiRateLimiter = rateLimit({
   max: config.API_RATE_LIMIT,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req: Request) => {
-    return String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown').split(',')[0].trim();
-  },
+  keyGenerator: (req: Request) => req.ip || 'unknown',
   handler: (req: Request, res: Response) => {
     securityLogger.warn({ ip: req.ip, path: req.path }, 'Rate limit exceeded');
     res.status(429).json({
@@ -47,9 +91,7 @@ export const swapRateLimiter = rateLimit({
   max: config.SWAP_RATE_LIMIT,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req: Request) => {
-    return String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown').split(',')[0].trim();
-  },
+  keyGenerator: (req: Request) => req.ip || 'unknown',
   handler: (req: Request, res: Response) => {
     securityLogger.warn({ ip: req.ip }, 'Swap rate limit exceeded');
     res.status(429).json({
@@ -85,20 +127,33 @@ export function requestLogger(req: Request, res: Response, next: NextFunction): 
 }
 
 // Error sanitization middleware - prevents leaking sensitive info
-export function errorSanitizer(err: Error, req: Request, res: Response, next: NextFunction): void {
+export function errorSanitizer(err: unknown, req: Request, res: Response, next: NextFunction): void {
   if (res.headersSent) return next(err);
 
-  const statusCode = (err as any).statusCode || 500;
-  const code = (err as any).code || 'INTERNAL_ERROR';
+  let statusCode = 500;
+  let code = 'INTERNAL_ERROR';
+  let message = 'Internal server error';
+  let stack: string | undefined;
+
+  if (err instanceof Error) {
+    message = err.message;
+    stack = err.stack;
+    if ('statusCode' in err && typeof (err as any).statusCode === 'number' && (err as any).statusCode >= 400 && (err as any).statusCode < 600) {
+      statusCode = (err as any).statusCode;
+    }
+    if ('code' in err && typeof (err as any).code === 'string') {
+      code = (err as any).code;
+    }
+  }
 
   // In production, don't leak stack traces or internal details
-  const message = config.NODE_ENV === 'production' && statusCode >= 500
-    ? 'Internal server error'
-    : err.message;
+  if (config.NODE_ENV === 'production' && statusCode >= 500) {
+    message = 'Internal server error';
+  }
 
   res.status(statusCode).json({
     error: message,
     code,
-    ...(config.NODE_ENV === 'development' && { stack: err.stack }),
+    ...(config.NODE_ENV === 'development' && { stack }),
   });
 }

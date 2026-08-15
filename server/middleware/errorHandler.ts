@@ -12,31 +12,53 @@ export function globalErrorHandler(
   res: Response,
   _next: NextFunction
 ): void {
-  // Log the error
-  if (!isBenignError(err)) {
-    logger.error({
-      err: {
-        message: err.message,
-        stack: err.stack,
-        name: err.name,
-      },
-      req: {
-        method: req.method,
-        path: req.path,
-        query: req.query,
-        ip: req.ip,
-      },
-    }, 'Unhandled error');
-  }
-
   // Handle AppError instances
   if (err instanceof AppError) {
+    if (!isBenignError(err)) {
+      logger.warn({
+        code: err.code,
+        message: err.message,
+        path: req.path,
+        method: req.method,
+      }, `Operational error: ${err.message}`);
+    }
     res.status(err.statusCode).json({
       error: err.message,
       code: err.code,
     });
     return;
   }
+
+  // Handle benign / network / CORS errors without spamming error logs
+  if (isBenignError(err)) {
+    logger.debug({
+      message: err.message,
+      path: req.path,
+      method: req.method,
+    }, 'Benign error suppressed');
+    
+    const statusCode = (err as any).statusCode || ((err as any).status >= 400 && (err as any).status < 600 ? (err as any).status : 400);
+    res.status(statusCode).json({
+      error: err.message,
+      code: (err as any).code || 'OPERATION_FAILED',
+    });
+    return;
+  }
+
+  // Log true unhandled errors
+  logger.error({
+    err: {
+      message: err.message,
+      stack: err.stack,
+      name: err.name,
+    },
+    req: {
+      method: req.method,
+      path: req.path,
+      query: req.query,
+      ip: req.ip,
+    },
+  }, 'Unhandled error');
 
   // Handle generic errors
   const statusCode = (err as any).statusCode || 500;

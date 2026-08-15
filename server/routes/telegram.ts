@@ -7,6 +7,8 @@ import { logger } from '../utils/logger.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
 import { validateRequiredString } from '../utils/validation.js';
 import { BadGatewayError } from '../utils/errors.js';
+import { config } from '../config/index.js';
+import { isAllowedOrigin } from '../middleware/security.js';
 
 const router = Router();
 
@@ -15,23 +17,19 @@ function sanitizeHtml(input: string): string {
   return input
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/&lt;(b|i|code|pre|a|strong|em)/g, '<$1')  // Allow safe tags
+    .replace(/&lt;(b|i|code|pre|a|strong|em)\b/g, '<$1')  // Allow safe tags
     .replace(/&lt;\/(b|i|code|pre|a|strong|em)&gt;/g, '</$1>');
 }
 
 router.post('/', asyncHandler(async (req, res) => {
-  // SSRF/Proxy Protection: Only allow requests originating from the same browser context 
-  // or explicit authorized origins, or require server-configured token.
-  // Using an open proxy for user-supplied Telegram tokens is dangerous.
-  const envToken = process.env.TELEGRAM_BOT_TOKEN || process.env.VITE_TELEGRAM_BOT_TOKEN;
-  const token = envToken || (req.body.token && typeof req.body.token === 'string' ? req.body.token.trim() : '');
-  
-  if (!envToken && (!req.headers.origin || !req.headers.origin.includes(req.hostname))) {
-     // If not using server token, block cURL/external requests that don't pass Origin matching hostname
-     // This mitigates the worst of the open proxy abuse.
-     throw new BadGatewayError('Telegram proxying of arbitrary tokens requires valid CORS origin');
+  // SSRF/Proxy Protection
+  if (req.headers.origin && !isAllowedOrigin(req.headers.origin)) {
+    throw new BadGatewayError('Telegram proxying requires valid CORS origin');
   }
 
+  const envToken = process.env.TELEGRAM_BOT_TOKEN;
+  const token = envToken || (req.body.token && typeof req.body.token === 'string' ? req.body.token.trim() : '');
+  
   if (!token) {
     throw new BadGatewayError('Telegram bot token not configured');
   }
@@ -61,12 +59,20 @@ router.post('/', asyncHandler(async (req, res) => {
       throw new BadGatewayError(`Telegram API returned ${response.status}`);
     }
 
-    const result = await response.json();
+    // Read as text first to handle non-JSON responses
+    const textData = await response.text();
+    let result;
+    try {
+      result = JSON.parse(textData);
+    } catch {
+      result = { success: true, raw: textData };
+    }
+    
     res.status(response.status).json(result);
-  } catch (error: any) {
+  } catch (error: unknown) {
     clearTimeout(timeout);
 
-    if (error.name === 'AbortError') {
+    if (error instanceof Error && error.name === 'AbortError') {
       logger.error('Telegram Proxy Timeout');
       throw new BadGatewayError('Telegram API Timeout');
     }

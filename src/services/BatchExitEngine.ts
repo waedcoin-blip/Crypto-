@@ -43,6 +43,11 @@ export interface BatchExitResult {
   netSolReceived: number;
   failedMints: string[];
   landingTimeMs: number;
+  perPositionResults: {
+    mint: string;
+    success: boolean;
+    amountReceivedSol?: number;
+  }[];
 }
 
 export class BatchExitEngine {
@@ -73,6 +78,7 @@ export class BatchExitEngine {
     const failedMints: string[] = [];
     const allInstructions: any[] = [];
     const allAlts: Set<string> = new Set();
+    const perPositionResults: BatchExitResult['perPositionResults'] = [];
 
     // Compute budget (once for entire batch)
     allInstructions.push(
@@ -103,7 +109,8 @@ export class BatchExitEngine {
           },
         });
 
-        expectedSolReceived += Number(quote.outAmount) / 1e9;
+        const expectedOut = Number(quote.outAmount) / 1e9;
+        expectedSolReceived += expectedOut;
 
         const ixs = this.decodeInstructions(swapInstructions);
         allInstructions.push(...ixs);
@@ -116,13 +123,37 @@ export class BatchExitEngine {
           );
           atasToClose.push({ ata: inputATA, mint: pos.mint });
         }
+        
+        perPositionResults.push({
+          mint: pos.mint,
+          success: true, // Optimistically true, updated on failure
+          amountReceivedSol: expectedOut, // Estimated for now
+        });
       } catch (err: any) {
         console.error(`Failed to build swap for ${pos.mint}:`, err.message);
         failedMints.push(pos.mint);
+        perPositionResults.push({
+          mint: pos.mint,
+          success: false,
+          amountReceivedSol: 0,
+        });
       }
     }
 
-    if (allInstructions.length <= 2) throw new Error('No viable swaps in batch');
+    if (allInstructions.length <= 2) {
+       // All failed to build
+       return {
+          signature: '',
+          slot: 0,
+          positionsExited: 0,
+          totalFeesSol: 0,
+          rentReclaimedSol: 0,
+          netSolReceived: 0,
+          failedMints: positions.map(p => p.mint),
+          landingTimeMs: Date.now() - startTime,
+          perPositionResults: positions.map(p => ({ mint: p.mint, success: false, amountReceivedSol: 0 }))
+       };
+    }
 
     for (const { ata } of atasToClose) {
       allInstructions.push(
@@ -170,30 +201,69 @@ export class BatchExitEngine {
       commitment: 'confirmed',
     });
 
-    if (sim.value.err) throw new Error(`Simulation failed: ${JSON.stringify(sim.value.err)}`);
+    if (sim.value.err) {
+      const errStr = JSON.stringify(sim.value.err);
+      perPositionResults.forEach(p => p.success = false);
+      throw new Error(`Simulation failed: ${errStr}`);
+    }
 
+    // Bug 18: use preflight simulation, not skipPreflight
     const signature = await this.connection.sendTransaction(transaction, {
-      skipPreflight: true,
+      skipPreflight: false,
       maxRetries: 2,
       preflightCommitment: 'confirmed',
     });
 
     const slot = await this.confirm(signature);
+    
+    // Bug 17: Fetch actual fee from confirmed transaction metadata
+    let actualFeeSol = (this.config.priorityFeeMicroLamports * 1_400_000) / 1e15 + 0.000005; // Fallback estimate
+    let actualSolReceived = expectedSolReceived; // Fallback estimate
+
+    try {
+      const txDetails = await this.connection.getTransaction(signature, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 });
+      if (txDetails?.meta) {
+        if (txDetails.meta.fee !== undefined) {
+          actualFeeSol = txDetails.meta.fee / 1e9;
+        }
+        
+        // Bug 5: Compute actual netSolReceived from pre/post balances
+        const accountIndex = txDetails.transaction.message.staticAccountKeys.findIndex(k => k.equals(this.wallet.publicKey));
+        if (accountIndex >= 0) {
+          const preBalance = txDetails.meta.preBalances[accountIndex];
+          const postBalance = txDetails.meta.postBalances[accountIndex];
+          
+          // Net change in SOL balance + fee paid gives the total SOL received from swaps
+          actualSolReceived = (postBalance - preBalance + (txDetails.meta.fee || 0)) / 1e9;
+          
+          // It's a batch swap, so we roughly distribute the actual received SOL to positions proportional to expected
+          if (expectedSolReceived > 0 && actualSolReceived > 0) {
+            const ratio = actualSolReceived / expectedSolReceived;
+            perPositionResults.forEach(p => {
+              if (p.success && p.amountReceivedSol) {
+                p.amountReceivedSol *= ratio;
+              }
+            });
+          }
+        }
+      }
+    } catch (e) {
+      // Ignore metadata fetch error, fallback to estimate
+    }
+    
     const landingTimeMs = Date.now() - startTime;
-    const baseFee = 0.000005;
-    const priorityFeeSol = (this.config.priorityFeeMicroLamports * 1_400_000) / 1e15;
-    const totalFeesSol = baseFee + priorityFeeSol;
     const rentReclaimedSol = atasToClose.length * 0.002039;
 
     return {
       signature,
       slot,
       positionsExited: positions.length - failedMints.length,
-      totalFeesSol,
+      totalFeesSol: actualFeeSol,
       rentReclaimedSol,
-      netSolReceived: expectedSolReceived,
+      netSolReceived: actualSolReceived,
       failedMints,
       landingTimeMs,
+      perPositionResults,
     };
   }
 

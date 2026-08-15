@@ -69,10 +69,10 @@ export const config = {
 };
 
 // API key resolution helpers
-export function getJupiterApiKey(reqKey?: string): string | undefined {
-  return reqKey || config.JUPITER_API_KEY || config.VITE_JUPITER_API_KEY;
+export function getJupiterApiKey(clientKey?: string): string | undefined {
+  return clientKey || config.JUPITER_API_KEY;
 }
 
 export function getHeliusApiKey(): string | undefined {
-  return config.HELIUS_API_KEY || config.VITE_HELIUS_API_KEY;
+  return config.HELIUS_API_KEY;
 }
