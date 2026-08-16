@@ -1,3 +1,5 @@
+// src/services/SyncService.ts
+
 import { doc, setDoc } from 'firebase/firestore';
 import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
 
@@ -68,37 +70,49 @@ export interface CriteriaSyncPayload {
   userId?: string;
   updatedAt?: string;
   source?: string;
+  [key: string]: any;
 }
 
 export interface SyncStatus {
   lastSyncedAt: number | null;
   firebaseSynced: boolean;
-  renderSynced: boolean;
+  backendSynced: boolean;
+  backendVersion: number | null;
   isSyncing: boolean;
   lastError: string | null;
 }
 
-const RENDER_PRIMARY_URL = 'https://crypto-yla8.onrender.com';
+export interface AuthoritativeCriteriaResponse {
+  status: string;
+  message?: string;
+  version: number;
+  updatedAt: string;
+  source: string;
+  userId?: string;
+  criteria: Partial<CriteriaSyncPayload>;
+  timestamp: number;
+}
 
 class SyncManager {
   private status: SyncStatus = {
     lastSyncedAt: null,
     firebaseSynced: false,
-    renderSynced: false,
+    backendSynced: false,
+    backendVersion: null,
     isSyncing: false,
-    lastError: null
+    lastError: null,
   };
 
   private listeners: Array<(status: SyncStatus) => void> = [];
   private debounceTimer: any = null;
-  private pendingPayload: CriteriaSyncPayload | null = null;
+  private pendingPayload: Partial<CriteriaSyncPayload> | null = null;
   private activeAbortController: AbortController | null = null;
 
   public subscribe(fn: (status: SyncStatus) => void): () => void {
     this.listeners.push(fn);
-    fn(this.status);
+    fn({ ...this.status });
     return () => {
-      this.listeners = this.listeners.filter(l => l !== fn);
+      this.listeners = this.listeners.filter((l) => l !== fn);
     };
   }
 
@@ -117,11 +131,37 @@ class SyncManager {
   }
 
   /**
-   * Immediately syncs criteria and trade size changes to both Render and Firebase database
+   * Fetch current authoritative criteria and version from backend
    */
-  public async syncImmediately(payload: Partial<CriteriaSyncPayload>, customUserId?: string): Promise<{ firebase: boolean; render: boolean }> {
+  public async fetchAuthoritativeCriteria(): Promise<AuthoritativeCriteriaResponse | null> {
+    try {
+      const res = await fetch('/api/criteria', {
+        headers: { Accept: 'application/json' },
+      });
+      if (res.ok) {
+        const data: AuthoritativeCriteriaResponse = await res.json();
+        if (data && typeof data.version === 'number') {
+          this.status.backendVersion = data.version;
+          this.status.backendSynced = true;
+          this.notify();
+          return data;
+        }
+      }
+    } catch (e) {
+      console.warn('Could not fetch authoritative criteria from backend:', e);
+    }
+    return null;
+  }
+
+  /**
+   * Immediately syncs criteria and parameters to the authoritative backend endpoint and Firestore
+   */
+  public async syncImmediately(
+    payload: Partial<CriteriaSyncPayload>,
+    customUserId?: string
+  ): Promise<{ firebase: boolean; backend: boolean; version: number | null }> {
     const timestamp = new Date().toISOString();
-    const resolvedUserId = customUserId || auth.currentUser?.uid || 'anonymous_user';
+    const currentUid = auth.currentUser?.uid || customUserId;
 
     const fullPayload: CriteriaSyncPayload = {
       buyAmountSol: payload.buyAmountSol !== undefined ? Number(payload.buyAmountSol) : 0.1,
@@ -177,9 +217,9 @@ class SyncManager {
       customWsUrl: payload.customWsUrl,
       apiKey: payload.apiKey,
       jupiterRpcUrl: payload.jupiterRpcUrl,
-      userId: resolvedUserId,
+      userId: currentUid,
       updatedAt: timestamp,
-      source: 'live_user_update'
+      source: 'live_user_update',
     };
 
     this.status.isSyncing = true;
@@ -187,33 +227,10 @@ class SyncManager {
     this.notify();
 
     let firebaseSuccess = false;
-    let renderSuccess = false;
+    let backendSuccess = false;
+    let confirmedVersion: number | null = null;
 
-    // 1. Synchronize to Firebase Database (Firestore)
-    try {
-      if (auth.currentUser) {
-        const docRef = doc(db, 'settings', auth.currentUser.uid);
-        await setDoc(docRef, fullPayload, { merge: true });
-        firebaseSuccess = true;
-        this.status.firebaseSynced = true;
-        console.log('✅ [FIREBASE SYNC] Criteria and trade size updated on Firebase database');
-      } else if (resolvedUserId && resolvedUserId !== 'anonymous_user') {
-        const docRef = doc(db, 'settings', resolvedUserId);
-        await setDoc(docRef, fullPayload, { merge: true });
-        firebaseSuccess = true;
-        this.status.firebaseSynced = true;
-        console.log('✅ [FIREBASE SYNC] Criteria and trade size updated for user on Firebase');
-      } else {
-        // If not yet signed in, the local storage retains it and it will save upon auth state change
-        console.log('ℹ️ [FIREBASE SYNC] Awaiting authenticated user session for cloud database commit');
-      }
-    } catch (err: any) {
-      console.error('❌ [FIREBASE SYNC ERROR]', err);
-      handleFirestoreError(err, OperationType.WRITE, `settings/${resolvedUserId}`);
-      this.status.lastError = err?.message || 'Firebase sync failed';
-    }
-
-    // 2. Synchronize to Render Server
+    // 1. Authoritative Backend Synchronization (/api/criteria)
     if (this.activeAbortController) {
       this.activeAbortController.abort();
     }
@@ -221,41 +238,58 @@ class SyncManager {
     const signal = this.activeAbortController.signal;
 
     try {
-      const renderEndpoints = [
-        `${RENDER_PRIMARY_URL}/api/criteria`,
-        `${RENDER_PRIMARY_URL}/api/jup/config`,
-        `/api/criteria`,
-        `/api/jup/config`
-      ];
-
-      // Dispatch parallel sync calls
-      const requests = renderEndpoints.map(async (url) => {
-        try {
-          const res = await fetch(url, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Accept': 'application/json'
-            },
-            body: JSON.stringify(fullPayload),
-            signal
-          });
-          return res.ok;
-        } catch (e: any) {
-          if (e.name === 'AbortError') return false;
-          // Silently capture individual endpoint unreachable to allow best-effort sync
-          return false;
-        }
+      const res = await fetch('/api/criteria', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify(fullPayload),
+        signal,
       });
 
-      const results = await Promise.allSettled(requests);
-      renderSuccess = results.some(r => r.status === 'fulfilled' && r.value === true);
-      this.status.renderSynced = renderSuccess;
-      console.log(`✅ [RENDER SYNC] Criteria and trade size posted to Render: ${renderSuccess ? 'SUCCESS' : 'QUEUED'}`);
+      if (res.ok) {
+        const data: AuthoritativeCriteriaResponse = await res.json();
+        if (data && typeof data.version === 'number') {
+          backendSuccess = true;
+          confirmedVersion = data.version;
+          this.status.backendSynced = true;
+          this.status.backendVersion = data.version;
+          console.log(`✅ [CRITERIA PERSISTED] Authoritative backend synced (Version: ${data.version}, Updated: ${data.updatedAt})`);
+        }
+      } else {
+        const errJson = await res.json().catch(() => null);
+        const errMsg = errJson?.error || `Backend criteria sync rejected with HTTP ${res.status}`;
+        console.error('❌ [CRITERIA PERSISTENCE ERROR]', errMsg);
+        this.status.backendSynced = false;
+        this.status.lastError = errMsg;
+      }
     } catch (err: any) {
       if (err.name !== 'AbortError') {
-        console.error('❌ [RENDER SYNC ERROR]', err);
+        console.error('❌ [BACKEND CRITERIA SYNC ERROR]', err);
+        this.status.backendSynced = false;
+        this.status.lastError = err?.message || 'Backend criteria sync failed';
       }
+    }
+
+    // 2. Firebase Database (Firestore) Cloud Persistence for Authenticated User
+    try {
+      if (auth.currentUser && auth.currentUser.uid) {
+        const docRef = doc(db, 'settings', auth.currentUser.uid);
+        await setDoc(docRef, fullPayload, { merge: true });
+        firebaseSuccess = true;
+        this.status.firebaseSynced = true;
+        console.log(`✅ [FIREBASE SYNC] Cloud settings updated for user: ${auth.currentUser.uid.slice(0, 6)}...`);
+      } else {
+        // Unauthenticated sessions store locally and defer cloud writes until sign-in
+        this.status.firebaseSynced = false;
+      }
+    } catch (err: any) {
+      console.error('❌ [FIREBASE SYNC ERROR]', err);
+      if (currentUid) {
+        handleFirestoreError(err, OperationType.WRITE, `settings/${currentUid}`);
+      }
+      this.status.lastError = err?.message || 'Firebase sync failed';
     } finally {
       this.status.isSyncing = false;
       this.status.lastSyncedAt = Date.now();
@@ -264,7 +298,8 @@ class SyncManager {
 
     return {
       firebase: firebaseSuccess,
-      render: renderSuccess
+      backend: backendSuccess,
+      version: confirmedVersion,
     };
   }
 

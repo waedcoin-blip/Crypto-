@@ -10,6 +10,7 @@ import { asyncHandler } from '../middleware/errorHandler.js';
 import { validateSolanaAddress, validateRequiredString } from '../utils/validation.js';
 import { generateSimulatedPrice, generateSimulatedQuote } from '../services/simulation.js';
 import { BadGatewayError } from '../utils/errors.js';
+import { criteriaService } from '../services/criteriaService.js';
 import type { JupiterPriceResponse } from '../types/index.js';
 
 const router = Router();
@@ -298,24 +299,34 @@ router.post('/swap', asyncHandler(async (req, res) => {
   res.status(response.status).send(text);
 }));
 
-// GET /api/jup/config or /api/jup/criteria
+// GET /api/jup/config or /api/jup/criteria - delegates to authoritative criteria service
 router.get(['/config', '/criteria'], asyncHandler(async (req, res) => {
+  const state = criteriaService.getCriteriaState();
   res.json({
     status: 'success',
+    version: state.version,
+    updatedAt: state.updatedAt,
+    source: state.source,
+    criteria: state.criteria,
     timestamp: Date.now()
   });
 }));
 
-// POST /api/jup/config or /api/jup/criteria
+// POST /api/jup/config or /api/jup/criteria - delegates to authoritative criteria service
 router.post(['/config', '/criteria'], asyncHandler(async (req, res) => {
-  const incoming = req.body || {};
-  jupiterLogger.info({ incoming }, 'Jupiter criteria/config updated');
+  const updatedState = criteriaService.updateCriteria(req.body, {
+    source: req.body?.source || 'jupiter_route_update',
+    userId: req.body?.userId
+  });
   res.json({
     status: 'success',
-    message: 'Configuration updated',
-    config: incoming,
+    message: 'Configuration updated in authoritative criteria store',
+    version: updatedState.version,
+    updatedAt: updatedState.updatedAt,
+    criteria: updatedState.criteria,
     timestamp: Date.now()
   });
 }));
 
 export default router;
+

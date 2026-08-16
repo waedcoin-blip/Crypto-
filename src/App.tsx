@@ -32,7 +32,7 @@ import { cn, detectTokenStage } from './lib/utils';
 import { setSolPriceUsd, getSolPriceUsd, calcNetPnl } from './utils/pnlCalculator';
 import { DEFAULT_HELIUS_RPC, HELIUS_API_KEY } from './constants/solana';
 import { encryptPrivateKey, decryptPrivateKey } from './lib/crypto';
-import { auth, db, signInWithGoogle, signInWithEmailAndPassword, createUserWithEmailAndPassword, signInAnonymously, authPersistencePromise } from './lib/firebase';
+import { auth, db, signInWithGoogle, signInWithEmailAndPassword, createUserWithEmailAndPassword, authPersistencePromise } from './lib/firebase';
 import { onAuthStateChanged, User, signOut } from 'firebase/auth';
 import { 
   collection, 
@@ -617,6 +617,37 @@ function App() {
 
   useEffect(() => {
     // Legacy expert_criteria_v3 initializer removed to prevent destructive resets
+    
+    // Hydrate local UI state from authoritative backend criteria
+    syncManager.fetchAuthoritativeCriteria().then((res) => {
+      if (res && res.criteria) {
+        const c = res.criteria;
+        
+        // Update local storage and standard React state where applicable
+        if (c.buyAmountSol !== undefined) {
+          localStorage.setItem('app_buyAmountSol', String(c.buyAmountSol));
+          useAppStore.setState({ buyAmountSol: c.buyAmountSol });
+        }
+        if (c.minTakeProfit !== undefined) {
+          localStorage.setItem('app_minTakeProfit', String(c.minTakeProfit));
+          useAppStore.setState({ minTakeProfit: c.minTakeProfit });
+        }
+        if (c.maxTakeProfit !== undefined) {
+          localStorage.setItem('app_maxTakeProfit', String(c.maxTakeProfit));
+          useAppStore.setState({ maxTakeProfit: c.maxTakeProfit });
+        }
+        if (c.stopLoss !== undefined) {
+          localStorage.setItem('app_stopLoss', String(c.stopLoss));
+          useAppStore.setState({ stopLoss: c.stopLoss });
+        }
+        if (c.maxPositions !== undefined) {
+          localStorage.setItem('app_maxPositions', String(c.maxPositions));
+          useAppStore.setState({ maxPositions: c.maxPositions });
+        }
+        
+        console.log(`✅ [CRITERIA HYDRATED] Successfully loaded authoritative criteria v${res.version}`);
+      }
+    });
   }, []);
 
   const [rpcLatency, setRpcLatency] = useState<number | null>(null);

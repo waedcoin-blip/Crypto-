@@ -3143,6 +3143,10 @@ export const PnLPage = ({
       throw new Error("Trading of tokens starting with 'sim' is strictly blocked.");
     }
 
+    if (!user) {
+      throw new Error("Authentication required: Please sign in with Google/Firebase before placing real on-chain orders.");
+    }
+
     if (!privateKey) throw new Error("Private Key missing");
     const keypair = Keypair.fromSecretKey(bs58.decode(privateKey));
     const connection = new Connection(jupRpcUrlToUse);
@@ -3983,10 +3987,12 @@ const checkTokenCriteria = (mint: string): {
     
     const storeStateForBuyMode = useAppStore.getState();
     const tradeModeFromStorage = (typeof localStorage !== 'undefined' ? localStorage.getItem('trade_mode') : null) || (typeof localStorage !== 'undefined' && localStorage.getItem('is_live_trading') === 'true' ? 'real' : 'paper');
-    const isRealBuyMode = (storeStateForBuyMode.isLiveTrading || tradeModeFromStorage === 'real') && Boolean(privateKey);
+    const isRealBuyMode = (storeStateForBuyMode.isLiveTrading || tradeModeFromStorage === 'real') && Boolean(privateKey) && Boolean(user);
 
     if (!isRealBuyMode) {
-      if (tradeModeFromStorage === 'real' && !privateKey) {
+      if (tradeModeFromStorage === 'real' && !user) {
+        addLog(`⚠️ [REAL BUY BLOCKED] Real Trading requires an authenticated Google/Firebase user session. Defaulting to Paper/Simulation buy for ${symbol}.`, 'warn');
+      } else if (tradeModeFromStorage === 'real' && !privateKey) {
         addLog(`⚠️ [REAL BUY FALLBACK] Real Trading mode selected, but no Private Key is configured in settings. Defaulting to Paper/Simulation buy for ${symbol}.`, 'warn');
       }
       // Simulation wallet logic

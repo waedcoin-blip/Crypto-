@@ -1,5 +1,5 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword, createUserWithEmailAndPassword, signInAnonymously, browserLocalPersistence, setPersistence } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword, createUserWithEmailAndPassword, browserLocalPersistence, setPersistence } from 'firebase/auth';
 import { initializeFirestore, doc, getDocFromServer } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
@@ -77,7 +77,7 @@ export const signInWithGoogle = async () => {
   }
 };
 
-export { signInWithEmailAndPassword, createUserWithEmailAndPassword, signInAnonymously };
+export { signInWithEmailAndPassword, createUserWithEmailAndPassword };
 
 async function testConnection() {
   try {
