@@ -107,7 +107,7 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
   };
 
   const isDevnet = network === 'devnet';
-  const displayHeaderBalance = solBalance !== null ? `${solBalance.toFixed(3)} SOL` : '--- SOL';
+  const displayHeaderBalance = typeof solBalance === 'number' ? `${solBalance.toFixed(3)} SOL` : '--- SOL';
 
   return (
     <div className={cn("flex flex-wrap items-center gap-2", className)}>
@@ -256,7 +256,7 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
                       "text-base font-black font-mono",
                       isDevnet ? "text-cyan-300" : "text-emerald-400"
                     )}>
-                      {solBalance !== null ? `${solBalance.toFixed(4)} SOL` : '0.0000 SOL'}
+                      {typeof solBalance === 'number' ? `${solBalance.toFixed(4)} SOL` : '0.0000 SOL'}
                     </span>
                     <span className="text-[10px] text-slate-400 font-mono">
                       {status === 'live' ? 'Synced RPC' : status === 'loading' ? 'Fetching...' : status === 'stale' ? 'Stale' : 'Idle'}
@@ -264,7 +264,7 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
                   </div>
                   <div className="mt-1.5 pt-1.5 border-t border-slate-800/60 flex items-center justify-between text-[10px] text-slate-400 font-mono">
                     <span>Reserved Gas Buffer:</span>
-                    <span className="text-slate-300">{reservedSol.toFixed(4)} SOL</span>
+                    <span className="text-slate-300">{typeof reservedSol === 'number' ? reservedSol.toFixed(4) : '0.0000'} SOL</span>
                   </div>
                 </div>
 
@@ -283,7 +283,7 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
                     "text-sm font-black font-mono",
                     isDevnet ? "text-cyan-300" : "text-emerald-300"
                   )}>
-                    {availableSolBalance !== null ? `${availableSolBalance.toFixed(4)} SOL` : '0.0000 SOL'}
+                    {typeof availableSolBalance === 'number' ? `${availableSolBalance.toFixed(4)} SOL` : '0.0000 SOL'}
                   </span>
                 </div>
 

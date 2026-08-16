@@ -123,9 +123,9 @@ export function WalletBalance({
             On-Chain Wallet
           </div>
           <div className="text-sm font-black font-mono mt-0.5 text-slate-100">
-            {solBalance === null
-              ? 'Loading...'
-              : `${solBalance.toFixed(4)} SOL`}
+            {typeof solBalance === 'number'
+              ? `${solBalance.toFixed(4)} SOL`
+              : 'Loading...'}
           </div>
         </div>
 
@@ -139,9 +139,9 @@ export function WalletBalance({
               isDevnet ? "text-cyan-400" : "text-emerald-400"
             )}
           >
-            {available === null
-              ? 'Loading...'
-              : `${available.toFixed(4)} SOL`}
+            {typeof available === 'number'
+              ? `${available.toFixed(4)} SOL`
+              : 'Loading...'}
           </div>
         </div>
       </div>
