@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events';
 import { z } from 'zod';
 import { logger } from '../utils/logger.js';
-import { adminAuth, FIREBASE_PROJECT_ID, FIRESTORE_DATABASE_ID } from '../utils/firebaseAdmin.js';
+import { adminAuth, adminDb, FIREBASE_PROJECT_ID, FIRESTORE_DATABASE_ID } from '../utils/firebaseAdmin.js';
 import { toFirestoreDocument, parseFirestoreDocument } from '../utils/firestoreConverter.js';
 
 export interface CriteriaConfig {
@@ -68,6 +68,7 @@ export interface AuthoritativeCriteriaState {
   source: string;
   userId?: string;
   criteria: CriteriaConfig;
+  updateTime?: string;
 }
 
 export const DEFAULT_CRITERIA: CriteriaConfig = {
@@ -209,72 +210,90 @@ export class CriteriaService extends EventEmitter {
   }
 
   public async fetchCriteriaFromFirestore(userId: string, idToken: string): Promise<AuthoritativeCriteriaState> {
-    const url = this.getFirestoreUrl(userId);
-    const res = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${idToken}`
+    // 1. Try Admin SDK if initialized and functional
+    if (adminDb) {
+      try {
+        const docRef = adminDb.doc(`settings/${userId}`);
+        const docSnap = await docRef.get();
+        if (docSnap.exists) {
+          const data = docSnap.data() || {};
+          const state: AuthoritativeCriteriaState = {
+            version: typeof data.version === 'number' ? data.version : 1,
+            updatedAt: data.updatedAt || (docSnap.updateTime ? docSnap.updateTime.toDate().toISOString() : new Date().toISOString()),
+            source: data.source || 'persisted_disk_state',
+            userId,
+            criteria: { ...DEFAULT_CRITERIA, ...data },
+            updateTime: docSnap.updateTime ? docSnap.updateTime.toDate().toISOString() : undefined
+          };
+          this.activeUsers.set(userId, state);
+          return state;
+        } else {
+          // Document genuinely does NOT exist yet (new user) -> defaults
+          const state: AuthoritativeCriteriaState = {
+            version: 1,
+            updatedAt: new Date().toISOString(),
+            source: 'initial_system_defaults',
+            userId,
+            criteria: { ...DEFAULT_CRITERIA }
+          };
+          this.activeUsers.set(userId, state);
+          return state;
+        }
+      } catch (adminErr: any) {
+        logger.warn({ err: adminErr.message, userId }, 'Admin SDK getDoc failed, attempting authenticated REST fallback');
       }
-    });
+    }
 
-    let state: AuthoritativeCriteriaState;
+    // 2. Authenticated REST fallback using verified user ID token
+    const url = this.getFirestoreUrl(userId);
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${idToken}`
+        }
+      });
+    } catch (networkErr: any) {
+      logger.error({ err: networkErr.message, userId }, 'Network failure connecting to Firestore REST API');
+      throw new Error(`Firestore connection error: ${networkErr.message}`);
+    }
+
     if (res.ok) {
       const doc = await res.json();
       const data = parseFirestoreDocument(doc);
-      state = {
-        version: data.version || 1,
-        updatedAt: data.updatedAt || new Date().toISOString(),
+      const state: AuthoritativeCriteriaState = {
+        version: typeof data.version === 'number' ? data.version : 1,
+        updatedAt: data.updatedAt || doc.updateTime || new Date().toISOString(),
         source: data.source || 'persisted_disk_state',
         userId,
-        criteria: { ...DEFAULT_CRITERIA, ...data }
+        criteria: { ...DEFAULT_CRITERIA, ...data },
+        updateTime: doc.updateTime
       };
-    } else {
-      // Not found or permission denied -> fallback to default
-      state = {
+      this.activeUsers.set(userId, state);
+      return state;
+    } else if (res.status === 404) {
+      // ONLY genuine 404 indicates the document has not yet been created -> initialize default criteria
+      const state: AuthoritativeCriteriaState = {
         version: 1,
         updatedAt: new Date().toISOString(),
         source: 'initial_system_defaults',
         userId,
         criteria: { ...DEFAULT_CRITERIA }
       };
-    }
-
-    this.activeUsers.set(userId, state);
-    return state;
-  }
-
-  public async persistToFirestore(userId: string, idToken: string, state: AuthoritativeCriteriaState): Promise<void> {
-    const url = this.getFirestoreUrl(userId);
-    const docData = {
-      ...state.criteria,
-      version: state.version,
-      updatedAt: state.updatedAt,
-      source: state.source,
-      userId: state.userId
-    };
-    
-    const docPayload = toFirestoreDocument(docData);
-    
-    // We use PATCH without updateMask to replace the document fields (merge semantics require updateMask, but we are sending the full document anyway, wait, no, PATCH without updateMask replaces the document. We have the full document in state.criteria. Actually let's just use PATCH and let it overwrite. Wait, PATCH with no updateMask only updates the fields provided in the body, which is what we want! No, actually to merge we need updateMask. Since we send full merged criteria, we don't need updateMask.)
-    const res = await fetch(url, {
-      method: 'PATCH',
-      headers: {
-        Authorization: `Bearer ${idToken}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(docPayload)
-    });
-
-    if (!res.ok) {
-      const err = await res.text();
-      logger.error({ err, userId }, 'Failed to persist criteria to Firestore');
-      throw new Error('Failed to persist criteria to Firestore: ' + res.status);
+      this.activeUsers.set(userId, state);
+      return state;
+    } else {
+      // 401 (Auth error), 403 (Permission error), 500/503 (Server/Firestore error)
+      // CRITICAL: NEVER convert database/auth errors into defaults!
+      const errText = await res.text().catch(() => '');
+      logger.error({ status: res.status, errText, userId }, 'Firestore read error - rejecting with persistence failure');
+      throw new Error(`Firestore read failed (HTTP ${res.status}): ${errText || 'Unable to access persistence storage'}`);
     }
   }
 
   public getCriteriaState(userId: string): AuthoritativeCriteriaState {
     const state = this.activeUsers.get(userId);
     if (!state) {
-      // In-memory fallback if not loaded yet
       return {
         version: 1,
         updatedAt: new Date().toISOString(),
@@ -295,53 +314,173 @@ export class CriteriaService extends EventEmitter {
     const decodedToken = await adminAuth.verifyIdToken(idToken);
     const userId = decodedToken.uid;
 
-    // 2. Fetch existing state from Firestore (single source of truth)
-    const currentState = await this.fetchCriteriaFromFirestore(userId, idToken);
-
-    // 3. Verify Version
-    if (options?.expectedVersion !== undefined) {
-      if (options.expectedVersion !== currentState.version) {
-        throw new Error(`Conflict: Expected version ${options.expectedVersion} but found ${currentState.version}.`);
-      }
-    }
-
-    // 4. Validate partial payload
+    // 2. Validate partial payload
     const validated = criteriaSchema.parse(inputPayload);
     const { userId: payloadUserId, source: payloadSource, updatedAt: _clientUpdatedAt, version: _clientVersion, ...criteriaUpdates } = validated;
 
-    // 5. Merge only changed fields
+    // 3. ATOMIC TRANSACTIONS VIA ADMIN SDK
+    if (adminDb) {
+      try {
+        const docRef = adminDb.doc(`settings/${userId}`);
+        const resultState = await adminDb.runTransaction(async (transaction) => {
+          const docSnap = await transaction.get(docRef);
+          
+          if (!docSnap.exists) {
+            // New document
+            if (options?.expectedVersion !== undefined && options.expectedVersion !== 1) {
+              throw new Error(`Conflict: Document does not exist, expected version ${options.expectedVersion}.`);
+            }
+            const initialMerged: CriteriaConfig = {
+              ...DEFAULT_CRITERIA,
+              ...criteriaUpdates
+            };
+            const now = new Date().toISOString();
+            const newState: AuthoritativeCriteriaState = {
+              version: 1,
+              updatedAt: now,
+              source: payloadSource || 'initial_user_setup',
+              userId,
+              criteria: initialMerged
+            };
+            transaction.set(docRef, {
+              ...initialMerged,
+              version: 1,
+              updatedAt: now,
+              source: newState.source,
+              userId
+            });
+            return newState;
+          }
+
+          // Existing document
+          const existingData = docSnap.data() || {};
+          const currentVersion = typeof existingData.version === 'number' ? existingData.version : 1;
+
+          // Enforce atomic optimistic concurrency version matching
+          if (options?.expectedVersion !== undefined && options.expectedVersion !== currentVersion) {
+            throw new Error(`Conflict: Expected version ${options.expectedVersion} but found ${currentVersion}.`);
+          }
+
+          const nextVersion = currentVersion + 1;
+          const mergedCriteria: CriteriaConfig = {
+            ...DEFAULT_CRITERIA,
+            ...existingData,
+            ...criteriaUpdates
+          };
+
+          const now = new Date().toISOString();
+          const newState: AuthoritativeCriteriaState = {
+            version: nextVersion,
+            updatedAt: now,
+            source: payloadSource || 'live_user_update',
+            userId,
+            criteria: mergedCriteria,
+            updateTime: docSnap.updateTime ? docSnap.updateTime.toDate().toISOString() : undefined
+          };
+
+          transaction.set(docRef, {
+            ...mergedCriteria,
+            version: nextVersion,
+            updatedAt: now,
+            source: newState.source,
+            userId
+          }, { merge: true });
+
+          return newState;
+        });
+
+        // Update in-memory cache and emit events
+        this.activeUsers.set(userId, resultState);
+        this.emit('criteriaUpdated', resultState);
+
+        logger.info({
+          version: resultState.version,
+          source: resultState.source,
+          userId: `${userId.slice(0, 6)}...`,
+          updatedKeysCount: Object.keys(criteriaUpdates).length
+        }, 'Authoritative criteria atomically committed via Admin Firestore Transaction');
+
+        return resultState;
+      } catch (adminErr: any) {
+        if (adminErr.message?.startsWith('Conflict:')) {
+          throw adminErr; // Propagate 409 conflict directly
+        }
+        logger.warn({ err: adminErr.message, userId }, 'Admin SDK transaction failed, falling back to REST precondition execution');
+      }
+    }
+
+    // 4. ATOMIC PRECONDITION FALLBACK VIA REST
+    const currentState = await this.fetchCriteriaFromFirestore(userId, idToken);
+
+    if (options?.expectedVersion !== undefined && options.expectedVersion !== currentState.version) {
+      throw new Error(`Conflict: Expected version ${options.expectedVersion} but found ${currentState.version}.`);
+    }
+
+    const nextVersion = currentState.version + 1;
     const mergedCriteria: CriteriaConfig = {
       ...currentState.criteria,
       ...criteriaUpdates
     };
 
-    const newVersion = currentState.version + 1;
+    const now = new Date().toISOString();
     const newState: AuthoritativeCriteriaState = {
-      version: newVersion,
-      updatedAt: new Date().toISOString(),
+      version: nextVersion,
+      updatedAt: now,
       source: payloadSource || 'live_user_update',
       userId,
       criteria: mergedCriteria
     };
 
-    // 6. Persist atomically back to Firestore
-    await this.persistToFirestore(userId, idToken, newState);
+    const docData = {
+      ...mergedCriteria,
+      version: nextVersion,
+      updatedAt: now,
+      source: newState.source,
+      userId
+    };
 
-    // 7. Update in-memory map
+    const docPayload = toFirestoreDocument(docData);
+    let patchUrl = this.getFirestoreUrl(userId);
+    if (currentState.updateTime) {
+      patchUrl += `?currentDocument.updateTime=${encodeURIComponent(currentState.updateTime)}`;
+    }
+
+    const res = await fetch(patchUrl, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${idToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(docPayload)
+    });
+
+    if (!res.ok) {
+      if (res.status === 412 || res.status === 409) {
+        throw new Error(`Conflict: Concurrent criteria update detected on Firestore document.`);
+      }
+      const err = await res.text();
+      logger.error({ err, status: res.status, userId }, 'Failed to persist criteria via REST precondition');
+      throw new Error(`Failed to persist criteria to Firestore (HTTP ${res.status}): ${err}`);
+    }
+
+    const resDoc = await res.json().catch(() => null);
+    if (resDoc?.updateTime) {
+      newState.updateTime = resDoc.updateTime;
+    }
+
     this.activeUsers.set(userId, newState);
-
-    // 8. Emit live update event for attached engine listeners
     this.emit('criteriaUpdated', newState);
 
     logger.info({
-      version: newVersion,
+      version: nextVersion,
       source: newState.source,
       userId: `${userId.slice(0, 6)}...`,
       updatedKeysCount: Object.keys(criteriaUpdates).length
-    }, 'Authoritative criteria updated and persisted');
+    }, 'Authoritative criteria atomically committed via REST precondition');
 
     return newState;
   }
 }
 
 export const criteriaService = CriteriaService.getInstance();
+

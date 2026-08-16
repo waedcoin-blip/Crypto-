@@ -149,25 +149,25 @@ export class MasterMonitorService {
 
   private setupWsSubscriptions(): void {
     const currentGeneration = this.connectionGeneration;
-    // Attempt WebSocket onLogs / onAccountChange subscriptions via Master Monitor RPC connection
+    // Dedicated WebSocket onLogs subscriptions via Master Monitor RPC connection
     for (const mint of this.subscribedMints) {
       if (this.wsSubscriptionIds.has(mint)) continue;
 
       try {
-        // Subscribe to transaction logs touching active mint token accounts on-chain
+        // Subscribe to real-time transaction logs touching active mint accounts on-chain
         const subId = this.connection.onLogs(
           { mentions: [mint] } as any,
           (_logs, ctx) => {
-            // Bug 8 Fix: Ensure callback applies to current connection generation
             if (this.connectionGeneration !== currentGeneration) return;
-            // High priority on-chain activity detected for mint — trigger instant quote / price recheck
+            // High priority on-chain activity detected for mint — trigger instant quote evaluation
             this.triggerInstantPriceCheck(mint, ctx?.slot);
           },
           'confirmed'
         );
         this.wsSubscriptionIds.set(mint, subId);
-      } catch {
-        // WS subscription fallback to batch polling
+      } catch (e) {
+        // Log error and rely on scheduled price aggregation
+        console.warn(`[MasterMonitorService] Could not establish onLogs subscription for ${mint.slice(0, 6)}:`, e);
       }
     }
   }
@@ -176,7 +176,7 @@ export class MasterMonitorService {
     const now = Date.now();
     const lastTime = this.lastCheckTime.get(mint) || 0;
     if (now - lastTime < 1500) {
-      // Throttle instant checks to max once every 1.5 seconds per mint to avoid polling storms
+      // Throttle instant checks to max once every 1.5 seconds per mint to prevent rate limits
       return;
     }
     this.lastCheckTime.set(mint, now);
@@ -194,9 +194,10 @@ export class MasterMonitorService {
         }
       }
     } catch {
-      // Fallback handled by batch ticker
+      // Handled by scheduled batch price ticker
     }
   }
+
 
   stopMonitoring(mint?: string): void {
     if (mint) {

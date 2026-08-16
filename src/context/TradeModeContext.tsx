@@ -2,6 +2,7 @@
 import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import { TradeManager, TradeMode } from '../services/TradeManager';
 import { useAppStore } from '../store/appStore';
+import { useBalanceStore } from '../store/balanceStore';
 
 const Context = createContext<{
   mode: TradeMode;
@@ -23,6 +24,7 @@ export const TradeModeProvider: React.FC<{
     localStorage.setItem('trade_mode', m);
     localStorage.setItem('is_live_trading', String(m === 'real'));
     useAppStore.getState().setIsLiveTrading(m === 'real');
+    useBalanceStore.getState().setTradeMode(m);
   }, [manager]);
 
   useEffect(() => {
@@ -58,6 +60,7 @@ export const useTradeMode = () => {
         localStorage.setItem('trade_mode', m);
         localStorage.setItem('is_live_trading', String(m === 'real'));
         useAppStore.getState().setIsLiveTrading(m === 'real');
+        useBalanceStore.getState().setTradeMode(m);
       },
       manager: null as unknown as TradeManager,
     };

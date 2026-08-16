@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { TokenMetric, TelemetryAlert, Trade, SniperTrade } from '../types';
 import { Keypair } from '@solana/web3.js';
+import { useBalanceStore } from './balanceStore';
 
 export interface ActivePositionData {
     boughtAt?: number;
@@ -110,11 +111,11 @@ export const useAppStore = create<AppState>((set) => ({
   })(),
   monitoredWallets: [],
   simulationBalance: (() => {
-    const saved = localStorage.getItem('app_simulationBalance_v4');
-    if (saved) return Number(saved);
-    const old = localStorage.getItem('app_simulationBalance');
-    if (old === '10' || !old || Number(old) === 0.12) return 10.0;
-    return Number(old);
+    try {
+      const saved = localStorage.getItem('app_authoritative_paper_balance_v1') || localStorage.getItem('app_simulationBalance_v4');
+      if (saved && !isNaN(Number(saved)) && Number(saved) >= 0) return Number(saved);
+    } catch {}
+    return 10.0;
   })(),
   jupiterLogs: [],
   sessionWallet: null,
@@ -131,11 +132,12 @@ export const useAppStore = create<AppState>((set) => ({
     localStorage.setItem('app_activePositions', JSON.stringify(newPositions));
     return { activePositions: newPositions };
   }),
-  setSimulationBalance: (fn) => set((state) => {
-    const val = fn(state.simulationBalance);
-    localStorage.setItem('app_simulationBalance_v4', String(val));
-    return { simulationBalance: val };
-  }),
+  setSimulationBalance: (fn) => {
+    const store = useBalanceStore.getState();
+    const updated = typeof fn === 'function' ? fn(store.paperSolBalance) : fn;
+    store.setPaperSolBalance(updated);
+    set({ simulationBalance: updated });
+  },
   setMySniperTrades: (fn) => set((state) => {
     const next = fn(state.mySniperTrades);
     localStorage.setItem('app_mySniperTrades', JSON.stringify(next));

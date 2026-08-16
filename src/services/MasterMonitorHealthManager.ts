@@ -7,7 +7,7 @@ export interface MasterMonitorStatus {
   backupUrl: string | null;
   wsUrl: string | null;
   activeUrl: string;
-  status: 'CONNECTING' | 'LIVE' | 'DEGRADED' | 'BACKUP' | 'OFFLINE';
+  status: 'PRIMARY' | 'BACKUP' | 'STALE' | 'OFFLINE' | 'CONNECTING' | 'LIVE' | 'DEGRADED';
   latencyMs: number | null;
   slot: number | null;
   lastUpdated: number | null; // Timestamp
@@ -20,7 +20,7 @@ export class MasterMonitorHealthManager {
   private wsUrl: string | null = null;
   private activeUrl: string = '';
   
-  private currentStatus: 'CONNECTING' | 'LIVE' | 'DEGRADED' | 'BACKUP' | 'OFFLINE' = 'OFFLINE';
+  private currentStatus: 'PRIMARY' | 'BACKUP' | 'STALE' | 'OFFLINE' | 'CONNECTING' | 'LIVE' | 'DEGRADED' = 'OFFLINE';
   private latencyMs: number | null = null;
   private slot: number | null = null;
   private lastUpdated: number | null = null;
@@ -125,13 +125,13 @@ export class MasterMonitorHealthManager {
 
   public async checkHealth(): Promise<void> {
     const targetUrl = this.activeUrl;
-    if (!targetUrl) {
+    if (!targetUrl || !this.primaryUrl) {
       this.currentStatus = 'OFFLINE';
+      this.latencyMs = null;
       this.notifyListeners();
       return;
     }
 
-    const hasDedicatedMonitor = !!this.primaryUrl;
     const start = performance.now();
 
     try {
@@ -143,14 +143,10 @@ export class MasterMonitorHealthManager {
       this.slot = currentSlot;
       this.lastUpdated = Date.now();
       
-      if (hasDedicatedMonitor) {
-        if (targetUrl === this.backupUrl) {
-          this.currentStatus = 'BACKUP';
-        } else {
-          this.currentStatus = duration > 500 ? 'DEGRADED' : 'LIVE';
-        }
+      if (targetUrl === this.backupUrl) {
+        this.currentStatus = 'BACKUP';
       } else {
-        this.currentStatus = 'OFFLINE';
+        this.currentStatus = duration > 800 ? 'STALE' : 'PRIMARY';
       }
 
       telemetryService.recordApiRequest(targetUrl, 'getSlot', 200, duration);
@@ -158,27 +154,22 @@ export class MasterMonitorHealthManager {
       const duration = Math.round(performance.now() - start);
       console.warn(`[MasterMonitorHealthManager] Check failed on ${targetUrl}:`, err.message || err);
       
-      if (hasDedicatedMonitor) {
-        // Failover only to master_monitor_rpc2 (backupUrl), NEVER to execution fallback
-        if (this.backupUrl && this.activeUrl === this.primaryUrl) {
-          console.log(`[MasterMonitorHealthManager] Switching to backup Master RPC: ${this.backupUrl}`);
-          this.activeUrl = this.backupUrl;
-          this.currentStatus = 'BACKUP';
-          
-          try {
-            const connBackup = new Connection(this.backupUrl, 'confirmed');
-            const backupSlot = await connBackup.getSlot('confirmed');
-            const backupDuration = Math.round(performance.now() - start);
+      // Failover only to master_monitor_rpc2 (backupUrl), NEVER to execution RPC
+      if (this.backupUrl && this.activeUrl === this.primaryUrl) {
+        console.log(`[MasterMonitorHealthManager] Switching to backup Master RPC: ${this.backupUrl}`);
+        this.activeUrl = this.backupUrl;
+        this.currentStatus = 'BACKUP';
+        
+        try {
+          const connBackup = new Connection(this.backupUrl, 'confirmed');
+          const backupSlot = await connBackup.getSlot('confirmed');
+          const backupDuration = Math.round(performance.now() - start);
 
-            this.latencyMs = backupDuration;
-            this.slot = backupSlot;
-            this.lastUpdated = Date.now();
-            this.currentStatus = 'BACKUP';
-          } catch {
-            this.currentStatus = 'OFFLINE';
-            this.latencyMs = null;
-          }
-        } else {
+          this.latencyMs = backupDuration;
+          this.slot = backupSlot;
+          this.lastUpdated = Date.now();
+          this.currentStatus = 'BACKUP';
+        } catch {
           this.currentStatus = 'OFFLINE';
           this.latencyMs = null;
         }
@@ -192,6 +183,7 @@ export class MasterMonitorHealthManager {
 
     this.notifyListeners();
   }
+
 
   private notifyListeners() {
     const status = this.getStatus();

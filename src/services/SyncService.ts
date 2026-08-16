@@ -156,15 +156,52 @@ class SyncManager {
         if (data && typeof data.version === 'number') {
           this.status.backendVersion = data.version;
           this.status.backendSynced = true;
+          this.status.lastError = null;
+          try {
+            localStorage.setItem('app_last_known_criteria_v1', JSON.stringify({
+              version: data.version,
+              criteria: data.criteria,
+              updatedAt: data.updatedAt
+            }));
+          } catch (e) {
+            // Ignore localStorage quota errors
+          }
           this.notify();
           return data;
         }
+      } else {
+        const errJson = await res.json().catch(() => null);
+        const errMsg = errJson?.error || `Failed to fetch authoritative criteria (HTTP ${res.status})`;
+        console.warn('⚠️ [CRITERIA PERSISTENCE FETCH ERROR]:', errMsg);
+        this.status.backendSynced = false;
+        this.status.lastError = errMsg;
+        this.notify();
       }
-    } catch (e) {
+    } catch (e: any) {
       console.warn('Could not fetch authoritative criteria from backend:', e);
+      this.status.backendSynced = false;
+      this.status.lastError = e?.message || 'Network error fetching criteria';
+      this.notify();
     }
     return null;
   }
+
+  /**
+   * Retrieve the last-known-good criteria if offline or backend is inaccessible
+   */
+  public getLastKnownGoodCriteria(): Partial<CriteriaSyncPayload> | null {
+    try {
+      const saved = localStorage.getItem('app_last_known_criteria_v1');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return parsed?.criteria || null;
+      }
+    } catch (e) {
+      console.error('Error reading last known good criteria:', e);
+    }
+    return null;
+  }
+
 
   /**
    * Immediately syncs criteria and parameters to the authoritative backend endpoint and Firestore

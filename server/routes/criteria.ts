@@ -25,17 +25,24 @@ const requireAuth = asyncHandler(async (req, res, next) => {
 
 // GET /api/criteria
 router.get('/', requireAuth, asyncHandler(async (req, res) => {
-  // Fetch latest from Firestore to populate cache, or return cached
-  const state = await criteriaService.fetchCriteriaFromFirestore((req as any).user.uid, (req as any).idToken);
-  res.json({
-    status: 'success',
-    version: state.version,
-    updatedAt: state.updatedAt,
-    source: state.source,
-    userId: state.userId,
-    criteria: state.criteria,
-    timestamp: Date.now(),
-  });
+  try {
+    const state = await criteriaService.fetchCriteriaFromFirestore((req as any).user.uid, (req as any).idToken);
+    res.json({
+      status: 'success',
+      version: state.version,
+      updatedAt: state.updatedAt,
+      source: state.source,
+      userId: state.userId,
+      criteria: state.criteria,
+      timestamp: Date.now(),
+    });
+  } catch (err: any) {
+    res.status(502).json({
+      status: 'error',
+      error: 'Persistence storage error: ' + (err.message || 'Failed to read criteria from database'),
+      timestamp: Date.now(),
+    });
+  }
 }));
 
 // PATCH /api/criteria
@@ -62,13 +69,14 @@ router.patch('/', requireAuth, asyncHandler(async (req, res) => {
       timestamp: Date.now(),
     });
   } catch (e: any) {
-    if (e.message.startsWith('Conflict:')) {
-      res.status(409).json({ error: e.message });
+    if (e.message?.startsWith('Conflict:')) {
+      res.status(409).json({ error: e.message, code: 'VERSION_CONFLICT' });
       return;
     }
-    throw e;
+    res.status(500).json({ error: e.message || 'Criteria update failed', code: 'PERSISTENCE_ERROR' });
   }
 }));
+
 
 // Legacy PUT
 router.put('/', requireAuth, asyncHandler(async (req, res) => {

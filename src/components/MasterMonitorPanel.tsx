@@ -46,13 +46,40 @@ export const MasterMonitorPanel: React.FC<MasterMonitorPanelProps> = ({
 
   const getStatusColor = (st: MasterMonitorStatus['status']) => {
     switch (st) {
-      case 'LIVE': return 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30';
-      case 'CONNECTING': return 'text-sky-400 bg-sky-500/10 border-sky-500/30';
-      case 'DEGRADED': return 'text-amber-400 bg-amber-500/10 border-amber-500/30';
-      case 'BACKUP': return 'text-indigo-400 bg-indigo-500/10 border-indigo-500/30';
-      case 'OFFLINE': return 'text-rose-400 bg-rose-500/10 border-rose-500/30';
+      case 'PRIMARY':
+      case 'LIVE':
+        return 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30';
+      case 'BACKUP':
+        return 'text-indigo-400 bg-indigo-500/10 border-indigo-500/30';
+      case 'STALE':
+      case 'DEGRADED':
+        return 'text-amber-400 bg-amber-500/10 border-amber-500/30';
+      case 'CONNECTING':
+        return 'text-sky-400 bg-sky-500/10 border-sky-500/30';
+      case 'OFFLINE':
+      default:
+        return 'text-rose-400 bg-rose-500/10 border-rose-500/30';
     }
   };
+
+  const getStatusLabel = (st: MasterMonitorStatus['status']) => {
+    switch (st) {
+      case 'PRIMARY':
+      case 'LIVE':
+        return 'PRIMARY ACTIVE';
+      case 'BACKUP':
+        return 'BACKUP NODE';
+      case 'STALE':
+      case 'DEGRADED':
+        return 'TELEMETRY STALE';
+      case 'CONNECTING':
+        return 'CONNECTING...';
+      case 'OFFLINE':
+      default:
+        return 'OFFLINE';
+    }
+  };
+
 
   const isCustomEngaged = !!(masterMonitorRpc && masterMonitorRpc.trim() !== '');
 
@@ -79,7 +106,7 @@ export const MasterMonitorPanel: React.FC<MasterMonitorPanelProps> = ({
         </div>
         <span className={`text-[10px] font-bold font-mono px-2 py-0.5 rounded-full border ${getStatusColor(status.status)} flex items-center gap-1.5`}>
           <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" />
-          {status.status.toUpperCase()}
+          {getStatusLabel(status.status)}
         </span>
       </div>
 

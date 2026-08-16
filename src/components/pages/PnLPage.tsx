@@ -31,6 +31,8 @@ import { ITradeExecutor } from '../../services/ITradeExecutor';
 import { masterMonitorHealthManager } from '../../services/MasterMonitorHealthManager';
 import { syncManager } from '../../services/SyncService';
 import { SyncStatusBadge } from '../SyncStatusBadge';
+import { useBalanceStore } from '../../store/balanceStore';
+import { walletBalanceService } from '../../services/WalletBalanceService';
 
 import { DEFAULT_HELIUS_RPC, DEFAULT_HELIUS_WS, HELIUS_API_KEY } from '../../constants/solana';
 
@@ -1301,29 +1303,7 @@ export const PnLPage = ({
       };
     } catch { return { trades: 0, wins: 0, losses: 0, pnl: 0, bestTrade: null as number | null }; }
   });
-  const globalSimulationBalance = useAppStore(state => state.simulationBalance);
-  const [simWalletBalance, setSimWalletBalance] = useState(() => {
-    const storeVal = useAppStore.getState().simulationBalance;
-    if (typeof storeVal === 'number' && !isNaN(storeVal) && storeVal > 0) return storeVal;
-
-    const saved = localStorage.getItem('app_simulationBalance_v4');
-    if (saved && saved !== 'undefined') {
-      const val = Number(saved);
-      if (!isNaN(val) && val > 0) return val;
-    }
-    const old = localStorage.getItem('juipter_auto_simWalletBalance');
-    if (old && old !== 'undefined') {
-      const oldVal = Number(old);
-      if (!isNaN(oldVal) && oldVal > 0) return oldVal;
-    }
-    return 10.0;
-  });
-
-  useEffect(() => {
-    if (typeof globalSimulationBalance === 'number' && !isNaN(globalSimulationBalance)) {
-      setSimWalletBalance(prev => (prev !== globalSimulationBalance ? globalSimulationBalance : prev));
-    }
-  }, [globalSimulationBalance]);
+  const { paperSolBalance: simWalletBalance, setPaperSolBalance: setSimWalletBalance, availableSolBalance, realSolBalance } = useBalanceStore();
   const [retentionLimit, setRetentionLimit] = useState<number>(() => {
     try {
       const saved = localStorage.getItem('juipter_auto_retentionLimit');
@@ -1834,13 +1814,12 @@ export const PnLPage = ({
           if (data.simWalletBalance !== undefined) {
             const fsBal = Number(data.simWalletBalance);
             if (!isNaN(fsBal) && fsBal > 0) {
-              const localSaved = localStorage.getItem('app_simulationBalance_v4');
+              const localSaved = localStorage.getItem('app_authoritative_paper_balance_v1') || localStorage.getItem('app_simulationBalance_v4');
               const localNum = localSaved ? Number(localSaved) : NaN;
               if (!isNaN(localNum) && localNum > 0 && fsBal === 10.0 && localNum !== 10.0) {
                 // Preserve local updated balance if Firestore returned default 10
               } else {
-                setSimWalletBalance(fsBal);
-                useAppStore.getState().setSimulationBalance(() => fsBal);
+                useBalanceStore.getState().setPaperSolBalance(fsBal);
               }
             }
           }
@@ -2078,15 +2057,6 @@ export const PnLPage = ({
   useEffect(() => {
     localStorage.setItem('juipter_auto_stats', JSON.stringify(stats));
   }, [stats]);
-  useEffect(() => {
-    if (typeof simWalletBalance === 'number' && !isNaN(simWalletBalance)) {
-      localStorage.setItem('app_simulationBalance_v4', simWalletBalance.toString());
-      localStorage.setItem('juipter_auto_simWalletBalance', simWalletBalance.toString());
-      if (useAppStore.getState().simulationBalance !== simWalletBalance) {
-        useAppStore.getState().setSimulationBalance(() => simWalletBalance);
-      }
-    }
-  }, [simWalletBalance]);
   useEffect(() => {
     localStorage.setItem('juipter_auto_logs', JSON.stringify(logs.slice(0, retentionLimit))); // Keep last logs matching chosen limit
   }, [logs, retentionLimit]);
@@ -4037,21 +4007,13 @@ const checkTokenCriteria = (mint: string): {
         addLog(`⚠️ [REAL BUY FALLBACK] Real Trading mode selected, but no Private Key is configured in settings. Defaulting to Paper/Simulation buy for ${symbol}.`, 'warn');
       }
       // Simulation wallet logic
-      const availableBalance = typeof useAppStore.getState().simulationBalance === 'number'
-        ? useAppStore.getState().simulationBalance
-        : simWalletBalance;
-      if (availableBalance < solAmount) {
+      const deducted = useBalanceStore.getState().deductTrade(solAmount, false);
+      if (!deducted) {
+        const availableBalance = useBalanceStore.getState().paperSolBalance;
         addLog(`Insufficient SIM balance (${availableBalance.toFixed(4)} < ${solAmount.toFixed(4)}) for ${symbol}`, 'err');
         pendingBuyMintsRef.current.delete(mint);
         return;
       }
-
-      // Atomically deduct balance
-      const newBal = Math.max(0, availableBalance - solAmount);
-      setSimWalletBalance(newBal);
-      useAppStore.getState().setSimulationBalance(() => newBal);
-      localStorage.setItem('app_simulationBalance_v4', newBal.toString());
-      localStorage.setItem('juipter_auto_simWalletBalance', newBal.toString());
 
       pendingBuysRef.current++;
       try {
@@ -4144,13 +4106,7 @@ const checkTokenCriteria = (mint: string): {
         addLog(`✅ [SIM] Bought ${symbol} @ ${parsedPrice.toFixed(8)} SOL (${tokenAmount.toFixed(2)} tokens)`, 'buy');
       } catch (e: any) {
          addLog(`[SIM] Failed: ${e.message}`, 'err');
-         setSimWalletBalance(prev => {
-           const refunded = prev + solAmount;
-           useAppStore.getState().setSimulationBalance(() => refunded);
-           localStorage.setItem('app_simulationBalance_v4', refunded.toString());
-           localStorage.setItem('juipter_auto_simWalletBalance', refunded.toString());
-           return refunded;
-         });
+         useBalanceStore.getState().creditTrade(solAmount, false);
       } finally {
         pendingBuysRef.current--;
         pendingBuyMintsRef.current.delete(mint);
@@ -4202,17 +4158,14 @@ const checkTokenCriteria = (mint: string): {
            return next;
         });
         addLog(`✅ Bought ${symbol} @ ${parsedPrice.toFixed(6)} SOL | tx: ${result.txid.slice(0, 12)}...`, 'buy');
+        walletBalanceService.refreshNow();
       }
     } catch (e: any) {
       addLog(`Buy error for ${symbol}: ${e.message}`, 'err');
       if (!privateKey) {
-        setSimWalletBalance(prev => {
-          const refunded = prev + solAmount;
-          useAppStore.getState().setSimulationBalance(() => refunded);
-          localStorage.setItem('app_simulationBalance_v4', refunded.toString());
-          localStorage.setItem('juipter_auto_simWalletBalance', refunded.toString());
-          return refunded;
-        });
+        useBalanceStore.getState().creditTrade(solAmount, false);
+      } else {
+        walletBalanceService.refreshNow();
       }
       if (e.message.includes('Route not found') || e.message.includes('NO_ROUTES_FOUND') || e.message.includes('Not Found') || e.message.includes('No route') || e.message.includes('TOKEN_NOT_TRADABLE')) {
         addLog(`❌ [BLACKLIST] ${symbol} added to blacklist due to unroutable liquidity/dead token.`, 'warn');
@@ -4374,12 +4327,14 @@ const checkTokenCriteria = (mint: string): {
                 addLog(`Blacklisted ${pos.symbol} due to negative PnL.`, 'warn');
               }
               isMainSold = true;
+              walletBalanceService.refreshNow();
             } else {
               throw new Error("Jupiter swap transaction ID missing.");
             }
           }
         } catch (e: any) {
           addLog(`Real main sell error: ${e.message}`, 'err');
+          walletBalanceService.refreshNow();
         }
       } else {
         // Simulated sell for main
@@ -4474,13 +4429,7 @@ const checkTokenCriteria = (mint: string): {
 
         const realWalletReturn = Math.max(0, netReceivedSOL - getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent));
         const walletNetPnlPct = (realWalletReturn - pos.solSpent) / pos.solSpent;
-        setSimWalletBalance(prev => {
-          const updated = prev + realWalletReturn;
-          useAppStore.getState().setSimulationBalance(() => updated);
-          localStorage.setItem('app_simulationBalance_v4', updated.toString());
-          localStorage.setItem('juipter_auto_simWalletBalance', updated.toString());
-          return updated;
-        });
+        useBalanceStore.getState().creditTrade(realWalletReturn, false);
 
         setStats((s) => ({
           trades: s.trades + 1,
@@ -4600,13 +4549,9 @@ const checkTokenCriteria = (mint: string): {
         // Credit returned SOL to simulation wallet balance
         const isRealModeActive = (useAppStore.getState().isLiveTrading || localStorage.getItem('juipter_auto_tradeMode') === 'real') && Boolean(privateKey) && Boolean(user);
         if (!isRealModeActive) {
-          setSimWalletBalance(prev => {
-            const updated = prev + actualSolReceived;
-            useAppStore.getState().setSimulationBalance(() => updated);
-            localStorage.setItem('app_simulationBalance_v4', updated.toString());
-            localStorage.setItem('juipter_auto_simWalletBalance', updated.toString());
-            return updated;
-          });
+          useBalanceStore.getState().creditTrade(actualSolReceived, false);
+        } else {
+          walletBalanceService.refreshNow();
         }
 
         setStats((s) => ({
@@ -5468,7 +5413,7 @@ const checkTokenCriteria = (mint: string): {
     setPositions({});
     positionsRef.current = {};
     setBlacklistedMints([]);
-    setSimWalletBalance(10.0);
+    useBalanceStore.getState().resetPaperBalance(10.0);
     setUptime(0);
     startTimeRef.current = null;
 
