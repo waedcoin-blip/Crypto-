@@ -48,6 +48,7 @@ import {
 } from 'firebase/firestore';
 import { Trash2, Plus, LogOut, LogIn, Scan } from 'lucide-react';
 import { useAppStore } from './store/appStore';
+import { useBalanceStore, getTradingBalance } from './store/balanceStore';
 import { SystemCheckPage } from './components/pages/SystemCheckPage';
 import { SafetyPage } from './components/pages/SafetyPage';
 import { PredictionPage } from './components/pages/PredictionPage';
@@ -420,7 +421,7 @@ function App() {
   const [isAddingGem, setIsAddingGem] = useState(false);
   const [sectorFilter, setSectorFilter] = useState<'ALL' | 'AI' | 'MEME' | 'GAMEFI' | 'DEPIN' | 'RWA' | 'DEFI' | 'POLITIFI' | 'AI_MEME'>('ALL');
   const [trackedFilter, setTrackedFilter] = useState<'ALL' | 'PROFIT' | 'LOSS'>('ALL');
-  const { telemetryAlerts, tokenMetrics, addTelemetryAlert, setTelemetryAlerts, setTokenMetrics, trades, setTrades, simulationBalance, setSimulationBalance, mySniperTrades, setMySniperTrades } = useAppStore();
+  const { telemetryAlerts, tokenMetrics, addTelemetryAlert, setTelemetryAlerts, setTokenMetrics, trades, setTrades, mySniperTrades, setMySniperTrades } = useAppStore();
   const [telemetryBits, setTelemetryBits] = useState<boolean[]>(Array(12).fill(false));
   const [monitoredWallets, setMonitoredWallets] = useState<{id: string, address: string, label: string}[]>([]);
   const alertedTokens = useRef<Set<string>>(new Set());
@@ -1759,7 +1760,7 @@ function App() {
     optimisticPositions.current.add(tokenAddress);
 
 
-    if (!isLiveTrading && simulationBalance < buyAmountSol) {
+    if (!isLiveTrading && getTradingBalance() < buyAmountSol) {
       addNotification(`Insufficient Simulation Balance (Need ${buyAmountSol} SOL)`);
       return;
     }
@@ -1789,8 +1790,7 @@ function App() {
         const solBalance = await connection.getBalance(new PublicKey(walletAddress));
         
         if (solBalance < lamports) {
-          addNotification("Insufficient real SOL balance. Falling back to Simulation Trade.");
-          isSimulated = true;
+          throw new Error("Insufficient real SOL balance for trade.");
         } else {
           const priorityTipLamports = 2000000;
           if (sessionWallet) {
@@ -1807,18 +1807,6 @@ function App() {
             } else throw new Error("Failed to create swap transaction");
           }
         }
-      }
-
-      if (isSimulated) {
-        const simLatency = 150 + Math.random() * 1200;
-        await new Promise(resolve => setTimeout(resolve, simLatency));
-        if (Math.random() < 0.002) {
-          throw new Error("SIM: Transaction not included — try increasing Jito tip");
-        }
-        if (simulationBalance < buyAmountSol) {
-          throw new Error("SIM: Insufficient simulation balance");
-        }
-        setSimulationBalance(prev => prev - buyAmountSol);
       }
       const security = await fetchTokenSecurityData(tokenAddress);
       
@@ -1983,7 +1971,8 @@ function App() {
 
         await new Promise(resolve => setTimeout(resolve, 800));
         
-        setSimulationBalance(prev => prev + simulatedNet);
+        // Simulation balance update removed for real trading
+
       }
 
       setActivePositions(prev => {
@@ -2140,7 +2129,7 @@ function App() {
       
       setMySniperTrades(prev => [newTrade, ...prev]);
       if (isSimulated) {
-        setSimulationBalance(prev => prev + totalReturned);
+        // Simulation balance update removed for real trading
       }
 
       setActivePositions(prev => {
@@ -2194,7 +2183,7 @@ function App() {
     // Set optimistic position to prevent concurrent duplicate buys
     optimisticPositions.current.add(tokenAddress);
     
-    if (!isLiveTrading && simulationBalance < buyAmountSol) {
+    if (!isLiveTrading && getTradingBalance() < buyAmountSol) {
       console.log("Auto-Sniper: Insufficient simulation balance");
       return;
     }
@@ -2267,10 +2256,10 @@ function App() {
         if (Math.random() < 0.002) {
           throw new Error("SIM: Transaction not included — try increasing Jito tip");
         }
-        if (simulationBalance < actualBuyAmountSol) {
+        if (getTradingBalance() < actualBuyAmountSol) {
           throw new Error("SIM: Insufficient simulation balance — top up via Settings.");
         }
-        setSimulationBalance(prev => prev - actualBuyAmountSol);
+        // Simulation balance update removed for real trading
       }
       
       // Force fresh price for accuracy
@@ -2459,10 +2448,6 @@ function App() {
   useEffect(() => {
     localStorage.setItem('app_mySniperTrades', JSON.stringify(mySniperTrades.slice(0, 50)));
   }, [mySniperTrades]);
-  
-  useEffect(() => {
-    localStorage.setItem('app_simulationBalance_v4', simulationBalance.toString());
-  }, [simulationBalance]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -4814,7 +4799,6 @@ function App() {
                   <span className="text-[8px] text-amber-500/80 font-bold uppercase mt-0.5 tracking-tighter">Immediate Feedback Active</span>
                 </div>
                 <div className="text-right">
-                   <div className="text-xl font-black text-amber-400 font-mono tracking-tighter">{simulationBalance.toFixed(4)} SOL</div>
                    <div className="text-[9px] text-slate-500 font-bold uppercase tracking-widest">Simulation Assets</div>
                 </div>
               </div>

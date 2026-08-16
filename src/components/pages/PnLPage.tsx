@@ -1303,7 +1303,10 @@ export const PnLPage = ({
       };
     } catch { return { trades: 0, wins: 0, losses: 0, pnl: 0, bestTrade: null as number | null }; }
   });
-  const { paperSolBalance: simWalletBalance, setPaperSolBalance: setSimWalletBalance, availableSolBalance, realSolBalance } = useBalanceStore();
+  const { solBalance, availableSolBalance } = useBalanceStore();
+  const simWalletBalance = solBalance;
+  const setSimWalletBalance = (bal: number) => { /* no-op in real mode */ };
+  const realSolBalance = solBalance;
   const [retentionLimit, setRetentionLimit] = useState<number>(() => {
     try {
       const saved = localStorage.getItem('juipter_auto_retentionLimit');

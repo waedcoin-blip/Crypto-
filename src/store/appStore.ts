@@ -55,7 +55,6 @@ interface AppState {
   mySniperTrades: SniperTrade[];
   activePositions: Record<string, ActivePositionData>;
   monitoredWallets: {id: string, address: string, label: string}[];
-  simulationBalance: number;
   sessionWallet: Keypair | null;
   jupiterLogs: { id: string; timestamp: number; type: 'QUOTE' | 'SWAP' | 'ERROR' | 'INFO'; message: string; details?: any }[];
 
@@ -68,7 +67,6 @@ interface AppState {
   setTelemetryAlerts: (fn: (prev: TelemetryAlert[]) => TelemetryAlert[]) => void;
   setTelemetryBits: (bits: boolean[]) => void;
   updateActivePositions: (fn: (prev: Record<string, ActivePositionData>) => Record<string, ActivePositionData>) => void;
-  setSimulationBalance: (fn: (prev: number) => number) => void;
   setMySniperTrades: (fn: (prev: SniperTrade[]) => SniperTrade[]) => void;
   setSessionWallet: (wallet: Keypair | null) => void;
   setIsMonitoring: (val: boolean) => void;
@@ -110,13 +108,6 @@ export const useAppStore = create<AppState>((set) => ({
     } catch { return {}; }
   })(),
   monitoredWallets: [],
-  simulationBalance: (() => {
-    try {
-      const saved = localStorage.getItem('app_authoritative_paper_balance_v1') || localStorage.getItem('app_simulationBalance_v4');
-      if (saved && !isNaN(Number(saved)) && Number(saved) >= 0) return Number(saved);
-    } catch {}
-    return 10.0;
-  })(),
   jupiterLogs: [],
   sessionWallet: null,
 
@@ -132,12 +123,6 @@ export const useAppStore = create<AppState>((set) => ({
     localStorage.setItem('app_activePositions', JSON.stringify(newPositions));
     return { activePositions: newPositions };
   }),
-  setSimulationBalance: (fn) => {
-    const store = useBalanceStore.getState();
-    const updated = typeof fn === 'function' ? fn(store.paperSolBalance) : fn;
-    store.setPaperSolBalance(updated);
-    set({ simulationBalance: updated });
-  },
   setMySniperTrades: (fn) => set((state) => {
     const next = fn(state.mySniperTrades);
     localStorage.setItem('app_mySniperTrades', JSON.stringify(next));
