@@ -75,7 +75,6 @@ export const apiRateLimiter = rateLimit({
   max: config.API_RATE_LIMIT,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req: Request) => req.ip || 'unknown',
   handler: (req: Request, res: Response) => {
     securityLogger.warn({ ip: req.ip, path: req.path }, 'Rate limit exceeded');
     res.status(429).json({
@@ -91,7 +90,6 @@ export const swapRateLimiter = rateLimit({
   max: config.SWAP_RATE_LIMIT,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req: Request) => req.ip || 'unknown',
   handler: (req: Request, res: Response) => {
     securityLogger.warn({ ip: req.ip }, 'Swap rate limit exceeded');
     res.status(429).json({
