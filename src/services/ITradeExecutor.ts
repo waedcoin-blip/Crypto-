@@ -16,7 +16,7 @@ export interface SwapResult {
 }
 
 export interface ITradeExecutor {
-  readonly mode: 'real' | 'paper';
+  readonly mode: 'real' | 'paper' | 'devnet' | 'mainnet';
   readonly publicKey: string;
 
   getQuote(params: QuoteGetRequest): Promise<QuoteResponse>;

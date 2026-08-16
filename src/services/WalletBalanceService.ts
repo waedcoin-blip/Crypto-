@@ -1,112 +1,108 @@
 // src/services/WalletBalanceService.ts
-import { Connection, PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js';
+import { Connection, PublicKey } from '@solana/web3.js';
+import { getNetworkConfig, TradingNetwork } from '../config/network';
 import { useBalanceStore } from '../store/balanceStore';
 
-class WalletBalanceService {
-  private static instance: WalletBalanceService;
+const LAMPORTS_PER_SOL = 1_000_000_000;
+
+export class WalletBalanceService {
   private connection: Connection | null = null;
+  private network: TradingNetwork;
+  private timer: ReturnType<typeof setInterval> | null = null;
   private activeAddress: string | null = null;
-  private pollIntervalId: any = null;
-  private isFetching = false;
-  private lastFetchTime = 0;
 
-  private constructor() {}
-
-  public static getInstance(): WalletBalanceService {
-    if (!WalletBalanceService.instance) {
-      WalletBalanceService.instance = new WalletBalanceService();
-    }
-    return WalletBalanceService.instance;
+  constructor(network: TradingNetwork) {
+    this.network = network;
+    const config = getNetworkConfig(network);
+    this.connection = new Connection(config.rpcUrl, 'confirmed');
+    useBalanceStore.getState().setNetwork(network);
   }
 
-  /**
-   * Set or update the active connection and active address
-   */
-  public setContext(connection: Connection | null, address: string | null): void {
-    const addressChanged = this.activeAddress !== address;
-    const connectionChanged = this.connection !== connection;
+  public updateNetwork(network: TradingNetwork): void {
+    this.network = network;
+    const config = getNetworkConfig(network);
+    this.connection = new Connection(config.rpcUrl, 'confirmed');
+    useBalanceStore.getState().setNetwork(network);
+    if (this.activeAddress) {
+      void this.refresh(this.activeAddress);
+    }
+  }
 
-    this.connection = connection;
-    this.activeAddress = address;
+  async refresh(walletAddress?: string): Promise<number> {
+    const address = walletAddress || this.activeAddress;
+    if (!this.connection) {
+      throw new Error('Wallet balance connection unavailable');
+    }
+
+    if (!address) {
+      throw new Error('Wallet address is required');
+    }
 
     useBalanceStore.getState().setWalletAddress(address);
 
-    if (addressChanged || connectionChanged) {
-      if (!address || !connection) {
-        useBalanceStore.getState().setRealSolBalance(null, address);
-        useBalanceStore.getState().setStatus('idle');
-      } else {
-        this.refreshNow();
+    const publicKey = new PublicKey(address);
+    const lamports = await this.connection.getBalance(
+      publicKey,
+      'confirmed'
+    );
+
+    const sol = lamports / LAMPORTS_PER_SOL;
+
+    useBalanceStore.getState().setBalance({
+      solBalance: sol,
+    });
+
+    return sol;
+  }
+
+  start(walletAddress: string, intervalMs = 5_000): void {
+    this.activeAddress = walletAddress;
+    this.stop();
+
+    const refresh = async () => {
+      try {
+        await this.refresh(walletAddress);
+      } catch (error) {
+        console.error('[WalletBalanceService] refresh failed:', error);
+
+        useBalanceStore
+          .getState()
+          .setStatus(
+            'error',
+            error instanceof Error
+              ? error.message
+              : 'Balance refresh failed'
+          );
       }
+    };
+
+    void refresh();
+
+    this.timer = setInterval(
+      refresh,
+      intervalMs
+    );
+  }
+
+  stop(): void {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
     }
   }
 
-  /**
-   * Start polling for on-chain wallet balance
-   */
-  public startPolling(intervalMs: number = 8000): void {
-    this.stopPolling();
-    this.refreshNow();
-    this.pollIntervalId = setInterval(() => {
-      this.refreshNow();
-    }, intervalMs);
-  }
-
-  /**
-   * Stop polling
-   */
-  public stopPolling(): void {
-    if (this.pollIntervalId) {
-      clearInterval(this.pollIntervalId);
-      this.pollIntervalId = null;
-    }
-  }
-
-  /**
-   * Force an immediate on-chain balance fetch (e.g. after buy/sell execution)
-   */
-  public async refreshNow(): Promise<number | null> {
-    if (!this.connection || !this.activeAddress) {
-      useBalanceStore.getState().setRealSolBalance(null, this.activeAddress);
-      return null;
-    }
-
-    if (this.isFetching) {
-      return useBalanceStore.getState().realSolBalance;
-    }
-
-    this.isFetching = true;
-    const store = useBalanceStore.getState();
-    if (store.status === 'idle' || store.realSolBalance === null) {
-      store.setStatus('loading');
-    }
-
-    try {
-      const pubkey = new PublicKey(this.activeAddress);
-      const lamports = await this.connection.getBalance(pubkey, 'confirmed');
-      const solBalance = lamports / LAMPORTS_PER_SOL;
-
-      this.lastFetchTime = Date.now();
-      useBalanceStore.getState().setRealSolBalance(solBalance, this.activeAddress);
-      useBalanceStore.getState().setStatus('live', null);
-
-      return solBalance;
-    } catch (err: any) {
-      console.warn(`[WalletBalanceService] Failed to fetch live SOL balance for ${this.activeAddress}:`, err);
-      const isStale = this.lastFetchTime > 0 && (Date.now() - this.lastFetchTime < 60000);
-      useBalanceStore.getState().setStatus(isStale ? 'stale' : 'error', err?.message || 'Failed to fetch balance');
-      return useBalanceStore.getState().realSolBalance;
-    } finally {
-      this.isFetching = false;
-    }
-  }
-
-  /**
-   * Get current state snapshot
-   */
-  public getSnapshot() {
-    return useBalanceStore.getState();
+  destroy(): void {
+    this.stop();
+    this.connection = null;
   }
 }
 
-export const walletBalanceService = WalletBalanceService.getInstance();
+// Global active instance for unified background sync
+let activeServiceInstance: WalletBalanceService | null = null;
+
+export function getActiveWalletBalanceService(network: TradingNetwork = 'devnet'): WalletBalanceService {
+  if (!activeServiceInstance) {
+    activeServiceInstance = new WalletBalanceService(network);
+  }
+  return activeServiceInstance;
+}

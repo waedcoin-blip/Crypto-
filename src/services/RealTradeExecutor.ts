@@ -6,17 +6,22 @@ import { QuoteGetRequest, QuoteResponse, createJupiterApiClient } from '@jup-ag/
 import { Connection, LAMPORTS_PER_SOL, PublicKey, Keypair, VersionedTransaction } from '@solana/web3.js';
 import bs58 from 'bs58';
 import { DEFAULT_HELIUS_RPC } from '../constants/solana';
+import { getNetworkConfig, TradingNetwork } from '../config/network';
+import { NetworkGuard } from './NetworkGuard';
+import { assertExecutionEnvironment } from '../store/balanceStore';
 
 export interface RealTradeConfig {
+  network?: TradingNetwork;
   hybridEngine?: HybridExecutionEngine | null;
   batchEngine?: BatchExitEngine | null;
   verbose?: boolean;
 }
 
 export class RealTradeExecutor implements ITradeExecutor {
-  readonly mode = 'real' as const;
+  readonly mode: TradingNetwork = 'devnet';
   readonly publicKey: string;
 
+  private network: TradingNetwork;
   private hybrid?: HybridExecutionEngine | null;
   private batch?: BatchExitEngine | null;
   private jupiterApi: ReturnType<typeof createJupiterApiClient>;
@@ -29,15 +34,23 @@ export class RealTradeExecutor implements ITradeExecutor {
   private telemetryFailedSwaps = 0;
 
   constructor(config: RealTradeConfig) {
+    this.network = config.network || (localStorage.getItem('app_trading_network') as TradingNetwork) || 'devnet';
+    (this as any).mode = this.network;
     this.hybrid = config.hybridEngine || null;
     this.batch = config.batchEngine || null;
+    
+    const netConfig = getNetworkConfig(this.network);
+    const rpcUrl = this.network === 'devnet' 
+      ? netConfig.rpcUrl 
+      : (localStorage.getItem('juipter_auto_rpcUrl') || netConfig.rpcUrl || DEFAULT_HELIUS_RPC);
+
+    NetworkGuard.assertNetwork(this.network, rpcUrl);
+    assertExecutionEnvironment(this.network, rpcUrl);
+
     this.jupiterApi = createJupiterApiClient({
       basePath: localStorage.getItem('juipter_auto_jupiterRpcUrl') || 'https://api.jup.ag/swap/v1'
     });
-    this.connection = new Connection(
-      localStorage.getItem('juipter_auto_rpcUrl') || DEFAULT_HELIUS_RPC,
-      'confirmed'
-    );
+    this.connection = new Connection(rpcUrl, 'confirmed');
 
     if (this.hybrid && this.hybrid.wallet) {
       this.publicKey = this.hybrid.wallet.publicKey.toBase58();

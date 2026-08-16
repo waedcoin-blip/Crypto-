@@ -11,33 +11,32 @@ import {
   Check, 
   RefreshCw, 
   LogOut, 
-  Zap, 
+  Flame, 
+  Globe,
   ShieldCheck, 
   ChevronDown,
   ExternalLink,
-  RotateCcw,
-  Sparkles
+  Sparkles,
+  Shield
 } from 'lucide-react';
-import { useTradeMode } from '../context/TradeModeContext';
 import { useAppStore } from '../store/appStore';
 import { useBalanceStore } from '../store/balanceStore';
-import { walletBalanceService } from '../services/WalletBalanceService';
+import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
+import { WalletBalanceService } from '../services/WalletBalanceService';
 import { cn } from '../lib/utils';
 
 export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className }) => {
   const { publicKey, wallet, disconnect } = useWallet();
   const { connection } = useConnection();
-  const { mode, setMode } = useTradeMode();
-  const { sessionWallet, setSessionWallet, isLiveTrading, setIsLiveTrading } = useAppStore();
+  const { sessionWallet, setSessionWallet } = useAppStore();
+  const { network, setNetwork, switching } = useTradingEnvironmentStore();
 
   const {
-    realSolBalance,
-    paperSolBalance,
+    solBalance,
     availableSolBalance,
     reservedSol,
-    safetyBufferSol,
     status,
-    resetPaperBalance
+    lastUpdated
   } = useBalanceStore();
 
   const [copied, setCopied] = useState(false);
@@ -48,23 +47,30 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
   const activeAddress = publicKey ? publicKey.toBase58() : sessionWallet ? sessionWallet.publicKey.toBase58() : null;
   const isSessionActive = !publicKey && !!sessionWallet;
 
-  // Keep walletBalanceService updated with latest connection and active address
+  // WalletBalanceService polling for active address
   useEffect(() => {
-    walletBalanceService.setContext(connection, activeAddress);
-    if (connection && activeAddress) {
-      walletBalanceService.startPolling(8000);
-    } else {
-      walletBalanceService.stopPolling();
+    if (!activeAddress) {
+      useBalanceStore.getState().reset();
+      return;
     }
+
+    const service = new WalletBalanceService(network);
+    service.start(activeAddress, 5000);
+
     return () => {
-      walletBalanceService.stopPolling();
+      service.destroy();
     };
-  }, [connection, activeAddress]);
+  }, [network, activeAddress]);
 
   const handleManualRefresh = async () => {
+    if (!activeAddress) return;
     setIsRefreshing(true);
     try {
-      await walletBalanceService.refreshNow();
+      const service = new WalletBalanceService(network);
+      await service.refresh(activeAddress);
+      service.destroy();
+    } catch (e) {
+      console.warn('Manual balance refresh error:', e);
     } finally {
       setTimeout(() => setIsRefreshing(false), 300);
     }
@@ -86,44 +92,58 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
   const handleDisconnectSession = () => {
     sessionStorage.removeItem('matrix_session_key');
     setSessionWallet(null);
-    walletBalanceService.setContext(connection, null);
+    useBalanceStore.getState().reset();
   };
 
-  const handleModeToggle = (newMode: 'paper' | 'real') => {
-    setMode(newMode);
-    setIsLiveTrading(newMode === 'real');
+  const handleNetworkSwitch = async (target: 'devnet' | 'mainnet') => {
+    if (target === network) return;
+    if (target === 'mainnet') {
+      const confirmed = window.confirm(
+        '⚠️ WARNING: Mainnet uses real SOL and real on-chain funds with actual financial risk.\n\nAre you sure you want to switch to Solana Mainnet-Beta?'
+      );
+      if (!confirmed) return;
+    }
+    await setNetwork(target);
   };
 
-  const displayHeaderBalance = isLiveTrading
-    ? (realSolBalance !== null ? `${realSolBalance.toFixed(3)} SOL` : '--- SOL')
-    : `${paperSolBalance.toFixed(3)} SOL`;
+  const isDevnet = network === 'devnet';
+  const displayHeaderBalance = solBalance !== null ? `${solBalance.toFixed(3)} SOL` : '--- SOL';
 
   return (
     <div className={cn("flex flex-wrap items-center gap-2", className)}>
-      {/* Trade Mode Pill (Paper vs Live) */}
+      {/* Network Selector Pill (Devnet vs Mainnet) */}
       <div className="flex items-center bg-slate-950/90 border border-slate-800/90 rounded-xl p-1 shadow-md">
         <button
-          onClick={() => handleModeToggle('paper')}
+          id="toggle-network-devnet"
+          type="button"
+          disabled={switching}
+          onClick={() => handleNetworkSwitch('devnet')}
           className={cn(
-            "px-2.5 py-1 rounded-lg text-[10px] font-black tracking-wider uppercase transition-all cursor-pointer",
-            mode === 'paper' && !isLiveTrading
-              ? "bg-slate-200 text-slate-950 shadow-sm"
+            "flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-black tracking-wider uppercase transition-all cursor-pointer",
+            isDevnet
+              ? "bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow-sm"
               : "text-slate-400 hover:text-white"
           )}
+          title="Devnet Cluster (Test Tokens)"
         >
-          Paper
+          <Globe className="w-3 h-3" />
+          <span>Devnet</span>
         </button>
         <button
-          onClick={() => handleModeToggle('real')}
+          id="toggle-network-mainnet"
+          type="button"
+          disabled={switching}
+          onClick={() => handleNetworkSwitch('mainnet')}
           className={cn(
-            "px-2.5 py-1 rounded-lg text-[10px] font-black tracking-wider uppercase transition-all cursor-pointer flex items-center gap-1",
-            mode === 'real' || isLiveTrading
-              ? "bg-rose-600 text-white shadow-sm shadow-rose-900/50"
-              : "text-slate-400 hover:text-rose-400"
+            "flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-black tracking-wider uppercase transition-all cursor-pointer",
+            !isDevnet
+              ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-sm"
+              : "text-slate-400 hover:text-emerald-400"
           )}
+          title="Solana Mainnet-Beta"
         >
-          <Zap className="w-2.5 h-2.5 fill-current" />
-          Live
+          <Flame className="w-3 h-3 fill-current" />
+          <span>Mainnet</span>
         </button>
       </div>
 
@@ -131,23 +151,25 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
       {activeAddress ? (
         <div className="relative">
           <button
+            id="wallet-dropdown-trigger"
+            type="button"
             onClick={() => setShowDropdown(!showDropdown)}
             className={cn(
               "flex items-center gap-2 px-3 py-1.5 rounded-xl border transition-all cursor-pointer text-xs font-mono shadow-md",
-              isLiveTrading 
-                ? "bg-slate-900/90 border-emerald-500/40 hover:border-emerald-400/80 text-white" 
-                : "bg-slate-900/80 border-indigo-500/30 hover:border-indigo-400/60 text-slate-200"
+              isDevnet 
+                ? "bg-slate-900/90 border-cyan-500/40 hover:border-cyan-400/80 text-white" 
+                : "bg-slate-900/90 border-emerald-500/40 hover:border-emerald-400/80 text-white"
             )}
           >
             {/* Status Dot */}
             <span className="relative flex h-2 w-2">
               <span className={cn(
                 "animate-ping absolute inline-flex h-full w-full rounded-full opacity-75",
-                isLiveTrading ? "bg-emerald-400" : "bg-indigo-400"
+                isDevnet ? "bg-cyan-400" : "bg-emerald-400"
               )}></span>
               <span className={cn(
                 "relative inline-flex rounded-full h-2 w-2",
-                isLiveTrading ? "bg-emerald-500" : "bg-indigo-500"
+                isDevnet ? "bg-cyan-500" : "bg-emerald-500"
               )}></span>
             </span>
 
@@ -155,7 +177,7 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
             {isSessionActive ? (
               <Key className="w-3.5 h-3.5 text-amber-400" />
             ) : (
-              <Wallet className="w-3.5 h-3.5 text-indigo-400" />
+              <Wallet className="w-3.5 h-3.5 text-cyan-400" />
             )}
 
             {/* Address */}
@@ -166,12 +188,15 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
             {/* Header Balance */}
             <div className={cn(
               "flex items-center gap-1 pl-1.5 border-l border-slate-700/60 text-[11px] font-sans font-bold",
-              isLiveTrading ? "text-emerald-400" : "text-amber-400"
+              isDevnet ? "text-cyan-300" : "text-emerald-400"
             )}>
               <span>{displayHeaderBalance}</span>
-              {!isLiveTrading && (
-                <span className="text-[9px] font-mono px-1 py-0.2 bg-amber-500/20 text-amber-300 rounded">SIM</span>
-              )}
+              <span className={cn(
+                "text-[9px] font-mono px-1 py-0.2 rounded uppercase",
+                isDevnet ? "bg-cyan-500/20 text-cyan-300" : "bg-emerald-500/20 text-emerald-300"
+              )}>
+                {network}
+              </span>
             </div>
 
             <ChevronDown className="w-3 h-3 text-slate-400 ml-0.5" />
@@ -182,111 +207,101 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
             <div className="absolute right-0 mt-2 w-80 rounded-2xl border border-slate-800 bg-slate-950/98 p-4 shadow-2xl backdrop-blur-xl z-50 text-slate-200 text-xs">
               <div className="flex items-center justify-between pb-3 border-b border-slate-800/80">
                 <div className="flex items-center gap-2">
-                  <ShieldCheck className={cn("w-4 h-4", isLiveTrading ? "text-emerald-400" : "text-amber-400")} />
+                  <ShieldCheck className={cn("w-4 h-4", isDevnet ? "text-cyan-400" : "text-emerald-400")} />
                   <span className="font-bold text-slate-100">
                     {isSessionActive ? 'Session Keypair' : wallet?.adapter.name || 'Browser Wallet'}
                   </span>
                 </div>
                 <button
+                  type="button"
                   onClick={() => setShowDropdown(false)}
-                  className="text-slate-500 hover:text-white"
+                  className="text-slate-500 hover:text-white cursor-pointer"
                 >
                   ✕
                 </button>
               </div>
 
-              {/* Dual Balance Cards: REAL vs PAPER */}
+              {/* On-Chain Balance Card */}
               <div className="my-3 space-y-2">
-                {/* 1. Real Wallet Card */}
                 <div className={cn(
                   "p-3 rounded-xl border transition-all",
-                  isLiveTrading 
-                    ? "bg-emerald-950/20 border-emerald-500/40" 
-                    : "bg-slate-900/70 border-slate-800/80 opacity-90"
+                  isDevnet 
+                    ? "bg-cyan-950/20 border-cyan-500/40" 
+                    : "bg-emerald-950/20 border-emerald-500/40"
                 )}>
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-1.5">
-                      <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Real Wallet (On-Chain)</span>
-                      {isLiveTrading && (
-                        <span className="bg-emerald-500/20 text-emerald-400 text-[8px] font-black px-1.5 py-0.5 rounded">ACTIVE</span>
-                      )}
+                      <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
+                        {isDevnet ? 'Devnet On-Chain Balance' : 'Mainnet On-Chain Balance'}
+                      </span>
+                      <span className={cn(
+                        "text-[8px] font-black px-1.5 py-0.5 rounded uppercase",
+                        isDevnet ? "bg-cyan-500/20 text-cyan-300" : "bg-emerald-500/20 text-emerald-300"
+                      )}>
+                        {network}
+                      </span>
                     </div>
                     <button
+                      type="button"
                       onClick={handleManualRefresh}
                       disabled={isRefreshing || status === 'loading'}
                       className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition-all cursor-pointer"
                       title="Fetch on-chain balance"
                     >
-                      <RefreshCw className={cn("w-3 h-3", (isRefreshing || status === 'loading') && "animate-spin text-emerald-400")} />
+                      <RefreshCw className={cn("w-3 h-3", (isRefreshing || status === 'loading') && "animate-spin text-cyan-400")} />
                     </button>
                   </div>
                   <div className="flex items-baseline justify-between mt-1">
-                    <span className="text-base font-black text-emerald-400 font-mono">
-                      {realSolBalance !== null ? `${realSolBalance.toFixed(4)} SOL` : '0.0000 SOL'}
+                    <span className={cn(
+                      "text-base font-black font-mono",
+                      isDevnet ? "text-cyan-300" : "text-emerald-400"
+                    )}>
+                      {solBalance !== null ? `${solBalance.toFixed(4)} SOL` : '0.0000 SOL'}
                     </span>
                     <span className="text-[10px] text-slate-400 font-mono">
                       {status === 'live' ? 'Synced RPC' : status === 'loading' ? 'Fetching...' : status === 'stale' ? 'Stale' : 'Idle'}
                     </span>
                   </div>
-                  {isLiveTrading && (
-                    <div className="mt-1.5 pt-1.5 border-t border-slate-800/60 flex items-center justify-between text-[10px] text-slate-400 font-mono">
-                      <span>Reserve Buffer:</span>
-                      <span className="text-slate-300">{(reservedSol + safetyBufferSol).toFixed(4)} SOL</span>
-                    </div>
-                  )}
-                </div>
-
-                {/* 2. Paper Trading Card */}
-                <div className={cn(
-                  "p-3 rounded-xl border transition-all",
-                  !isLiveTrading 
-                    ? "bg-amber-950/20 border-amber-500/40" 
-                    : "bg-slate-900/70 border-slate-800/80 opacity-90"
-                )}>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Paper Trading (Simulated)</span>
-                      {!isLiveTrading && (
-                        <span className="bg-amber-500/20 text-amber-400 text-[8px] font-black px-1.5 py-0.5 rounded">ACTIVE</span>
-                      )}
-                    </div>
-                    <button
-                      onClick={() => resetPaperBalance(10.0)}
-                      className="flex items-center gap-1 text-[9px] font-bold text-slate-400 hover:text-amber-300 transition-all cursor-pointer px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700"
-                      title="Reset Paper Balance to 10 SOL"
-                    >
-                      <RotateCcw className="w-2.5 h-2.5" />
-                      <span>Reset 10</span>
-                    </button>
-                  </div>
-                  <div className="flex items-baseline justify-between mt-1">
-                    <span className="text-base font-black text-amber-400 font-mono">
-                      {paperSolBalance.toFixed(4)} SOL
-                    </span>
-                    <span className="text-[10px] text-amber-500/80 font-bold font-mono">
-                      Virtual Ledger
-                    </span>
+                  <div className="mt-1.5 pt-1.5 border-t border-slate-800/60 flex items-center justify-between text-[10px] text-slate-400 font-mono">
+                    <span>Reserved Gas Buffer:</span>
+                    <span className="text-slate-300">{reservedSol.toFixed(4)} SOL</span>
                   </div>
                 </div>
 
-                {/* 3. Trading Available Summary */}
+                {/* Trading Available Summary */}
                 <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-between">
                   <div className="flex items-center gap-1.5">
-                    <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+                    <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
                     <div>
                       <div className="text-[10px] uppercase font-bold text-slate-300">Trading Available Balance</div>
                       <div className="text-[9px] text-slate-500">
-                        {isLiveTrading ? 'Real - Gas Reserve - Buffer' : 'Paper simulated funds'}
+                        Total On-Chain SOL - Reserved Buffer
                       </div>
                     </div>
                   </div>
                   <span className={cn(
                     "text-sm font-black font-mono",
-                    isLiveTrading ? "text-emerald-300" : "text-amber-300"
+                    isDevnet ? "text-cyan-300" : "text-emerald-300"
                   )}>
                     {availableSolBalance !== null ? `${availableSolBalance.toFixed(4)} SOL` : '0.0000 SOL'}
                   </span>
                 </div>
+
+                {isDevnet && (
+                  <div className="p-2 rounded-lg bg-cyan-950/30 border border-cyan-500/20 flex items-center justify-between text-[10px] text-cyan-400">
+                    <span className="flex items-center gap-1">
+                      <Shield className="w-3 h-3" /> Need free Devnet SOL?
+                    </span>
+                    <a
+                      href="https://faucet.solana.com"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="underline font-bold hover:text-cyan-200"
+                    >
+                      Devnet Faucet ↗
+                    </a>
+                  </div>
+                )}
               </div>
 
               {/* Address Row */}
@@ -296,6 +311,7 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
                   <span className="truncate pr-2">{activeAddress}</span>
                   <div className="flex items-center gap-1.5">
                     <button
+                      type="button"
                       onClick={() => copyToClipboard(activeAddress)}
                       className="text-slate-400 hover:text-white p-1 cursor-pointer"
                       title="Copy Address"
@@ -303,10 +319,10 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
                       {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
                     </button>
                     <a
-                      href={`https://solscan.io/account/${activeAddress}`}
+                      href={isDevnet ? `https://solscan.io/account/${activeAddress}?cluster=devnet` : `https://solscan.io/account/${activeAddress}`}
                       target="_blank"
                       rel="noreferrer"
-                      className="text-slate-400 hover:text-indigo-400 p-1 cursor-pointer"
+                      className="text-slate-400 hover:text-cyan-400 p-1 cursor-pointer"
                       title="View on Solscan"
                     >
                       <ExternalLink className="w-3.5 h-3.5" />
@@ -319,6 +335,7 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
               <div className="pt-2 border-t border-slate-800/80 space-y-2">
                 {publicKey ? (
                   <button
+                    type="button"
                     onClick={() => {
                       disconnect();
                       setShowDropdown(false);
@@ -329,6 +346,7 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
                   </button>
                 ) : isSessionActive ? (
                   <button
+                    type="button"
                     onClick={() => {
                       handleDisconnectSession();
                       setShowDropdown(false);
@@ -345,11 +363,12 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
       ) : (
         <div className="flex items-center gap-2">
           {/* Custom Wallet Multi Button Container */}
-          <div className="wallet-adapter-button-custom border border-indigo-500/40 rounded-xl overflow-hidden shadow-lg shadow-indigo-950/30">
-            <WalletMultiButton className="!bg-indigo-600 hover:!bg-indigo-500 !text-white !font-bold !text-xs !h-8 !px-3.5 !rounded-xl transition-all" />
+          <div className="wallet-adapter-button-custom border border-cyan-500/40 rounded-xl overflow-hidden shadow-lg shadow-cyan-950/30">
+            <WalletMultiButton className="!bg-cyan-600 hover:!bg-cyan-500 !text-white !font-bold !text-xs !h-8 !px-3.5 !rounded-xl transition-all" />
           </div>
 
           <button
+            type="button"
             onClick={handleGenerateSessionWallet}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-amber-500/30 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 font-bold text-xs transition-all cursor-pointer"
             title="Generate local keypair for auto-trading"
@@ -362,4 +381,3 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
     </div>
   );
 };
-

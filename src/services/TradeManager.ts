@@ -1,39 +1,32 @@
 // src/services/TradeManager.ts
 import { ITradeExecutor, SwapResult, ExecutorTelemetry } from './ITradeExecutor';
-import { PaperTradeExecutor, PaperTradeConfig } from './PaperTradeExecutor';
 import { RealTradeExecutor, RealTradeConfig } from './RealTradeExecutor';
 import { QuoteGetRequest, QuoteResponse } from '@jup-ag/api';
+import { TradingNetwork } from '../config/network';
 
-export type TradeMode = 'real' | 'paper';
+export type TradeMode = 'devnet' | 'mainnet' | 'real' | 'paper';
 
 export class TradeManager {
   private executor: ITradeExecutor;
   private _mode: TradeMode;
-  private paperConfig: PaperTradeConfig;
   private realConfig: RealTradeConfig;
 
   constructor(options: {
     mode: TradeMode;
-    paperConfig: PaperTradeConfig;
-    realConfig: RealTradeConfig;
+    realConfig?: RealTradeConfig;
+    paperConfig?: any;
   }) {
     this._mode = options.mode;
-    this.paperConfig = options.paperConfig;
-    this.realConfig = options.realConfig;
+    this.realConfig = options.realConfig || {};
     this.executor = this.createExecutor();
   }
 
   private createExecutor(): ITradeExecutor {
-    if (this._mode === 'paper') {
-      const saved = typeof window !== 'undefined'
-        ? localStorage.getItem('paper_state') : null;
-      if (saved) {
-        try { return PaperTradeExecutor.deserialize(this.paperConfig, saved); }
-        catch { /* fall through */ }
-      }
-      return new PaperTradeExecutor(this.paperConfig);
-    }
-    return new RealTradeExecutor(this.realConfig);
+    const net: TradingNetwork = (this._mode === 'mainnet' || this._mode === 'real') ? 'mainnet' : 'devnet';
+    return new RealTradeExecutor({
+      ...this.realConfig,
+      network: net,
+    });
   }
 
   switchMode(mode: TradeMode) {
@@ -47,9 +40,7 @@ export class TradeManager {
   get mode() { return this._mode; }
 
   save() {
-    if (this.executor instanceof PaperTradeExecutor) {
-      localStorage.setItem('paper_state', this.executor.serialize());
-    }
+    // No-op for real on-chain execution
   }
 
   // Passthrough methods

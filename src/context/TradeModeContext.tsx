@@ -3,6 +3,8 @@ import React, { createContext, useContext, useState, useCallback, useEffect } fr
 import { TradeManager, TradeMode } from '../services/TradeManager';
 import { useAppStore } from '../store/appStore';
 import { useBalanceStore } from '../store/balanceStore';
+import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
+import { TradingNetwork } from '../config/network';
 
 const Context = createContext<{
   mode: TradeMode;
@@ -21,27 +23,22 @@ export const TradeModeProvider: React.FC<{
       manager.switchMode(m);
     }
     setModeState(m);
+    const network: TradingNetwork = (m === 'mainnet' || m === 'real') ? 'mainnet' : 'devnet';
     localStorage.setItem('trade_mode', m);
-    localStorage.setItem('is_live_trading', String(m === 'real'));
-    useAppStore.getState().setIsLiveTrading(m === 'real');
-    useBalanceStore.getState().setTradeMode(m);
+    localStorage.setItem('app_trading_network', network);
+    localStorage.setItem('is_live_trading', String(network === 'mainnet'));
+    useAppStore.getState().setIsLiveTrading(network === 'mainnet');
+    useBalanceStore.getState().setNetwork(network);
+    void useTradingEnvironmentStore.getState().setNetwork(network);
   }, [manager]);
 
   useEffect(() => {
     // Sync initial state on mount
-    const savedMode = localStorage.getItem('trade_mode') as TradeMode;
-    if (savedMode && (savedMode === 'real' || savedMode === 'paper')) {
-      if (savedMode !== mode) {
-        setMode(savedMode);
-      }
+    const savedMode = (localStorage.getItem('trade_mode') as TradeMode) || 'devnet';
+    if (savedMode !== mode) {
+      setMode(savedMode);
     }
   }, []);
-
-  useEffect(() => {
-    if (mode !== 'paper') return;
-    const id = setInterval(() => manager?.save(), 10000);
-    return () => clearInterval(id);
-  }, [mode, manager]);
 
   return (
     <Context.Provider value={{ mode, setMode, manager }}>
@@ -53,18 +50,20 @@ export const TradeModeProvider: React.FC<{
 export const useTradeMode = () => {
   const ctx = useContext(Context);
   if (!ctx) {
-    const savedMode = (localStorage.getItem('trade_mode') as TradeMode) || 'paper';
+    const savedMode = (localStorage.getItem('trade_mode') as TradeMode) || 'devnet';
     return {
       mode: savedMode,
       setMode: (m: TradeMode) => {
+        const network: TradingNetwork = (m === 'mainnet' || m === 'real') ? 'mainnet' : 'devnet';
         localStorage.setItem('trade_mode', m);
-        localStorage.setItem('is_live_trading', String(m === 'real'));
-        useAppStore.getState().setIsLiveTrading(m === 'real');
-        useBalanceStore.getState().setTradeMode(m);
+        localStorage.setItem('app_trading_network', network);
+        localStorage.setItem('is_live_trading', String(network === 'mainnet'));
+        useAppStore.getState().setIsLiveTrading(network === 'mainnet');
+        useBalanceStore.getState().setNetwork(network);
+        void useTradingEnvironmentStore.getState().setNetwork(network);
       },
       manager: null as unknown as TradeManager,
     };
   }
   return ctx;
 };
-
