@@ -1,17 +1,12 @@
-// server/services/criteriaService.ts
-
-import fs from 'fs';
-import path from 'path';
 import { EventEmitter } from 'events';
 import { z } from 'zod';
 import { logger } from '../utils/logger.js';
+import { adminAuth, FIREBASE_PROJECT_ID, FIRESTORE_DATABASE_ID } from '../utils/firebaseAdmin.js';
+import { toFirestoreDocument, parseFirestoreDocument } from '../utils/firestoreConverter.js';
 
 export interface CriteriaConfig {
-  // Trade Size
   buyAmountSol: number;
   simulationBuyAmountSol?: number;
-
-  // Hardened Entry Scanner Criteria
   hardenedMcapMinPump: number;
   hardenedMcapMinRaydium: number;
   hardenedMcapMax: number;
@@ -48,8 +43,6 @@ export interface CriteriaConfig {
   tradeUnknown?: boolean;
   hardenedMinProfit5m?: number;
   maxRebuyTimes?: number;
-
-  // Exit & Position Limits
   minTakeProfit?: number;
   maxTakeProfit?: number;
   bondingCurveTakeProfit?: number;
@@ -61,15 +54,11 @@ export interface CriteriaConfig {
   moonbagStrategy?: boolean;
   slippage?: number;
   activePreset?: string;
-
-  // Connection & Auth
   rpcUrl?: string;
   rpcUrl2?: string;
   customWsUrl?: string;
   apiKey?: string;
   jupiterRpcUrl?: string;
-
-  // Extra generic keys
   [key: string]: any;
 }
 
@@ -196,29 +185,16 @@ export const criteriaSchema = z.object({
   userId: z.string().optional(),
   source: z.string().optional(),
   updatedAt: z.string().optional(),
+  version: z.coerce.number().optional(),
 }).passthrough();
 
 export class CriteriaService extends EventEmitter {
   private static instance: CriteriaService;
-  private state: AuthoritativeCriteriaState;
-  private filePath: string;
+  // User ID -> Criteria State
+  private activeUsers = new Map<string, AuthoritativeCriteriaState>();
 
   private constructor() {
     super();
-    // Default storage directory at data/criteria.json
-    const storageDir = path.join(process.cwd(), 'data');
-    this.filePath = path.join(storageDir, 'criteria.json');
-
-    // Ensure data directory exists
-    try {
-      if (!fs.existsSync(storageDir)) {
-        fs.mkdirSync(storageDir, { recursive: true });
-      }
-    } catch (e) {
-      logger.warn({ err: e }, 'Could not create data directory, using in-memory store');
-    }
-
-    this.state = this.loadInitialState();
   }
 
   public static getInstance(): CriteriaService {
@@ -228,105 +204,143 @@ export class CriteriaService extends EventEmitter {
     return CriteriaService.instance;
   }
 
-  private loadInitialState(): AuthoritativeCriteriaState {
-    try {
-      if (fs.existsSync(this.filePath)) {
-        const raw = fs.readFileSync(this.filePath, 'utf-8');
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed.version === 'number' && parsed.criteria) {
-          logger.info({ version: parsed.version, updatedAt: parsed.updatedAt }, 'Loaded persisted criteria from disk');
-          return {
-            version: parsed.version,
-            updatedAt: parsed.updatedAt || new Date().toISOString(),
-            source: parsed.source || 'persisted_disk_state',
-            userId: parsed.userId,
-            criteria: { ...DEFAULT_CRITERIA, ...parsed.criteria }
-          };
-        }
+  private getFirestoreUrl(userId: string) {
+    return `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/${FIRESTORE_DATABASE_ID}/documents/settings/${userId}`;
+  }
+
+  public async fetchCriteriaFromFirestore(userId: string, idToken: string): Promise<AuthoritativeCriteriaState> {
+    const url = this.getFirestoreUrl(userId);
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${idToken}`
       }
-    } catch (err) {
-      logger.warn({ err }, 'Failed reading persisted criteria, falling back to defaults');
+    });
+
+    let state: AuthoritativeCriteriaState;
+    if (res.ok) {
+      const doc = await res.json();
+      const data = parseFirestoreDocument(doc);
+      state = {
+        version: data.version || 1,
+        updatedAt: data.updatedAt || new Date().toISOString(),
+        source: data.source || 'persisted_disk_state',
+        userId,
+        criteria: { ...DEFAULT_CRITERIA, ...data }
+      };
+    } else {
+      // Not found or permission denied -> fallback to default
+      state = {
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        source: 'initial_system_defaults',
+        userId,
+        criteria: { ...DEFAULT_CRITERIA }
+      };
     }
 
-    const initialState: AuthoritativeCriteriaState = {
-      version: 1,
-      updatedAt: new Date().toISOString(),
-      source: 'initial_system_defaults',
-      criteria: { ...DEFAULT_CRITERIA }
-    };
-
-    this.persistToDisk(initialState);
-    return initialState;
+    this.activeUsers.set(userId, state);
+    return state;
   }
 
-  private persistToDisk(state: AuthoritativeCriteriaState): void {
-    try {
-      const dir = path.dirname(this.filePath);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-      fs.writeFileSync(this.filePath, JSON.stringify(state, null, 2), 'utf-8');
-    } catch (err) {
-      logger.error({ err }, 'Failed to persist criteria to disk');
+  public async persistToFirestore(userId: string, idToken: string, state: AuthoritativeCriteriaState): Promise<void> {
+    const url = this.getFirestoreUrl(userId);
+    const docData = {
+      ...state.criteria,
+      version: state.version,
+      updatedAt: state.updatedAt,
+      source: state.source,
+      userId: state.userId
+    };
+    
+    const docPayload = toFirestoreDocument(docData);
+    
+    // We use PATCH without updateMask to replace the document fields (merge semantics require updateMask, but we are sending the full document anyway, wait, no, PATCH without updateMask replaces the document. We have the full document in state.criteria. Actually let's just use PATCH and let it overwrite. Wait, PATCH with no updateMask only updates the fields provided in the body, which is what we want! No, actually to merge we need updateMask. Since we send full merged criteria, we don't need updateMask.)
+    const res = await fetch(url, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${idToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(docPayload)
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      logger.error({ err, userId }, 'Failed to persist criteria to Firestore');
+      throw new Error('Failed to persist criteria to Firestore: ' + res.status);
     }
   }
 
-  public getCriteriaState(): AuthoritativeCriteriaState {
-    return {
-      version: this.state.version,
-      updatedAt: this.state.updatedAt,
-      source: this.state.source,
-      userId: this.state.userId,
-      criteria: { ...this.state.criteria }
-    };
+  public getCriteriaState(userId: string): AuthoritativeCriteriaState {
+    const state = this.activeUsers.get(userId);
+    if (!state) {
+      // In-memory fallback if not loaded yet
+      return {
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        source: 'initial_system_defaults',
+        userId,
+        criteria: { ...DEFAULT_CRITERIA }
+      };
+    }
+    return state;
   }
 
-  public updateCriteria(
+  public async updateCriteria(
+    idToken: string,
     inputPayload: unknown,
-    options?: { source?: string; userId?: string; expectedVersion?: number }
-  ): AuthoritativeCriteriaState {
-    // 1. Validate payload
+    options?: { expectedVersion?: number }
+  ): Promise<AuthoritativeCriteriaState> {
+    // 1. Verify token
+    const decodedToken = await adminAuth.verifyIdToken(idToken);
+    const userId = decodedToken.uid;
+
+    // 2. Fetch existing state from Firestore (single source of truth)
+    const currentState = await this.fetchCriteriaFromFirestore(userId, idToken);
+
+    // 3. Verify Version
+    if (options?.expectedVersion !== undefined) {
+      if (options.expectedVersion !== currentState.version) {
+        throw new Error(`Conflict: Expected version ${options.expectedVersion} but found ${currentState.version}.`);
+      }
+    }
+
+    // 4. Validate partial payload
     const validated = criteriaSchema.parse(inputPayload);
+    const { userId: payloadUserId, source: payloadSource, updatedAt: _clientUpdatedAt, version: _clientVersion, ...criteriaUpdates } = validated;
 
-    // Extract metadata fields from payload if present
-    const { userId: payloadUserId, source: payloadSource, updatedAt: _clientUpdatedAt, ...criteriaUpdates } = validated;
-
-    const source = options?.source || payloadSource || 'live_user_update';
-    const userId = options?.userId || payloadUserId || this.state.userId;
-
-    // 2. Increment version and update state atomically
-    const newVersion = this.state.version + 1;
-    const newUpdatedAt = new Date().toISOString();
-
+    // 5. Merge only changed fields
     const mergedCriteria: CriteriaConfig = {
-      ...this.state.criteria,
+      ...currentState.criteria,
       ...criteriaUpdates
     };
 
+    const newVersion = currentState.version + 1;
     const newState: AuthoritativeCriteriaState = {
       version: newVersion,
-      updatedAt: newUpdatedAt,
-      source,
+      updatedAt: new Date().toISOString(),
+      source: payloadSource || 'live_user_update',
       userId,
       criteria: mergedCriteria
     };
 
-    this.state = newState;
+    // 6. Persist atomically back to Firestore
+    await this.persistToFirestore(userId, idToken, newState);
 
-    // 3. Persist to disk
-    this.persistToDisk(newState);
+    // 7. Update in-memory map
+    this.activeUsers.set(userId, newState);
+
+    // 8. Emit live update event for attached engine listeners
+    this.emit('criteriaUpdated', newState);
 
     logger.info({
       version: newVersion,
-      source,
-      userId: userId ? `${userId.slice(0, 6)}...` : undefined,
+      source: newState.source,
+      userId: `${userId.slice(0, 6)}...`,
       updatedKeysCount: Object.keys(criteriaUpdates).length
     }, 'Authoritative criteria updated and persisted');
 
-    // 4. Emit live update event for attached engine listeners
-    this.emit('criteriaUpdated', newState);
-
-    return this.getCriteriaState();
+    return newState;
   }
 }
 

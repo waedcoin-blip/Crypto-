@@ -41,6 +41,7 @@ export class TokenScanner {
     this.onTokenFound = onTokenFound;
   }
 
+  getCriteria() { return this.criteria; }
   updateCriteria(criteria: Partial<TokenCriteria>) {
     this.criteria = { ...this.criteria, ...criteria };
   }

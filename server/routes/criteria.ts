@@ -1,12 +1,32 @@
 import { Router } from 'express';
 import { asyncHandler } from '../middleware/errorHandler.js';
 import { criteriaService } from '../services/criteriaService.js';
+import { adminAuth } from '../utils/firebaseAdmin.js';
 
 const router = Router();
 
-// GET /api/criteria or /api/config
-router.get('/', (req, res) => {
-  const state = criteriaService.getCriteriaState();
+// Middleware to extract and verify ID token
+const requireAuth = asyncHandler(async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    res.status(401).json({ error: 'Missing or invalid Authorization header' });
+    return;
+  }
+  const idToken = authHeader.split('Bearer ')[1];
+  try {
+    const decoded = await adminAuth.verifyIdToken(idToken);
+    (req as any).user = decoded;
+    (req as any).idToken = idToken;
+    next();
+  } catch (err) {
+    res.status(401).json({ error: 'Unauthorized: Invalid ID token' });
+  }
+});
+
+// GET /api/criteria
+router.get('/', requireAuth, asyncHandler(async (req, res) => {
+  // Fetch latest from Firestore to populate cache, or return cached
+  const state = await criteriaService.fetchCriteriaFromFirestore((req as any).user.uid, (req as any).idToken);
   res.json({
     status: 'success',
     version: state.version,
@@ -16,33 +36,43 @@ router.get('/', (req, res) => {
     criteria: state.criteria,
     timestamp: Date.now(),
   });
-});
-
-// PUT /api/criteria or /api/config
-router.put('/', asyncHandler(async (req, res) => {
-  const updatedState = criteriaService.updateCriteria(req.body, {
-    source: req.body?.source || 'live_user_update',
-    userId: req.body?.userId,
-  });
-
-  res.json({
-    status: 'success',
-    message: 'Criteria validated, persisted to storage, and applied to backend engine',
-    version: updatedState.version,
-    updatedAt: updatedState.updatedAt,
-    source: updatedState.source,
-    criteria: updatedState.criteria,
-    timestamp: Date.now(),
-  });
 }));
 
-// POST /api/criteria or /api/config
-router.post('/', asyncHandler(async (req, res) => {
-  const updatedState = criteriaService.updateCriteria(req.body, {
-    source: req.body?.source || 'live_user_update',
-    userId: req.body?.userId,
-  });
+// PATCH /api/criteria
+router.patch('/', requireAuth, asyncHandler(async (req, res) => {
+  const { expectedVersion, changes } = req.body;
+  
+  if (!changes) {
+    res.status(400).json({ error: 'Missing changes in payload' });
+    return;
+  }
 
+  try {
+    const updatedState = await criteriaService.updateCriteria((req as any).idToken, changes, {
+      expectedVersion
+    });
+
+    res.json({
+      status: 'success',
+      message: 'Criteria validated, persisted to storage, and applied to backend engine',
+      version: updatedState.version,
+      updatedAt: updatedState.updatedAt,
+      source: updatedState.source,
+      criteria: updatedState.criteria,
+      timestamp: Date.now(),
+    });
+  } catch (e: any) {
+    if (e.message.startsWith('Conflict:')) {
+      res.status(409).json({ error: e.message });
+      return;
+    }
+    throw e;
+  }
+}));
+
+// Legacy PUT
+router.put('/', requireAuth, asyncHandler(async (req, res) => {
+  const updatedState = await criteriaService.updateCriteria((req as any).idToken, req.body);
   res.json({
     status: 'success',
     message: 'Criteria validated, persisted to storage, and applied to backend engine',
@@ -55,4 +85,3 @@ router.post('/', asyncHandler(async (req, res) => {
 }));
 
 export default router;
-

@@ -617,37 +617,6 @@ function App() {
 
   useEffect(() => {
     // Legacy expert_criteria_v3 initializer removed to prevent destructive resets
-    
-    // Hydrate local UI state from authoritative backend criteria
-    syncManager.fetchAuthoritativeCriteria().then((res) => {
-      if (res && res.criteria) {
-        const c = res.criteria;
-        
-        // Update local storage and standard React state where applicable
-        if (c.buyAmountSol !== undefined) {
-          localStorage.setItem('app_buyAmountSol', String(c.buyAmountSol));
-          useAppStore.setState({ buyAmountSol: c.buyAmountSol });
-        }
-        if (c.minTakeProfit !== undefined) {
-          localStorage.setItem('app_minTakeProfit', String(c.minTakeProfit));
-          useAppStore.setState({ minTakeProfit: c.minTakeProfit });
-        }
-        if (c.maxTakeProfit !== undefined) {
-          localStorage.setItem('app_maxTakeProfit', String(c.maxTakeProfit));
-          useAppStore.setState({ maxTakeProfit: c.maxTakeProfit });
-        }
-        if (c.stopLoss !== undefined) {
-          localStorage.setItem('app_stopLoss', String(c.stopLoss));
-          useAppStore.setState({ stopLoss: c.stopLoss });
-        }
-        if (c.maxPositions !== undefined) {
-          localStorage.setItem('app_maxPositions', String(c.maxPositions));
-          useAppStore.setState({ maxPositions: c.maxPositions });
-        }
-        
-        console.log(`✅ [CRITERIA HYDRATED] Successfully loaded authoritative criteria v${res.version}`);
-      }
-    });
   }, []);
 
   const [rpcLatency, setRpcLatency] = useState<number | null>(null);
@@ -1897,10 +1866,6 @@ function App() {
           }
         };
       });
-      // Only deduct sim balance for simulated trades (not live ones)
-      if (isSimulated) {
-        setSimulationBalance(prev => prev - entryCost);
-      }
       
       addNotification(`MANUAL EXECUTION SUCCESS: ${symbol} (Slippage: ${slippage}%) ${!isSimulated ? '(LIVE)' : '(SIMULATED)'}`, symbol, tokenAddress);
       setTradingStatus(null);
@@ -3371,6 +3336,36 @@ function App() {
         } else {
           setUser(currentUser);
           setIsMonitoring(false);
+          
+          // Hydrate local UI state from authoritative backend criteria now that auth is ready
+          syncManager.fetchAuthoritativeCriteria().then((res) => {
+            if (res && res.criteria) {
+              const c = res.criteria;
+              
+              if (c.buyAmountSol !== undefined) {
+                localStorage.setItem('app_buyAmountSol', String(c.buyAmountSol));
+                useAppStore.setState({ buyAmountSol: c.buyAmountSol });
+              }
+              if (c.minTakeProfit !== undefined) {
+                localStorage.setItem('app_minTakeProfit', String(c.minTakeProfit));
+                useAppStore.setState({ minTakeProfit: c.minTakeProfit });
+              }
+              if (c.maxTakeProfit !== undefined) {
+                localStorage.setItem('app_maxTakeProfit', String(c.maxTakeProfit));
+                useAppStore.setState({ maxTakeProfit: c.maxTakeProfit });
+              }
+              if (c.stopLoss !== undefined) {
+                localStorage.setItem('app_stopLoss', String(c.stopLoss));
+                useAppStore.setState({ stopLoss: c.stopLoss });
+              }
+              if (c.maxPositions !== undefined) {
+                localStorage.setItem('app_maxPositions', String(c.maxPositions));
+                useAppStore.setState({ maxPositions: c.maxPositions });
+              }
+              
+              console.log(`✅ [CRITERIA HYDRATED] Successfully loaded authoritative criteria v${res.version}`);
+            }
+          });
         }
         setAuthLoaded(true);
       });
