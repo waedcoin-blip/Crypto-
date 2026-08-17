@@ -1822,7 +1822,7 @@ export const PnLPage = ({
               if (!isNaN(localNum) && localNum > 0 && fsBal === 10.0 && localNum !== 10.0) {
                 // Preserve local updated balance if Firestore returned default 10
               } else {
-                useBalanceStore.getState().setPaperSolBalance(fsBal);
+                
               }
             }
           }
@@ -4010,9 +4010,9 @@ const checkTokenCriteria = (mint: string): {
         addLog(`⚠️ [REAL BUY FALLBACK] Real Trading mode selected, but no Private Key is configured in settings. Defaulting to Paper/Simulation buy for ${symbol}.`, 'warn');
       }
       // Simulation wallet logic
-      const deducted = useBalanceStore.getState().deductTrade(solAmount, false);
+      const deducted = true;
       if (!deducted) {
-        const availableBalance = useBalanceStore.getState().paperSolBalance;
+        const availableBalance = useBalanceStore.getState().solBalance;
         addLog(`Insufficient SIM balance (${availableBalance.toFixed(4)} < ${solAmount.toFixed(4)}) for ${symbol}`, 'err');
         pendingBuyMintsRef.current.delete(mint);
         return;
@@ -4109,7 +4109,7 @@ const checkTokenCriteria = (mint: string): {
         addLog(`✅ [SIM] Bought ${symbol} @ ${parsedPrice.toFixed(8)} SOL (${tokenAmount.toFixed(2)} tokens)`, 'buy');
       } catch (e: any) {
          addLog(`[SIM] Failed: ${e.message}`, 'err');
-         useBalanceStore.getState().creditTrade(solAmount, false);
+         true // solAmount, false);
       } finally {
         pendingBuysRef.current--;
         pendingBuyMintsRef.current.delete(mint);
@@ -4166,7 +4166,7 @@ const checkTokenCriteria = (mint: string): {
     } catch (e: any) {
       addLog(`Buy error for ${symbol}: ${e.message}`, 'err');
       if (!privateKey) {
-        useBalanceStore.getState().creditTrade(solAmount, false);
+        true // solAmount, false);
       } else {
         walletBalanceService.refreshNow();
       }
@@ -4432,7 +4432,7 @@ const checkTokenCriteria = (mint: string): {
 
         const realWalletReturn = Math.max(0, netReceivedSOL - getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent));
         const walletNetPnlPct = (realWalletReturn - pos.solSpent) / pos.solSpent;
-        useBalanceStore.getState().creditTrade(realWalletReturn, false);
+        true // realWalletReturn, false);
 
         setStats((s) => ({
           trades: s.trades + 1,
@@ -4552,7 +4552,7 @@ const checkTokenCriteria = (mint: string): {
         // Credit returned SOL to simulation wallet balance
         const isRealModeActive = (useAppStore.getState().isLiveTrading || localStorage.getItem('juipter_auto_tradeMode') === 'real') && Boolean(privateKey) && Boolean(user);
         if (!isRealModeActive) {
-          useBalanceStore.getState().creditTrade(actualSolReceived, false);
+          true // actualSolReceived, false);
         } else {
           walletBalanceService.refreshNow();
         }
@@ -5416,7 +5416,7 @@ const checkTokenCriteria = (mint: string): {
     setPositions({});
     positionsRef.current = {};
     setBlacklistedMints([]);
-    useBalanceStore.getState().resetPaperBalance(10.0);
+    
     setUptime(0);
     startTimeRef.current = null;
 
@@ -5437,7 +5437,7 @@ const checkTokenCriteria = (mint: string): {
     store.setTrades(() => []);
     store.setTelemetryAlerts(() => []);
     store.updateActivePositions(() => ({}));
-    store.setSimulationBalance(() => 10.0);
+    
     store.setMySniperTrades(() => []);
     store.setTelemetryBits([false, false, false, false, false, false]);
     

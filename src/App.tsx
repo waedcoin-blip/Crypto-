@@ -1053,14 +1053,8 @@ function App() {
     };
   }, [rpcUrl, rpcUrl2]);
 
-  // Load or generate session wallet, syncing with auth/user logout state
+  // Load session wallet on mount
   useEffect(() => {
-    if (!user) {
-      setSessionWallet(null);
-      sessionStorage.removeItem('matrix_session_key');
-      return;
-    }
-
     const savedKey = sessionStorage.getItem('matrix_session_key');
     if (savedKey) {
       try {
@@ -1071,7 +1065,7 @@ function App() {
         sessionStorage.removeItem('matrix_session_key');
       }
     }
-  }, [user]);
+  }, []);
 
   const generateSessionWallet = () => {
     const kp = Keypair.generate();

@@ -1,5 +1,7 @@
 // src/config/network.ts
 
+/// <reference types="vite/client" />
+
 export type TradingNetwork = 'devnet' | 'mainnet';
 
 export interface NetworkConfig {

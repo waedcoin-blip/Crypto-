@@ -59,7 +59,7 @@ export class WalletBalanceService {
     const publicKey = new PublicKey(address);
     const balance = await this.connection.getBalance(publicKey);
     const sol = balance / LAMPORTS_PER_SOL;
-    useBalanceStore.getState().setBalance(sol);
+    useBalanceStore.getState().setBalance({ solBalance: sol });
     return sol;
   }
 }

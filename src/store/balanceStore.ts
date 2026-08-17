@@ -58,13 +58,16 @@ export const useBalanceStore = create<BalanceState>((set) => ({
     }),
 
   setWalletAddress: (walletAddress) =>
-    set({
-      walletAddress,
-      solBalance: null,
-      availableSolBalance: null,
-      lastUpdated: null,
-      status: walletAddress ? 'loading' : 'idle',
-      error: null,
+    set((state) => {
+      if (state.walletAddress === walletAddress) return {};
+      return {
+        walletAddress,
+        solBalance: null,
+        availableSolBalance: null,
+        lastUpdated: null,
+        status: walletAddress ? 'loading' : 'idle',
+        error: null,
+      };
     }),
 
   setBalance: ({
