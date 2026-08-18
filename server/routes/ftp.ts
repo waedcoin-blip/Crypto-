@@ -12,6 +12,16 @@ import type { BackupData } from '../services/ftpService.js';
 
 const router = Router();
 
+// Require strict admin API Key for all FTP routes
+router.use((req, res, next) => {
+  const apiKey = req.headers['x-admin-api-key'];
+  if (!apiKey || apiKey !== process.env.ADMIN_API_KEY) {
+    ftpLogger.warn({ ip: req.ip }, 'Unauthorized FTP administration access attempt');
+    return res.status(401).json({ error: 'Unauthorized: Invalid Admin API Key' });
+  }
+  next();
+});
+
 function getCredentials() {
   const credentials = {
     host: process.env.FTP_HOST || '',

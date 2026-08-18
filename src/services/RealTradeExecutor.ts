@@ -8,7 +8,7 @@ import bs58 from 'bs58';
 import { DEFAULT_HELIUS_RPC } from '../constants/solana';
 import { getNetworkConfig, TradingNetwork } from '../config/network';
 import { NetworkGuard } from './NetworkGuard';
-import { assertExecutionEnvironment } from '../store/balanceStore';
+import { assertExecutionEnvironment, assertTradeBalance } from '../store/balanceStore';
 
 export interface RealTradeConfig {
   network?: TradingNetwork;
@@ -87,6 +87,9 @@ export class RealTradeExecutor implements ITradeExecutor {
     this.telemetryTotalSwaps++;
 
     try {
+      // Priority 5 Safety Gate: Ensure balance is live and sufficient before trading
+      await assertTradeBalance(inputMint === 'So11111111111111111111111111111111111111112' ? amount / LAMPORTS_PER_SOL : 0.005);
+
       const quote = await this.getQuote({
         inputMint,
         outputMint,

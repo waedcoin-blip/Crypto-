@@ -1,6 +1,7 @@
 // src/services/TradeManager.ts
 import { ITradeExecutor, SwapResult, ExecutorTelemetry } from './ITradeExecutor';
 import { RealTradeExecutor, RealTradeConfig } from './RealTradeExecutor';
+import { PaperTradeExecutor, PaperTradeConfig } from './PaperTradeExecutor';
 import { QuoteGetRequest, QuoteResponse } from '@jup-ag/api';
 import { TradingNetwork } from '../config/network';
 
@@ -10,6 +11,7 @@ export class TradeManager {
   private executor: ITradeExecutor;
   private _mode: TradeMode;
   private realConfig: RealTradeConfig;
+  private paperConfig: any;
 
   constructor(options: {
     mode: TradeMode;
@@ -18,14 +20,24 @@ export class TradeManager {
   }) {
     this._mode = options.mode;
     this.realConfig = options.realConfig || {};
+    this.paperConfig = options.paperConfig || { initialSolBalance: 10 };
     this.executor = this.createExecutor();
   }
 
   private createExecutor(): ITradeExecutor {
-    const net: TradingNetwork = (this._mode === 'mainnet' || this._mode === 'real') ? 'mainnet' : 'devnet';
+    if (this._mode === 'paper') {
+      return new PaperTradeExecutor(this.paperConfig);
+    }
+
+    if (this._mode === 'mainnet' || this._mode === 'real') {
+      console.error("TRADING STATUS: DEVELOPMENT ONLY. MAINNET EXECUTION: DISABLED. Falling back to paper trading.");
+      this._mode = 'paper';
+      return new PaperTradeExecutor(this.paperConfig);
+    }
+
     return new RealTradeExecutor({
       ...this.realConfig,
-      network: net,
+      network: 'devnet',
     });
   }
 

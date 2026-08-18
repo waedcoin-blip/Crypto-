@@ -1550,6 +1550,17 @@ export const PnLPage = ({
     localStorage.setItem('juipter_auto_retentionLimit', retentionLimit.toString());
   }, [retentionLimit]);
 
+  const pipelineCountersRef = useRef({
+    discovered: 0,
+    solana: 0,
+    validMetrics: 0,
+    criteriaPass: 0,
+    buyCandidates: 0,
+    buyAttempts: 0,
+    simBuySuccess: 0,
+    simBuyFailed: 0
+  });
+
   const [logs, setLogs] = useState<LogEvent[]>(() => {
     try {
       const saved = localStorage.getItem('juipter_auto_logs');
@@ -2824,115 +2835,6 @@ export const PnLPage = ({
     });
   }, [retentionLimit]);
 
-  // ── BACKGROUND SCAN & SIMULATION PIPELINE ──
-
-  // ── Initialize scanner on mount ──
-  useEffect(() => {
-    scannerRef.current = new TokenScanner(
-      DEFAULT_CRITERIA,
-      (token: ScannedToken) => {
-        // Callback when a token passes criteria — add to monitoring
-        monitoredTokensRef.current.set(token.address, token);
-      }
-    );
-
-    // Initial load of authoritative criteria
-    syncManager.fetchAuthoritativeCriteria().then(res => {
-      if (res && res.criteria && scannerRef.current) {
-        const c = res.criteria;
-        scannerRef.current.updateCriteria({
-          simulationBuyAmountSol: c.simulationBuyAmountSol ?? c.buyAmountSol,
-          minLiquidityUsd: c.hardenedLiquidityMin,
-          // map other fields if necessary
-        });
-        addLog(`[System] TokenScanner loaded authoritative criteria (v${res.version})`, 'info');
-      }
-    });
-
-    // Subscribe to live criteria updates
-    const unsubscribeSync = syncManager.subscribe((status) => {
-      if (status.backendSynced) {
-        syncManager.fetchAuthoritativeCriteria().then(res => {
-          if (res && res.criteria && scannerRef.current) {
-            const c = res.criteria;
-            scannerRef.current.updateCriteria({
-              simulationBuyAmountSol: c.simulationBuyAmountSol ?? c.buyAmountSol,
-              minLiquidityUsd: c.hardenedLiquidityMin,
-            });
-          }
-        });
-      }
-    });
-
-    return () => {
-      unsubscribeSync();
-      scannerRef.current = null;
-      monitoredTokensRef.current.clear();
-    };
-  }, []);
-
-  // ── TOKEN SCANNER LOOP ──
-  // Scans DEXScreener for new tokens meeting criteria.
-  // Opens simulation positions for qualifying tokens.
-  useEffect(() => {
-    if (!scannerRef.current) return;
-
-    const scanLoop = async () => {
-      if (!scannerRef.current) return;
-      const tokens = await scannerRef.current.scanAndFilter();
-
-      for (const token of tokens) {
-        // Skip if already have a simulation position
-        if (hasSimPosition(token.address)) continue;
-
-        // Open simulation position
-        const simAmt = scannerRef.current?.getCriteria()?.simulationBuyAmountSol || DEFAULT_CRITERIA.simulationBuyAmountSol;
-        openSimPosition(token, simAmt);
-
-        // Start monitoring this token's price
-        monitoredTokensRef.current.set(token.address, token);
-        
-        addLog(`[Scanner] Passed criteria: ${token.symbol} | Liq: $${token.liquidityUsd.toFixed(0)} | Vol: $${token.volume24h.toFixed(0)}`, 'success');
-      }
-    };
-
-    // Initial scan after 5 seconds
-    const initialTimer = setTimeout(scanLoop, 5000);
-
-    // Then every 30 seconds
-    const interval = setInterval(scanLoop, 30_000);
-
-    return () => {
-      clearTimeout(initialTimer);
-      clearInterval(interval);
-    };
-  }, [hasSimPosition, openSimPosition, addLog]);
-
-  // ── PRICE MONITORING LOOP ──
-  // Fetches current prices for all monitored tokens.
-  // Updates simulation positions.
-  useEffect(() => {
-    const updatePrices = async () => {
-      const tokensList = Array.from(monitoredTokensRef.current.values());
-      if (tokensList.length === 0) return;
-
-      const mints = tokensList.map(t => t.address);
-      const prices = await marketDataManager.getPrices(mints, 'ui');
-      prices.forEach((tp, addr) => {
-        if (tp.priceUsd != null && tp.priceUsd > 0) {
-          latestPricesRef.current[addr] = tp.priceUsd;
-          if (hasSimPosition(addr)) {
-            updateSimPrice(addr, tp.priceNative || tp.priceUsd / 145);
-          }
-        }
-      });
-    };
-
-    const interval = setInterval(updatePrices, 2000);
-    return () => clearInterval(interval);
-  }, [hasSimPosition, updateSimPrice]);
-
-
   useEffect(() => {
     if (!privateKey) {
       if (lastLoggedKeyRef.current) {
@@ -3870,13 +3772,7 @@ const checkTokenCriteria = (mint: string): {
       }
     }
 
-    // MANDATORY Hardened Criteria Validation (Enforced for ALL sources)
-    const criteriaResult = checkTokenCriteria(mint);
-    if (!criteriaResult.pass) {
-      addLog(`❌ [HARDENED CRITERIA BLOCK] Skipping buy of ${symbol} (${mint.slice(0, 8)}...): ${criteriaResult.reason}`, 'warn');
-      return;
-    }
-
+    // Criteria Validation handled by the single scanner (checkAndTrade)
     const {
       hardenedMinProfit5m, enableLatencyGuard, rpcLatency,
       hardenedMinLatency, hardenedMaxLatency, hardenedMatchRequirement
@@ -4085,6 +3981,8 @@ const checkTokenCriteria = (mint: string): {
 
         await new Promise(resolve => setTimeout(resolve, 50)); // Simulate tx time
         
+        pipelineCountersRef.current.simBuySuccess++;
+
         setPositions((prev) => {
           const existing = prev[mint];
           const newSolSpent = existing ? (existing.solSpent || 0) + solAmount : solAmount;
@@ -4166,6 +4064,7 @@ const checkTokenCriteria = (mint: string): {
     } catch (e: any) {
       addLog(`Buy error for ${symbol}: ${e.message}`, 'err');
       if (!privateKey) {
+        pipelineCountersRef.current.simBuyFailed++;
         true // solAmount, false);
       } else {
         walletBalanceService.refreshNow();
@@ -4185,6 +4084,7 @@ const checkTokenCriteria = (mint: string): {
   const executeBuy = async (mint: string, symbol: string, price: any, solAmount: number, isManualDirectBuy = false) => {
     if (positionsRef.current[mint] || pendingBuyMintsRef.current.has(mint)) return;
     pendingBuyMintsRef.current.add(mint);
+    pipelineCountersRef.current.buyAttempts++;
     try {
       await _executeBuyInternal(mint, symbol, price, solAmount, isManualDirectBuy);
     } finally {
@@ -4507,17 +4407,13 @@ const checkTokenCriteria = (mint: string): {
     const isRealMode = tradeModeFromStorage === 'real' && !!configRef.current.privateKey;
     const currentJup = jupiterRpcUrl || 'https://api.jup.ag/swap/v1';
 
-    let executor: ITradeExecutor;
-    if (isRealMode) {
-      executor = new RealTradeExecutor({ verbose: true });
-    } else {
-      executor = new PaperTradeExecutor({
+    // Force PaperTradeExecutor to strictly prevent live execution
+    let executor: ITradeExecutor = new PaperTradeExecutor({
         jupiterEndpoint: currentJup,
         jupiterApiKey: '',
         initialSolBalance: simWalletBalance,
         latencyRange: [10, 50],
-      });
-    }
+    });
 
     const exitMgr = new PositionExitManager(
       executor,
@@ -4805,7 +4701,9 @@ const checkTokenCriteria = (mint: string): {
             clearPriceHistories();
             addLog(`⏸️ [MAX POSITIONS REACHED] Positions: ${activeMints.length}/${maxPositions} — Stopped searching new tokens.`, 'warn');
          } else {
-            addLog(`📡 [SCANNER HEARTBEAT] Monitoring ${Object.keys(tokenMetricsRef.current).length} active tokens | Positions: ${activeMints.length}/${maxPositions} | Required Match: ${matchRate}%`, 'info');
+            const counters = pipelineCountersRef.current;
+            addLog(`📡 [SCANNER HEARTBEAT] Monitoring ${Object.keys(tokenMetricsRef.current).length} active tokens | Positions: ${activeMints.length}/${maxPositions} | Required Match: ${matchRate}%
+  ↳ PIPELINE METRICS: Discovered: ${counters.discovered} | Solana: ${counters.solana} | Valid Metrics: ${counters.validMetrics} | Criteria Pass: ${counters.criteriaPass} | Buy Candidates: ${counters.buyCandidates} | Buy Attempts: ${counters.buyAttempts} | Sim Success: ${counters.simBuySuccess} | Sim Failed: ${counters.simBuyFailed}`, 'info');
          }
       }
 
@@ -4816,9 +4714,15 @@ const checkTokenCriteria = (mint: string): {
            ([mint, metric]: [string, any]) => {
              if (activeMints.includes(mint)) return false;
              if (blacklistedMints.includes(mint)) return false;
-             return checkTokenCriteria(mint).pass;
+             const isPass = checkTokenCriteria(mint).pass;
+             if (isPass) {
+                 pipelineCountersRef.current.criteriaPass++;
+             }
+             return isPass;
            }
          ).sort((a: any, b: any) => (b[1].marketCap || 0) - (a[1].marketCap || 0));
+
+         pipelineCountersRef.current.buyCandidates += scannerTokens.length;
 
          if (scannerTokens.length === 0 && Object.keys(tokenMetricsRef.current).length > 0) {
             // Sort nontraded candidates by criteria pass rates so we present the closest qualifiers first
@@ -5246,8 +5150,12 @@ const checkTokenCriteria = (mint: string): {
           return;
         }
 
+        pipelineCountersRef.current.discovered = profiles.length;
+
         // Filter for Solana network profiles as specified by user chain constraints
         const solanaProfiles = profiles.filter((p: any) => p.chainId === 'solana');
+        pipelineCountersRef.current.solana = solanaProfiles.length;
+        
         if (solanaProfiles.length === 0) {
           addLog(`ℹ️ [DEXSCREENER ENGINE] No new Solana token profiles found in this batch. Running simulator.`, 'info');
           runHighFidelitySimulator();
@@ -5281,9 +5189,11 @@ const checkTokenCriteria = (mint: string): {
           addLog(`📡 [BOT PROTOCOL] Querying ${mintsToQuery.length} candidate discovery pairs via MarketDataManager...`, 'info');
           const discoveredPrices = await marketDataManager.getPrices(mintsToQuery, 'discovery');
           
+          let validMetricsCount = 0;
           for (const [tokenAddress, tp] of discoveredPrices) {
             if (!isPolled) break;
             if (!tp || tp.priceUsd == null || tp.priceUsd <= 0) continue;
+            validMetricsCount++;
 
             const priceUsd = tp.priceUsd;
             const liquidityUsd = tp.liquidityUsd || 0;
@@ -5338,6 +5248,7 @@ const checkTokenCriteria = (mint: string): {
                 return {
                   ...prev,
                   [tokenAddress]: {
+                    ...existing,
                     volume24h: vol24h,
                     priceChange5m: p5m,
                     priceChange1m: p1m,
@@ -5356,7 +5267,6 @@ const checkTokenCriteria = (mint: string): {
                     sellVolume: vol24h * 0.2,
                     recentBuysTimeline: existing.recentBuysTimeline || [],
                     category: isGraduated ? 'RAYDIUM' : 'PUMP_FUN',
-                    ...existing,
                     address: tokenAddress,
                     symbol,
                     name,
@@ -5370,6 +5280,7 @@ const checkTokenCriteria = (mint: string): {
               });
             }
           }
+          pipelineCountersRef.current.validMetrics += validMetricsCount;
         }
       } catch (err: any) {
         addLog(`⚠️ [DEXSCREENER ENGINE] Error during DexScreener polling: ${err.message}. Triggering simulator.`, 'warn');

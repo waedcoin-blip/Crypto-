@@ -571,7 +571,7 @@ function App() {
 
   const [hardenedMatchRequirement, setHardenedMatchRequirement] = useState(() => {
     const saved = localStorage.getItem('hd_match_requirement');
-    return saved !== null ? Number(saved) : 100;
+    return saved !== null ? Number(saved) : 50;
   });
 
   const [enableLatencyGuard, setEnableLatencyGuard] = useState(() => {

@@ -75,7 +75,7 @@ export class MasterMonitorService {
 
   async startMonitoring(mints: string[]): Promise<void> {
     for (const mint of mints) {
-      if (mint) this.subscribedMints.add(mint);
+      if (mint) this.subscribedMints.add(`${this.connection.rpcEndpoint.includes("devnet") ? "devnet" : "mainnet"}:${mint}`);
     }
     
     this.ensureBatchPolling();
@@ -85,7 +85,7 @@ export class MasterMonitorService {
   // Fast direct push update from RPC parser, WebSocket, or Market Tracker
   public pushPriceUpdate(mint: string, priceNative: number, timestamp = Date.now(), source: TokenPriceUpdate['source'] = 'jupiter'): void {
     if (!mint || priceNative <= 0) return;
-    this.subscribedMints.add(mint);
+    this.subscribedMints.add(`${this.connection.rpcEndpoint.includes("devnet") ? "devnet" : "mainnet"}:${mint}`);
     
     this.priceEngine.set(mint, {
       priceNative,
