@@ -137,6 +137,8 @@ interface Position {
   realNetPnl?: number;
   realNetSol?: number;
   decimals?: number;
+  tpPct?: number;
+  slPct?: number;
   signalEmitted?: boolean;
   entryPriceUsd?: number;
   currentPriceUsd?: number;
@@ -4039,11 +4041,14 @@ const checkTokenCriteria = (mint: string): {
       const result = await executeJupiterSwap(SOL_MINT, mint, amountLamports);
       if (result.txid) {
         const passedOutputAmount = typeof result.outputAmount === 'number' && !isNaN(result.outputAmount) ? result.outputAmount : 0;
+        let tokenDecimals = 6;
+        try {
+          tokenDecimals = await resolveDecimals(mint, jupRpcUrlToUse);
+        } catch {}
         
         let exactTokenAmount = solAmount / parsedPrice;
         if (result.quoteOutAmountRaw && passedOutputAmount > 0) {
-          const decimals = await resolveDecimals(mint, jupRpcUrlToUse);
-          exactTokenAmount = passedOutputAmount / Math.pow(10, decimals);
+          exactTokenAmount = passedOutputAmount / Math.pow(10, tokenDecimals);
           parsedPrice = solAmount / exactTokenAmount; // Update to actual execution price
         }
         
@@ -4069,7 +4074,7 @@ const checkTokenCriteria = (mint: string): {
                txid: result.txid,
                tpPct: existing?.tpPct ?? (configRef.current.minTakeProfit || 25),
                slPct: existing?.slPct ?? (configRef.current.stopLossPct || 15),
-               decimals: existing?.decimals ?? (decimals ?? 6)
+               decimals: existing?.decimals ?? tokenDecimals
              }
            };
            positionsRef.current = next;

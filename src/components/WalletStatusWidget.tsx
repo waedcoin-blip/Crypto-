@@ -1,4 +1,4 @@
-import { getKeypairFromPrivateKey } from '../utils/keypairUtils';
+import { getKeypairFromPrivateKey, getSavedSessionKeypair, saveSessionKeypair } from '../utils/keypairUtils';
 // src/components/WalletStatusWidget.tsx
 import React, { useState, useEffect } from 'react';
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
@@ -57,10 +57,6 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
     }
     try {
       const kp = getKeypairFromPrivateKey(raw);
-      const encoded = bs58.encode(kp.secretKey);
-      sessionStorage.setItem('matrix_session_key', encoded);
-      localStorage.setItem('matrix_user_custom_key', encoded);
-      localStorage.setItem('juipter_auto_privateKey', encoded);
       setSessionWallet(kp);
 
       useBalanceStore.getState().setWalletAddress(kp.publicKey.toBase58());
@@ -121,23 +117,14 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
   };
 
   const handleGenerateSessionWallet = () => {
-    const customKey = localStorage.getItem('matrix_user_custom_key');
-    if (customKey) {
-      try {
-        const kp = getKeypairFromPrivateKey(customKey);
-        setSessionWallet(kp);
-        return;
-      } catch (e) {}
-    }
     const kp = Keypair.generate();
-    const encoded = bs58.encode(kp.secretKey);
-    sessionStorage.setItem('matrix_session_key', encoded);
     setSessionWallet(kp);
+    useBalanceStore.getState().setWalletAddress(kp.publicKey.toBase58());
+    const service = new WalletBalanceService(network);
+    service.refresh(kp.publicKey.toBase58());
   };
 
   const handleDisconnectSession = () => {
-    sessionStorage.removeItem('matrix_session_key');
-    localStorage.removeItem('matrix_user_custom_key');
     setSessionWallet(null);
     useBalanceStore.getState().reset();
   };

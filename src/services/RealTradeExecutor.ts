@@ -1,4 +1,4 @@
-import { getKeypairFromPrivateKey } from '../utils/keypairUtils';
+import { getKeypairFromPrivateKey, getSavedSessionKeypair } from '../utils/keypairUtils';
 // src/services/RealTradeExecutor.ts
 import { ITradeExecutor, SwapResult, ExecutorTelemetry } from './ITradeExecutor';
 import { HybridExecutionEngine } from './HybridExecutionEngine';
@@ -56,14 +56,9 @@ export class RealTradeExecutor implements ITradeExecutor {
     if (this.hybrid && this.hybrid.wallet) {
       this.publicKey = this.hybrid.wallet.publicKey.toBase58();
     } else {
-      const savedKey = typeof window !== 'undefined' ? sessionStorage.getItem('matrix_session_key') : null;
-      if (savedKey) {
-        try {
-          const kp = getKeypairFromPrivateKey(savedKey);
-          this.publicKey = kp.publicKey.toBase58();
-        } catch {
-          this.publicKey = '';
-        }
+      const kp = getSavedSessionKeypair();
+      if (kp) {
+        this.publicKey = kp.publicKey.toBase58();
       } else {
         this.publicKey = '';
       }
@@ -115,10 +110,9 @@ export class RealTradeExecutor implements ITradeExecutor {
 
         const txBuf = Buffer.from(swapBuild.swapTransaction, 'base64');
         
-        const savedKey = typeof window !== 'undefined' ? sessionStorage.getItem('matrix_session_key') : null;
-        if (!savedKey) throw new Error('Hybrid execution failed: No private key available to sign transaction.');
+        const kp = getSavedSessionKeypair();
+        if (!kp) throw new Error('Hybrid execution failed: No private key available to sign transaction.');
         
-        const kp = getKeypairFromPrivateKey(savedKey);
         const tx = VersionedTransaction.deserialize(txBuf);
         tx.sign([kp]);
         
@@ -146,10 +140,9 @@ export class RealTradeExecutor implements ITradeExecutor {
         });
 
         const txBuf = Buffer.from(swapBuild.swapTransaction, 'base64');
-        const savedKey = typeof window !== 'undefined' ? sessionStorage.getItem('matrix_session_key') : null;
-        if (!savedKey) throw new Error('RealTradeExecutor failed: No private key available to sign transaction.');
+        const kp = getSavedSessionKeypair();
+        if (!kp) throw new Error('RealTradeExecutor failed: No private key available to sign transaction.');
 
-        const kp = getKeypairFromPrivateKey(savedKey);
         const tx = VersionedTransaction.deserialize(txBuf);
         tx.sign([kp]);
         sig = await this.connection.sendRawTransaction(tx.serialize(), {

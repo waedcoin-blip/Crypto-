@@ -1,4 +1,4 @@
-import { getKeypairFromPrivateKey } from './utils/keypairUtils';
+import { getKeypairFromPrivateKey, getSavedSessionKeypair, saveSessionKeypair } from './utils/keypairUtils';
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { 
@@ -461,9 +461,33 @@ function App() {
   const [slippage, setSlippage] = useState(1.0); 
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('jupiter_auto_apiKey') || localStorage.getItem('juipter_auto_apiKey') || '');
   const [jupiterRpcUrl, setJupiterRpcUrl] = useState(() => localStorage.getItem('juipter_auto_jupiterRpcUrl') || '');
-  const [privateKey, setPrivateKey] = useState('');
+  const { activePositions, updateActivePositions: setActivePositions, sessionWallet, setSessionWallet } = useAppStore();
+  const [privateKey, setPrivateKey] = useState(() => {
+    const saved = getSavedSessionKeypair();
+    return saved ? bs58.encode(saved.secretKey) : '';
+  });
   const [telegramBotToken, setTelegramBotToken] = useState(() => localStorage.getItem('tg_bot_token') || '');
   const [telegramChatId, setTelegramChatId] = useState(() => localStorage.getItem('tg_chat_id') || '');
+
+  useEffect(() => {
+    if (sessionWallet) {
+      const encoded = bs58.encode(sessionWallet.secretKey);
+      if (privateKey !== encoded) {
+        setPrivateKey(encoded);
+      }
+    }
+  }, [sessionWallet]);
+
+  useEffect(() => {
+    if (privateKey) {
+      try {
+        const kp = getKeypairFromPrivateKey(privateKey);
+        if (!sessionWallet || sessionWallet.publicKey.toBase58() !== kp.publicKey.toBase58()) {
+          setSessionWallet(kp);
+        }
+      } catch {}
+    }
+  }, [privateKey, sessionWallet, setSessionWallet]);
 
   useEffect(() => {
     localStorage.setItem('jupiter_auto_apiKey', apiKey);
@@ -475,7 +499,6 @@ function App() {
   // Save encrypted private key to localStorage
   useEffect(() => {
     if (!privateKey) {
-      localStorage.removeItem('juipter_auto_privateKey');
       return;
     }
     let active = true;
@@ -498,8 +521,12 @@ function App() {
       if (stored) {
         const uid = user?.uid || 'default_app_offline_salt';
         const decrypted = await decryptPrivateKey(stored, uid);
-        if (active && decrypted !== privateKey) {
-          setPrivateKey(decrypted);
+        if (active && decrypted && decrypted !== privateKey) {
+          try {
+            const kp = getKeypairFromPrivateKey(decrypted);
+            setSessionWallet(kp);
+            setPrivateKey(decrypted);
+          } catch {}
         }
       }
     };
@@ -523,10 +550,6 @@ function App() {
     localStorage.setItem('tg_bot_token', telegramBotToken);
     localStorage.setItem('tg_chat_id', telegramChatId);
   }, [telegramBotToken, telegramChatId]);
-  
-  const { activePositions, updateActivePositions: setActivePositions } = useAppStore();
-
-  const [sessionWallet, setSessionWallet] = useState<Keypair | null>(null);
   
   const [isMonitoring, setIsMonitoring] = useState(false);
 
@@ -1054,40 +1077,18 @@ function App() {
     };
   }, [rpcUrl, rpcUrl2]);
 
-  // Load session wallet on mount
+  // Load session wallet on mount if not already in store
   useEffect(() => {
-    const savedKey = localStorage.getItem('matrix_user_custom_key') || sessionStorage.getItem('matrix_session_key');
-    if (savedKey) {
-      try {
-        const kp = getKeypairFromPrivateKey(savedKey);
-        setSessionWallet(kp);
-        return;
-      } catch (e) {
-        console.error('Failed to load session wallet', e);
-        sessionStorage.removeItem('matrix_session_key');
-        localStorage.removeItem('matrix_user_custom_key');
+    if (!sessionWallet) {
+      const saved = getSavedSessionKeypair();
+      if (saved) {
+        setSessionWallet(saved);
       }
     }
-    const kp = Keypair.generate();
-    const encoded = bs58.encode(kp.secretKey);
-    sessionStorage.setItem('matrix_session_key', encoded);
-    setSessionWallet(kp);
-  }, []);
+  }, [sessionWallet, setSessionWallet]);
 
   const generateSessionWallet = () => {
-    const customKey = localStorage.getItem('matrix_user_custom_key') || sessionStorage.getItem('matrix_session_key');
-    if (customKey) {
-      try {
-        const kp = getKeypairFromPrivateKey(customKey);
-        setSessionWallet(kp);
-        return;
-      } catch (e) {
-        // ignore
-      }
-    }
     const kp = Keypair.generate();
-    const encoded = bs58.encode(kp.secretKey);
-    sessionStorage.setItem('matrix_session_key', encoded);
     setSessionWallet(kp);
     addNotification('New Session Wallet Generated. Deposit SOL to start auto-trading.');
   };

@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { TokenMetric, TelemetryAlert, Trade, SniperTrade } from '../types';
 import { Keypair } from '@solana/web3.js';
 import { useBalanceStore } from './balanceStore';
+import { getSavedSessionKeypair, saveSessionKeypair } from '../utils/keypairUtils';
 
 export interface ActivePositionData {
     boughtAt?: number;
@@ -109,7 +110,7 @@ export const useAppStore = create<AppState>((set) => ({
   })(),
   monitoredWallets: [],
   jupiterLogs: [],
-  sessionWallet: null,
+  sessionWallet: getSavedSessionKeypair(),
 
   setAutoSniperEnabled: (val) => set({ autoSniperEnabled: val }),
   setIsLiveTrading: (val) => set({ isLiveTrading: val }),
@@ -128,7 +129,10 @@ export const useAppStore = create<AppState>((set) => ({
     localStorage.setItem('app_mySniperTrades', JSON.stringify(next));
     return { mySniperTrades: next };
   }),
-  setSessionWallet: (wallet) => set({ sessionWallet: wallet }),
+  setSessionWallet: (wallet) => {
+    saveSessionKeypair(wallet);
+    set({ sessionWallet: wallet });
+  },
   setIsMonitoring: (val) => set({ isMonitoring: val }),
   addJupiterLog: (log) => set((state) => ({
     jupiterLogs: [{ id: Math.random().toString(36).substr(2, 9), timestamp: Date.now(), ...log }, ...state.jupiterLogs].slice(0, 100)

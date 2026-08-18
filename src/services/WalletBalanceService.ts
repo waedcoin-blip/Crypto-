@@ -48,30 +48,26 @@ export class WalletBalanceService {
 
   async refresh(walletAddress?: string): Promise<number> {
     const address = walletAddress || this.activeAddress;
-    const isRealMode = useAppStore.getState().isLiveTrading 
-      || (typeof localStorage !== 'undefined' && localStorage.getItem('trade_mode') === 'real')
-      || (typeof localStorage !== 'undefined' && localStorage.getItem('juipter_auto_tradeMode') === 'real');
-
-    if (!isRealMode) {
-      const simExecutor = getSimExecutor();
-      const simBal = await simExecutor.getSolBalance();
-      useBalanceStore.getState().setBalance({ solBalance: simBal, availableSolBalance: simBal, reservedSol: 0 });
-      return simBal;
-    }
-
-    if (!this.connection) {
-      throw new Error('Wallet balance connection unavailable');
-    }
     if (!address) {
-      throw new Error('Wallet address is required');
+      return 0;
     }
 
-    useBalanceStore.getState().setWalletAddress(address);
-    const publicKey = new PublicKey(address);
-    const balance = await this.connection.getBalance(publicKey);
-    const sol = balance / LAMPORTS_PER_SOL;
-    useBalanceStore.getState().setBalance({ solBalance: sol });
-    return sol;
+    try {
+      if (!this.connection) {
+        const config = getNetworkConfig(this.network);
+        this.connection = new Connection(config.rpcUrl, 'confirmed');
+      }
+
+      useBalanceStore.getState().setWalletAddress(address);
+      const publicKey = new PublicKey(address);
+      const balance = await this.connection.getBalance(publicKey);
+      const sol = balance / LAMPORTS_PER_SOL;
+      useBalanceStore.getState().setBalance({ solBalance: sol });
+      return sol;
+    } catch (err) {
+      console.warn('Wallet balance query error for', address, err);
+      return 0;
+    }
   }
 }
 
