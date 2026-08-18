@@ -3947,6 +3947,7 @@ const checkTokenCriteria = (mint: string): {
         
         let outAmountRaw = 0;
         let tokenAmount = 0;
+        let finalDecimals = 6;
 
         if (!quote) {
            const isMockTokenOrSim = !privateKey || ['FU', 'MOONSHOT', 'PEPEFUN', 'DOGE2026', 'PUMPKITTY', 'CLOUDRUN', 'FROGPUMP', 'FASTSO', 'PUMPX', 'AI_SWIFT', 'NEURAL', 'GROKFUN', 'BABYGOAT', 'LASERT'].includes(symbol);

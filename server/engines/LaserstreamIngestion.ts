@@ -731,8 +731,10 @@ export function stopFallbackWebSocket(): void {
 
   if (state.fallbackRawWs) {
     try {
-      state.fallbackRawWs.removeAllListeners();
-      state.fallbackRawWs.close();
+      const ws = state.fallbackRawWs;
+      ws.removeAllListeners();
+      ws.on('error', () => {}); // Prevent unhandled error event on close
+      ws.close();
     } catch {
       // Ignore
     }

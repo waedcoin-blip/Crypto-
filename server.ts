@@ -1,3 +1,4 @@
+import { isBenignError } from './server/utils/errors.js';
 import express from "express";
 import path from "path";
 import compression from "compression";
@@ -23,13 +24,20 @@ import laserstreamRouter from "./server/routes/laserstream.js";
 import criteriaRouter from "./server/routes/criteria.js";
 
 // Process level crash guard
-process.on("uncaughtException", (err) => {
+process.on("uncaughtException", (err: any) => {
+  if (isBenignError(err)) {
+    console.warn("[BENIGN UNCAUGHT EXCEPTION SUPPRESSED]", err?.message || err);
+    return;
+  }
   console.error("[UNCAUGHT EXCEPTION]", err);
-  // Perform safe shutdown here if needed, then exit
   process.exit(1);
 });
 
 process.on("unhandledRejection", (reason: any) => {
+  if (isBenignError(reason)) {
+    console.warn("[BENIGN UNHANDLED REJECTION SUPPRESSED]", reason?.message || reason);
+    return;
+  }
   console.error("[UNHANDLED REJECTION]", reason);
 });
 
