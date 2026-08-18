@@ -1056,20 +1056,36 @@ function App() {
 
   // Load session wallet on mount
   useEffect(() => {
-    const savedKey = sessionStorage.getItem('matrix_session_key');
+    const savedKey = localStorage.getItem('matrix_user_custom_key') || sessionStorage.getItem('matrix_session_key');
     if (savedKey) {
       try {
-        const decoded = bs58.decode(savedKey);
-        setSessionWallet(getKeypairFromPrivateKey(savedKey));
+        const kp = getKeypairFromPrivateKey(savedKey);
+        setSessionWallet(kp);
+        return;
       } catch (e) {
-        console.error('Failed to load session wallet');
+        console.error('Failed to load session wallet', e);
         sessionStorage.removeItem('matrix_session_key');
+        localStorage.removeItem('matrix_user_custom_key');
       }
     }
+    const kp = Keypair.generate();
+    const encoded = bs58.encode(kp.secretKey);
+    sessionStorage.setItem('matrix_session_key', encoded);
+    setSessionWallet(kp);
   }, []);
 
   const generateSessionWallet = () => {
-    const kp = useBalanceStore.getState().network === 'devnet' ? Keypair.fromSeed(new Uint8Array(32).fill(7)) : Keypair.generate();
+    const customKey = localStorage.getItem('matrix_user_custom_key') || sessionStorage.getItem('matrix_session_key');
+    if (customKey) {
+      try {
+        const kp = getKeypairFromPrivateKey(customKey);
+        setSessionWallet(kp);
+        return;
+      } catch (e) {
+        // ignore
+      }
+    }
+    const kp = Keypair.generate();
     const encoded = bs58.encode(kp.secretKey);
     sessionStorage.setItem('matrix_session_key', encoded);
     setSessionWallet(kp);

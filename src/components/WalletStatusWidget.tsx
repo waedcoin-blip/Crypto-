@@ -59,6 +59,7 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
       const kp = getKeypairFromPrivateKey(raw);
       const encoded = bs58.encode(kp.secretKey);
       sessionStorage.setItem('matrix_session_key', encoded);
+      localStorage.setItem('matrix_user_custom_key', encoded);
       localStorage.setItem('juipter_auto_privateKey', encoded);
       setSessionWallet(kp);
 
@@ -120,7 +121,15 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
   };
 
   const handleGenerateSessionWallet = () => {
-    const kp = network === 'devnet' ? Keypair.fromSeed(new Uint8Array(32).fill(7)) : Keypair.generate();
+    const customKey = localStorage.getItem('matrix_user_custom_key');
+    if (customKey) {
+      try {
+        const kp = getKeypairFromPrivateKey(customKey);
+        setSessionWallet(kp);
+        return;
+      } catch (e) {}
+    }
+    const kp = Keypair.generate();
     const encoded = bs58.encode(kp.secretKey);
     sessionStorage.setItem('matrix_session_key', encoded);
     setSessionWallet(kp);
@@ -128,6 +137,7 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
 
   const handleDisconnectSession = () => {
     sessionStorage.removeItem('matrix_session_key');
+    localStorage.removeItem('matrix_user_custom_key');
     setSessionWallet(null);
     useBalanceStore.getState().reset();
   };
