@@ -25,6 +25,7 @@ import { marketDataManager } from '../../services/marketDataManager';
 import { rpcHealthManager } from '../../services/rpcHealthManager';
 import { PositionExitManager } from '../../services/PositionExitManager';
 import { MasterMonitorService } from '../../services/MasterMonitorService';
+import { getSimExecutor, syncSimBalanceToStore } from '../../services/SimExecutorSingleton';
 import { PaperTradeExecutor } from '../../services/PaperTradeExecutor';
 import { RealTradeExecutor } from '../../services/RealTradeExecutor';
 import { ITradeExecutor } from '../../services/ITradeExecutor';
@@ -3905,10 +3906,10 @@ const checkTokenCriteria = (mint: string): {
       } else if (tradeModeFromStorage === 'real' && !privateKey) {
         addLog(`⚠️ [REAL BUY FALLBACK] Real Trading mode selected, but no Private Key is configured in settings. Defaulting to Paper/Simulation buy for ${symbol}.`, 'warn');
       }
-      // Simulation wallet logic
-      const deducted = true;
-      if (!deducted) {
-        const availableBalance = useBalanceStore.getState().solBalance;
+      // Simulation wallet logic via unified singleton
+      const simExecutor = getSimExecutor(simWalletBalance || 1.0, jupRpcUrlToUse);
+      const availableBalance = await simExecutor.getSolBalance();
+      if (solAmount > availableBalance) {
         addLog(`Insufficient SIM balance (${availableBalance.toFixed(4)} < ${solAmount.toFixed(4)}) for ${symbol}`, 'err');
         pendingBuyMintsRef.current.delete(mint);
         return;
@@ -3981,6 +3982,13 @@ const checkTokenCriteria = (mint: string): {
 
         await new Promise(resolve => setTimeout(resolve, 50)); // Simulate tx time
         
+        const finalSimTxId = simExecutor.executeManualSwap(
+          SOL_MINT,
+          mint,
+          solAmount,
+          outAmountRaw,
+          'entry'
+        );
         pipelineCountersRef.current.simBuySuccess++;
 
         setPositions((prev) => {
@@ -3998,16 +4006,20 @@ const checkTokenCriteria = (mint: string): {
               amount: newAmount,
               amountLamports: existing ? (existing.amountLamports || 0) + outAmountRaw : outAmountRaw,
               entryTime: existing?.entryTime || Date.now(),
-              txid: `sim-${Date.now()}`,
+              txid: finalSimTxId,
+              tpPct: existing?.tpPct ?? (configRef.current.minTakeProfit || 25),
+              slPct: existing?.slPct ?? (configRef.current.stopLossPct || 15),
+              decimals: existing?.decimals ?? (estimatedDecimals ?? fallbackDecimals ?? 6)
             }
           };
           positionsRef.current = next;
           return next;
         });
+        syncSimBalanceToStore();
         addLog(`✅ [SIM] Bought ${symbol} @ ${parsedPrice.toFixed(8)} SOL (${tokenAmount.toFixed(2)} tokens)`, 'buy');
       } catch (e: any) {
          addLog(`[SIM] Failed: ${e.message}`, 'err');
-         true // solAmount, false);
+         syncSimBalanceToStore();
       } finally {
         pendingBuysRef.current--;
         pendingBuyMintsRef.current.delete(mint);
@@ -4053,6 +4065,9 @@ const checkTokenCriteria = (mint: string): {
                amountLamports: existing ? (existing.amountLamports || 0) + (passedOutputAmount || 0) : (passedOutputAmount || 0),
                entryTime: existing?.entryTime || Date.now(),
                txid: result.txid,
+               tpPct: existing?.tpPct ?? (configRef.current.minTakeProfit || 25),
+               slPct: existing?.slPct ?? (configRef.current.stopLossPct || 15),
+               decimals: existing?.decimals ?? (decimals ?? 6)
              }
            };
            positionsRef.current = next;
@@ -4065,7 +4080,7 @@ const checkTokenCriteria = (mint: string): {
       addLog(`Buy error for ${symbol}: ${e.message}`, 'err');
       if (!privateKey) {
         pipelineCountersRef.current.simBuyFailed++;
-        true // solAmount, false);
+        syncSimBalanceToStore();
       } else {
         walletBalanceService.refreshNow();
       }
@@ -4332,7 +4347,7 @@ const checkTokenCriteria = (mint: string): {
 
         const realWalletReturn = Math.max(0, netReceivedSOL - getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent));
         const walletNetPnlPct = (realWalletReturn - pos.solSpent) / pos.solSpent;
-        true // realWalletReturn, false);
+        syncSimBalanceToStore();
 
         setStats((s) => ({
           trades: s.trades + 1,
@@ -4407,13 +4422,7 @@ const checkTokenCriteria = (mint: string): {
     const isRealMode = tradeModeFromStorage === 'real' && !!configRef.current.privateKey;
     const currentJup = jupiterRpcUrl || 'https://api.jup.ag/swap/v1';
 
-    // Force PaperTradeExecutor to strictly prevent live execution
-    let executor: ITradeExecutor = new PaperTradeExecutor({
-        jupiterEndpoint: currentJup,
-        jupiterApiKey: '',
-        initialSolBalance: simWalletBalance,
-        latencyRange: [10, 50],
-    });
+    let executor: ITradeExecutor = getSimExecutor(simWalletBalance || 1.0, currentJup);
 
     const exitMgr = new PositionExitManager(
       executor,
@@ -4427,7 +4436,7 @@ const checkTokenCriteria = (mint: string): {
       }
     );
 
-    exitMgr.setOnExitCallback((mint, side, signature, pnlPct) => {
+    exitMgr.setOnExitCallback((mint, side, signature, pnlPct, outputAmountSol) => {
       addLog(`⚡ [FAST EXIT ENGINE] ${side.toUpperCase()} triggered for ${mint} at ${pnlPct.toFixed(2)}% | Tx: ${signature}`, 'sell');
       const pos = positionsRef.current[mint];
       if (pos) {
@@ -4442,13 +4451,15 @@ const checkTokenCriteria = (mint: string): {
 
         // Update trade history and stats
         const costBasisSol = pos.solSpent || 0;
-        const actualPnlSOL = costBasisSol > 0 ? (costBasisSol * pnlPct / 100) : 0;
-        const actualSolReceived = Math.max(0, costBasisSol + actualPnlSOL);
+        const actualSolReceived = outputAmountSol !== undefined ? outputAmountSol : Math.max(0, costBasisSol + (costBasisSol * pnlPct / 100));
+        const actualPnlSOL = actualSolReceived - costBasisSol;
+        // recalculate pnlPct purely based on actual real return
+        pnlPct = costBasisSol > 0 ? (actualPnlSOL / costBasisSol) * 100 : pnlPct;
 
         // Credit returned SOL to simulation wallet balance
         const isRealModeActive = (useAppStore.getState().isLiveTrading || localStorage.getItem('juipter_auto_tradeMode') === 'real') && Boolean(privateKey) && Boolean(user);
         if (!isRealModeActive) {
-          true // actualSolReceived, false);
+          syncSimBalanceToStore();
         } else {
           walletBalanceService.refreshNow();
         }
@@ -4506,11 +4517,11 @@ const checkTokenCriteria = (mint: string): {
         if (pos && !positionExitManagerRef.current.getPosition(mint)) {
           positionExitManagerRef.current.addPosition({
             mint,
-            amount: pos.amountLamports || Math.floor((pos.amount || 0) * 1e6),
+            amount: pos.amountLamports || Math.floor((pos.amount || 0) * (pos.decimals ? Math.pow(10, pos.decimals) : 1e6)),
             buyPrice: pos.buyPrice || 0,
             solSpent: pos.solSpent || 0.1,
-            tpPct: configRef.current.minTakeProfit || 25,
-            slPct: configRef.current.stopLossPct || 15,
+            tpPct: pos.tpPct ?? (configRef.current.minTakeProfit || 25),
+            slPct: pos.slPct ?? (configRef.current.stopLossPct || 15),
           });
           positionExitManagerRef.current.confirmBuy(mint, pos.txid || 'init-sig', 0);
         }

@@ -32,7 +32,8 @@ export type ExitCallback = (
   mint: string,
   side: 'tp' | 'sl',
   signature: string,
-  pnlPct: number
+  pnlPct: number,
+  outputAmountSol?: number
 ) => void;
 
 export class PositionExitManager {
@@ -211,7 +212,7 @@ export class PositionExitManager {
       this.positions.delete(mint);
 
       if (this.onExitCallback) {
-        this.onExitCallback(mint, side, result.signature || 'exit-tx', pnlPct);
+        this.onExitCallback(mint, side, result.signature || 'exit-tx', pnlPct, (result.outputAmount / 1e9) - result.feeSol);
       }
     } catch (err: any) {
       console.error(`[ExitManager] ❌ Exit error for ${mint}:`, err);

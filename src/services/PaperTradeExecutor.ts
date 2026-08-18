@@ -101,7 +101,7 @@ export class PaperTradeExecutor implements ITradeExecutor {
     const ataRent = isNewATA ? ATA_RENT_SOL : 0;
     const totalFeeSol = BASE_TX_FEE_SOL + priorityFeeSol + ataRent;
 
-    const outputAmount = Number(quote.otherAmountThreshold);
+    const outputAmount = Number(quote.outAmount);
     const inputAmountLamports = Number(quote.inAmount);
 
     if (inputMint === 'So11111111111111111111111111111111111111112') {
@@ -109,7 +109,7 @@ export class PaperTradeExecutor implements ITradeExecutor {
         throw new Error('Paper trade: insufficient SOL balance');
       }
       this.virtualSol -= (inputAmountLamports / 1e9) + totalFeeSol;
-      this.addTokenBalance(outputMint, outputAmount, 6);
+      this.addTokenBalance(outputMint, outputAmount, 0);
       if (isNewATA) this.createdATAs.add(outputMint);
     } else if (outputMint === 'So11111111111111111111111111111111111111112') {
       const tokenBalance = this.getVirtualTokenBalance(inputMint);
@@ -120,7 +120,7 @@ export class PaperTradeExecutor implements ITradeExecutor {
       this.virtualSol += (outputAmount / 1e9) - totalFeeSol;
     } else {
       this.subTokenBalance(inputMint, inputAmountLamports);
-      this.addTokenBalance(outputMint, outputAmount, 6);
+      this.addTokenBalance(outputMint, outputAmount, 0);
     }
 
     const signature = `PAPER-${++this.txCounter}-${Date.now()}`;
@@ -187,14 +187,14 @@ export class PaperTradeExecutor implements ITradeExecutor {
         continue;
       }
 
-      const outputAmount = Number(quote.otherAmountThreshold);
+      const outputAmount = Number(quote.outAmount);
       const isNewATA = !this.createdATAs.has(s.outputMint)
         && s.outputMint !== 'So11111111111111111111111111111111111111112';
       const ataRent = isNewATA ? ATA_RENT_SOL : 0;
 
       if (s.inputMint === 'So11111111111111111111111111111111111111112') {
         this.virtualSol -= (Number(quote.inAmount) / 1e9) + perSwapFee + ataRent;
-        this.addTokenBalance(s.outputMint, outputAmount, 6);
+        this.addTokenBalance(s.outputMint, outputAmount, 0);
         if (isNewATA) this.createdATAs.add(s.outputMint);
       } else if (s.outputMint === 'So11111111111111111111111111111111111111112') {
         this.subTokenBalance(s.inputMint, Number(quote.inAmount));

@@ -1,0 +1,1 @@
+sed -i 's|import { PaperTradeExecutor } from '"'"'../../services/PaperTradeExecutor'"'"';|import { getSimExecutor } from '"'"'../../services/SimExecutorSingleton'"'"';\nimport { PaperTradeExecutor } from '"'"'../../services/PaperTradeExecutor'"'"';|' src/components/pages/PnLPage.tsx
