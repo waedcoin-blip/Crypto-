@@ -3,21 +3,55 @@ import { create } from 'zustand';
 
 export type BalanceNetwork = 'devnet' | 'mainnet';
 
+export interface SimLedgerState {
+  cashSol: number;
+  initialSol: number;
+  realizedPnl: number;
+  unrealizedPnl: number;
+  openCostBasis: number;
+  equitySol: number;
+  lastUpdated: number | null;
+}
+
 export interface BalanceState {
   network: BalanceNetwork;
   walletAddress: string | null;
 
+  // On-Chain Wallet Balance (RPC queried for Devnet/Mainnet)
+  onChainSolBalance: number | null;
+  onChainAvailableSol: number | null;
+  onChainReservedSol: number;
+  onChainLastUpdated: number | null;
+  onChainStatus: 'idle' | 'loading' | 'live' | 'stale' | 'error';
+  onChainError: string | null;
+
+  // Authoritative Simulation Ledger
+  simCashSol: number;
+  simInitialSol: number;
+  simRealizedPnl: number;
+  simUnrealizedPnl: number;
+  simOpenCostBasis: number;
+  simEquitySol: number;
+  simLastUpdated: number | null;
+
+  // Backward-compatible fields
   solBalance: number | null;
   availableSolBalance: number | null;
-
   reservedSol: number;
   lastUpdated: number | null;
-
   status: 'idle' | 'loading' | 'live' | 'stale' | 'error';
   error: string | null;
 
   setNetwork: (network: BalanceNetwork) => void;
   setWalletAddress: (address: string | null) => void;
+
+  setOnChainBalance: (balance: {
+    solBalance: number;
+    availableSolBalance?: number;
+    reservedSol?: number;
+  }) => void;
+
+  setSimLedgerState: (state: Partial<SimLedgerState>) => void;
 
   setBalance: (balance: {
     solBalance: number;
@@ -33,9 +67,29 @@ export interface BalanceState {
   reset: () => void;
 }
 
+const initialSimCash = typeof localStorage !== 'undefined'
+  ? Number(localStorage.getItem('app_authoritative_paper_balance_v1') || localStorage.getItem('juipter_auto_simWalletBalance') || 10.0) || 10.0
+  : 10.0;
+
 const initialState = {
   network: 'devnet' as BalanceNetwork,
   walletAddress: null,
+  
+  onChainSolBalance: null,
+  onChainAvailableSol: null,
+  onChainReservedSol: 0.005,
+  onChainLastUpdated: null,
+  onChainStatus: 'idle' as const,
+  onChainError: null,
+
+  simCashSol: initialSimCash,
+  simInitialSol: 10.0,
+  simRealizedPnl: 0,
+  simUnrealizedPnl: 0,
+  simOpenCostBasis: 0,
+  simEquitySol: initialSimCash,
+  simLastUpdated: null,
+
   solBalance: null,
   availableSolBalance: null,
   reservedSol: 0.005,
@@ -50,6 +104,11 @@ export const useBalanceStore = create<BalanceState>((set) => ({
   setNetwork: (network) =>
     set({
       network,
+      onChainSolBalance: null,
+      onChainAvailableSol: null,
+      onChainLastUpdated: null,
+      onChainStatus: 'idle',
+      onChainError: null,
       solBalance: null,
       availableSolBalance: null,
       lastUpdated: null,
@@ -59,9 +118,14 @@ export const useBalanceStore = create<BalanceState>((set) => ({
 
   setWalletAddress: (walletAddress) =>
     set((state) => {
-      if (state.walletAddress === walletAddress) return {};
+      if (state.walletAddress === walletAddress) return state;
       return {
         walletAddress,
+        onChainSolBalance: null,
+        onChainAvailableSol: null,
+        onChainLastUpdated: null,
+        onChainStatus: walletAddress ? 'loading' : 'idle',
+        onChainError: null,
         solBalance: null,
         availableSolBalance: null,
         lastUpdated: null,
@@ -70,26 +134,89 @@ export const useBalanceStore = create<BalanceState>((set) => ({
       };
     }),
 
+  setOnChainBalance: ({
+    solBalance,
+    availableSolBalance,
+    reservedSol = 0.005,
+  }) =>
+    set((state) => {
+      const newAvail = availableSolBalance ?? Math.max(0, solBalance - reservedSol);
+      if (
+        state.onChainSolBalance === solBalance &&
+        state.onChainAvailableSol === newAvail &&
+        state.onChainReservedSol === reservedSol &&
+        state.onChainStatus === 'live'
+      ) {
+        return state;
+      }
+      return {
+        onChainSolBalance: solBalance,
+        onChainReservedSol: reservedSol,
+        onChainAvailableSol: newAvail,
+        onChainLastUpdated: Date.now(),
+        onChainStatus: 'live',
+        onChainError: null,
+        // Also update standard solBalance for on-chain listeners
+        solBalance,
+        reservedSol,
+        availableSolBalance: newAvail,
+        lastUpdated: Date.now(),
+        status: 'live',
+        error: null,
+      };
+    }),
+
+  setSimLedgerState: (simState) =>
+    set((state) => {
+      const newCash = simState.cashSol !== undefined ? simState.cashSol : state.simCashSol;
+      const newInitial = simState.initialSol !== undefined ? simState.initialSol : state.simInitialSol;
+      const newRealized = simState.realizedPnl !== undefined ? simState.realizedPnl : state.simRealizedPnl;
+      const newUnrealized = simState.unrealizedPnl !== undefined ? simState.unrealizedPnl : state.simUnrealizedPnl;
+      const newOpenCost = simState.openCostBasis !== undefined ? simState.openCostBasis : state.simOpenCostBasis;
+      const newEquity = simState.equitySol !== undefined ? simState.equitySol : (newCash + (newOpenCost + newUnrealized));
+
+      return {
+        simCashSol: newCash,
+        simInitialSol: newInitial,
+        simRealizedPnl: newRealized,
+        simUnrealizedPnl: newUnrealized,
+        simOpenCostBasis: newOpenCost,
+        simEquitySol: newEquity,
+        simLastUpdated: Date.now(),
+      };
+    }),
+
   setBalance: ({
     solBalance,
     availableSolBalance,
     reservedSol = 0.005,
   }) =>
-    set({
-      solBalance,
-      reservedSol,
-      availableSolBalance:
-        availableSolBalance ??
-        Math.max(0, solBalance - reservedSol),
-      lastUpdated: Date.now(),
-      status: 'live',
-      error: null,
+    set((state) => {
+      const newAvail = availableSolBalance ?? Math.max(0, solBalance - reservedSol);
+      if (
+        state.solBalance === solBalance &&
+        state.availableSolBalance === newAvail &&
+        state.reservedSol === reservedSol &&
+        state.status === 'live'
+      ) {
+        return state;
+      }
+      return {
+        solBalance,
+        reservedSol,
+        availableSolBalance: newAvail,
+        lastUpdated: Date.now(),
+        status: 'live',
+        error: null,
+      };
     }),
 
   setStatus: (status, error = null) =>
     set({
       status,
+      onChainStatus: status,
       error,
+      onChainError: error,
     }),
 
   reset: () =>

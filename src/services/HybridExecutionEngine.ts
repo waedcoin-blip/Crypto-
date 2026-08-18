@@ -77,6 +77,14 @@ export class HybridExecutionEngine {
     this.jupiterApi = createJupiterApiClient({ basePath: config.jupiterEndpoint });
   }
 
+  public setWallet(keypair: Keypair | null) {
+    if (keypair) {
+      this.wallet = keypair;
+      this.publicKey = keypair.publicKey;
+      this.config.privateKeyBase58 = bs58.encode(keypair.secretKey);
+    }
+  }
+
   private log(...args: any[]) {
     if (this.config.verbose) console.log('[HybridEngine]', ...args);
   }

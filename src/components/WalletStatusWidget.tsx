@@ -1,9 +1,8 @@
-import { getKeypairFromPrivateKey, getSavedSessionKeypair, saveSessionKeypair } from '../utils/keypairUtils';
 // src/components/WalletStatusWidget.tsx
 import React, { useState, useEffect } from 'react';
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
-import { Keypair } from '@solana/web3.js';
+import { Keypair, PublicKey } from '@solana/web3.js';
 import bs58 from 'bs58';
 import { 
   Wallet, 
@@ -23,30 +22,73 @@ import {
 import { useAppStore } from '../store/appStore';
 import { useBalanceStore } from '../store/balanceStore';
 import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
-import { WalletBalanceService } from '../services/WalletBalanceService';
+import { useActiveWalletStore } from '../store/activeWalletStore';
+import { activeWalletService } from '../services/ActiveWalletService';
+import { walletBalanceService } from '../services/WalletBalanceService';
 import { cn } from '../lib/utils';
 
 export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className }) => {
   const { publicKey, wallet, disconnect } = useWallet();
   const { connection } = useConnection();
-  const { sessionWallet, setSessionWallet } = useAppStore();
+  const { sessionWallet } = useAppStore();
   const { network, setNetwork, switching } = useTradingEnvironmentStore();
+  const { address: activeStoreAddress, source: activeSource, keypair: activeKeypair } = useActiveWalletStore();
 
   const {
+    onChainSolBalance,
+    onChainAvailableSol,
     solBalance,
     availableSolBalance,
     reservedSol,
     status,
-    lastUpdated
+    onChainStatus,
   } = useBalanceStore();
+
+  const currentSolBalance = onChainSolBalance ?? solBalance;
+  const currentAvailableSol = onChainAvailableSol ?? availableSolBalance;
+  const currentStatus = onChainStatus || status;
 
   const [copied, setCopied] = useState(false);
   const [showKeyForm, setShowKeyForm] = useState(false);
   const [inputKey, setInputKey] = useState('');
   const [keyError, setKeyError] = useState('');
   const [keySuccess, setKeySuccess] = useState('');
+  const [showDropdown, setShowDropdown] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
-  const handleUpdateKeySubmit = (e: React.FormEvent) => {
+  // Authoritative active address calculation: Session wallet takes priority when configured
+  const activeAddress = activeKeypair
+    ? activeKeypair.publicKey.toBase58()
+    : sessionWallet
+      ? sessionWallet.publicKey.toBase58()
+      : (publicKey ? publicKey.toBase58() : activeStoreAddress);
+
+  const isSessionActive = !!activeKeypair || !!sessionWallet;
+
+  // Sync connected wallet when no session wallet is active
+  useEffect(() => {
+    if (publicKey && !sessionWallet && !activeKeypair) {
+      void activeWalletService.activateConnectedWallet(publicKey, network);
+    }
+  }, [publicKey, sessionWallet, activeKeypair, network]);
+
+  // WalletBalanceService polling for active address
+  useEffect(() => {
+    if (!activeAddress) {
+      walletBalanceService.stop();
+      useBalanceStore.getState().reset();
+      return;
+    }
+
+    walletBalanceService.updateNetwork(network);
+    walletBalanceService.start(activeAddress, 5000);
+
+    return () => {
+      walletBalanceService.stop();
+    };
+  }, [network, activeAddress]);
+
+  const handleUpdateKeySubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setKeyError('');
     setKeySuccess('');
@@ -55,56 +97,27 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
       setKeyError('Please enter a private key');
       return;
     }
-    try {
-      const kp = getKeypairFromPrivateKey(raw);
-      setSessionWallet(kp);
 
-      useBalanceStore.getState().setWalletAddress(kp.publicKey.toBase58());
-      const service = new WalletBalanceService(network);
-      service.refresh(kp.publicKey.toBase58());
-
-      setKeySuccess(`Wallet updated! Address: ${kp.publicKey.toBase58().slice(0, 4)}...${kp.publicKey.toBase58().slice(-4)}`);
+    const res = await activeWalletService.activateSessionKey(raw, network);
+    if (res.success && res.address) {
+      setKeySuccess(`Wallet activated: ${res.address.slice(0, 4)}...${res.address.slice(-4)}`);
       setInputKey('');
       setTimeout(() => {
         setKeySuccess('');
         setShowKeyForm(false);
-      }, 2000);
-    } catch (err: any) {
-      setKeyError(err.message || 'Invalid Base58 or JSON private key');
+      }, 1500);
+    } else {
+      setKeyError(res.error || 'Invalid Base58 or JSON private key');
     }
   };
-
-  const [showDropdown, setShowDropdown] = useState(false);
-  const [isRefreshing, setIsRefreshing] = useState(false);
-
-  // Active address: prioritize connected browser wallet, fallback to session wallet keypair
-  const activeAddress = publicKey ? publicKey.toBase58() : sessionWallet ? sessionWallet.publicKey.toBase58() : null;
-  const isSessionActive = !publicKey && !!sessionWallet;
-
-  // WalletBalanceService polling for active address
-  useEffect(() => {
-    if (!activeAddress) {
-      useBalanceStore.getState().reset();
-      return;
-    }
-
-    const service = new WalletBalanceService(network);
-    service.start(activeAddress, 5000);
-
-    return () => {
-      service.destroy();
-    };
-  }, [network, activeAddress]);
 
   const handleManualRefresh = async () => {
     if (!activeAddress) return;
     setIsRefreshing(true);
     try {
-      const service = new WalletBalanceService(network);
-      await service.refresh(activeAddress);
-      service.destroy();
+      await walletBalanceService.refresh(activeAddress);
     } catch (e) {
-      console.warn('Manual balance refresh error:', e);
+      console.warn('Manual balance refresh notice:', e);
     } finally {
       setTimeout(() => setIsRefreshing(false), 300);
     }
@@ -116,17 +129,13 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleGenerateSessionWallet = () => {
+  const handleGenerateSessionWallet = async () => {
     const kp = Keypair.generate();
-    setSessionWallet(kp);
-    useBalanceStore.getState().setWalletAddress(kp.publicKey.toBase58());
-    const service = new WalletBalanceService(network);
-    service.refresh(kp.publicKey.toBase58());
+    await activeWalletService.activateSessionKey(bs58.encode(kp.secretKey), network);
   };
 
-  const handleDisconnectSession = () => {
-    setSessionWallet(null);
-    useBalanceStore.getState().reset();
+  const handleDisconnectSession = async () => {
+    await activeWalletService.clearActiveWallet();
   };
 
   const handleNetworkSwitch = async (target: 'devnet' | 'mainnet') => {
@@ -138,10 +147,15 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
       if (!confirmed) return;
     }
     await setNetwork(target);
+    useActiveWalletStore.getState().setNetwork(target);
+    walletBalanceService.updateNetwork(target);
+    if (activeAddress) {
+      void walletBalanceService.refresh(activeAddress);
+    }
   };
 
   const isDevnet = network === 'devnet';
-  const displayHeaderBalance = typeof solBalance === 'number' ? `${solBalance.toFixed(3)} SOL` : '--- SOL';
+  const displayHeaderBalance = typeof currentSolBalance === 'number' ? `${currentSolBalance.toFixed(3)} SOL` : '--- SOL';
 
   return (
     <div className={cn("flex flex-wrap items-center gap-2", className)}>
@@ -243,7 +257,7 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
                 <div className="flex items-center gap-2">
                   <ShieldCheck className={cn("w-4 h-4", isDevnet ? "text-cyan-400" : "text-emerald-400")} />
                   <span className="font-bold text-slate-100">
-                    {isSessionActive ? 'Session Keypair' : wallet?.adapter.name || 'Browser Wallet'}
+                    {isSessionActive ? 'Session Keypair (Active Signer)' : wallet?.adapter.name || 'Browser Wallet'}
                   </span>
                 </div>
                 <button
@@ -278,11 +292,11 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
                     <button
                       type="button"
                       onClick={handleManualRefresh}
-                      disabled={isRefreshing || status === 'loading'}
+                      disabled={isRefreshing || currentStatus === 'loading'}
                       className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition-all cursor-pointer"
                       title="Fetch on-chain balance"
                     >
-                      <RefreshCw className={cn("w-3 h-3", (isRefreshing || status === 'loading') && "animate-spin text-cyan-400")} />
+                      <RefreshCw className={cn("w-3 h-3", (isRefreshing || currentStatus === 'loading') && "animate-spin text-cyan-400")} />
                     </button>
                   </div>
                   <div className="flex items-baseline justify-between mt-1">
@@ -290,10 +304,10 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
                       "text-base font-black font-mono",
                       isDevnet ? "text-cyan-300" : "text-emerald-400"
                     )}>
-                      {typeof solBalance === 'number' ? `${solBalance.toFixed(4)} SOL` : '0.0000 SOL'}
+                      {typeof currentSolBalance === 'number' ? `${currentSolBalance.toFixed(4)} SOL` : '0.0000 SOL'}
                     </span>
                     <span className="text-[10px] text-slate-400 font-mono">
-                      {status === 'live' ? 'Synced RPC' : status === 'loading' ? 'Fetching...' : status === 'stale' ? 'Stale' : 'Idle'}
+                      {currentStatus === 'live' ? 'Synced RPC' : currentStatus === 'loading' ? 'Fetching...' : currentStatus === 'stale' ? 'Stale' : 'Idle'}
                     </span>
                   </div>
                   <div className="mt-1.5 pt-1.5 border-t border-slate-800/60 flex items-center justify-between text-[10px] text-slate-400 font-mono">
@@ -317,7 +331,7 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
                     "text-sm font-black font-mono",
                     isDevnet ? "text-cyan-300" : "text-emerald-300"
                   )}>
-                    {typeof availableSolBalance === 'number' ? `${availableSolBalance.toFixed(4)} SOL` : '0.0000 SOL'}
+                    {typeof currentAvailableSol === 'number' ? `${currentAvailableSol.toFixed(4)} SOL` : '0.0000 SOL'}
                   </span>
                 </div>
 
@@ -338,7 +352,7 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
                 )}
               </div>
 
-                            {/* Key Management Row */}
+              {/* Key Management Row */}
               <div className="mb-3 space-y-1.5">
                 <div className="flex items-center justify-between">
                   <div className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Wallet Key Management</div>
@@ -384,13 +398,13 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
                       <button
                         type="button"
                         onClick={() => {
-                          handleGenerateSessionWallet();
+                          void handleGenerateSessionWallet();
                           setShowKeyForm(false);
                         }}
                         className="py-1.5 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-[10px] transition-all cursor-pointer"
-                        title="Reset to default session key"
+                        title="Reset to a new generated session key"
                       >
-                        Reset Key
+                        New Key
                       </button>
                     </div>
                   </form>
@@ -426,7 +440,18 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
 
               {/* Actions */}
               <div className="pt-2 border-t border-slate-800/80 space-y-2">
-                {publicKey ? (
+                {isSessionActive ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void handleDisconnectSession();
+                      setShowDropdown(false);
+                    }}
+                    className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-400 font-bold transition-all cursor-pointer text-xs"
+                  >
+                    <LogOut className="w-3.5 h-3.5" /> Clear Session Keypair
+                  </button>
+                ) : publicKey ? (
                   <button
                     type="button"
                     onClick={() => {
@@ -436,17 +461,6 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
                     className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-400 font-bold transition-all cursor-pointer text-xs"
                   >
                     <LogOut className="w-3.5 h-3.5" /> Disconnect Wallet
-                  </button>
-                ) : isSessionActive ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      handleDisconnectSession();
-                      setShowDropdown(false);
-                    }}
-                    className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-400 font-bold transition-all cursor-pointer text-xs"
-                  >
-                    <LogOut className="w-3.5 h-3.5" /> Clear Session Keypair
                   </button>
                 ) : null}
               </div>

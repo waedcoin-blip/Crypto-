@@ -14,6 +14,7 @@ import {
   isLaserStreamUsingFallback,
   isLaserStreamSimulated,
   getActiveLaserStreamEndpoint,
+  getLaserStreamTelemetry,
 } from '../engines/LaserstreamIngestion.js';
 
 const router = Router();
@@ -24,17 +25,20 @@ let isActive = false;
 let currentOptions: LaserStreamOptions = {
   apiKey: process.env.HELIUS_API_KEY || '',
   endpoint: 'auto',
-  programAddresses: [
-    '6EF87t756LkSg6GptZTEAtgX9v7R24C4FtsZbXm9o6RA', // Pump.fun
-    '675k1q2AYp74sk2Wym6L6nd56N7Y5D7T6jhpxS22bbe', // Raydium AMM
-  ],
+  network: 'devnet',
+  programAddresses: [],
 };
 
 // ─── SSE Heartbeat ───
 const heartbeatInterval = setInterval(() => {
   if (clients.length === 0) return;
 
-  const ping = JSON.stringify({ type: 'HEARTBEAT', timestamp: Date.now() });
+  const telemetry = getLaserStreamTelemetry();
+  const ping = JSON.stringify({
+    type: 'HEARTBEAT',
+    timestamp: Date.now(),
+    telemetry,
+  });
   const deadClients: string[] = [];
 
   clients.forEach((client) => {
@@ -85,8 +89,10 @@ export function broadcastToClients(event: SseEvent): void {
 }
 
 function getSafeStatus(): LaserStreamStatus {
+  const telemetry = getLaserStreamTelemetry();
   return {
     active: isActive,
+    network: currentOptions.network || 'devnet',
     options: {
       ...currentOptions,
       apiKey: currentOptions.apiKey ? '***' : '',
@@ -95,6 +101,7 @@ function getSafeStatus(): LaserStreamStatus {
     isFallback: isLaserStreamUsingFallback(),
     isSimulated: isLaserStreamSimulated(),
     activeEndpoint: getActiveLaserStreamEndpoint(),
+    telemetry,
   };
 }
 
@@ -108,7 +115,8 @@ router.get('/status', (req, res) => {
 const ConfigSchema = z.object({
   enabled: z.boolean().optional(),
   apiKey: z.string().optional(),
-  endpoint: z.enum(['auto', 'primary', 'fallback', 'custom']).optional(),
+  network: z.enum(['devnet', 'mainnet']).optional(),
+  endpoint: z.string().optional(),
   programAddresses: z.array(z.string()).max(10).optional(),
   customWsUrl: z.string().url().optional().or(z.literal('')),
 });
@@ -124,25 +132,29 @@ router.post('/config', asyncHandler(async (req, res) => {
     return res.status(400).json({ success: false, message: 'Invalid config payload', errors: parsed.error.issues });
   }
 
-  const { enabled, apiKey, endpoint, programAddresses, customWsUrl } = parsed.data;
+  const { enabled, apiKey, network, endpoint, programAddresses, customWsUrl } = parsed.data;
 
   currentOptions = {
-    apiKey: apiKey || currentOptions.apiKey,
-    endpoint: endpoint || currentOptions.endpoint,
+    apiKey: apiKey !== undefined ? apiKey : currentOptions.apiKey,
+    network: network || currentOptions.network || 'devnet',
+    endpoint: endpoint || currentOptions.endpoint || 'auto',
     programAddresses: programAddresses || currentOptions.programAddresses,
-    customWsUrl: customWsUrl || currentOptions.customWsUrl,
+    customWsUrl: customWsUrl !== undefined ? customWsUrl : currentOptions.customWsUrl,
   };
 
   // Vercel doesn't support long-lived processes
   if (config.IS_VERCEL) {
+    const wsHost = currentOptions.network === 'devnet' ? 'devnet.helius-rpc.com' : 'mainnet.helius-rpc.com';
     return res.json({
       success: true,
       active: enabled,
+      network: currentOptions.network,
       options: { ...currentOptions, apiKey: currentOptions.apiKey ? '***' : '' },
       clientsCount: 0,
       isFallback: true,
       isSimulated: false,
-      activeEndpoint: 'WebSocket (Vercel Fallback)',
+      activeEndpoint: `WebSocket (Vercel Fallback: ${wsHost})`,
+      telemetry: getLaserStreamTelemetry(),
     });
   }
 
@@ -150,7 +162,7 @@ router.post('/config', asyncHandler(async (req, res) => {
     await stopLaserStream();
     await startLaserStream(currentOptions, broadcastToClients);
     isActive = true;
-    laserLogger.info({ clients: clients.length }, 'LaserStream started');
+    laserLogger.info({ clients: clients.length, network: currentOptions.network }, 'LaserStream started');
   } else {
     await stopLaserStream();
     isActive = false;
@@ -166,6 +178,8 @@ router.post('/config', asyncHandler(async (req, res) => {
     isFallback: isLaserStreamUsingFallback(),
     isSimulated: isLaserStreamSimulated(),
     activeEndpoint: getActiveLaserStreamEndpoint(),
+    network: currentOptions.network || 'devnet',
+    telemetry: getLaserStreamTelemetry(),
   } as any);
 
   res.json(status);

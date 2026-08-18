@@ -2,8 +2,11 @@
 import { ITradeExecutor, SwapResult, ExecutorTelemetry } from './ITradeExecutor';
 import { RealTradeExecutor, RealTradeConfig } from './RealTradeExecutor';
 import { PaperTradeExecutor, PaperTradeConfig } from './PaperTradeExecutor';
+import { getSimExecutor } from './SimExecutorSingleton';
 import { QuoteGetRequest, QuoteResponse } from '@jup-ag/api';
 import { TradingNetwork } from '../config/network';
+import { Keypair } from '@solana/web3.js';
+import { getSavedSessionKeypair } from '../utils/keypairUtils';
 
 export type TradeMode = 'devnet' | 'mainnet' | 'real' | 'paper';
 
@@ -12,6 +15,7 @@ export class TradeManager {
   private _mode: TradeMode;
   private realConfig: RealTradeConfig;
   private paperConfig: any;
+  private currentKeypair: Keypair | null = null;
 
   constructor(options: {
     mode: TradeMode;
@@ -21,24 +25,41 @@ export class TradeManager {
     this._mode = options.mode;
     this.realConfig = options.realConfig || {};
     this.paperConfig = options.paperConfig || { initialSolBalance: 10 };
+    this.currentKeypair = getSavedSessionKeypair();
     this.executor = this.createExecutor();
+  }
+
+  public setWallet(keypair: Keypair | null, network?: TradingNetwork) {
+    this.currentKeypair = keypair;
+    if (this.executor instanceof RealTradeExecutor) {
+      this.executor.setWallet(keypair, network);
+    }
   }
 
   private createExecutor(): ITradeExecutor {
     if (this._mode === 'paper') {
-      return new PaperTradeExecutor(this.paperConfig);
+      return getSimExecutor(this.paperConfig.initialSolBalance || 10);
     }
 
     if (this._mode === 'mainnet' || this._mode === 'real') {
-      console.error("TRADING STATUS: DEVELOPMENT ONLY. MAINNET EXECUTION: DISABLED. Falling back to paper trading.");
-      this._mode = 'paper';
-      return new PaperTradeExecutor(this.paperConfig);
+      console.warn("Mainnet/Real execution routed to RealTradeExecutor or paper fallback if unconfigured.");
+      if (this.realConfig?.hybridEngine) {
+        const exec = new RealTradeExecutor({
+          ...this.realConfig,
+          network: 'mainnet',
+        });
+        if (this.currentKeypair) exec.setWallet(this.currentKeypair, 'mainnet');
+        return exec;
+      }
+      return getSimExecutor(this.paperConfig.initialSolBalance || 10);
     }
 
-    return new RealTradeExecutor({
+    const exec = new RealTradeExecutor({
       ...this.realConfig,
       network: 'devnet',
     });
+    if (this.currentKeypair) exec.setWallet(this.currentKeypair, 'devnet');
+    return exec;
   }
 
   switchMode(mode: TradeMode) {

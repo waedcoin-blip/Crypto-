@@ -28,12 +28,11 @@ export function getSimExecutor(initialBalance?: number, currentJup: string = 'ht
 }
 
 export function resetSimExecutor(initialBalance: number = 10.0): void {
-    simExecutorInstance = new PaperTradeExecutor({
-        jupiterEndpoint: 'https://api.jup.ag/swap/v1',
-        jupiterApiKey: '',
-        initialSolBalance: initialBalance,
-        latencyRange: [10, 50],
-    });
+    if (!simExecutorInstance) {
+        getSimExecutor(initialBalance);
+    } else {
+        simExecutorInstance.resetLedger(initialBalance);
+    }
     if (typeof localStorage !== 'undefined') {
         localStorage.setItem('app_authoritative_paper_balance_v1', initialBalance.toString());
         localStorage.setItem('juipter_auto_simWalletBalance', initialBalance.toString());
@@ -49,18 +48,26 @@ export function setSimExecutorBalance(bal: number): void {
     }
 }
 
-export function syncSimBalanceToStore(onBalanceUpdated?: (bal: number) => void) {
+export function syncSimBalanceToStore(onBalanceUpdated?: (bal: number) => void, currentPrices?: Record<string, number>) {
     if (simExecutorInstance) {
-        simExecutorInstance.getSolBalance().then(bal => {
-            useBalanceStore.getState().setBalance({ solBalance: bal, availableSolBalance: bal, reservedSol: 0 });
-            if (typeof localStorage !== 'undefined') {
-                localStorage.setItem('app_authoritative_paper_balance_v1', bal.toString());
-                localStorage.setItem('juipter_auto_simWalletBalance', bal.toString());
-                localStorage.setItem('app_simulationBalance_v4', bal.toString());
-            }
-            if (onBalanceUpdated) {
-                onBalanceUpdated(bal);
-            }
+        const summary = simExecutorInstance.getLedgerSummary(currentPrices);
+        useBalanceStore.getState().setSimLedgerState({
+            cashSol: summary.cashSol,
+            initialSol: summary.initialSol,
+            realizedPnl: summary.realizedPnlSol,
+            openCostBasis: summary.openCostBasisSol,
+            unrealizedPnl: summary.unrealizedPnlSol,
+            equitySol: summary.totalEquitySol,
         });
+
+        if (typeof localStorage !== 'undefined') {
+            localStorage.setItem('app_authoritative_paper_balance_v1', summary.cashSol.toString());
+            localStorage.setItem('juipter_auto_simWalletBalance', summary.cashSol.toString());
+            localStorage.setItem('app_simulationBalance_v4', summary.cashSol.toString());
+        }
+        if (onBalanceUpdated) {
+            onBalanceUpdated(summary.cashSol);
+        }
     }
 }
+

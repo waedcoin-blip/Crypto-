@@ -41,7 +41,6 @@ export function getSavedSessionKeypair(): Keypair | null {
     localStorage.getItem('matrix_user_custom_key'),
     sessionStorage.getItem('matrix_session_key'),
     localStorage.getItem('app_active_private_key'),
-    localStorage.getItem('juipter_auto_privateKey'),
   ];
   for (const raw of candidates) {
     if (raw && raw.trim()) {
@@ -62,11 +61,9 @@ export function saveSessionKeypair(kp: Keypair | null): void {
     localStorage.setItem('matrix_user_custom_key', encoded);
     sessionStorage.setItem('matrix_session_key', encoded);
     localStorage.setItem('app_active_private_key', encoded);
-    localStorage.setItem('juipter_auto_privateKey', encoded);
   } else {
     localStorage.removeItem('matrix_user_custom_key');
     sessionStorage.removeItem('matrix_session_key');
     localStorage.removeItem('app_active_private_key');
-    localStorage.removeItem('juipter_auto_privateKey');
   }
 }

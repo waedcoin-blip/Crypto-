@@ -64,6 +64,13 @@ export class BatchExitEngine {
     this.jupiterApi = createJupiterApiClient({ basePath: config.jupiterEndpoint });
   }
 
+  public setWallet(keypair: Keypair | null) {
+    if (keypair) {
+      this.wallet = keypair;
+      this.config.privateKeyBase58 = bs58.encode(keypair.secretKey);
+    }
+  }
+
   async batchExit(positions: MicroPosition[]): Promise<BatchExitResult[]> {
     const chunks = this.chunk(positions, this.config.maxBatchSize);
     const results: BatchExitResult[] = [];

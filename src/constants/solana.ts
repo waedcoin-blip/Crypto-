@@ -8,6 +8,10 @@ export const DEFAULT_SLIPPAGE_BPS = 100;
 export const BPS_DIVISOR = 10_000;
 export const SIMULATION_SAMPLING_RATE = 0.05;
 
+export const SOL_MINT = 'So11111111111111111111111111111111111111112';
+export const WSOL_MINT = 'So11111111111111111111111111111111111111112';
+export const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
 export const HELIUS_API_KEY =
   (import.meta as any).env?.VITE_HELIUS_API_KEY ||
   (import.meta as any).env?.HELIUS_API_KEY ||

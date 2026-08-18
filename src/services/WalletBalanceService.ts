@@ -2,8 +2,6 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import { getNetworkConfig, TradingNetwork } from '../config/network';
 import { useBalanceStore } from '../store/balanceStore';
-import { useAppStore } from '../store/appStore';
-import { getSimExecutor } from './SimExecutorSingleton';
 
 const LAMPORTS_PER_SOL = 1_000_000_000;
 
@@ -12,6 +10,7 @@ export class WalletBalanceService {
   private network: TradingNetwork;
   private timer: ReturnType<typeof setInterval> | null = null;
   private activeAddress: string | null = null;
+  private refreshGeneration = 0;
 
   constructor(network: TradingNetwork) {
     this.network = network;
@@ -26,14 +25,25 @@ export class WalletBalanceService {
     }
   }
 
-  start(address: string, intervalMs: number) {
+  start(address: string, intervalMs = 5000) {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
     this.activeAddress = address;
-    this.refresh(address);
-    this.timer = setInterval(() => this.refresh(address), intervalMs);
+    void this.refresh(address);
+    this.timer = setInterval(() => void this.refresh(this.activeAddress || address), intervalMs);
+  }
+
+  stop() {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
   }
 
   destroy() {
-    if (this.timer) clearInterval(this.timer);
+    this.stop();
   }
 
   public updateNetwork(network: TradingNetwork): void {
@@ -49,8 +59,12 @@ export class WalletBalanceService {
   async refresh(walletAddress?: string): Promise<number> {
     const address = walletAddress || this.activeAddress;
     if (!address) {
+      useBalanceStore.getState().reset();
       return 0;
     }
+
+    const requestId = ++this.refreshGeneration;
+    this.activeAddress = address;
 
     try {
       if (!this.connection) {
@@ -58,14 +72,26 @@ export class WalletBalanceService {
         this.connection = new Connection(config.rpcUrl, 'confirmed');
       }
 
-      useBalanceStore.getState().setWalletAddress(address);
+      // Mark address in store if not set
+      if (useBalanceStore.getState().walletAddress !== address) {
+        useBalanceStore.getState().setWalletAddress(address);
+      }
+
       const publicKey = new PublicKey(address);
       const balance = await this.connection.getBalance(publicKey);
       const sol = balance / LAMPORTS_PER_SOL;
-      useBalanceStore.getState().setBalance({ solBalance: sol });
+
+      // Generation & Active Address Guard to eliminate async race conditions
+      if (requestId !== this.refreshGeneration || this.activeAddress !== address) {
+        return sol;
+      }
+
+      useBalanceStore.getState().setOnChainBalance({ solBalance: sol });
       return sol;
     } catch (err) {
-      console.warn('Wallet balance query error for', address, err);
+      if (requestId === this.refreshGeneration && this.activeAddress === address) {
+        console.warn('Wallet balance query notice for', address, err);
+      }
       return 0;
     }
   }

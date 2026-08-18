@@ -47,9 +47,28 @@ export interface RpcProbeResult {
   error?: string;
 }
 
+export type LaserStreamNetwork = 'devnet' | 'mainnet';
+export type LaserStreamMode = 'grpc' | 'websocket' | 'simulation';
+export type LaserStreamHealthStatus = 'disabled' | 'connecting' | 'connected' | 'stalled' | 'error' | 'fallback' | 'simulated';
+
+export interface LaserStreamTelemetry {
+  transportConnected: boolean;
+  status: LaserStreamHealthStatus;
+  lastHeartbeatAt: number | null;
+  lastEventAt: number | null;
+  lastSlot: number | null;
+  eventsReceived: number;
+  reconnectCount: number;
+  network: LaserStreamNetwork;
+  endpoint: string | null;
+  mode: LaserStreamMode;
+  errorMessage?: string | null;
+}
+
 export interface LaserStreamOptions {
   apiKey?: string;
   endpoint?: string;
+  network?: LaserStreamNetwork;
   programAddresses?: string[];
   customWsUrl?: string;
 }
@@ -61,6 +80,8 @@ export interface LaserStreamStatus {
   isFallback: boolean;
   isSimulated: boolean;
   activeEndpoint: string | null;
+  network: LaserStreamNetwork;
+  telemetry: LaserStreamTelemetry;
 }
 
 export interface SseClient {

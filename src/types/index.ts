@@ -102,3 +102,20 @@ export interface SniperTrade {
   tokenAmount?: number;
   positionId?: string;
 }
+
+export type PositionState =
+  | 'SIGNAL'
+  | 'BUY_PENDING'
+  | 'BUY_CONFIRMED'
+  | 'OPEN'
+  | 'EXIT_TRIGGERED'
+  | 'SELL_PENDING'
+  | 'SELL_CONFIRMED'
+  | 'CLOSED';
+
+export interface PositionTransition {
+  from: PositionState;
+  to: PositionState;
+  timestamp: number;
+  reason: string;
+}

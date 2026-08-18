@@ -131,7 +131,15 @@ export const useAppStore = create<AppState>((set) => ({
   }),
   setSessionWallet: (wallet) => {
     saveSessionKeypair(wallet);
-    set({ sessionWallet: wallet });
+    set((state) => {
+      if (
+        (state.sessionWallet === null && wallet === null) ||
+        (state.sessionWallet && wallet && state.sessionWallet.publicKey.toBase58() === wallet.publicKey.toBase58())
+      ) {
+        return state;
+      }
+      return { sessionWallet: wallet };
+    });
   },
   setIsMonitoring: (val) => set({ isMonitoring: val }),
   addJupiterLog: (log) => set((state) => ({

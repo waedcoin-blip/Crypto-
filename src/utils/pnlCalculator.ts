@@ -16,7 +16,7 @@ export const getDynamicOperationalFeeSol = (isRecovery: boolean = false, tradeAm
   const baseGasAndComputeSol = 0.00005;
   let jitoTip = isRecovery ? 0.0025 : 0.0015;
   if (tradeAmountSol < 0.05) {
-    jitoTip = Math.min(jitoTip, tradeAmountSol * 0.05); // Cap at 5% of trade size
+    jitoTip = isRecovery ? 0.0010 : 0.0003;
   }
   return baseGasAndComputeSol + jitoTip;
 };

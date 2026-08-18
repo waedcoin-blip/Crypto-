@@ -17,8 +17,7 @@ import { detectTokenStage } from '../../lib/utils';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { checkTokenInProfitLast2Seconds, clearPriceHistories } from '../../services/priceTracker';
 import { encryptPrivateKey, decryptPrivateKey } from '../../lib/crypto';
-import { getSolPriceUsd, setSolPriceUsd, calcNetPnl } from '../../utils/pnlCalculator';
-import { TradeModeToggle } from '../TradeModeToggle';
+import { getSolPriceUsd, setSolPriceUsd, calcNetPnl, getDynamicOperationalFeeSol } from '../../utils/pnlCalculator';
 import { TradingSettings } from '../TradingSettings';
 import { WalletStatusWidget } from '../WalletStatusWidget';
 import { MasterMonitorPanel } from '../MasterMonitorPanel';
@@ -34,17 +33,16 @@ import { masterMonitorHealthManager } from '../../services/MasterMonitorHealthMa
 import { syncManager } from '../../services/SyncService';
 import { SyncStatusBadge } from '../SyncStatusBadge';
 import { useBalanceStore } from '../../store/balanceStore';
+import { useTradingEnvironmentStore } from '../../store/tradingEnvironmentStore';
 import { walletBalanceService } from '../../services/WalletBalanceService';
 
-import { DEFAULT_HELIUS_RPC, DEFAULT_HELIUS_WS, HELIUS_API_KEY } from '../../constants/solana';
+import { DEFAULT_HELIUS_RPC, DEFAULT_HELIUS_WS, HELIUS_API_KEY, SOL_MINT, USDC_MINT } from '../../constants/solana';
 
 window.Buffer = window.Buffer || Buffer;
 
 const JUPITER_SWAP = 'https://api.jup.ag/swap/v1/swap';
 const JUPITER_PRICE = 'https://api.jup.ag/price/v2';
 const DEXSCREENER = 'https://api.dexscreener.com/latest/dex';
-const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
-const SOL_MINT = 'So11111111111111111111111111111111111111112';
 
 const decimalsCache: Record<string, number> = {};
 
@@ -108,16 +106,6 @@ const resolveDecimals = async (mint: string, rpcUrl: string | undefined): Promis
   const fallback = 6;
   decimalsCache[cleanMint] = fallback;
   return fallback;
-};
-
-const getDynamicOperationalFeeSol = (isRecovery: boolean = false, tradeAmountSol: number = 0.05): number => {
-  const baseGasAndComputeSol = 0.00005;
-  // Scale Jito tip for smaller trades (under 0.05 SOL) to prevent 15%+ starting loss
-  let jitoTip = isRecovery ? 0.0025 : 0.0015;
-  if (tradeAmountSol < 0.05) {
-     jitoTip = isRecovery ? 0.0010 : 0.0003; 
-  }
-  return baseGasAndComputeSol + jitoTip;
 };
 
 interface Position {
@@ -2140,22 +2128,34 @@ export const PnLPage = ({
     localStorage.setItem('force_usdc_routing', forceUsdcRouting.toString());
   }, [forceUsdcRouting]);
 
+  const { network: tradingNetwork } = useTradingEnvironmentStore();
+  const seenTxSignaturesRef = useRef<Set<string>>(new Set());
+
   useEffect(() => {
     const syncLaserstream = async () => {
       try {
         setLaserstreamStatus('connecting');
+        const defaultPrograms = tradingNetwork === 'devnet'
+          ? [
+              'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', // SPL Token
+              '11111111111111111111111111111111', // System Program
+              'ComputeBudget111111111111111111111111111111', // Compute Budget
+            ]
+          : [
+              '6EF87t756LkSg6GptZTEAtgX9v7R24C4FtsZbXm9o6RA', // Pump.fun
+              '675k1q2AYp74sk2Wym6L6nd56N7Y5D7T6jhpxS22bbe', // Raydium AMM
+            ];
+
         const res = await fetch('/api/laserstream/config', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             enabled: laserstreamEnabled,
             apiKey: laserstreamApiKey,
+            network: tradingNetwork,
             endpoint: laserstreamEndpoint,
             customWsUrl: externalSettings.customWsUrl,
-            programAddresses: [
-              '6EF87t756LkSg6GptZTEAtgX9v7R24C4FtsZbXm9o6RA', // Pump.fun Program
-              '675k1q2AYp74sk2Wym6L6nd56N7Y5D7T6jhpxS22bbe'  // Raydium AMM Program
-            ]
+            programAddresses: defaultPrograms,
           })
         });
         
@@ -2166,10 +2166,12 @@ export const PnLPage = ({
                data = await res.json();
            } else {
                // Vercel deployment without backend, fallback to client-side websocket
-               data = { success: true, active: laserstreamEnabled, isFallback: true, isSimulated: false, activeEndpoint: 'WebSocket (Vercel Fallback)' };
+               const wsHost = tradingNetwork === 'devnet' ? 'devnet.helius-rpc.com' : 'mainnet.helius-rpc.com';
+               data = { success: true, active: laserstreamEnabled, isFallback: true, isSimulated: false, activeEndpoint: `WebSocket (Vercel Fallback: ${wsHost})` };
            }
         } else {
-           data = { success: true, active: laserstreamEnabled, isFallback: true, isSimulated: false, activeEndpoint: 'WebSocket (Network Fallback)' };
+           const wsHost = tradingNetwork === 'devnet' ? 'devnet.helius-rpc.com' : 'mainnet.helius-rpc.com';
+           data = { success: true, active: laserstreamEnabled, isFallback: true, isSimulated: false, activeEndpoint: `WebSocket (Fallback: ${wsHost})` };
         }
 
         if (data.success && data.active) {
@@ -2180,9 +2182,9 @@ export const PnLPage = ({
           if (data.isSimulated) {
             // Silently active sandbox loop without spamming system logs
           } else if (data.isFallback) {
-            addLog(`ℹ️ Helius Geyser Plan Limitation: Automatically routed feed through High-Speed WebSockets fallback.`, 'info');
+            addLog(`ℹ️ Helius Geyser Plan Limitation: Automatically routed ${tradingNetwork.toUpperCase()} feed through High-Speed WebSockets fallback.`, 'info');
           } else {
-            addLog(`Helius LaserStream gRPC channel active. Connected via regional hub: ${data.activeEndpoint || 'Unknown'}`, 'success');
+            addLog(`Helius LaserStream gRPC channel active (${tradingNetwork.toUpperCase()}). Connected via regional hub: ${data.activeEndpoint || 'Auto'}`, 'success');
           }
         } else {
           setLaserstreamStatus('disconnected');
@@ -2204,7 +2206,7 @@ export const PnLPage = ({
     };
 
     syncLaserstream();
-  }, [laserstreamEnabled, laserstreamApiKey, laserstreamEndpoint]);
+  }, [laserstreamEnabled, laserstreamApiKey, laserstreamEndpoint, tradingNetwork]);
 
   // Manage frontend Helius LaserStream EventSource connection
   useEffect(() => {
@@ -2213,13 +2215,24 @@ export const PnLPage = ({
     let eventSource: EventSource | null = null;
     let reconnectTimeout: number | null = null;
 
+    const recordAndDedupe = (key: string): boolean => {
+      if (seenTxSignaturesRef.current.has(key)) return false;
+      if (seenTxSignaturesRef.current.size > 2000) {
+        const first = seenTxSignaturesRef.current.values().next().value;
+        if (first) seenTxSignaturesRef.current.delete(first);
+      }
+      seenTxSignaturesRef.current.add(key);
+      return true;
+    };
+
     const connectSSE = () => {
       if (laserstreamActiveEndpoint && laserstreamActiveEndpoint.includes('Vercel')) {
         // Vercel serverless doesn't support SSE, connect WebSocket directly
-        console.log("🔗 Vercel Detected: Connecting directly via WebSocket...");
+        console.log("🔗 Vercel Detected: Connecting directly via network-matched WebSocket...");
+        const wsHost = tradingNetwork === 'devnet' ? 'devnet.helius-rpc.com' : 'mainnet.helius-rpc.com';
         const wsUrl = (laserstreamApiKey && laserstreamApiKey.length > 20 && laserstreamApiKey !== 'default' && laserstreamApiKey !== 'free') 
-          ? `wss://mainnet.helius-rpc.com/?api-key=${laserstreamApiKey}` 
-          : DEFAULT_HELIUS_WS;
+          ? `wss://${wsHost}/?api-key=${laserstreamApiKey}` 
+          : `wss://${wsHost}`;
         
         const ws = new WebSocket(wsUrl);
         let pingTimer: any = null;
@@ -2228,21 +2241,27 @@ export const PnLPage = ({
           setLaserstreamStatus('connected');
           pingTimer = setInterval(() => ws.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' })), 30000);
           
+          const prog = tradingNetwork === 'devnet'
+            ? 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
+            : '6EF87t756LkSg6GptZTEAtgX9v7R24C4FtsZbXm9o6RA';
+
           ws.send(JSON.stringify({
             jsonrpc: '2.0',
             id: 1,
             method: 'logsSubscribe',
-            params: [{ mentions: [ '6EF87t756LkSg6GptZTEAtgX9v7R24C4FtsZbXm9o6RA' ] }, { commitment: 'confirmed' }]
+            params: [{ mentions: [ prog ] }, { commitment: 'confirmed' }]
           }));
         };
         
         ws.onmessage = (event) => {
           try {
              const data = JSON.parse(event.data);
-             if (data.method === 'logsNotification') {
+             if (data.method === 'logsNotification' && data.params?.result?.value) {
                const sig = data.params.result.value.signature;
-               const slot = data.params.result.context.slot;
-               addLog(`⚡ Live Direct Feed: [slot: ${slot}] sig: ${sig.substring(0, 8)}... (Client WebSocket)`, 'success');
+               const slot = data.params.result.context?.slot || 0;
+               if (sig && recordAndDedupe(`${tradingNetwork}:${slot}:${sig}`)) {
+                 addLog(`⚡ Live Direct Feed: [slot: ${slot}] sig: ${sig.substring(0, 8)}... (${tradingNetwork.toUpperCase()} WebSocket)`, 'success');
+               }
              }
           } catch(e) {}
         };
@@ -2281,7 +2300,11 @@ export const PnLPage = ({
         try {
           const data = JSON.parse(event.data);
           if (data.type === 'HEARTBEAT') {
-            setLaserstreamStatus('connected');
+            if (data.telemetry?.status) {
+              setLaserstreamStatus(data.telemetry.status === 'error' ? 'disconnected' : 'connected');
+            } else {
+              setLaserstreamStatus('connected');
+            }
           } else if (data.type === 'STATUS') {
             if (data.laserstreamActive || data.status === 'connected') {
               setLaserstreamStatus('connected');
@@ -2297,6 +2320,12 @@ export const PnLPage = ({
             const isFallback = !!data.isFallback;
             const isSim = !!data.isSimulated;
             const endpoint = data.endpoint;
+            const eventNetwork = data.network || tradingNetwork;
+
+            if (signature && !recordAndDedupe(`${eventNetwork}:${slot}:${signature}`)) {
+              return; // Deduplicated
+            }
+
             if (endpoint && endpoint !== laserstreamActiveEndpoint) {
               setLaserstreamActiveEndpoint(endpoint);
             }
@@ -2307,14 +2336,13 @@ export const PnLPage = ({
               setLaserstreamIsSimulated(isSim);
             }
             
-            // Render on UI log to provide visual excitement and proof of functionality!
             setLaserstreamStatus('connected');
             if (isSim) {
-              addLog(`⚡ LaserStream Shred [Simulated]: [slot: ${slot}] sig: ${signature.substring(0, 8)}... (Local Sandbox Stream)`, 'info');
+              addLog(`⚡ LaserStream gRPC [Simulated]: [slot: ${slot}] sig: ${signature.substring(0, 8)}... (${eventNetwork.toUpperCase()} Sandbox)`, 'info');
             } else if (isFallback) {
-              addLog(`⚡ Live Direct Feed: [slot: ${slot}] sig: ${signature.substring(0, 8)}... (High-Speed WebSocket Logs Protocol)`, 'success');
+              addLog(`⚡ Live Direct Feed: [slot: ${slot}] sig: ${signature.substring(0, 8)}... (${eventNetwork.toUpperCase()} WebSocket Fallback)`, 'success');
             } else {
-              addLog(`⚡ LaserStream Shred: [slot: ${slot}] sig: ${signature.substring(0, 8)}... (Ingested via Helius gRPC Geyser)`, 'success');
+              addLog(`⚡ LaserStream gRPC: [slot: ${slot}] sig: ${signature.substring(0, 8)}... (${eventNetwork.toUpperCase()} Geyser Ingestion)`, 'success');
             }
           }
         } catch (e) {
@@ -2331,7 +2359,7 @@ export const PnLPage = ({
         eventSource.close();
       }
     };
-  }, [laserstreamEnabled, isRunning]);
+  }, [laserstreamEnabled, isRunning, tradingNetwork]);
 
   const botIntervalRef = useRef<number | null>(null);
   const uptimeIntervalRef = useRef<number | null>(null);
@@ -2590,8 +2618,13 @@ export const PnLPage = ({
     } catch(e) {}
   }, [getTokenPrices]);
 
+  const tokenFetchGenRef = useRef(0);
   const fetchWalletTokens = useCallback(async () => {
-    if (!privateKey || !rpcUrl) return;
+    if (!privateKey || !rpcUrl) {
+      setWalletTokens([]);
+      return;
+    }
+    const currentGen = ++tokenFetchGenRef.current;
     setIsFetchingTokens(true);
     try {
       const keypair = getKeypairFromPrivateKey(privateKey);
@@ -2605,6 +2638,8 @@ export const PnLPage = ({
         'confirmed'
       );
       
+      if (tokenFetchGenRef.current !== currentGen) return;
+
       const tokens = accounts.value.map(acc => {
         const info = acc.account.data.parsed.info;
         return {
@@ -2624,6 +2659,8 @@ export const PnLPage = ({
         };
       }));
       
+      if (tokenFetchGenRef.current !== currentGen) return;
+
       setWalletTokens(enrichedTokens);
 
       // Kick off initial price fetch in parallel
@@ -2631,7 +2668,9 @@ export const PnLPage = ({
     } catch (e) {
       console.warn("Failed to fetch wallet tokens", e);
     } finally {
-      setIsFetchingTokens(false);
+      if (tokenFetchGenRef.current === currentGen) {
+        setIsFetchingTokens(false);
+      }
     }
   }, [privateKey, rpcUrl, customWsUrl]);
 
@@ -4355,10 +4394,19 @@ const checkTokenCriteria = (mint: string): {
         const realWalletReturn = Math.max(0, netReceivedSOL - getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent));
         const walletNetPnlPct = (realWalletReturn - pos.solSpent) / pos.solSpent;
         const simExecManual = getSimExecutor();
-        simExecManual.getSolBalance().then(curBal => {
-          simExecManual.setVirtualSol(curBal + realWalletReturn);
-          syncSimBalanceToStore((b) => setSimWalletBalance(b));
-        });
+        const amountTokensRaw = pos.amountLamports || Math.floor((pos.amount || 0) * Math.pow(10, pos.decimals || 6));
+        const expectedLamports = Math.floor(realWalletReturn * 1e9);
+
+        // Authoritatively execute the simulated token -> SOL swap in the ledger
+        try {
+          simExecManual.executeManualSwap(mint, SOL_MINT, amountTokensRaw, expectedLamports, 'exit_manual');
+        } catch {
+          // Fallback if token was not in ledger map
+          simExecManual.getSolBalance().then(curBal => {
+            simExecManual.setVirtualSol(curBal + realWalletReturn);
+          });
+        }
+        syncSimBalanceToStore((b) => setSimWalletBalance(b));
 
         setStats((s) => ({
           trades: s.trades + 1,
@@ -4467,14 +4515,10 @@ const checkTokenCriteria = (mint: string): {
         // recalculate pnlPct purely based on actual real return
         pnlPct = costBasisSol > 0 ? (actualPnlSOL / costBasisSol) * 100 : pnlPct;
 
-        // Credit returned SOL to simulation wallet balance
+        // Sync returned SOL to simulation wallet balance (already authoritatively credited by executor.swap)
         const isRealModeActive = (useAppStore.getState().isLiveTrading || localStorage.getItem('juipter_auto_tradeMode') === 'real') && Boolean(privateKey) && Boolean(user);
         if (!isRealModeActive) {
-          const simExecAuto = getSimExecutor();
-          simExecAuto.getSolBalance().then(curBal => {
-            simExecAuto.setVirtualSol(curBal + actualSolReceived);
-            syncSimBalanceToStore((b) => setSimWalletBalance(b));
-          });
+          syncSimBalanceToStore((b) => setSimWalletBalance(b));
         } else {
           walletBalanceService.refreshNow();
         }
@@ -5810,21 +5854,45 @@ const checkTokenCriteria = (mint: string): {
                         }}
                         className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-2.5 py-1.5 text-[12px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors"
                       >
-                        <option value="auto">⚡ Auto-Select Fastest (TLS Ping)</option>
-                        <option value="https://laserstream-mainnet-ams.helius-rpc.com">Amsterdam (AMS) - Europe Edge</option>
-                        <option value="https://laserstream-mainnet-fra.helius-rpc.com">Frankfurt (FRA) - Central Europe</option>
-                        <option value="https://laserstream-mainnet-lon.helius-rpc.com">London (LON) - UK Edge</option>
-                        <option value="https://laserstream-mainnet-ewr.helius-rpc.com">Newark (EWR) - East US Edge</option>
-                        <option value="https://laserstream-mainnet-tyo.helius-rpc.com">Tokyo (TYO) - Asia Edge</option>
-                        <option value="https://laserstream-mainnet-sgp.helius-rpc.com">Singapore (SGP) - Asia Edge</option>
+                        {tradingNetwork === 'devnet' ? (
+                          <>
+                            <option value="auto">⚡ Auto-Select (Devnet Edge)</option>
+                            <option value="https://laserstream-devnet-ams.helius-rpc.com">Amsterdam (AMS) - Devnet Edge</option>
+                            <option value="https://laserstream-devnet-ewr.helius-rpc.com">Newark (EWR) - Devnet Edge</option>
+                          </>
+                        ) : (
+                          <>
+                            <option value="auto">⚡ Auto-Select Fastest (TLS Ping)</option>
+                            <option value="https://laserstream-mainnet-ams.helius-rpc.com">Amsterdam (AMS) - Europe Edge</option>
+                            <option value="https://laserstream-mainnet-fra.helius-rpc.com">Frankfurt (FRA) - Central Europe</option>
+                            <option value="https://laserstream-mainnet-lon.helius-rpc.com">London (LON) - UK Edge</option>
+                            <option value="https://laserstream-mainnet-ewr.helius-rpc.com">Newark (EWR) - East US Edge</option>
+                            <option value="https://laserstream-mainnet-tyo.helius-rpc.com">Tokyo (TYO) - Asia Edge</option>
+                            <option value="https://laserstream-mainnet-sgp.helius-rpc.com">Singapore (SGP) - Asia Edge</option>
+                          </>
+                        )}
                       </select>
                     </div>
 
                     <div className="flex flex-col gap-1 pt-1 border-t border-[#1f212e]/40">
-                      <span className="text-[10px] text-[#64748b] uppercase font-bold tracking-wider">📡 Active gRPC Filters</span>
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] text-[#64748b] uppercase font-bold tracking-wider">📡 Active gRPC Filters</span>
+                        <span className="text-[8px] font-mono text-[#94a3b8] uppercase">{tradingNetwork}</span>
+                      </div>
                       <div className="flex flex-wrap gap-1 mt-1">
-                        <span className="text-[8px] bg-[#c7f284]/10 text-[#c7f284] border border-[#c7f284]/25 px-1.5 py-0.5 rounded font-mono font-medium">Pump.fun Ingestion</span>
-                        <span className="text-[8px] bg-[#c7f284]/10 text-[#c7f284] border border-[#c7f284]/25 px-1.5 py-0.5 rounded font-mono font-medium">Raydium Liquidity Pool</span>
+                        {tradingNetwork === 'devnet' ? (
+                          <>
+                            <span className="text-[8px] bg-[#c7f284]/10 text-[#c7f284] border border-[#c7f284]/25 px-1.5 py-0.5 rounded font-mono font-medium">SPL Token Program</span>
+                            <span className="text-[8px] bg-[#c7f284]/10 text-[#c7f284] border border-[#c7f284]/25 px-1.5 py-0.5 rounded font-mono font-medium">System Program</span>
+                            <span className="text-[8px] bg-[#c7f284]/10 text-[#c7f284] border border-[#c7f284]/25 px-1.5 py-0.5 rounded font-mono font-medium">Compute Budget</span>
+                          </>
+                        ) : (
+                          <>
+                            <span className="text-[8px] bg-[#c7f284]/10 text-[#c7f284] border border-[#c7f284]/25 px-1.5 py-0.5 rounded font-mono font-medium">Pump.fun Ingestion</span>
+                            <span className="text-[8px] bg-[#c7f284]/10 text-[#c7f284] border border-[#c7f284]/25 px-1.5 py-0.5 rounded font-mono font-medium">Raydium Liquidity Pool</span>
+                            <span className="text-[8px] bg-[#c7f284]/10 text-[#c7f284] border border-[#c7f284]/25 px-1.5 py-0.5 rounded font-mono font-medium">Jupiter v6</span>
+                          </>
+                        )}
                       </div>
                     </div>
                   </div>

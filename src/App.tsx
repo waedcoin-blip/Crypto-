@@ -1,4 +1,7 @@
 import { getKeypairFromPrivateKey, getSavedSessionKeypair, saveSessionKeypair } from './utils/keypairUtils';
+import { activeWalletService } from './services/ActiveWalletService';
+import { useActiveWalletStore } from './store/activeWalletStore';
+import { TradingNetwork } from './config/network';
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { 
@@ -30,7 +33,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { cn, detectTokenStage } from './lib/utils';
-import { setSolPriceUsd, getSolPriceUsd, calcNetPnl } from './utils/pnlCalculator';
+import { setSolPriceUsd, getSolPriceUsd, calcNetPnl, getDynamicOperationalFeeSol } from './utils/pnlCalculator';
 import { DEFAULT_HELIUS_RPC, HELIUS_API_KEY } from './constants/solana';
 import { encryptPrivateKey, decryptPrivateKey } from './lib/crypto';
 import { auth, db, signInWithGoogle, signInWithEmailAndPassword, createUserWithEmailAndPassword, authPersistencePromise } from './lib/firebase';
@@ -228,16 +231,6 @@ const SAFETY_PRESETS: SafetyPreset[] = [
 ];
 
 const NARRATIVE_KEYWORDS = ['AI', 'AGENT', 'GPT', 'ZK', 'PROOF', 'SOL', 'MASK'];
-
-const getDynamicOperationalFeeSol = (isRecovery: boolean = false, tradeAmountSol: number = 0.05): number => {
-  const baseGasAndComputeSol = 0.00005;
-  // Scale Jito tip for smaller trades (under 0.05 SOL) to prevent 15%+ starting loss
-  let jitoTip = isRecovery ? 0.0025 : 0.0015;
-  if (tradeAmountSol < 0.05) {
-     jitoTip = isRecovery ? 0.0010 : 0.0003; 
-  }
-  return baseGasAndComputeSol + jitoTip;
-};
 
 import { SniperTrade, Trade, TokenMetric, TelemetryAlert } from './types';
 
@@ -462,32 +455,29 @@ function App() {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('jupiter_auto_apiKey') || localStorage.getItem('juipter_auto_apiKey') || '');
   const [jupiterRpcUrl, setJupiterRpcUrl] = useState(() => localStorage.getItem('juipter_auto_jupiterRpcUrl') || '');
   const { activePositions, updateActivePositions: setActivePositions, sessionWallet, setSessionWallet } = useAppStore();
-  const [privateKey, setPrivateKey] = useState(() => {
+  const [privateKey, setPrivateKeyState] = useState(() => {
     const saved = getSavedSessionKeypair();
     return saved ? bs58.encode(saved.secretKey) : '';
   });
   const [telegramBotToken, setTelegramBotToken] = useState(() => localStorage.getItem('tg_bot_token') || '');
   const [telegramChatId, setTelegramChatId] = useState(() => localStorage.getItem('tg_chat_id') || '');
 
+  const setPrivateKey = useCallback((newKey: string) => {
+    setPrivateKeyState(newKey);
+    const network = (localStorage.getItem('app_trading_network') as TradingNetwork) || 'devnet';
+    if (newKey && newKey.trim()) {
+      void activeWalletService.activateSessionKey(newKey.trim(), network);
+    } else {
+      void activeWalletService.clearActiveWallet();
+    }
+  }, []);
+
   useEffect(() => {
     if (sessionWallet) {
       const encoded = bs58.encode(sessionWallet.secretKey);
-      if (privateKey !== encoded) {
-        setPrivateKey(encoded);
-      }
+      setPrivateKeyState((prev) => (prev !== encoded ? encoded : prev));
     }
   }, [sessionWallet]);
-
-  useEffect(() => {
-    if (privateKey) {
-      try {
-        const kp = getKeypairFromPrivateKey(privateKey);
-        if (!sessionWallet || sessionWallet.publicKey.toBase58() !== kp.publicKey.toBase58()) {
-          setSessionWallet(kp);
-        }
-      } catch {}
-    }
-  }, [privateKey, sessionWallet, setSessionWallet]);
 
   useEffect(() => {
     localStorage.setItem('jupiter_auto_apiKey', apiKey);
@@ -522,17 +512,13 @@ function App() {
         const uid = user?.uid || 'default_app_offline_salt';
         const decrypted = await decryptPrivateKey(stored, uid);
         if (active && decrypted && decrypted !== privateKey) {
-          try {
-            const kp = getKeypairFromPrivateKey(decrypted);
-            setSessionWallet(kp);
-            setPrivateKey(decrypted);
-          } catch {}
+          setPrivateKey(decrypted);
         }
       }
     };
     loadAndDecrypt();
     return () => { active = false; };
-  }, [user?.uid]);
+  }, [user?.uid, setPrivateKey]);
   useEffect(() => {
     localStorage.setItem('app_buyAmountSol', buyAmountSol.toString());
     localStorage.setItem('app_minTakeProfit', minTakeProfit.toString());
@@ -1076,16 +1062,6 @@ function App() {
       unsubscribe();
     };
   }, [rpcUrl, rpcUrl2]);
-
-  // Load session wallet on mount if not already in store
-  useEffect(() => {
-    if (!sessionWallet) {
-      const saved = getSavedSessionKeypair();
-      if (saved) {
-        setSessionWallet(saved);
-      }
-    }
-  }, [sessionWallet, setSessionWallet]);
 
   const generateSessionWallet = () => {
     const kp = Keypair.generate();
