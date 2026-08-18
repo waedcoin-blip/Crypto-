@@ -1,3 +1,4 @@
+import { getKeypairFromPrivateKey } from '../utils/keypairUtils';
 // src/services/JupiterUltraJitoWallet.ts
 import {
   Connection,
@@ -37,7 +38,7 @@ export class JupiterUltraJitoWallet {
     this.config = config;
     this.connection = new Connection(config.rpcEndpoint, 'confirmed');
     this.jupiterApi = createJupiterApiClient({ basePath: config.jupiterEndpoint });
-    this.wallet = Keypair.fromSecretKey(bs58.decode(config.privateKeyBase58));
+    this.wallet = getKeypairFromPrivateKey(config.privateKeyBase58);
     this.publicKey = this.wallet.publicKey;
   }
 

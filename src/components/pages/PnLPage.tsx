@@ -1,3 +1,4 @@
+import { getKeypairFromPrivateKey } from '../../utils/keypairUtils';
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Play, Square, Search, ShieldCheck, ShieldAlert, AlertTriangle, Shield, TrendingUp, ChevronDown, ChevronUp, BookOpen, X, Zap, Activity, ChevronRight, Download, Trash2, Settings, Pause, Database, Copy, Check, Terminal, ArrowUpDown, SlidersHorizontal, Eye, EyeOff, Clock, Info, Bug, Filter, Server, Globe, RefreshCw, Wifi, CloudUpload } from 'lucide-react';
@@ -2591,7 +2592,7 @@ export const PnLPage = ({
     if (!privateKey || !rpcUrl) return;
     setIsFetchingTokens(true);
     try {
-      const keypair = Keypair.fromSecretKey(bs58.decode(privateKey));
+      const keypair = getKeypairFromPrivateKey(privateKey);
       const activeWsUrl = (customWsUrl && customWsUrl.trim() !== "") ? customWsUrl.trim() : rpcUrl.replace('https', 'wss').replace('http', 'ws');
       const conn = new Connection(rpcUrl, { commitment: 'confirmed', wsEndpoint: activeWsUrl });
       
@@ -2705,7 +2706,7 @@ export const PnLPage = ({
     }, 60000);
 
     try {
-      const keypair = Keypair.fromSecretKey(bs58.decode(privateKey));
+      const keypair = getKeypairFromPrivateKey(privateKey);
       const activeWsUrl = (customWsUrl && customWsUrl.trim() !== "") ? customWsUrl.trim() : rpcUrl.replace('https', 'wss').replace('http', 'ws');
       const conn = new Connection(rpcUrl, { commitment: 'confirmed', wsEndpoint: activeWsUrl });
       
@@ -2854,7 +2855,7 @@ export const PnLPage = ({
         setJupiterStatus('CONNECTING');
         let keypair;
         try {
-          keypair = Keypair.fromSecretKey(bs58.decode(privateKey));
+          keypair = getKeypairFromPrivateKey(privateKey);
         } catch (e: any) {
           setJupiterStatus('ERROR');
           setJupiterAddress('');
@@ -3065,7 +3066,7 @@ export const PnLPage = ({
     }
 
     if (!privateKey) throw new Error("Private Key missing");
-    const keypair = Keypair.fromSecretKey(bs58.decode(privateKey));
+    const keypair = getKeypairFromPrivateKey(privateKey);
     const connection = new Connection(jupRpcUrlToUse);
 
     let baseUrl = 'https://api.jup.ag';
@@ -4016,11 +4017,11 @@ const checkTokenCriteria = (mint: string): {
           positionsRef.current = next;
           return next;
         });
-        syncSimBalanceToStore();
+        syncSimBalanceToStore((b) => setSimWalletBalance(b));
         addLog(`✅ [SIM] Bought ${symbol} @ ${parsedPrice.toFixed(8)} SOL (${tokenAmount.toFixed(2)} tokens)`, 'buy');
       } catch (e: any) {
          addLog(`[SIM] Failed: ${e.message}`, 'err');
-         syncSimBalanceToStore();
+         syncSimBalanceToStore((b) => setSimWalletBalance(b));
       } finally {
         pendingBuysRef.current--;
         pendingBuyMintsRef.current.delete(mint);
@@ -4194,7 +4195,7 @@ const checkTokenCriteria = (mint: string): {
           let lamportsToSell = lamportsToSellRaw;
           if (!lamportsToSell || lamportsToSell <= 0) {
             try {
-              const keypair = Keypair.fromSecretKey(bs58.decode(privateKey));
+              const keypair = getKeypairFromPrivateKey(privateKey);
               const activeWsUrl = (customWsUrl && customWsUrl.trim() !== "") ? customWsUrl.trim() : rpcUrl.replace('https', 'wss').replace('http', 'ws');
               const conn = new Connection(rpcUrl, { commitment: 'confirmed', wsEndpoint: activeWsUrl });
               const accounts = await conn.getParsedTokenAccountsByOwner(
@@ -4348,7 +4349,11 @@ const checkTokenCriteria = (mint: string): {
 
         const realWalletReturn = Math.max(0, netReceivedSOL - getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent));
         const walletNetPnlPct = (realWalletReturn - pos.solSpent) / pos.solSpent;
-        syncSimBalanceToStore();
+        const simExecManual = getSimExecutor();
+        simExecManual.getSolBalance().then(curBal => {
+          simExecManual.setVirtualSol(curBal + realWalletReturn);
+          syncSimBalanceToStore((b) => setSimWalletBalance(b));
+        });
 
         setStats((s) => ({
           trades: s.trades + 1,
@@ -4460,7 +4465,11 @@ const checkTokenCriteria = (mint: string): {
         // Credit returned SOL to simulation wallet balance
         const isRealModeActive = (useAppStore.getState().isLiveTrading || localStorage.getItem('juipter_auto_tradeMode') === 'real') && Boolean(privateKey) && Boolean(user);
         if (!isRealModeActive) {
-          syncSimBalanceToStore();
+          const simExecAuto = getSimExecutor();
+          simExecAuto.getSolBalance().then(curBal => {
+            simExecAuto.setVirtualSol(curBal + actualSolReceived);
+            syncSimBalanceToStore((b) => setSimWalletBalance(b));
+          });
         } else {
           walletBalanceService.refreshNow();
         }

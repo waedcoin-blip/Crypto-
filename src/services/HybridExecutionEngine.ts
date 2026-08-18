@@ -1,3 +1,4 @@
+import { getKeypairFromPrivateKey } from '../utils/keypairUtils';
 // src/services/HybridExecutionEngine.ts
 import {
   Connection,
@@ -71,7 +72,7 @@ export class HybridExecutionEngine {
   constructor(config: HybridConfig) {
     this.config = config;
     this.connection = new Connection(config.rpcEndpoint, 'confirmed');
-    this.wallet = Keypair.fromSecretKey(bs58.decode(config.privateKeyBase58));
+    this.wallet = getKeypairFromPrivateKey(config.privateKeyBase58);
     this.publicKey = this.wallet.publicKey;
     this.jupiterApi = createJupiterApiClient({ basePath: config.jupiterEndpoint });
   }

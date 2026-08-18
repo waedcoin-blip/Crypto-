@@ -1,3 +1,4 @@
+import { getKeypairFromPrivateKey } from '../utils/keypairUtils';
 // src/components/WalletStatusWidget.tsx
 import React, { useState, useEffect } from 'react';
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
@@ -55,20 +56,7 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
       return;
     }
     try {
-      let secretKeyUint8: Uint8Array;
-      if (raw.startsWith('[') && raw.endsWith(']')) {
-        const parsed = JSON.parse(raw);
-        if (!Array.isArray(parsed) || parsed.length !== 64) {
-          throw new Error('Secret key array must be 64 bytes long');
-        }
-        secretKeyUint8 = new Uint8Array(parsed);
-      } else {
-        secretKeyUint8 = bs58.decode(raw);
-        if (secretKeyUint8.length !== 64) {
-          throw new Error('Base58 private key must decode to 64 bytes');
-        }
-      }
-      const kp = Keypair.fromSecretKey(secretKeyUint8);
+      const kp = getKeypairFromPrivateKey(raw);
       const encoded = bs58.encode(kp.secretKey);
       sessionStorage.setItem('matrix_session_key', encoded);
       localStorage.setItem('juipter_auto_privateKey', encoded);

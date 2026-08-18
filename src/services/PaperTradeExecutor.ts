@@ -222,6 +222,10 @@ export class PaperTradeExecutor implements ITradeExecutor {
     return this.virtualSol;
   }
 
+  public setVirtualSol(sol: number): void {
+    this.virtualSol = Math.max(0, sol);
+  }
+
   async getTokenBalance(mint: string): Promise<number> {
     return this.getVirtualTokenBalance(mint);
   }

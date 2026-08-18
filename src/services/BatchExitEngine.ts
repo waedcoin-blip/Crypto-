@@ -1,3 +1,4 @@
+import { getKeypairFromPrivateKey } from '../utils/keypairUtils';
 // src/services/BatchExitEngine.ts
 import {
   Connection,
@@ -59,7 +60,7 @@ export class BatchExitEngine {
   constructor(config: BatchExitConfig) {
     this.config = { maxBatchSize: 6, ...config };
     this.connection = new Connection(config.rpcEndpoint, 'confirmed');
-    this.wallet = Keypair.fromSecretKey(bs58.decode(config.privateKeyBase58));
+    this.wallet = getKeypairFromPrivateKey(config.privateKeyBase58);
     this.jupiterApi = createJupiterApiClient({ basePath: config.jupiterEndpoint });
   }
 

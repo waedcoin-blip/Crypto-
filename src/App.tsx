@@ -1,3 +1,4 @@
+import { getKeypairFromPrivateKey } from './utils/keypairUtils';
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { 
@@ -1059,7 +1060,7 @@ function App() {
     if (savedKey) {
       try {
         const decoded = bs58.decode(savedKey);
-        setSessionWallet(Keypair.fromSecretKey(decoded));
+        setSessionWallet(getKeypairFromPrivateKey(savedKey));
       } catch (e) {
         console.error('Failed to load session wallet');
         sessionStorage.removeItem('matrix_session_key');
