@@ -83,7 +83,7 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
   };
 
   const handleGenerateSessionWallet = () => {
-    const kp = Keypair.generate();
+    const kp = network === 'devnet' ? Keypair.fromSeed(new Uint8Array(32).fill(7)) : Keypair.generate();
     const encoded = bs58.encode(kp.secretKey);
     sessionStorage.setItem('matrix_session_key', encoded);
     setSessionWallet(kp);

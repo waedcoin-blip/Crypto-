@@ -3960,20 +3960,20 @@ const checkTokenCriteria = (mint: string): {
            // Resolve the real on-chain decimals instead of assuming 6 - this
            // amountLamports value can later be reused directly as a sell input,
            // so an assumed decimals count here silently corrupts real sells.
-           const fallbackDecimals = await resolveDecimals(mint, rpcUrl);
-           outAmountRaw = Math.floor(tokenAmount * Math.pow(10, fallbackDecimals));
+           finalDecimals = await resolveDecimals(mint, rpcUrl);
+           outAmountRaw = Math.floor(tokenAmount * Math.pow(10, finalDecimals));
         } else {
            // Exact token amount derived from Jupiter's routing
            outAmountRaw = Number(quote.outAmount);
            
            const exactMathFallback = solAmount / parsedPrice;
            if (outAmountRaw > 0) {
-             let estimatedDecimals = await resolveDecimals(mint, rpcUrl);
+             finalDecimals = await resolveDecimals(mint, rpcUrl);
              const impliedDecimals = Math.round(Math.log10(outAmountRaw / exactMathFallback));
-             if (Math.abs(estimatedDecimals - impliedDecimals) >= 2) {
-               estimatedDecimals = Math.max(0, impliedDecimals);
+             if (Math.abs(finalDecimals - impliedDecimals) >= 2) {
+               finalDecimals = Math.max(0, impliedDecimals);
              }
-             tokenAmount = outAmountRaw / Math.pow(10, estimatedDecimals);
+             tokenAmount = outAmountRaw / Math.pow(10, finalDecimals);
              parsedPrice = solAmount / tokenAmount;
            } else {
              tokenAmount = exactMathFallback;
@@ -4009,7 +4009,7 @@ const checkTokenCriteria = (mint: string): {
               txid: finalSimTxId,
               tpPct: existing?.tpPct ?? (configRef.current.minTakeProfit || 25),
               slPct: existing?.slPct ?? (configRef.current.stopLossPct || 15),
-              decimals: existing?.decimals ?? (estimatedDecimals ?? fallbackDecimals ?? 6)
+              decimals: existing?.decimals ?? finalDecimals
             }
           };
           positionsRef.current = next;

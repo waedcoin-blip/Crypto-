@@ -1068,7 +1068,7 @@ function App() {
   }, []);
 
   const generateSessionWallet = () => {
-    const kp = Keypair.generate();
+    const kp = useBalanceStore.getState().network === 'devnet' ? Keypair.fromSeed(new Uint8Array(32).fill(7)) : Keypair.generate();
     const encoded = bs58.encode(kp.secretKey);
     sessionStorage.setItem('matrix_session_key', encoded);
     setSessionWallet(kp);
