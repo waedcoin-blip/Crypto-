@@ -74,8 +74,10 @@ export class MasterMonitorService {
   }
 
   async startMonitoring(mints: string[]): Promise<void> {
-    for (const mint of mints) {
-      if (mint) this.subscribedMints.add(`${this.connection.rpcEndpoint.includes("devnet") ? "devnet" : "mainnet"}:${mint}`);
+    for (const rawMint of mints) {
+      if (!rawMint) continue;
+      const mint = rawMint.includes(':') ? rawMint.split(':')[1] : rawMint;
+      this.subscribedMints.add(mint);
     }
     
     this.ensureBatchPolling();
@@ -83,9 +85,10 @@ export class MasterMonitorService {
   }
 
   // Fast direct push update from RPC parser, WebSocket, or Market Tracker
-  public pushPriceUpdate(mint: string, priceNative: number, timestamp = Date.now(), source: TokenPriceUpdate['source'] = 'jupiter'): void {
-    if (!mint || priceNative <= 0) return;
-    this.subscribedMints.add(`${this.connection.rpcEndpoint.includes("devnet") ? "devnet" : "mainnet"}:${mint}`);
+  public pushPriceUpdate(rawMint: string, priceNative: number, timestamp = Date.now(), source: TokenPriceUpdate['source'] = 'jupiter'): void {
+    if (!rawMint || priceNative <= 0) return;
+    const mint = rawMint.includes(':') ? rawMint.split(':')[1] : rawMint;
+    this.subscribedMints.add(mint);
     
     this.priceEngine.set(mint, {
       priceNative,
@@ -121,7 +124,32 @@ export class MasterMonitorService {
               const priceNative = parseFloat(priceInfo.price);
               if (priceNative > 0) {
                 this.pushPriceUpdate(mint, priceNative, now, 'jupiter');
+                continue;
               }
+            }
+
+            // Fallback for Devnet or unlisted tokens: fetch from DexScreener or retain active price
+            try {
+              const dexRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`);
+              if (dexRes.ok) {
+                const dexData = await dexRes.json();
+                const pair = dexData.pairs?.[0];
+                if (pair?.priceNative) {
+                  const priceNative = parseFloat(pair.priceNative);
+                  if (priceNative > 0) {
+                    this.pushPriceUpdate(mint, priceNative, now, 'dexscreener');
+                    continue;
+                  }
+                }
+              }
+            } catch {
+              // Ignore DexScreener error
+            }
+
+            // Keep existing price updated if still fresh or active
+            const existing = this.priceEngine.get(mint);
+            if (existing && existing.priceNative > 0) {
+              this.pushPriceUpdate(mint, existing.priceNative, now, existing.source);
             }
           }
         }

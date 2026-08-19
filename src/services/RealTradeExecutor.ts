@@ -103,8 +103,8 @@ export class RealTradeExecutor implements ITradeExecutor {
         const latestBlockhash = await this.connection.getLatestBlockhash('confirmed');
         const isSolBuy = inputMint === 'So11111111111111111111111111111111111111112';
 
-        // Devnet Liquidity Vault / Program destination
-        const devnetVault = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
+        // Devnet Liquidity Vault / Non-executable System Account
+        const devnetVault = new PublicKey('SysvarRent111111111111111111111111111111111');
 
         if (isSolBuy) {
           outAmountNum = Math.floor((amount / LAMPORTS_PER_SOL) * 1_000_000 * 0.98); // Estimated tokens
