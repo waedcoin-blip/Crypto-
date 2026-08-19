@@ -226,38 +226,51 @@ export const useBalanceStore = create<BalanceState>((set) => ({
 }));
 
 /**
- * Authoritative trading balance retriever
+ * Authoritative trading balance retriever (Strictly mode-aware)
  */
-export function getTradingBalance(): number {
+export function getTradingBalance(isPaperTrading = false): number {
   const state = useBalanceStore.getState();
 
-  if (state.availableSolBalance === null) {
-    throw new Error('Wallet balance is not available');
+  if (isPaperTrading) {
+    return state.simCashSol;
   }
 
-  if (state.status !== 'live') {
-    throw new Error('Wallet balance is stale or unavailable');
+  const avail = state.onChainAvailableSol ?? state.availableSolBalance;
+  if (avail === null) {
+    throw new Error('On-chain wallet balance is not available');
   }
 
-  return state.availableSolBalance;
+  if (state.onChainStatus !== 'live' && state.status !== 'live') {
+    throw new Error('On-chain wallet balance is stale or unavailable');
+  }
+
+  return avail;
 }
 
 /**
- * Asserts sufficient live on-chain balance prior to trade execution
+ * Asserts sufficient live balance prior to trade execution (Mode-aware)
  */
-export async function assertTradeBalance(requiredSol: number): Promise<void> {
+export async function assertTradeBalance(requiredSol: number, isPaperTrading = false): Promise<void> {
   const state = useBalanceStore.getState();
 
-  if (state.status !== 'live') {
-    throw new Error('Trading blocked: wallet balance is not live');
+  if (isPaperTrading) {
+    if (state.simCashSol < requiredSol) {
+      throw new Error(`Insufficient Simulation Cash SOL balance (Available: ${state.simCashSol.toFixed(4)} SOL, Required: ${requiredSol.toFixed(4)} SOL)`);
+    }
+    return;
   }
 
-  if (state.availableSolBalance === null) {
-    throw new Error('Trading blocked: wallet balance unavailable');
+  if (state.onChainStatus !== 'live' && state.status !== 'live') {
+    throw new Error('Trading blocked: on-chain wallet balance is not live');
   }
 
-  if (state.availableSolBalance < requiredSol) {
-    throw new Error(`Insufficient ${state.network.toUpperCase()} SOL balance (Available: ${state.availableSolBalance.toFixed(4)} SOL, Required: ${requiredSol.toFixed(4)} SOL)`);
+  const avail = state.onChainAvailableSol ?? state.availableSolBalance;
+  if (avail === null) {
+    throw new Error('Trading blocked: on-chain wallet balance unavailable');
+  }
+
+  if (avail < requiredSol) {
+    throw new Error(`Insufficient ${state.network.toUpperCase()} SOL balance (Available: ${avail.toFixed(4)} SOL, Required: ${requiredSol.toFixed(4)} SOL)`);
   }
 }
 

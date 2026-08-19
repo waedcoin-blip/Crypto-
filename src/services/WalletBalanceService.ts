@@ -2,11 +2,10 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import { getNetworkConfig, TradingNetwork } from '../config/network';
 import { useBalanceStore } from '../store/balanceStore';
-import { useAppStore } from '../store/appStore';
-import { getSimExecutor } from './SimExecutorSingleton';
 import { useActiveWalletStore } from '../store/activeWalletStore';
 
 const LAMPORTS_PER_SOL = 1_000_000_000;
+const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
 
 export class WalletBalanceService {
   private connection: Connection | null = null;
@@ -20,8 +19,8 @@ export class WalletBalanceService {
     useBalanceStore.getState().setNetwork(network);
   }
 
-  refreshNow() {
-    void this.refresh();
+  refreshNow(address?: string) {
+    void this.refresh(address);
   }
 
   start(intervalMs: number) {
@@ -41,8 +40,8 @@ export class WalletBalanceService {
     void this.refresh();
   }
 
-  async refresh(): Promise<number> {
-    const address = useActiveWalletStore.getState().activeWallet?.address;
+  async refresh(overrideAddress?: string): Promise<number> {
+    const address = overrideAddress || useActiveWalletStore.getState().activeWallet?.address;
     if (!address) {
       useBalanceStore.getState().setWalletAddress(null);
       return 0;
@@ -60,6 +59,39 @@ export class WalletBalanceService {
       return sol;
     } catch (err) {
       console.warn('Wallet balance query error for', address, err);
+      return 0;
+    }
+  }
+
+  /**
+   * Fetch exact on-chain SPL token account balance for a specific mint
+   */
+  async getTokenBalance(mint: string, walletAddress?: string): Promise<number> {
+    const address = walletAddress || useActiveWalletStore.getState().activeWallet?.address;
+    if (!address) return 0;
+
+    try {
+      if (!this.connection) {
+        const config = getNetworkConfig(this.network);
+        this.connection = new Connection(config.rpcUrl, 'confirmed');
+      }
+      const owner = new PublicKey(address);
+      const mintPk = new PublicKey(mint);
+
+      const accounts = await this.connection.getParsedTokenAccountsByOwner(owner, {
+        mint: mintPk
+      });
+
+      let totalRawAmount = 0;
+      for (const account of accounts.value) {
+        const amountStr = account.account.data.parsed?.info?.tokenAmount?.amount;
+        if (amountStr) {
+          totalRawAmount += Number(amountStr);
+        }
+      }
+      return totalRawAmount;
+    } catch (err) {
+      console.warn(`Failed to fetch token balance for ${mint}:`, err);
       return 0;
     }
   }

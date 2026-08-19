@@ -1,6 +1,7 @@
 // src/services/PositionExitManager.ts
 
 import { ITradeExecutor } from './ITradeExecutor';
+import { walletBalanceService } from './WalletBalanceService';
 
 export interface ManagedExitPosition {
   mint: string;
@@ -66,9 +67,10 @@ export class PositionExitManager {
   public start(): void {
     this.isRunning = true;
     if (!this.evaluationInterval) {
+      // 200ms high-frequency evaluation loop (5x per second)
       this.evaluationInterval = setInterval(() => {
         this.evaluateAllPositions();
-      }, 1000);
+      }, 200);
     }
   }
 
@@ -92,6 +94,9 @@ export class PositionExitManager {
   }): void {
     const existing = this.positions.get(params.mint);
     if (existing && existing.state !== 'CLOSED') {
+      // Update existing position's TP/SL if provided
+      if (params.tpPct !== undefined) existing.tpPct = params.tpPct;
+      if (params.slPct !== undefined) existing.slPct = params.slPct;
       return;
     }
 
@@ -112,6 +117,14 @@ export class PositionExitManager {
     };
 
     this.positions.set(params.mint, pos);
+  }
+
+  public updatePositionTpSl(mint: string, tpPct: number, slPct: number): void {
+    const pos = this.positions.get(mint);
+    if (pos) {
+      pos.tpPct = tpPct;
+      pos.slPct = slPct;
+    }
   }
 
   public confirmBuy(mint: string, signature: string, slot: number): void {
@@ -197,7 +210,15 @@ export class PositionExitManager {
       const slippageBps = side === 'tp' ? (pos.slippageBpsTp || 250) : (pos.slippageBpsSl || 1000);
       const label = side === 'tp' ? 'exit_tp' : 'exit_sl';
 
-      console.log(`[ExitManager] ⚡ Executing ${side.toUpperCase()} exit for ${mint} at PnL: ${pnlPct.toFixed(2)}%`);
+      // Query actual live token balance from executor if available
+      if (typeof this.executor.getTokenBalance === 'function') {
+        const liveAmount = await this.executor.getTokenBalance(mint).catch(() => 0);
+        if (liveAmount > 0) {
+          pos.amount = liveAmount;
+        }
+      }
+
+      console.log(`[ExitManager] ⚡ Executing ${side.toUpperCase()} exit for ${mint} at PnL: ${pnlPct.toFixed(2)}% (Amount: ${pos.amount})`);
 
       const result = await this.executor.swap(
         mint,
@@ -211,6 +232,9 @@ export class PositionExitManager {
       this.exitingMints.delete(mint);
       this.positions.delete(mint);
 
+      // Instantly refresh on-chain wallet balance after exit execution
+      walletBalanceService.refreshNow();
+
       if (this.onExitCallback) {
         this.onExitCallback(mint, side, result.signature || 'exit-tx', pnlPct, (result.outputAmount / 1e9) - result.feeSol);
       }
@@ -223,6 +247,9 @@ export class PositionExitManager {
         pos.state = 'CLOSED';
         this.exitingMints.delete(mint);
         this.positions.delete(mint);
+
+        walletBalanceService.refreshNow();
+
         if (this.onExitCallback) {
           this.onExitCallback(mint, side, 'recovered-exit-tx', pnlPct);
         }

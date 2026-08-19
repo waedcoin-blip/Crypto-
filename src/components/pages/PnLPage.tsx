@@ -4471,7 +4471,7 @@ const checkTokenCriteria = (mint: string): {
     const isRealMode = tradeModeFromStorage === 'real' && !!useActiveWalletStore.getState().activeWallet?.keypair;
     const currentJup = jupiterRpcUrl || 'https://api.jup.ag/swap/v1';
 
-    let executor: ITradeExecutor = isRealMode ? new RealTradeExecutor({ network: "mainnet" }) : getSimExecutor(simWalletBalance || 1.0, currentJup);
+    let executor: ITradeExecutor = isRealMode ? new RealTradeExecutor({ network: (tradingNetwork as any) || 'devnet' }) : getSimExecutor(simWalletBalance || 1.0, currentJup);
 
     const exitMgr = new PositionExitManager(
       executor,
