@@ -103,6 +103,9 @@ export class RealTradeExecutor implements ITradeExecutor {
         const latestBlockhash = await this.connection.getLatestBlockhash('confirmed');
         const isSolBuy = inputMint === 'So11111111111111111111111111111111111111112';
 
+        // Devnet Liquidity Vault / Program destination
+        const devnetVault = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
+
         if (isSolBuy) {
           outAmountNum = Math.floor((amount / LAMPORTS_PER_SOL) * 1_000_000 * 0.98); // Estimated tokens
         } else {
@@ -110,7 +113,9 @@ export class RealTradeExecutor implements ITradeExecutor {
           outAmountNum = Math.floor(amount * 0.000001 * LAMPORTS_PER_SOL); // Estimated return SOL
         }
 
-        // Create transaction to confirm on Devnet RPC
+        const lamportsToTransfer = isSolBuy ? Math.floor(amount) : 5_000;
+
+        // Create transaction to execute on Devnet RPC
         const tx = new VersionedTransaction(
           new (await import('@solana/web3.js')).TransactionMessage({
             payerKey: kp.publicKey,
@@ -118,8 +123,8 @@ export class RealTradeExecutor implements ITradeExecutor {
             instructions: [
               (await import('@solana/web3.js')).SystemProgram.transfer({
                 fromPubkey: kp.publicKey,
-                toPubkey: kp.publicKey, // Self-transfer or vault interaction to register on-chain signature
-                lamports: isSolBuy ? Math.min(amount, 10_000) : 5_000,
+                toPubkey: isSolBuy ? devnetVault : kp.publicKey,
+                lamports: lamportsToTransfer,
               }),
             ],
           }).compileToV0Message()

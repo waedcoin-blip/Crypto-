@@ -30,20 +30,10 @@ export class TradeManager {
       return getSimExecutor(this.paperConfig.initialSolBalance || 10);
     }
 
-    if (this._mode === 'mainnet' || this._mode === 'real') {
-      console.warn("Mainnet/Real execution routed to RealTradeExecutor or paper fallback if unconfigured.");
-      if (this.realConfig?.hybridEngine) {
-        return new RealTradeExecutor({
-          ...this.realConfig,
-          network: 'mainnet',
-        });
-      }
-      return getSimExecutor(this.paperConfig.initialSolBalance || 10);
-    }
-
+    const network: TradingNetwork = this._mode === 'mainnet' ? 'mainnet' : 'devnet';
     return new RealTradeExecutor({
       ...this.realConfig,
-      network: 'devnet',
+      network,
     });
   }
 
