@@ -1,5 +1,4 @@
-import { getKeypairFromPrivateKey } from '../utils/keypairUtils';
-// src/services/HybridExecutionEngine.ts
+import { useActiveWalletStore } from '../store/activeWalletStore';
 import {
   Connection,
   Keypair,
@@ -52,8 +51,6 @@ export interface AtomicBundleResult {
 
 export class HybridExecutionEngine {
   public connection: Connection;
-  public wallet: Keypair;
-  public publicKey: PublicKey;
   public jupiterApi: ReturnType<typeof createJupiterApiClient>;
   private config: HybridConfig;
   private consecutiveJitoFailures = 0;
@@ -69,20 +66,20 @@ export class HybridExecutionEngine {
     '3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT',
   ].map(a => new PublicKey(a));
 
+  get wallet(): Keypair {
+    const kp = useActiveWalletStore.getState().activeWallet?.keypair;
+    if (!kp) throw new Error("No active wallet in store for HybridExecutionEngine");
+    return kp;
+  }
+
+  get publicKey(): PublicKey {
+    return this.wallet.publicKey;
+  }
+
   constructor(config: HybridConfig) {
     this.config = config;
     this.connection = new Connection(config.rpcEndpoint, 'confirmed');
-    this.wallet = getKeypairFromPrivateKey(config.privateKeyBase58);
-    this.publicKey = this.wallet.publicKey;
     this.jupiterApi = createJupiterApiClient({ basePath: config.jupiterEndpoint });
-  }
-
-  public setWallet(keypair: Keypair | null) {
-    if (keypair) {
-      this.wallet = keypair;
-      this.publicKey = keypair.publicKey;
-      this.config.privateKeyBase58 = bs58.encode(keypair.secretKey);
-    }
   }
 
   private log(...args: any[]) {

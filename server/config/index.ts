@@ -74,5 +74,17 @@ export function getJupiterApiKey(clientKey?: string): string | undefined {
 }
 
 export function getHeliusApiKey(): string | undefined {
-  return config.HELIUS_API_KEY;
+  const raw = config.HELIUS_API_KEY || config.VITE_HELIUS_API_KEY;
+  if (!raw) return undefined;
+  if (raw.includes('api-key=')) {
+    const match = raw.match(/api-key=([a-zA-Z0-9-]+)/);
+    if (match && match[1]) return match[1];
+  }
+  if (raw.startsWith('http://') || raw.startsWith('https://')) {
+    try {
+      const u = new URL(raw);
+      return u.searchParams.get('api-key') || raw;
+    } catch {}
+  }
+  return raw;
 }

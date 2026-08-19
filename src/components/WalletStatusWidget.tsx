@@ -1,8 +1,10 @@
+import { useActiveWalletStore } from "../store/activeWalletStore";
+import { getKeypairFromPrivateKey, getSavedSessionKeypair, saveSessionKeypair } from '../utils/keypairUtils';
 // src/components/WalletStatusWidget.tsx
 import React, { useState, useEffect } from 'react';
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
-import { Keypair, PublicKey } from '@solana/web3.js';
+import { Keypair } from '@solana/web3.js';
 import bs58 from 'bs58';
 import { 
   Wallet, 
@@ -22,17 +24,15 @@ import {
 import { useAppStore } from '../store/appStore';
 import { useBalanceStore } from '../store/balanceStore';
 import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
-import { useActiveWalletStore } from '../store/activeWalletStore';
-import { activeWalletService } from '../services/ActiveWalletService';
-import { walletBalanceService } from '../services/WalletBalanceService';
+import { WalletBalanceService } from '../services/WalletBalanceService';
 import { cn } from '../lib/utils';
 
 export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className }) => {
   const { publicKey, wallet, disconnect } = useWallet();
   const { connection } = useConnection();
-  const { sessionWallet } = useAppStore();
+  const { sessionWallet, setSessionWallet } = useAppStore();
   const { network, setNetwork, switching } = useTradingEnvironmentStore();
-  const { address: activeStoreAddress, source: activeSource, keypair: activeKeypair } = useActiveWalletStore();
+  const isDevnet = network === 'devnet';
 
   const {
     onChainSolBalance,
@@ -42,6 +42,7 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
     reservedSol,
     status,
     onChainStatus,
+    lastUpdated
   } = useBalanceStore();
 
   const currentSolBalance = onChainSolBalance ?? solBalance;
@@ -53,42 +54,8 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
   const [inputKey, setInputKey] = useState('');
   const [keyError, setKeyError] = useState('');
   const [keySuccess, setKeySuccess] = useState('');
-  const [showDropdown, setShowDropdown] = useState(false);
-  const [isRefreshing, setIsRefreshing] = useState(false);
 
-  // Authoritative active address calculation: Session wallet takes priority when configured
-  const activeAddress = activeKeypair
-    ? activeKeypair.publicKey.toBase58()
-    : sessionWallet
-      ? sessionWallet.publicKey.toBase58()
-      : (publicKey ? publicKey.toBase58() : activeStoreAddress);
-
-  const isSessionActive = !!activeKeypair || !!sessionWallet;
-
-  // Sync connected wallet when no session wallet is active
-  useEffect(() => {
-    if (publicKey && !sessionWallet && !activeKeypair) {
-      void activeWalletService.activateConnectedWallet(publicKey, network);
-    }
-  }, [publicKey, sessionWallet, activeKeypair, network]);
-
-  // WalletBalanceService polling for active address
-  useEffect(() => {
-    if (!activeAddress) {
-      walletBalanceService.stop();
-      useBalanceStore.getState().reset();
-      return;
-    }
-
-    walletBalanceService.updateNetwork(network);
-    walletBalanceService.start(activeAddress, 5000);
-
-    return () => {
-      walletBalanceService.stop();
-    };
-  }, [network, activeAddress]);
-
-  const handleUpdateKeySubmit = async (e: React.FormEvent) => {
+  const handleUpdateKeySubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setKeyError('');
     setKeySuccess('');
@@ -97,27 +64,80 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
       setKeyError('Please enter a private key');
       return;
     }
+    try {
+      const kp = getKeypairFromPrivateKey(raw);
+      setSessionWallet(kp);
 
-    const res = await activeWalletService.activateSessionKey(raw, network);
-    if (res.success && res.address) {
-      setKeySuccess(`Wallet activated: ${res.address.slice(0, 4)}...${res.address.slice(-4)}`);
+      useBalanceStore.getState().setWalletAddress(kp.publicKey.toBase58());
+      const service = new WalletBalanceService(network);
+      service.refresh(kp.publicKey.toBase58());
+
+      setKeySuccess(`Wallet updated! Address: ${kp.publicKey.toBase58().slice(0, 4)}...${kp.publicKey.toBase58().slice(-4)}`);
       setInputKey('');
       setTimeout(() => {
         setKeySuccess('');
         setShowKeyForm(false);
-      }, 1500);
-    } else {
-      setKeyError(res.error || 'Invalid Base58 or JSON private key');
+      }, 2000);
+    } catch (err: any) {
+      setKeyError(err.message || 'Invalid Base58 or JSON private key');
     }
   };
+
+  const [showDropdown, setShowDropdown] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  const { activeWallet, switchActiveWallet } = useActiveWalletStore();
+  const activeAddress = activeWallet?.address || null;
+  const isSessionActive = activeWallet?.source === 'session';
+
+  // Synchronize phantom connect/disconnect to the ActiveWalletStore
+  useEffect(() => {
+    if (publicKey) {
+      if (activeWallet?.address !== publicKey.toBase58()) {
+         switchActiveWallet({
+           keypair: null,
+           address: publicKey.toBase58(),
+           network: isDevnet ? 'devnet' : 'mainnet',
+           source: 'connected'
+         });
+      }
+    } else if (sessionWallet) {
+       if (activeWallet?.address !== sessionWallet.publicKey.toBase58()) {
+          switchActiveWallet({
+            keypair: sessionWallet,
+            network: isDevnet ? 'devnet' : 'mainnet',
+            source: 'session'
+          });
+       }
+    } else if (activeWallet) {
+       switchActiveWallet({ keypair: null, address: '', network: 'mainnet', source: 'session' });
+    }
+  }, [publicKey, sessionWallet, isDevnet]);
+
+  // WalletBalanceService polling for active address
+  useEffect(() => {
+    if (!activeAddress) {
+      useBalanceStore.getState().reset();
+      return;
+    }
+
+    const service = new WalletBalanceService(network);
+    service.start(5000);
+
+    return () => {
+      service.destroy();
+    };
+  }, [network, activeAddress]);
 
   const handleManualRefresh = async () => {
     if (!activeAddress) return;
     setIsRefreshing(true);
     try {
-      await walletBalanceService.refresh(activeAddress);
+      const service = new WalletBalanceService(network);
+      await service.refresh();
+      service.destroy();
     } catch (e) {
-      console.warn('Manual balance refresh notice:', e);
+      console.warn('Manual balance refresh error:', e);
     } finally {
       setTimeout(() => setIsRefreshing(false), 300);
     }
@@ -129,13 +149,17 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleGenerateSessionWallet = async () => {
+  const handleGenerateSessionWallet = () => {
     const kp = Keypair.generate();
-    await activeWalletService.activateSessionKey(bs58.encode(kp.secretKey), network);
+    setSessionWallet(kp);
+    useBalanceStore.getState().setWalletAddress(kp.publicKey.toBase58());
+    const service = new WalletBalanceService(network);
+    service.refresh(kp.publicKey.toBase58());
   };
 
-  const handleDisconnectSession = async () => {
-    await activeWalletService.clearActiveWallet();
+  const handleDisconnectSession = () => {
+    setSessionWallet(null);
+    useBalanceStore.getState().reset();
   };
 
   const handleNetworkSwitch = async (target: 'devnet' | 'mainnet') => {
@@ -147,14 +171,8 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
       if (!confirmed) return;
     }
     await setNetwork(target);
-    useActiveWalletStore.getState().setNetwork(target);
-    walletBalanceService.updateNetwork(target);
-    if (activeAddress) {
-      void walletBalanceService.refresh(activeAddress);
-    }
   };
 
-  const isDevnet = network === 'devnet';
   const displayHeaderBalance = typeof currentSolBalance === 'number' ? `${currentSolBalance.toFixed(3)} SOL` : '--- SOL';
 
   return (
@@ -257,7 +275,7 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
                 <div className="flex items-center gap-2">
                   <ShieldCheck className={cn("w-4 h-4", isDevnet ? "text-cyan-400" : "text-emerald-400")} />
                   <span className="font-bold text-slate-100">
-                    {isSessionActive ? 'Session Keypair (Active Signer)' : wallet?.adapter.name || 'Browser Wallet'}
+                    {isSessionActive ? 'Session Keypair' : wallet?.adapter.name || 'Browser Wallet'}
                   </span>
                 </div>
                 <button
@@ -352,7 +370,7 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
                 )}
               </div>
 
-              {/* Key Management Row */}
+                            {/* Key Management Row */}
               <div className="mb-3 space-y-1.5">
                 <div className="flex items-center justify-between">
                   <div className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Wallet Key Management</div>
@@ -398,13 +416,13 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
                       <button
                         type="button"
                         onClick={() => {
-                          void handleGenerateSessionWallet();
+                          handleGenerateSessionWallet();
                           setShowKeyForm(false);
                         }}
                         className="py-1.5 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-[10px] transition-all cursor-pointer"
-                        title="Reset to a new generated session key"
+                        title="Reset to default session key"
                       >
-                        New Key
+                        Reset Key
                       </button>
                     </div>
                   </form>
@@ -440,18 +458,7 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
 
               {/* Actions */}
               <div className="pt-2 border-t border-slate-800/80 space-y-2">
-                {isSessionActive ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      void handleDisconnectSession();
-                      setShowDropdown(false);
-                    }}
-                    className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-400 font-bold transition-all cursor-pointer text-xs"
-                  >
-                    <LogOut className="w-3.5 h-3.5" /> Clear Session Keypair
-                  </button>
-                ) : publicKey ? (
+                {publicKey ? (
                   <button
                     type="button"
                     onClick={() => {
@@ -461,6 +468,17 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
                     className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-400 font-bold transition-all cursor-pointer text-xs"
                   >
                     <LogOut className="w-3.5 h-3.5" /> Disconnect Wallet
+                  </button>
+                ) : isSessionActive ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleDisconnectSession();
+                      setShowDropdown(false);
+                    }}
+                    className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-400 font-bold transition-all cursor-pointer text-xs"
+                  >
+                    <LogOut className="w-3.5 h-3.5" /> Clear Session Keypair
                   </button>
                 ) : null}
               </div>

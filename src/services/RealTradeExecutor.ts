@@ -1,5 +1,4 @@
-// src/services/RealTradeExecutor.ts
-import { getKeypairFromPrivateKey, getSavedSessionKeypair } from '../utils/keypairUtils';
+import { useActiveWalletStore } from '../store/activeWalletStore';
 import { ITradeExecutor, SwapResult, ExecutorTelemetry } from './ITradeExecutor';
 import { HybridExecutionEngine } from './HybridExecutionEngine';
 import { BatchExitEngine } from './BatchExitEngine';
@@ -19,9 +18,8 @@ export interface RealTradeConfig {
 }
 
 export class RealTradeExecutor implements ITradeExecutor {
-  public mode: TradingNetwork = 'devnet';
-  public publicKey: string = '';
-  private keypair: Keypair | null = null;
+  readonly mode: TradingNetwork = 'devnet';
+  readonly publicKey: string;
 
   private network: TradingNetwork;
   private hybrid?: HybridExecutionEngine | null;
@@ -37,7 +35,7 @@ export class RealTradeExecutor implements ITradeExecutor {
 
   constructor(config: RealTradeConfig) {
     this.network = config.network || (localStorage.getItem('app_trading_network') as TradingNetwork) || 'devnet';
-    this.mode = this.network;
+    (this as any).mode = this.network;
     this.hybrid = config.hybridEngine || null;
     this.batch = config.batchEngine || null;
     
@@ -55,40 +53,16 @@ export class RealTradeExecutor implements ITradeExecutor {
     this.connection = new Connection(rpcUrl, 'confirmed');
 
     if (this.hybrid && this.hybrid.wallet) {
-      this.keypair = this.hybrid.wallet;
       this.publicKey = this.hybrid.wallet.publicKey.toBase58();
     } else {
-      const kp = getSavedSessionKeypair();
-      if (kp) {
-        this.keypair = kp;
-        this.publicKey = kp.publicKey.toBase58();
+      const activeWallet = useActiveWalletStore.getState().activeWallet;
+      if (activeWallet && activeWallet.keypair) {
+        this.publicKey = activeWallet.keypair.publicKey.toBase58();
+      } else if (activeWallet && activeWallet.address) {
+        this.publicKey = activeWallet.address;
       } else {
-        this.keypair = null;
         this.publicKey = '';
       }
-    }
-  }
-
-  public setWallet(keypair: Keypair | null, network?: TradingNetwork) {
-    this.keypair = keypair;
-    this.publicKey = keypair ? keypair.publicKey.toBase58() : '';
-
-    if (network && network !== this.network) {
-      this.network = network;
-      this.mode = network;
-      const netConfig = getNetworkConfig(this.network);
-      const rpcUrl = this.network === 'devnet' 
-        ? netConfig.rpcUrl 
-        : (localStorage.getItem('juipter_auto_rpcUrl') || netConfig.rpcUrl || DEFAULT_HELIUS_RPC);
-      NetworkGuard.assertNetwork(this.network, rpcUrl);
-      this.connection = new Connection(rpcUrl, 'confirmed');
-    }
-
-    if (this.hybrid) {
-      this.hybrid.setWallet(keypair);
-    }
-    if (this.batch) {
-      this.batch.setWallet(keypair);
     }
   }
 
@@ -110,7 +84,7 @@ export class RealTradeExecutor implements ITradeExecutor {
     this.telemetryTotalSwaps++;
 
     try {
-      // Priority Safety Gate: Ensure balance is live and sufficient before trading
+      // Priority 5 Safety Gate: Ensure balance is live and sufficient before trading
       await assertTradeBalance(inputMint === 'So11111111111111111111111111111111111111112' ? amount / LAMPORTS_PER_SOL : 0.005);
 
       const quote = await this.getQuote({
@@ -125,24 +99,22 @@ export class RealTradeExecutor implements ITradeExecutor {
       let slot = 0;
       let actualFee = 0.000005;
 
-      const kp = this.keypair || getSavedSessionKeypair();
-      const currentPubkey = kp ? kp.publicKey.toBase58() : this.publicKey;
-
-      if (!kp) {
-        throw new Error('RealTradeExecutor failed: No active private key available to sign transaction.');
-      }
-
       if (this.hybrid) {
         const swapBuild = await this.hybrid.jupiterApi.swapPost({
           swapRequest: {
             quoteResponse: quote,
-            userPublicKey: currentPubkey || kp.publicKey.toBase58(),
+            userPublicKey: this.publicKey,
             dynamicComputeUnitLimit: true,
             prioritizationFeeLamports: 10_000 as any,
           },
         });
 
         const txBuf = Buffer.from(swapBuild.swapTransaction, 'base64');
+        
+        const activeWallet = useActiveWalletStore.getState().activeWallet;
+        const kp = activeWallet?.keypair;
+        if (!kp) throw new Error('Hybrid execution failed: No private key available to sign transaction.');
+        
         const tx = VersionedTransaction.deserialize(txBuf);
         tx.sign([kp]);
         
@@ -163,13 +135,17 @@ export class RealTradeExecutor implements ITradeExecutor {
         const swapBuild = await this.jupiterApi.swapPost({
           swapRequest: {
             quoteResponse: quote,
-            userPublicKey: currentPubkey || kp.publicKey.toBase58(),
+            userPublicKey: this.publicKey || '11111111111111111111111111111111',
             dynamicComputeUnitLimit: true,
             prioritizationFeeLamports: 10_000 as any,
           },
         });
 
         const txBuf = Buffer.from(swapBuild.swapTransaction, 'base64');
+        const activeWallet = useActiveWalletStore.getState().activeWallet;
+        const kp = activeWallet?.keypair;
+        if (!kp) throw new Error('RealTradeExecutor failed: No private key available to sign transaction.');
+
         const tx = VersionedTransaction.deserialize(txBuf);
         tx.sign([kp]);
         sig = await this.connection.sendRawTransaction(tx.serialize(), {
@@ -206,34 +182,24 @@ export class RealTradeExecutor implements ITradeExecutor {
     } catch (err: any) {
       this.telemetryFailedSwaps++;
       console.error('RealTradeExecutor swap failed:', err);
-      throw err;
+      throw new Error(`Real Jupiter swap transaction execution failed: ${err.message || String(err)}`);
     }
   }
 
   async batchSwap(
-    swaps: {
-      inputMint: string;
-      outputMint: string;
-      amount: number;
-      slippageBps: number;
-      label?: 'entry' | 'exit_tp' | 'exit_sl';
-    }[]
+    swaps: Array<{ inputMint: string; outputMint: string; amount: number; slippageBps: number }>
   ): Promise<SwapResult[]> {
-    if (!this.batch) {
-      const results: SwapResult[] = [];
-      for (const s of swaps) {
-        results.push(await this.swap(s.inputMint, s.outputMint, s.amount, s.slippageBps, s.label));
-      }
-      return results;
-    }
-
-    const microPositions = swaps.map(s => ({
+    if (!this.batch) throw new Error('Batch engine not configured');
+    
+    const positions = swaps.map(s => ({
       mint: s.inputMint,
       amount: s.amount,
       solSpent: 0,
     }));
-
-    const results = await this.batch.batchExit(microPositions);
+    
+    this.telemetryTotalSwaps += swaps.length;
+    const results = await this.batch.batchExit(positions as any);
+    
     const mappedResults: SwapResult[] = [];
     
     for (const batchRes of results) {
@@ -265,7 +231,7 @@ export class RealTradeExecutor implements ITradeExecutor {
               outputMint: 'So11111111111111111111111111111111111111112',
               inputAmount: originalSwap.amount,
               outputAmount: (posRes.amountReceivedSol || 0) * 1e9,
-              feeSol: batchRes.totalFeesSol / Math.max(1, batchRes.perPositionResults.filter(p => p.success).length),
+              feeSol: batchRes.totalFeesSol / batchRes.perPositionResults.filter(p => p.success).length, // approximate fee share
               slot: batchRes.slot,
               landingTimeMs: batchRes.landingTimeMs,
               method: 'rpc',
@@ -278,10 +244,9 @@ export class RealTradeExecutor implements ITradeExecutor {
   }
 
   async getSolBalance(): Promise<number> {
-    const address = this.publicKey || (this.keypair ? this.keypair.publicKey.toBase58() : '');
-    if (!address) return 0;
+    if (!this.publicKey) return 0;
     try {
-      const lamports = await this.connection.getBalance(new PublicKey(address));
+      const lamports = await this.connection.getBalance(new PublicKey(this.publicKey));
       return lamports / LAMPORTS_PER_SOL;
     } catch {
       return 0;
@@ -289,11 +254,10 @@ export class RealTradeExecutor implements ITradeExecutor {
   }
 
   async getTokenBalance(mint: string): Promise<number> {
-    const address = this.publicKey || (this.keypair ? this.keypair.publicKey.toBase58() : '');
-    if (!address) return 0;
+    if (!this.publicKey) return 0;
     try {
       const accounts = await this.connection.getParsedTokenAccountsByOwner(
-        new PublicKey(address),
+        new PublicKey(this.publicKey),
         { mint: new PublicKey(mint) }
       );
       if (accounts.value.length === 0) return 0;
@@ -304,11 +268,10 @@ export class RealTradeExecutor implements ITradeExecutor {
   }
 
   async hasTokenAccount(mint: string): Promise<boolean> {
-    const address = this.publicKey || (this.keypair ? this.keypair.publicKey.toBase58() : '');
-    if (!address) return false;
+    if (!this.publicKey) return false;
     try {
       const accounts = await this.connection.getParsedTokenAccountsByOwner(
-        new PublicKey(address),
+        new PublicKey(this.publicKey),
         { mint: new PublicKey(mint) }
       );
       return accounts.value.length > 0;
@@ -326,3 +289,4 @@ export class RealTradeExecutor implements ITradeExecutor {
     };
   }
 }
+

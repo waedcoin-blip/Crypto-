@@ -16,7 +16,6 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { startAlertManager } from './engines';
 import { TradeManager, TradeMode } from './services/TradeManager';
 import { TradeModeProvider } from './context/TradeModeContext';
-import { activeWalletService } from './services/ActiveWalletService';
 
 window.Buffer = Buffer;
 
@@ -271,9 +270,8 @@ function Root() {
   }), []);
 
   useEffect(() => {
-    activeWalletService.registerTradeManager(tradeManager);
     startAlertManager();
-  }, [tradeManager]);
+  }, []);
 
   return (
     <ConnectionProvider endpoint={endpoint}>

@@ -110,7 +110,7 @@ export const useAppStore = create<AppState>((set) => ({
   })(),
   monitoredWallets: [],
   jupiterLogs: [],
-  sessionWallet: getSavedSessionKeypair(),
+  sessionWallet: null,
 
   setAutoSniperEnabled: (val) => set({ autoSniperEnabled: val }),
   setIsLiveTrading: (val) => set({ isLiveTrading: val }),
@@ -130,7 +130,7 @@ export const useAppStore = create<AppState>((set) => ({
     return { mySniperTrades: next };
   }),
   setSessionWallet: (wallet) => {
-    saveSessionKeypair(wallet);
+    // saveSessionKeypair(wallet);
     set((state) => {
       if (
         (state.sessionWallet === null && wallet === null) ||

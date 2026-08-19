@@ -2,6 +2,9 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import { getNetworkConfig, TradingNetwork } from '../config/network';
 import { useBalanceStore } from '../store/balanceStore';
+import { useAppStore } from '../store/appStore';
+import { getSimExecutor } from './SimExecutorSingleton';
+import { useActiveWalletStore } from '../store/activeWalletStore';
 
 const LAMPORTS_PER_SOL = 1_000_000_000;
 
@@ -9,8 +12,6 @@ export class WalletBalanceService {
   private connection: Connection | null = null;
   private network: TradingNetwork;
   private timer: ReturnType<typeof setInterval> | null = null;
-  private activeAddress: string | null = null;
-  private refreshGeneration = 0;
 
   constructor(network: TradingNetwork) {
     this.network = network;
@@ -20,30 +21,16 @@ export class WalletBalanceService {
   }
 
   refreshNow() {
-    if (this.activeAddress) {
-      void this.refresh(this.activeAddress);
-    }
+    void this.refresh();
   }
 
-  start(address: string, intervalMs = 5000) {
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
-    }
-    this.activeAddress = address;
-    void this.refresh(address);
-    this.timer = setInterval(() => void this.refresh(this.activeAddress || address), intervalMs);
-  }
-
-  stop() {
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
-    }
+  start(intervalMs: number) {
+    this.refresh();
+    this.timer = setInterval(() => this.refresh(), intervalMs);
   }
 
   destroy() {
-    this.stop();
+    if (this.timer) clearInterval(this.timer);
   }
 
   public updateNetwork(network: TradingNetwork): void {
@@ -51,47 +38,28 @@ export class WalletBalanceService {
     const config = getNetworkConfig(network);
     this.connection = new Connection(config.rpcUrl, 'confirmed');
     useBalanceStore.getState().setNetwork(network);
-    if (this.activeAddress) {
-      void this.refresh(this.activeAddress);
-    }
+    void this.refresh();
   }
 
-  async refresh(walletAddress?: string): Promise<number> {
-    const address = walletAddress || this.activeAddress;
+  async refresh(): Promise<number> {
+    const address = useActiveWalletStore.getState().activeWallet?.address;
     if (!address) {
-      useBalanceStore.getState().reset();
+      useBalanceStore.getState().setWalletAddress(null);
       return 0;
     }
-
-    const requestId = ++this.refreshGeneration;
-    this.activeAddress = address;
-
     try {
       if (!this.connection) {
         const config = getNetworkConfig(this.network);
         this.connection = new Connection(config.rpcUrl, 'confirmed');
       }
-
-      // Mark address in store if not set
-      if (useBalanceStore.getState().walletAddress !== address) {
-        useBalanceStore.getState().setWalletAddress(address);
-      }
-
+      useBalanceStore.getState().setWalletAddress(address);
       const publicKey = new PublicKey(address);
       const balance = await this.connection.getBalance(publicKey);
       const sol = balance / LAMPORTS_PER_SOL;
-
-      // Generation & Active Address Guard to eliminate async race conditions
-      if (requestId !== this.refreshGeneration || this.activeAddress !== address) {
-        return sol;
-      }
-
       useBalanceStore.getState().setOnChainBalance({ solBalance: sol });
       return sol;
     } catch (err) {
-      if (requestId === this.refreshGeneration && this.activeAddress === address) {
-        console.warn('Wallet balance query notice for', address, err);
-      }
+      console.warn('Wallet balance query error for', address, err);
       return 0;
     }
   }

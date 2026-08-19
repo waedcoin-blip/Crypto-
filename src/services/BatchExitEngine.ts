@@ -1,4 +1,4 @@
-import { getKeypairFromPrivateKey } from '../utils/keypairUtils';
+import { useActiveWalletStore } from '../store/activeWalletStore';
 // src/services/BatchExitEngine.ts
 import {
   Connection,
@@ -53,22 +53,19 @@ export interface BatchExitResult {
 
 export class BatchExitEngine {
   private connection: Connection;
-  private wallet: Keypair;
   private jupiterApi: ReturnType<typeof createJupiterApiClient>;
   private config: Required<BatchExitConfig>;
+
+  private get wallet(): Keypair {
+    const kp = useActiveWalletStore.getState().activeWallet?.keypair;
+    if (!kp) throw new Error("No active wallet in store for BatchExitEngine");
+    return kp;
+  }
 
   constructor(config: BatchExitConfig) {
     this.config = { maxBatchSize: 6, ...config };
     this.connection = new Connection(config.rpcEndpoint, 'confirmed');
-    this.wallet = getKeypairFromPrivateKey(config.privateKeyBase58);
     this.jupiterApi = createJupiterApiClient({ basePath: config.jupiterEndpoint });
-  }
-
-  public setWallet(keypair: Keypair | null) {
-    if (keypair) {
-      this.wallet = keypair;
-      this.config.privateKeyBase58 = bs58.encode(keypair.secretKey);
-    }
   }
 
   async batchExit(positions: MicroPosition[]): Promise<BatchExitResult[]> {

@@ -1,3 +1,4 @@
+import { useActiveWalletStore } from "../../store/activeWalletStore";
 import { getKeypairFromPrivateKey } from '../../utils/keypairUtils';
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -2618,16 +2619,11 @@ export const PnLPage = ({
     } catch(e) {}
   }, [getTokenPrices]);
 
-  const tokenFetchGenRef = useRef(0);
   const fetchWalletTokens = useCallback(async () => {
-    if (!privateKey || !rpcUrl) {
-      setWalletTokens([]);
-      return;
-    }
-    const currentGen = ++tokenFetchGenRef.current;
+    if (!privateKey || !rpcUrl) return;
     setIsFetchingTokens(true);
     try {
-      const keypair = getKeypairFromPrivateKey(privateKey);
+      const keypair = useActiveWalletStore.getState().activeWallet?.keypair;
       const activeWsUrl = (customWsUrl && customWsUrl.trim() !== "") ? customWsUrl.trim() : rpcUrl.replace('https', 'wss').replace('http', 'ws');
       const conn = new Connection(rpcUrl, { commitment: 'confirmed', wsEndpoint: activeWsUrl });
       
@@ -2638,8 +2634,6 @@ export const PnLPage = ({
         'confirmed'
       );
       
-      if (tokenFetchGenRef.current !== currentGen) return;
-
       const tokens = accounts.value.map(acc => {
         const info = acc.account.data.parsed.info;
         return {
@@ -2659,8 +2653,6 @@ export const PnLPage = ({
         };
       }));
       
-      if (tokenFetchGenRef.current !== currentGen) return;
-
       setWalletTokens(enrichedTokens);
 
       // Kick off initial price fetch in parallel
@@ -2668,9 +2660,7 @@ export const PnLPage = ({
     } catch (e) {
       console.warn("Failed to fetch wallet tokens", e);
     } finally {
-      if (tokenFetchGenRef.current === currentGen) {
-        setIsFetchingTokens(false);
-      }
+      setIsFetchingTokens(false);
     }
   }, [privateKey, rpcUrl, customWsUrl]);
 
@@ -2747,7 +2737,7 @@ export const PnLPage = ({
     }, 60000);
 
     try {
-      const keypair = getKeypairFromPrivateKey(privateKey);
+      const keypair = useActiveWalletStore.getState().activeWallet?.keypair;
       const activeWsUrl = (customWsUrl && customWsUrl.trim() !== "") ? customWsUrl.trim() : rpcUrl.replace('https', 'wss').replace('http', 'ws');
       const conn = new Connection(rpcUrl, { commitment: 'confirmed', wsEndpoint: activeWsUrl });
       
@@ -2896,7 +2886,7 @@ export const PnLPage = ({
         setJupiterStatus('CONNECTING');
         let keypair;
         try {
-          keypair = getKeypairFromPrivateKey(privateKey);
+          keypair = useActiveWalletStore.getState().activeWallet?.keypair;
         } catch (e: any) {
           setJupiterStatus('ERROR');
           setJupiterAddress('');
@@ -3107,7 +3097,7 @@ export const PnLPage = ({
     }
 
     if (!privateKey) throw new Error("Private Key missing");
-    const keypair = getKeypairFromPrivateKey(privateKey);
+    const keypair = useActiveWalletStore.getState().activeWallet?.keypair;
     const connection = new Connection(jupRpcUrlToUse);
 
     let baseUrl = 'https://api.jup.ag';
@@ -4239,7 +4229,7 @@ const checkTokenCriteria = (mint: string): {
           let lamportsToSell = lamportsToSellRaw;
           if (!lamportsToSell || lamportsToSell <= 0) {
             try {
-              const keypair = getKeypairFromPrivateKey(privateKey);
+              const keypair = useActiveWalletStore.getState().activeWallet?.keypair;
               const activeWsUrl = (customWsUrl && customWsUrl.trim() !== "") ? customWsUrl.trim() : rpcUrl.replace('https', 'wss').replace('http', 'ws');
               const conn = new Connection(rpcUrl, { commitment: 'confirmed', wsEndpoint: activeWsUrl });
               const accounts = await conn.getParsedTokenAccountsByOwner(
@@ -4478,10 +4468,10 @@ const checkTokenCriteria = (mint: string): {
     }
 
     const tradeModeFromStorage = (typeof localStorage !== 'undefined' ? localStorage.getItem('trade_mode') : null) || (typeof localStorage !== 'undefined' && localStorage.getItem('is_live_trading') === 'true' ? 'real' : 'paper');
-    const isRealMode = tradeModeFromStorage === 'real' && !!configRef.current.privateKey;
+    const isRealMode = tradeModeFromStorage === 'real' && !!useActiveWalletStore.getState().activeWallet?.keypair;
     const currentJup = jupiterRpcUrl || 'https://api.jup.ag/swap/v1';
 
-    let executor: ITradeExecutor = getSimExecutor(simWalletBalance || 1.0, currentJup);
+    let executor: ITradeExecutor = isRealMode ? new RealTradeExecutor({ network: "mainnet" }) : getSimExecutor(simWalletBalance || 1.0, currentJup);
 
     const exitMgr = new PositionExitManager(
       executor,

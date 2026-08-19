@@ -1,3 +1,5 @@
+import { getKeypairFromPrivateKey } from "../utils/keypairUtils";
+import { useActiveWalletStore } from "../store/activeWalletStore";
 // src/components/TradingSettings.tsx
 import React, { useState, useEffect } from 'react';
 import { SecureInput } from './SecureInput';
@@ -97,6 +99,11 @@ export const TradingSettings: React.FC = () => {
         localStorage.setItem('jupiter_api_key', jupiterApiKey);
       }
       if (privateKey && privateKey !== '••••••••••••••••••••••••••') {
+        try {
+          const kp = getKeypairFromPrivateKey(privateKey);
+          useActiveWalletStore.getState().switchActiveWallet({ keypair: kp, network: 'mainnet', source: 'session' });
+        } catch (e) {}
+
         localStorage.setItem('enc_private_key', await encryptData(privateKey, password));
       }
       if (rpcUrl) {

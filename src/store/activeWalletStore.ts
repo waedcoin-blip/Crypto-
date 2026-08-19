@@ -1,83 +1,50 @@
-// src/store/activeWalletStore.ts
 import { create } from 'zustand';
-import { Keypair, PublicKey } from '@solana/web3.js';
-import { TradingNetwork } from '../config/network';
-import { getSavedSessionKeypair } from '../utils/keypairUtils';
+import { Keypair } from '@solana/web3.js';
+import { getSavedSessionKeypair, saveSessionKeypair } from '../utils/keypairUtils';
 
-export type ActiveWalletSource = 'session' | 'connected' | null;
-
-export interface ActiveWalletState {
-  network: TradingNetwork;
-  address: string | null;
-  publicKey: PublicKey | null;
-  keypair: Keypair | null;
-  source: ActiveWalletSource;
-  version: number;
-
-  setWallet: (params: {
-    network?: TradingNetwork;
-    address?: string | null;
-    publicKey?: PublicKey | null;
-    keypair?: Keypair | null;
-    source: ActiveWalletSource;
-  }) => void;
-  setNetwork: (network: TradingNetwork) => void;
-  clearWallet: () => void;
+export interface ActiveWallet {
+    address: string;
+    keypair: Keypair | null;
+    network: 'devnet' | 'mainnet';
+    source: 'session' | 'connected';
+    version: number;
 }
 
-const initialSaved = getSavedSessionKeypair();
-const initialNetwork = (localStorage.getItem('app_trading_network') as TradingNetwork) || 'devnet';
+interface ActiveWalletState {
+    activeWallet: ActiveWallet | null;
+    setActiveWallet: (wallet: ActiveWallet | null) => void;
+    switchActiveWallet: (params: { keypair: Keypair | null; address?: string; network: 'devnet' | 'mainnet'; source: 'session' | 'connected' }) => void;
+}
 
-export const useActiveWalletStore = create<ActiveWalletState>((set) => ({
-  network: initialNetwork,
-  address: initialSaved ? initialSaved.publicKey.toBase58() : null,
-  publicKey: initialSaved ? initialSaved.publicKey : null,
-  keypair: initialSaved,
-  source: initialSaved ? 'session' : null,
-  version: 1,
+export const useActiveWalletStore = create<ActiveWalletState>((set, get) => ({
+    activeWallet: null,
+    
+    setActiveWallet: (wallet) => set({ activeWallet: wallet }),
 
-  setWallet: (params) =>
-    set((state) => {
-      const network = params.network || state.network;
-      let address = params.address || null;
-      let publicKey = params.publicKey || null;
-      let keypair = params.keypair !== undefined ? params.keypair : null;
-
-      if (keypair) {
-        publicKey = keypair.publicKey;
-        address = keypair.publicKey.toBase58();
-      } else if (publicKey && !address) {
-        address = publicKey.toBase58();
-      } else if (address && !publicKey) {
-        try {
-          publicKey = new PublicKey(address);
-        } catch {
-          // Ignore parse errors
+    switchActiveWallet: (params) => {
+        const { keypair, network, source } = params;
+        const address = params.address || (keypair ? keypair.publicKey.toBase58() : '');
+        
+        if (source === 'session') {
+           saveSessionKeypair(keypair);
         }
-      }
 
-      return {
-        network,
-        address,
-        publicKey,
-        keypair,
-        source: params.source,
-        version: state.version + 1,
-      };
-    }),
+        if (!address && !keypair) {
+             set({ activeWallet: null });
+             return;
+        }
 
-  setNetwork: (network) =>
-    set((state) => ({
-      network,
-      version: state.version + 1,
-    })),
-
-  clearWallet: () =>
-    set((state) => ({
-      address: null,
-      publicKey: null,
-      keypair: null,
-      source: null,
-      version: state.version + 1,
-    })),
+        const current = get().activeWallet;
+        const newVersion = current ? current.version + 1 : 1;
+        
+        const newWallet: ActiveWallet = {
+            address,
+            keypair,
+            network,
+            source,
+            version: newVersion
+        };
+        
+        set({ activeWallet: newWallet });
+    }
 }));

@@ -190,9 +190,30 @@ export function getHeliusWsUrl(network: LaserStreamNetwork = 'devnet', apiKey = 
     : `wss://${host}`;
 }
 
+export function sanitizeApiKey(rawKey?: string): string {
+  if (!rawKey || !rawKey.trim()) return '';
+  let k = rawKey.trim();
+  if (k.includes('api-key=')) {
+    try {
+      const match = k.match(/api-key=([a-zA-Z0-9-]+)/);
+      if (match && match[1]) {
+        k = match[1];
+      }
+    } catch {}
+  } else if (k.startsWith('http://') || k.startsWith('https://')) {
+    try {
+      const u = new URL(k);
+      const param = u.searchParams.get('api-key');
+      if (param) k = param;
+    } catch {}
+  }
+  return k;
+}
+
 export function isFreeOrDefaultKey(key?: string): boolean {
-  if (!key) return true;
-  const k = key.trim().toLowerCase();
+  const cleanKey = sanitizeApiKey(key);
+  if (!cleanKey) return true;
+  const k = cleanKey.toLowerCase();
   return (
     k === 'e161791f-b336-40b9-80d6-f4c9f626833c' ||
     k === '98ec7a83-f29a-4ead-aaa3-3f288daf43b7' ||
@@ -213,7 +234,14 @@ export function isPlanError(errorMsg?: string): boolean {
     lower.includes('plan does not support') ||
     lower.includes('geyser access denied') ||
     lower.includes('upgrade your plan') ||
-    lower.includes('tier limit')
+    lower.includes('tier limit') ||
+    lower.includes('invalid api key') ||
+    lower.includes('authentication credentials') ||
+    lower.includes('unauthenticated') ||
+    lower.includes('unauthorized') ||
+    lower.includes('permission denied') ||
+    lower.includes('invalid key') ||
+    lower.includes('valid authentication')
   );
 }
 
@@ -523,7 +551,7 @@ export async function startLaserStream(
 ): Promise<{ cancel(): void; unsubscribe(): void } | null> {
   const sessionId = ++state.currentSessionId;
   const network = options.network || 'devnet';
-  const apiKey = options.apiKey || config.HELIUS_API_KEY || '';
+  const apiKey = sanitizeApiKey(options.apiKey || config.HELIUS_API_KEY || '');
   const programs = (options.programAddresses && options.programAddresses.length > 0)
     ? options.programAddresses
     : DEFAULT_NETWORK_PROGRAMS[network];
@@ -624,6 +652,9 @@ export async function startLaserStream(
     state.childProcess.stderr?.on('data', (data: Buffer) => {
       const str = data.toString();
       rateLimitedLog('warn', `gRPC worker stderr: ${str.trim()}`);
+      if (isPlanError(str)) {
+        handleFallback(str.trim());
+      }
     });
 
     state.childProcess.stdout?.on('data', (data: Buffer) => {

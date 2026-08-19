@@ -1,7 +1,5 @@
+import { useActiveWalletStore } from "./store/activeWalletStore";
 import { getKeypairFromPrivateKey, getSavedSessionKeypair, saveSessionKeypair } from './utils/keypairUtils';
-import { activeWalletService } from './services/ActiveWalletService';
-import { useActiveWalletStore } from './store/activeWalletStore';
-import { TradingNetwork } from './config/network';
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { 
@@ -454,9 +452,12 @@ function App() {
   const [slippage, setSlippage] = useState(1.0); 
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('jupiter_auto_apiKey') || localStorage.getItem('juipter_auto_apiKey') || '');
   const [jupiterRpcUrl, setJupiterRpcUrl] = useState(() => localStorage.getItem('juipter_auto_jupiterRpcUrl') || '');
-  const { activePositions, updateActivePositions: setActivePositions, sessionWallet, setSessionWallet } = useAppStore();
+  const { activePositions, updateActivePositions: setActivePositions } = useAppStore();
+  const activeWalletStore = useActiveWalletStore();
+  const sessionWallet = activeWalletStore.activeWallet?.keypair || null;
+  const activeAddress = activeWalletStore.activeWallet?.address || null;
   const [privateKey, setPrivateKeyState] = useState(() => {
-    const saved = getSavedSessionKeypair();
+    const saved = activeWalletStore.activeWallet?.keypair;
     return saved ? bs58.encode(saved.secretKey) : '';
   });
   const [telegramBotToken, setTelegramBotToken] = useState(() => localStorage.getItem('tg_bot_token') || '');
@@ -464,13 +465,15 @@ function App() {
 
   const setPrivateKey = useCallback((newKey: string) => {
     setPrivateKeyState(newKey);
-    const network = (localStorage.getItem('app_trading_network') as TradingNetwork) || 'devnet';
     if (newKey && newKey.trim()) {
-      void activeWalletService.activateSessionKey(newKey.trim(), network);
+      try {
+        const kp = getKeypairFromPrivateKey(newKey.trim());
+        activeWalletStore.switchActiveWallet({ keypair: kp, network: "mainnet", source: "session" });
+      } catch {}
     } else {
-      void activeWalletService.clearActiveWallet();
+      activeWalletStore.switchActiveWallet({ keypair: null, network: "mainnet", source: "session" });
     }
-  }, []);
+  }, [activeWalletStore]);
 
   useEffect(() => {
     if (sessionWallet) {
@@ -1065,7 +1068,7 @@ function App() {
 
   const generateSessionWallet = () => {
     const kp = Keypair.generate();
-    setSessionWallet(kp);
+    activeWalletStore.switchActiveWallet({ keypair: kp, network: "mainnet", source: "session" });
     addNotification('New Session Wallet Generated. Deposit SOL to start auto-trading.');
   };
 
@@ -1178,13 +1181,13 @@ function App() {
           // Set to false to disable minimum hold time delay so stop loss/take profit execute instantly
           const isHoldProtected = false;
           
-          const walletAddress = (isLiveTrading && (sessionWallet || publicKey)) 
-            ? (sessionWallet ? sessionWallet.publicKey.toBase58() : publicKey!.toBase58())
+          const walletAddress = (isLiveTrading && activeAddress) 
+            ? activeAddress!
             : '11111111111111111111111111111111';
 
           let amountLamports = position.amountLamports;
 
-          if (isLiveTrading && (sessionWallet || publicKey)) {
+          if (isLiveTrading && activeAddress) {
             if (!position.amountLamports) {
                 getTokenBalanceRaw(connection, walletAddress, token.address).then(bal => {
                     setActivePositions(prev => ({
@@ -1771,10 +1774,10 @@ function App() {
       let outTokensRaw = quote.outAmount;
 
       if (isLiveTrading) {
-        if (!sessionWallet && !publicKey) {
+        if (!activeAddress) {
           throw new Error("No wallet connected for Live Trading");
         }
-        const walletAddress = sessionWallet ? sessionWallet.publicKey.toBase58() : publicKey!.toBase58();
+        const walletAddress = activeAddress!;
         const solBalance = await connection.getBalance(new PublicKey(walletAddress));
         
         if (solBalance < lamports) {
@@ -1869,9 +1872,9 @@ function App() {
       let signature = 'SIM_PS_' + Math.random().toString(36).substring(7);
 
       if (isLiveTrading) {
-        if (!sessionWallet && !publicKey) throw new Error("Wallet not connected");
+        if (!activeAddress) throw new Error("Wallet not connected");
         
-        const walletAddress = sessionWallet ? sessionWallet.publicKey.toBase58() : publicKey!.toBase58();
+        const walletAddress = activeAddress!;
         const balanceRaw = await getTokenBalanceRaw(connection, walletAddress, tokenAddress);
         const sellAmountRaw = Math.floor(Number(balanceRaw) * percent);
         
@@ -2018,8 +2021,8 @@ function App() {
     try {
       let signature = 'SIM_SELL_' + Math.random().toString(36).substring(7);
       let isSimulated = !isLiveTrading;
-      const walletAddress = (isLiveTrading && (sessionWallet || publicKey)) 
-         ? (sessionWallet ? sessionWallet.publicKey.toBase58() : publicKey!.toBase58())
+      const walletAddress = (isLiveTrading && activeAddress) 
+         ? activeAddress!
          : '11111111111111111111111111111111';
       let balanceRaw: string | number = 0;
       if (isLiveTrading) {
@@ -2209,10 +2212,10 @@ function App() {
       let outTokensRaw = quote.outAmount;
 
       if (isLiveTrading) {
-        if (!sessionWallet && !publicKey) {
+        if (!activeAddress) {
           throw new Error("No wallet connected for Live Trading");
         }
-        const walletAddress = sessionWallet ? sessionWallet.publicKey.toBase58() : publicKey!.toBase58();
+        const walletAddress = activeAddress!;
         const solBalance = await connection.getBalance(new PublicKey(walletAddress));
                 
         if (solBalance < lamports) {
