@@ -53,9 +53,40 @@ export class WalletBalanceService {
       }
       useBalanceStore.getState().setWalletAddress(address);
       const publicKey = new PublicKey(address);
-      const balance = await this.connection.getBalance(publicKey);
+
+      // 1. SOL
+      const balance = await this.connection.getBalance(publicKey, 'confirmed');
       const sol = balance / LAMPORTS_PER_SOL;
-      useBalanceStore.getState().setOnChainBalance({ solBalance: sol });
+
+      // 2. ALL SPL tokens (not just SOL)
+      const tokenAccounts = await this.connection.getParsedTokenAccountsByOwner(
+        publicKey,
+        { programId: TOKEN_PROGRAM_ID },
+        'confirmed'
+      );
+
+      const tokenBalances: Record<string, number> = {};
+      for (const { account } of tokenAccounts.value) {
+        const parsed = account.data.parsed.info;
+        const mint: string = parsed.mint;
+        const ta = parsed.tokenAmount;
+        // UI amount (decimal-adjusted) so it matches what users see
+        tokenBalances[mint] = ta.uiAmount ?? Number(ta.amount) / Math.pow(10, ta.decimals);
+      }
+
+      // 3. Push to store
+      const bs = useBalanceStore.getState();
+      bs.setOnChainBalance({ solBalance: sol });
+
+      // Adapt to your balanceStore API (see step 3 below)
+      if ('setTokenBalances' in bs && typeof (bs as any).setTokenBalances === 'function') {
+        (bs as any).setTokenBalances(tokenBalances);
+      } else if ('setTokenBalance' in bs && typeof (bs as any).setTokenBalance === 'function') {
+        for (const [mint, bal] of Object.entries(tokenBalances)) {
+          (bs as any).setTokenBalance(mint, bal);
+        }
+      }
+
       return sol;
     } catch (err) {
       console.warn('Wallet balance query error for', address, err);
@@ -64,7 +95,8 @@ export class WalletBalanceService {
   }
 
   /**
-   * Fetch exact on-chain SPL token account balance for a specific mint
+   * Fetch raw on-chain SPL token account balance for a specific mint.
+   * Returns RAW amount (smallest unit) so it can be compared against Jupiter quote amounts.
    */
   async getTokenBalance(mint: string, walletAddress?: string): Promise<number> {
     const address = walletAddress || useActiveWalletStore.getState().activeWallet?.address;
@@ -78,9 +110,11 @@ export class WalletBalanceService {
       const owner = new PublicKey(address);
       const mintPk = new PublicKey(mint);
 
-      const accounts = await this.connection.getParsedTokenAccountsByOwner(owner, {
-        mint: mintPk
-      });
+      const accounts = await this.connection.getParsedTokenAccountsByOwner(
+        owner,
+        { mint: mintPk },
+        'confirmed' // <-- FIX: explicit commitment
+      );
 
       let totalRawAmount = 0;
       for (const account of accounts.value) {

@@ -65,6 +65,10 @@ export interface BalanceState {
   ) => void;
 
   reset: () => void;
+
+  tokenBalances: Record<string, number>;
+  setTokenBalances: (balances: Record<string, number>) => void;
+  setTokenBalance: (mint: string, balance: number) => void;
 }
 
 const initialSimCash = typeof localStorage !== 'undefined'
@@ -96,6 +100,7 @@ const initialState = {
   lastUpdated: null,
   status: 'idle' as const,
   error: null,
+  tokenBalances: {},
 };
 
 export const useBalanceStore = create<BalanceState>((set) => ({
@@ -218,6 +223,20 @@ export const useBalanceStore = create<BalanceState>((set) => ({
       error,
       onChainError: error,
     }),
+
+  setTokenBalances: (balances) =>
+    set({
+      tokenBalances: balances,
+      lastUpdated: Date.now(),
+      onChainLastUpdated: Date.now(),
+    }),
+
+  setTokenBalance: (mint, balance) =>
+    set((state) => ({
+      tokenBalances: { ...state.tokenBalances, [mint]: balance },
+      lastUpdated: Date.now(),
+      onChainLastUpdated: Date.now(),
+    })),
 
   reset: () =>
     set({

@@ -8,8 +8,8 @@ import bs58 from 'bs58';
 import { DEFAULT_HELIUS_RPC } from '../constants/solana';
 import { getNetworkConfig, TradingNetwork } from '../config/network';
 import { NetworkGuard } from './NetworkGuard';
-import { assertExecutionEnvironment, assertTradeBalance } from '../store/balanceStore';
-import { WalletBalanceService } from './WalletBalanceService';
+import { assertExecutionEnvironment, assertTradeBalance, useBalanceStore } from '../store/balanceStore';
+import { WalletBalanceService, walletBalanceService } from './WalletBalanceService';
 
 export interface RealTradeConfig {
   network?: TradingNetwork;
@@ -312,8 +312,8 @@ export class RealTradeExecutor implements ITradeExecutor {
 
       // Authoritative Post-Trade State Refresh
       if (activePublicKey) {
-        const balanceService = new WalletBalanceService(this.network);
-        await balanceService.refresh(activePublicKey);
+        const isSolBuy = inputMint === 'So11111111111111111111111111111111111111112';
+        await this.syncStoreBalances(activePublicKey, isSolBuy ? outputMint : inputMint);
       }
 
       const landingTimeMs = Date.now() - start;
@@ -410,7 +410,8 @@ export class RealTradeExecutor implements ITradeExecutor {
     try {
       const accounts = await this.connection.getParsedTokenAccountsByOwner(
         new PublicKey(this.publicKey),
-        { mint: new PublicKey(mint) }
+        { mint: new PublicKey(mint) },
+        'confirmed'
       );
       if (accounts.value.length === 0) return 0;
       return Number(accounts.value[0].account.data.parsed.info.tokenAmount.amount);
@@ -424,11 +425,60 @@ export class RealTradeExecutor implements ITradeExecutor {
     try {
       const accounts = await this.connection.getParsedTokenAccountsByOwner(
         new PublicKey(this.publicKey),
-        { mint: new PublicKey(mint) }
+        { mint: new PublicKey(mint) },
+        'confirmed'
       );
       return accounts.value.length > 0;
     } catch {
       return false;
+    }
+  }
+
+  private async syncStoreBalances(activePublicKey: string, targetMint?: string): Promise<void> {
+    try {
+      // 1. SOL
+      const solLamports = await this.connection.getBalance(new PublicKey(activePublicKey), 'confirmed');
+      const sol = solLamports / LAMPORTS_PER_SOL;
+
+      // 2. All tokens (so the store is fully consistent, not just the traded one)
+      const tokenAccounts = await this.connection.getParsedTokenAccountsByOwner(
+        new PublicKey(activePublicKey),
+        { programId: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA') },
+        'confirmed'
+      );
+
+      const tokenBalances: Record<string, number> = {};
+      for (const { account } of tokenAccounts.value) {
+        const info = account.data.parsed.info;
+        const mint = info.mint;
+        const ta = info.tokenAmount;
+        tokenBalances[mint] = ta.uiAmount ?? Number(ta.amount) / Math.pow(10, ta.decimals);
+      }
+
+      // 3. Push directly into the reactive store
+      const bs = useBalanceStore.getState();
+      bs.setOnChainBalance({ solBalance: sol });
+
+      if ('setTokenBalances' in bs && typeof (bs as any).setTokenBalances === 'function') {
+        (bs as any).setTokenBalances(tokenBalances);
+      } else if ('setTokenBalance' in bs && typeof (bs as any).setTokenBalance === 'function') {
+        for (const [mint, bal] of Object.entries(tokenBalances)) {
+          (bs as any).setTokenBalance(mint, bal);
+        }
+      }
+
+      // 4. Also keep the singleton service in sync
+      walletBalanceService.refreshNow(activePublicKey);
+
+      if (this.network === 'devnet') {
+        console.log('[RealTradeExecutor] Balances synced:', {
+          sol,
+          targetMint,
+          targetBalance: targetMint ? tokenBalances[targetMint] : undefined,
+        });
+      }
+    } catch (e) {
+      console.warn('[RealTradeExecutor] syncStoreBalances failed:', e);
     }
   }
 
