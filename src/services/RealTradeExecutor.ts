@@ -122,56 +122,45 @@ export class RealTradeExecutor implements ITradeExecutor {
       const activePublicKey = this.getActivePublicKey();
 
       if (this.network === 'devnet') {
-        // Fetch real Jupiter quote to simulate the exact amount we would receive
+        // Fetch real Jupiter quote to see if route exists on Devnet (or Mainnet API accessed under Devnet mode)
         const quote = await this.getQuote({
           inputMint,
           outputMint,
           amount,
           slippageBps,
           restrictIntermediateTokens: true,
-        }).catch(e => null);
-        
-        // Devnet Execution Venue: Devnet RPC On-Chain Execution
+        }).catch(e => {
+          throw new Error(`Devnet swap unavailable: No route found. ${e.message || String(e)}`);
+        });
+
+        if (!quote) {
+          throw new Error("Devnet swap unavailable: Jupiter returned no quote.");
+        }
+
         const activeWallet = this.getActiveWallet();
         const kp = activeWallet?.keypair;
         if (!kp) throw new Error('RealTradeExecutor failed: No private key available to sign Devnet transaction.');
 
-        // Perform an on-chain Devnet transaction
-        const latestBlockhash = await this.connection.getLatestBlockhash('confirmed');
-        const isSolBuy = inputMint === 'So11111111111111111111111111111111111111112';
+        const swapBuild = await this.jupiterApi.swapPost({
+          swapRequest: {
+            quoteResponse: quote,
+            userPublicKey: activePublicKey,
+            dynamicComputeUnitLimit: true,
+            prioritizationFeeLamports: 10_000 as any,
+          },
+        }).catch(e => {
+          throw new Error(`Devnet swap unavailable: Failed to build swap transaction. ${e.message || String(e)}`);
+        });
 
-        // Devnet Liquidity Vault / Non-executable System Account
-        const devnetVault = new PublicKey('SysvarRent111111111111111111111111111111111');
-
-        if (quote) {
-          outAmountNum = Number(quote.outAmount);
-        } else {
-          if (isSolBuy) {
-            outAmountNum = Math.floor((amount / LAMPORTS_PER_SOL) * 1_000_000 * 0.98); // Estimated tokens
-          } else {
-            // Selling token for SOL
-            outAmountNum = Math.floor(amount * 0.000001 * LAMPORTS_PER_SOL); // Estimated return SOL
-          }
-        }
-
-        const lamportsToTransfer = isSolBuy ? Math.floor(amount) : 5_000;
-
-        // Create transaction to execute on Devnet RPC
-        const tx = new VersionedTransaction(
-          new (await import('@solana/web3.js')).TransactionMessage({
-            payerKey: kp.publicKey,
-            recentBlockhash: latestBlockhash.blockhash,
-            instructions: [
-              (await import('@solana/web3.js')).SystemProgram.transfer({
-                fromPubkey: kp.publicKey,
-                toPubkey: isSolBuy ? devnetVault : kp.publicKey,
-                lamports: lamportsToTransfer,
-              }),
-            ],
-          }).compileToV0Message()
-        );
-
+        const txBuf = Buffer.from(swapBuild.swapTransaction, 'base64');
+        const tx = VersionedTransaction.deserialize(txBuf);
         tx.sign([kp]);
+
+        // Record pre-transaction token and SOL balances
+        const targetMint = isSolBuy ? outputMint : inputMint;
+        const preTokenBalance = await this.getTokenBalance(targetMint);
+        const preSolBalance = await this.getSolBalance();
+
         sig = await this.connection.sendRawTransaction(tx.serialize(), {
           skipPreflight: false,
           maxRetries: 3,
@@ -179,8 +168,8 @@ export class RealTradeExecutor implements ITradeExecutor {
 
         const confirmation = await this.connection.confirmTransaction({
           signature: sig,
-          blockhash: latestBlockhash.blockhash,
-          lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+          blockhash: tx.message.recentBlockhash,
+          lastValidBlockHeight: swapBuild.lastValidBlockHeight || (await this.connection.getLatestBlockhash()).lastValidBlockHeight
         }, 'confirmed');
 
         if (confirmation.value.err) {
@@ -188,7 +177,61 @@ export class RealTradeExecutor implements ITradeExecutor {
         }
 
         slot = confirmation.context.slot;
-        actualFee = 0.000005;
+
+        // Poll/fetch post-transaction balances to verify exact changes
+        let postTokenBalance = preTokenBalance;
+        let postSolBalance = preSolBalance;
+        let actualTokensChange = 0;
+
+        for (let attempt = 0; attempt < 3; attempt++) {
+          postTokenBalance = await this.getTokenBalance(targetMint);
+          postSolBalance = await this.getSolBalance();
+          actualTokensChange = postTokenBalance - preTokenBalance;
+          if (isSolBuy ? actualTokensChange > 0 : actualTokensChange < 0) {
+            break;
+          }
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+
+        // Parse confirmed transaction for precise numbers
+        let parsedTokensReceived = 0;
+        let parsedSolSpent = 0;
+        let parsedFee = 0.000005;
+
+        try {
+          const txDetails = await this.connection.getParsedTransaction(sig, {
+            maxSupportedTransactionVersion: 0,
+            commitment: 'confirmed'
+          });
+          if (txDetails && txDetails.meta) {
+            parsedFee = txDetails.meta.fee / LAMPORTS_PER_SOL;
+            const accountKeys = txDetails.transaction.message.accountKeys;
+            const ourIndex = accountKeys.findIndex(k => k.pubkey.toBase58() === activePublicKey);
+            if (ourIndex !== -1) {
+              const preBalance = txDetails.meta.preBalances[ourIndex];
+              const postBalance = txDetails.meta.postBalances[ourIndex];
+              parsedSolSpent = Math.max(0, (preBalance - postBalance) / LAMPORTS_PER_SOL);
+            }
+            const preTokenBalances = txDetails.meta.preTokenBalances || [];
+            const postTokenBalances = txDetails.meta.postTokenBalances || [];
+            const ourPreToken = preTokenBalances.find(b => b.owner === activePublicKey && b.mint === targetMint);
+            const ourPostToken = postTokenBalances.find(b => b.owner === activePublicKey && b.mint === targetMint);
+            const preAmount = ourPreToken ? Number(ourPreToken.uiTokenAmount.amount) : 0;
+            const postAmount = ourPostToken ? Number(ourPostToken.uiTokenAmount.amount) : 0;
+            parsedTokensReceived = Math.abs(postAmount - preAmount);
+          }
+        } catch (parseErr) {
+          console.warn("Failed to parse transaction for balance changes:", parseErr);
+        }
+
+        const finalTokensChange = parsedTokensReceived > 0 ? parsedTokensReceived : Math.abs(actualTokensChange);
+
+        if (finalTokensChange <= 0) {
+          throw new Error("TRADE FAILED: Devnet transaction confirmed but expected token balance change was not detected.");
+        }
+
+        outAmountNum = finalTokensChange;
+        actualFee = parsedFee;
 
       } else {
         // Mainnet Execution Venue: Jupiter Swap Aggregator API
