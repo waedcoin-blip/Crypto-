@@ -20,7 +20,6 @@ export interface RealTradeConfig {
 
 export class RealTradeExecutor implements ITradeExecutor {
   readonly mode: TradingNetwork = 'devnet';
-  readonly publicKey: string;
 
   private network: TradingNetwork;
   private hybrid?: HybridExecutionEngine | null;
@@ -52,19 +51,37 @@ export class RealTradeExecutor implements ITradeExecutor {
       basePath: localStorage.getItem('juipter_auto_jupiterRpcUrl') || 'https://api.jup.ag/swap/v1'
     });
     this.connection = new Connection(rpcUrl, 'confirmed');
+  }
 
+  public get publicKey(): string {
     if (this.hybrid && this.hybrid.wallet) {
-      this.publicKey = this.hybrid.wallet.publicKey.toBase58();
-    } else {
-      const activeWallet = useActiveWalletStore.getState().activeWallet;
-      if (activeWallet && activeWallet.keypair) {
-        this.publicKey = activeWallet.keypair.publicKey.toBase58();
-      } else if (activeWallet && activeWallet.address) {
-        this.publicKey = activeWallet.address;
-      } else {
-        this.publicKey = '';
-      }
+      return this.hybrid.wallet.publicKey.toBase58();
     }
+    const wallet = useActiveWalletStore.getState().activeWallet;
+    if (!wallet) return '';
+    if (wallet.keypair) {
+      return wallet.keypair.publicKey.toBase58();
+    }
+    if (wallet.address) {
+      return wallet.address;
+    }
+    return '';
+  }
+
+  private getActiveWallet() {
+    const wallet = useActiveWalletStore.getState().activeWallet;
+    if (!wallet) {
+      throw new Error('No active wallet selected');
+    }
+    return wallet;
+  }
+
+  private getActivePublicKey(): string {
+    const pk = this.publicKey;
+    if (!pk) {
+      throw new Error('Active wallet has no valid address');
+    }
+    return pk;
   }
 
   async getQuote(params: QuoteGetRequest): Promise<QuoteResponse> {
@@ -85,17 +102,37 @@ export class RealTradeExecutor implements ITradeExecutor {
     this.telemetryTotalSwaps++;
 
     try {
+      const isSolBuy = inputMint === 'So11111111111111111111111111111111111111112';
+
       // Priority 5 Safety Gate: Ensure balance is live and sufficient before trading
-      await assertTradeBalance(inputMint === 'So11111111111111111111111111111111111111112' ? amount / LAMPORTS_PER_SOL : 0.005, false);
+      await assertTradeBalance(isSolBuy ? amount / LAMPORTS_PER_SOL : 0.005, false);
+
+      if (!isSolBuy) {
+        const tokenBalance = await this.getTokenBalance(inputMint);
+        if (tokenBalance < amount) {
+          throw new Error(`Insufficient token balance (Available: ${tokenBalance}, Required: ${amount})`);
+        }
+      }
 
       let sig = '';
       let slot = 0;
       let actualFee = 0.000005;
       let outAmountNum = 0;
 
+      const activePublicKey = this.getActivePublicKey();
+
       if (this.network === 'devnet') {
+        // Fetch real Jupiter quote to simulate the exact amount we would receive
+        const quote = await this.getQuote({
+          inputMint,
+          outputMint,
+          amount,
+          slippageBps,
+          restrictIntermediateTokens: true,
+        }).catch(e => null);
+        
         // Devnet Execution Venue: Devnet RPC On-Chain Execution
-        const activeWallet = useActiveWalletStore.getState().activeWallet;
+        const activeWallet = this.getActiveWallet();
         const kp = activeWallet?.keypair;
         if (!kp) throw new Error('RealTradeExecutor failed: No private key available to sign Devnet transaction.');
 
@@ -106,11 +143,15 @@ export class RealTradeExecutor implements ITradeExecutor {
         // Devnet Liquidity Vault / Non-executable System Account
         const devnetVault = new PublicKey('SysvarRent111111111111111111111111111111111');
 
-        if (isSolBuy) {
-          outAmountNum = Math.floor((amount / LAMPORTS_PER_SOL) * 1_000_000 * 0.98); // Estimated tokens
+        if (quote) {
+          outAmountNum = Number(quote.outAmount);
         } else {
-          // Selling token for SOL
-          outAmountNum = Math.floor(amount * 0.000001 * LAMPORTS_PER_SOL); // Estimated return SOL
+          if (isSolBuy) {
+            outAmountNum = Math.floor((amount / LAMPORTS_PER_SOL) * 1_000_000 * 0.98); // Estimated tokens
+          } else {
+            // Selling token for SOL
+            outAmountNum = Math.floor(amount * 0.000001 * LAMPORTS_PER_SOL); // Estimated return SOL
+          }
         }
 
         const lamportsToTransfer = isSolBuy ? Math.floor(amount) : 5_000;
@@ -164,7 +205,7 @@ export class RealTradeExecutor implements ITradeExecutor {
           const swapBuild = await this.hybrid.jupiterApi.swapPost({
             swapRequest: {
               quoteResponse: quote,
-              userPublicKey: this.publicKey,
+              userPublicKey: activePublicKey,
               dynamicComputeUnitLimit: true,
               prioritizationFeeLamports: 10_000 as any,
             },
@@ -172,7 +213,7 @@ export class RealTradeExecutor implements ITradeExecutor {
 
           const txBuf = Buffer.from(swapBuild.swapTransaction, 'base64');
           
-          const activeWallet = useActiveWalletStore.getState().activeWallet;
+          const activeWallet = this.getActiveWallet();
           const kp = activeWallet?.keypair;
           if (!kp) throw new Error('Hybrid execution failed: No private key available to sign transaction.');
           
@@ -196,14 +237,14 @@ export class RealTradeExecutor implements ITradeExecutor {
           const swapBuild = await this.jupiterApi.swapPost({
             swapRequest: {
               quoteResponse: quote,
-              userPublicKey: this.publicKey || '11111111111111111111111111111111',
+              userPublicKey: activePublicKey || '11111111111111111111111111111111',
               dynamicComputeUnitLimit: true,
               prioritizationFeeLamports: 10_000 as any,
             },
           });
 
           const txBuf = Buffer.from(swapBuild.swapTransaction, 'base64');
-          const activeWallet = useActiveWalletStore.getState().activeWallet;
+          const activeWallet = this.getActiveWallet();
           const kp = activeWallet?.keypair;
           if (!kp) throw new Error('RealTradeExecutor failed: No private key available to sign transaction.');
 
@@ -227,9 +268,9 @@ export class RealTradeExecutor implements ITradeExecutor {
       }
 
       // Authoritative Post-Trade State Refresh
-      if (this.publicKey) {
+      if (activePublicKey) {
         const balanceService = new WalletBalanceService(this.network);
-        await balanceService.refresh(this.publicKey);
+        await balanceService.refresh(activePublicKey);
       }
 
       const landingTimeMs = Date.now() - start;

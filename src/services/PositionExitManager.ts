@@ -94,16 +94,10 @@ export class PositionExitManager {
   }): void {
     const existing = this.positions.get(params.mint);
     if (existing && existing.state !== 'CLOSED') {
-      // Update existing position's TP/SL, amount, buyPrice, and solSpent if provided
+      // ONLY update existing position's TP/SL if provided
+      // Do NOT overwrite immutable authoritative entry parameters (amount, buyPrice, solSpent) from React UI state sync
       if (params.tpPct !== undefined) existing.tpPct = params.tpPct;
       if (params.slPct !== undefined) existing.slPct = params.slPct;
-      if (params.amount > 0) existing.amount = params.amount;
-      if (params.buyPrice > 0) {
-        existing.buyPrice = params.buyPrice;
-        if (!existing.currentPrice) existing.currentPrice = params.buyPrice;
-        if (!existing.peakPrice) existing.peakPrice = params.buyPrice;
-      }
-      if (params.solSpent > 0) existing.solSpent = params.solSpent;
       return;
     }
 

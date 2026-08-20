@@ -1232,6 +1232,7 @@ function App() {
           } else if (stage.platform === 'UNKNOWN' || stage.stage === 'UNKNOWN') {
             baseSL = typeof state.unknownStopLoss === 'number' ? state.unknownStopLoss : userGlobalSL;
           }
+          baseSL = position.slPct !== undefined ? position.slPct : baseSL;
           baseSL = -Math.abs(baseSL);
 
           // ── TRAILING STOP LOSS: lock in gains as price rises ────────────────
@@ -1255,9 +1256,9 @@ function App() {
           const trailingSL = peakPnL > 20 ? peakPnL - 15 : baseSL;
           const effectiveSL = Math.max(baseSL, trailingSL); // never looser than base SL
 
-          let activeTakeProfit = stage.isBonding 
+          let activeTakeProfit = position.tpPct ?? (stage.isBonding 
             ? (typeof state.bondingCurveTakeProfit === 'number' ? state.bondingCurveTakeProfit : 25) 
-            : (state.moonbagStrategy ? (position.soldPartial ? state.maxTakeProfit : state.minTakeProfit) : state.minTakeProfit);
+            : (state.moonbagStrategy ? (position.soldPartial ? state.maxTakeProfit : state.minTakeProfit) : state.minTakeProfit));
             
           const trackingVerdict = await processActiveTrackingFrame(
             connection,
@@ -1804,8 +1805,19 @@ function App() {
       const entryCost = buyAmountSol;
       const currentPriceUsd = security?.priceUsd ?? (tokenMetrics[tokenAddress]?.priceUsd || 0.0000001);
       
-      // GROSS entry amount (no initial slippage deduction here to prevent double counting in P&L display)
-      const entryAmountTokens = entryCost; 
+      // Separate actual token amount from SOL spent
+      let entryAmountTokens = 0;
+      if (outTokensRaw) {
+        // Attempt to guess decimals to give human-readable token amount
+        // If we can't reliably guess, we fallback to exact computation if we have currentPriceUsd & solUsd
+        const solPriceUsd = getSolPriceUsd();
+        if (solPriceUsd > 0 && currentPriceUsd > 0) {
+          entryAmountTokens = (buyAmountSol * solPriceUsd) / currentPriceUsd;
+        } else {
+          entryAmountTokens = Number(outTokensRaw) / 1_000_000; // rough guess
+        }
+      }
+
 
       // Record trade
       const newTrade: SniperTrade = {
@@ -1833,15 +1845,22 @@ function App() {
            newEntryPriceUsd = (existingTotalUsd + newTotalUsd) / newAmount;
         }
 
+        const newEntry = { signature, solSpent: entryCost, amount: entryAmountTokens, buyPrice: currentPriceUsd, slot: 0 };
+        const newBuyEntries = existing && existing.buyEntries ? [...existing.buyEntries, newEntry] : [newEntry];
+
         return {
           ...prev,
           [tokenAddress]: { 
             boughtAt: existing ? existing.boughtAt : Date.now(), 
             amount: newAmount, 
             symbol: symbol,
+            txid: signature,
+            buyEntries: newBuyEntries,
             tokenQuantityRaw: existing && existing.tokenQuantityRaw ? (BigInt(existing.tokenQuantityRaw) + BigInt(outTokensRaw)).toString() : outTokensRaw, 
             entryPrice: newEntryPriceUsd,
-            entryPriceSol: newEntryPriceSol
+            entryPriceSol: newEntryPriceSol,
+            tpPct: existing?.tpPct ?? minTakeProfit,
+            slPct: existing?.slPct ?? stopLoss
           }
         };
       });
@@ -2041,8 +2060,8 @@ function App() {
         'So11111111111111111111111111111111111111112', 
         sellRawAmount, 
         metric?.liquidity || 0,
-        curPnLPercent > minTakeProfit ? (position.entryPriceSol || 0.1) : undefined,
-        curPnLPercent > minTakeProfit ? minTakeProfit : undefined,
+        curPnLPercent > (position.tpPct ?? minTakeProfit) ? (position.entryPriceSol || 0.1) : undefined,
+        curPnLPercent > (position.tpPct ?? minTakeProfit) ? (position.tpPct ?? minTakeProfit) : undefined,
         curPnLPercent
       );
       if (!quote) throw new Error("No route for partial sell execution");
@@ -2256,7 +2275,16 @@ function App() {
       // Force fresh price for accuracy
       const security = await fetchTokenSecurityData(tokenAddress);
       const currentPriceUsd = security?.priceUsd ?? (tokenMetrics[tokenAddress]?.priceUsd || 0.0000001);
-      const effectiveEntryAmount = actualBuyAmountSol * (1 - (slippage / 100));
+      
+      let effectiveEntryAmount = 0;
+      if (outTokensRaw) {
+        const solPriceUsd = getSolPriceUsd();
+        if (solPriceUsd > 0 && currentPriceUsd > 0) {
+          effectiveEntryAmount = (actualBuyAmountSol * solPriceUsd) / currentPriceUsd;
+        } else {
+          effectiveEntryAmount = Number(outTokensRaw) / 1_000_000;
+        }
+      }
 
       setActivePositions(prev => {
         const existing = prev[tokenAddress];
@@ -2271,15 +2299,22 @@ function App() {
            newEntryPriceUsd = (existingTotalUsd + newTotalUsd) / newAmount;
         }
 
+        const newEntry = { signature, solSpent: actualBuyAmountSol, amount: effectiveEntryAmount, buyPrice: currentPriceUsd, slot: 0 };
+        const newBuyEntries = existing && existing.buyEntries ? [...existing.buyEntries, newEntry] : [newEntry];
+
         return {
           ...prev,
           [tokenAddress]: { 
             boughtAt: existing ? existing.boughtAt : Date.now(), 
             amount: newAmount, 
             symbol: symbol,
+            txid: signature,
+            buyEntries: newBuyEntries,
             tokenQuantityRaw: existing && existing.tokenQuantityRaw ? (BigInt(existing.tokenQuantityRaw) + BigInt(outTokensRaw)).toString() : outTokensRaw,
             entryPrice: newEntryPriceUsd,
             entryPriceSol: newEntryPriceSol,
+            tpPct: existing?.tpPct ?? minTakeProfit,
+            slPct: existing?.slPct ?? stopLoss,
             entryFeesSol: isLiveTrading ? (existing ? (existing.entryFeesSol || 0) + 0.003 : 0.003) : 0, // Tip + Tx
             soldPartial: false,
             isScalp: true

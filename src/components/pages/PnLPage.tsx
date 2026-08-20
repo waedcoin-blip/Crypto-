@@ -29,6 +29,7 @@ import { MasterMonitorService } from '../../services/MasterMonitorService';
 import { getSimExecutor, syncSimBalanceToStore } from '../../services/SimExecutorSingleton';
 import { PaperTradeExecutor } from '../../services/PaperTradeExecutor';
 import { RealTradeExecutor } from '../../services/RealTradeExecutor';
+import { useTradeMode } from '../../context/TradeModeContext';
 import { ITradeExecutor } from '../../services/ITradeExecutor';
 import { masterMonitorHealthManager } from '../../services/MasterMonitorHealthManager';
 import { syncManager } from '../../services/SyncService';
@@ -117,7 +118,9 @@ interface Position {
   amount: number;
   amountLamports?: number;
   entryTime: number;
-  txid: string;
+  txid: string; // The primary/most recent transaction
+  buySlot?: number;
+  buyEntries?: { signature: string; solSpent: number; amount: number; buyPrice: number; slot: number }[];
   positionId?: string;
   recoveryMode?: boolean;
   triggersDisabled?: boolean;
@@ -1127,6 +1130,7 @@ export const PnLPage = ({
   const [showDocsModal, setShowDocsModal] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const isPausedRef = useRef(false);
+  const { manager: tradeManager } = useTradeMode();
   const [isPausedState, setIsPausedState] = useState(false);
   const setPaused = (val: boolean) => {
     isPausedRef.current = val;
@@ -4067,7 +4071,14 @@ const checkTokenCriteria = (mint: string): {
       addLog(`🟢 [BUY TRIGGER] All required criteria & buy limits verified for ${symbol} (${isGraduated ? 'Raydium' : 'Pump.fun'}) | Pos Limit: ${activePositionsCount + 1}/${maxPositions || '∞'}, Rebuy Limit: ${totalTradedCount + 1}/${activeMaxRebuyTimes}, Amount: ${solAmount} SOL. Placing real on-chain order...`, 'buy');
       addLog(`Ordering ${solAmount} SOL → ${symbol}...`, 'buy');
       const amountLamports = Math.floor(solAmount * 1_000_000_000);
-      const result = await executeJupiterSwap(SOL_MINT, mint, amountLamports);
+      const slippageBps = Math.floor(configRef.current.slippage * 100);
+      const swapRes = await tradeManager.swap(SOL_MINT, mint, amountLamports, slippageBps, 'entry');
+      const result = {
+        txid: swapRes.signature,
+        slot: swapRes.slot || 0,
+        outputAmount: swapRes.outputAmount,
+        quoteOutAmountRaw: swapRes.outputAmount,
+      };
       if (result.txid) {
         const passedOutputAmount = typeof result.outputAmount === 'number' && !isNaN(result.outputAmount) ? result.outputAmount : 0;
         let tokenDecimals = 6;
@@ -4090,6 +4101,9 @@ const checkTokenCriteria = (mint: string): {
            const newSolSpent = existing ? (existing.solSpent || 0) + solAmount : solAmount;
            const newAmount = existing ? (existing.amount || 0) + tokenAmount : tokenAmount;
            
+           const newEntry = { signature: result.txid, solSpent: solAmount, amount: tokenAmount, buyPrice: parsedPrice, slot: result.slot };
+           const newBuyEntries = existing && existing.buyEntries ? [...existing.buyEntries, newEntry] : [newEntry];
+           
            const next = {
              ...prev,
              [mint]: {
@@ -4101,6 +4115,8 @@ const checkTokenCriteria = (mint: string): {
                amountLamports: existing ? (existing.amountLamports || 0) + (passedOutputAmount || 0) : (passedOutputAmount || 0),
                entryTime: existing?.entryTime || Date.now(),
                txid: result.txid,
+               buySlot: result.slot,
+               buyEntries: newBuyEntries,
                tpPct: existing?.tpPct ?? (configRef.current.minTakeProfit || 25),
                slPct: existing?.slPct ?? (configRef.current.stopLossPct || 15),
                decimals: existing?.decimals ?? tokenDecimals
@@ -4572,7 +4588,9 @@ const checkTokenCriteria = (mint: string): {
             tpPct: pos.tpPct ?? (configRef.current.minTakeProfit || 25),
             slPct: pos.slPct ?? (configRef.current.stopLossPct || 15),
           });
-          positionExitManagerRef.current.confirmBuy(mint, pos.txid || 'init-sig', 0);
+          if (pos.txid && pos.txid !== 'init-sig') {
+            positionExitManagerRef.current.confirmBuy(mint, pos.txid, pos.buySlot || 0);
+          }
         }
       }
     }
@@ -6768,6 +6786,44 @@ const checkTokenCriteria = (mint: string): {
                           </div>
                         </div>
                         
+                        {/* Transaction Ledger for multi-buys */}
+                        {pos.buyEntries && pos.buyEntries.length > 0 && (
+                          <div className="col-span-2 mt-1 pt-2 border-t border-[#1f212e]/40">
+                            <details className="group">
+                              <summary className="list-none flex items-center justify-between text-[10px] font-bold text-[#64748b] hover:text-[#94a3b8] cursor-pointer uppercase select-none tracking-wider">
+                                <span className="flex items-center gap-1">🧾 Ledger ({pos.buyEntries.length})</span>
+                                <span className="group-open:rotate-180 transition-transform text-[8px] text-[#64748b]">▼</span>
+                              </summary>
+                              <div className="mt-2 space-y-1.5 font-mono text-[10px] text-[#94a3b8] max-h-[120px] overflow-y-auto pr-1">
+                                {pos.buyEntries.map((entry, idx) => (
+                                  <div key={idx} className="flex justify-between items-center bg-[#10111a]/50 p-1.5 rounded border border-[#1f212e]/40">
+                                    <div className="flex flex-col">
+                                      <span className="text-[#e2e8f0] font-semibold">Buy #{idx + 1}</span>
+                                      <span className="text-[9px] opacity-70">Price: {entry.buyPrice?.toFixed(8)} SOL</span>
+                                    </div>
+                                    <div className="text-right flex flex-col items-end">
+                                      <span className="text-emerald-400">+{entry.amount?.toLocaleString(undefined, { maximumFractionDigits: 2 })} tokens</span>
+                                      <div className="flex items-center gap-1 mt-0.5 text-[8px]">
+                                        <span className="text-slate-500">{(entry.solSpent || 0).toFixed(4)} SOL</span>
+                                        {entry.signature && entry.signature !== 'recovered-exit-tx' && entry.signature !== 'init-sig' && (
+                                          <a
+                                            href={`https://solscan.io/tx/${entry.signature}?cluster=devnet`}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="text-indigo-400 hover:text-indigo-300 underline"
+                                          >
+                                            tx
+                                          </a>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </details>
+                          </div>
+                        )}
+
                         <div className="col-span-2 flex justify-between items-center pt-2 border-t border-[#1f212e]/60">
                           <div className="text-[#64748b] text-[10px] uppercase font-bold tracking-wider">
                             Buy: <span className="text-[#e2e8f0] ml-1">{new Date(pos.entryTime).toLocaleTimeString()}</span>

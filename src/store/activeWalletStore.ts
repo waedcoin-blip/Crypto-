@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { Keypair } from '@solana/web3.js';
 import { getSavedSessionKeypair, saveSessionKeypair } from '../utils/keypairUtils';
+import { useBalanceStore } from './balanceStore';
 
 export interface ActiveWallet {
     address: string;
@@ -29,6 +30,9 @@ export const useActiveWalletStore = create<ActiveWalletState>((set, get) => ({
            saveSessionKeypair(keypair);
         }
 
+        // Clear previous balance to prevent displaying stale balance for the new wallet
+        useBalanceStore.getState().setWalletAddress(address || null);
+
         if (!address && !keypair) {
              set({ activeWallet: null });
              return;
@@ -46,5 +50,12 @@ export const useActiveWalletStore = create<ActiveWalletState>((set, get) => ({
         };
         
         set({ activeWallet: newWallet });
+
+        // Trigger immediate authoritative sync for the new wallet
+        setTimeout(() => {
+          import('../services/WalletBalanceService').then(m => {
+            m.walletBalanceService.refreshNow(address);
+          });
+        }, 0);
     }
 }));

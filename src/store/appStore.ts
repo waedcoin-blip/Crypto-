@@ -23,6 +23,11 @@ export interface ActivePositionData {
     hasPulledPrincipal?: boolean;
     recoveryMode?: boolean;
     triggersDisabled?: boolean;
+    tpPct?: number;
+    slPct?: number;
+    txid?: string;
+    buySlot?: number;
+    buyEntries?: { signature: string; solSpent: number; amount: number; buyPrice: number; slot: number }[];
     currentStage?: any;
     initialMoonbagSizeStr?: string;
     isManualSellTriggered?: boolean;
