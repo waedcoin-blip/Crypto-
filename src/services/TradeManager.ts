@@ -1,36 +1,27 @@
 // src/services/TradeManager.ts
 import { ITradeExecutor, SwapResult, ExecutorTelemetry } from './ITradeExecutor';
 import { RealTradeExecutor, RealTradeConfig } from './RealTradeExecutor';
-import { PaperTradeExecutor, PaperTradeConfig } from './PaperTradeExecutor';
-import { getSimExecutor } from './SimExecutorSingleton';
 import { QuoteGetRequest, QuoteResponse } from '@jup-ag/api';
 import { TradingNetwork } from '../config/network';
 
-export type TradeMode = 'devnet' | 'mainnet' | 'real' | 'paper';
+export type TradeMode = 'devnet' | 'mainnet';
 
 export class TradeManager {
   private executor: ITradeExecutor;
   private _mode: TradeMode;
   private realConfig: RealTradeConfig;
-  private paperConfig: any;
 
   constructor(options: {
     mode: TradeMode;
     realConfig?: RealTradeConfig;
-    paperConfig?: any;
   }) {
     this._mode = options.mode;
     this.realConfig = options.realConfig || {};
-    this.paperConfig = options.paperConfig || { initialSolBalance: 10 };
     this.executor = this.createExecutor();
   }
 
   private createExecutor(): ITradeExecutor {
-    if (this._mode === 'paper') {
-      return getSimExecutor(this.paperConfig.initialSolBalance || 10);
-    }
-
-    const network: TradingNetwork = this._mode === 'mainnet' ? 'mainnet' : 'devnet';
+    const network: TradingNetwork = this._mode;
     return new RealTradeExecutor({
       ...this.realConfig,
       network,

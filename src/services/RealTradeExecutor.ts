@@ -105,7 +105,7 @@ export class RealTradeExecutor implements ITradeExecutor {
       const isSolBuy = inputMint === 'So11111111111111111111111111111111111111112';
 
       // Priority 5 Safety Gate: Ensure balance is live and sufficient before trading
-      await assertTradeBalance(isSolBuy ? amount / LAMPORTS_PER_SOL : 0.005, false);
+      await assertTradeBalance(isSolBuy ? amount / LAMPORTS_PER_SOL : 0.005);
 
       if (!isSolBuy) {
         const tokenBalance = await this.getTokenBalance(inputMint);

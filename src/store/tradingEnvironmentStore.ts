@@ -34,7 +34,7 @@ export const useTradingEnvironmentStore = create<TradingEnvironmentState>((set) 
       try {
         const config = getNetworkConfig(network);
         localStorage.setItem('app_trading_network', network);
-        localStorage.setItem('trade_mode', network === 'mainnet' ? 'real' : 'devnet');
+        localStorage.setItem('trade_mode', network);
         localStorage.setItem('is_live_trading', network === 'mainnet' ? 'true' : 'false');
         
         useBalanceStore.getState().setNetwork(network);

@@ -3,16 +3,6 @@ import { create } from 'zustand';
 
 export type BalanceNetwork = 'devnet' | 'mainnet';
 
-export interface SimLedgerState {
-  cashSol: number;
-  initialSol: number;
-  realizedPnl: number;
-  unrealizedPnl: number;
-  openCostBasis: number;
-  equitySol: number;
-  lastUpdated: number | null;
-}
-
 export interface BalanceState {
   network: BalanceNetwork;
   walletAddress: string | null;
@@ -24,15 +14,6 @@ export interface BalanceState {
   onChainLastUpdated: number | null;
   onChainStatus: 'idle' | 'loading' | 'live' | 'stale' | 'error';
   onChainError: string | null;
-
-  // Authoritative Simulation Ledger
-  simCashSol: number;
-  simInitialSol: number;
-  simRealizedPnl: number;
-  simUnrealizedPnl: number;
-  simOpenCostBasis: number;
-  simEquitySol: number;
-  simLastUpdated: number | null;
 
   // Backward-compatible fields
   solBalance: number | null;
@@ -50,8 +31,6 @@ export interface BalanceState {
     availableSolBalance?: number;
     reservedSol?: number;
   }) => void;
-
-  setSimLedgerState: (state: Partial<SimLedgerState>) => void;
 
   setBalance: (balance: {
     solBalance: number;
@@ -71,10 +50,6 @@ export interface BalanceState {
   setTokenBalance: (mint: string, balance: number) => void;
 }
 
-const initialSimCash = typeof localStorage !== 'undefined'
-  ? Number(localStorage.getItem('app_authoritative_paper_balance_v1') || localStorage.getItem('juipter_auto_simWalletBalance') || 10.0) || 10.0
-  : 10.0;
-
 const initialState = {
   network: 'devnet' as BalanceNetwork,
   walletAddress: null,
@@ -85,14 +60,6 @@ const initialState = {
   onChainLastUpdated: null,
   onChainStatus: 'idle' as const,
   onChainError: null,
-
-  simCashSol: initialSimCash,
-  simInitialSol: 10.0,
-  simRealizedPnl: 0,
-  simUnrealizedPnl: 0,
-  simOpenCostBasis: 0,
-  simEquitySol: initialSimCash,
-  simLastUpdated: null,
 
   solBalance: null,
   availableSolBalance: null,
@@ -171,26 +138,6 @@ export const useBalanceStore = create<BalanceState>((set) => ({
       };
     }),
 
-  setSimLedgerState: (simState) =>
-    set((state) => {
-      const newCash = simState.cashSol !== undefined ? simState.cashSol : state.simCashSol;
-      const newInitial = simState.initialSol !== undefined ? simState.initialSol : state.simInitialSol;
-      const newRealized = simState.realizedPnl !== undefined ? simState.realizedPnl : state.simRealizedPnl;
-      const newUnrealized = simState.unrealizedPnl !== undefined ? simState.unrealizedPnl : state.simUnrealizedPnl;
-      const newOpenCost = simState.openCostBasis !== undefined ? simState.openCostBasis : state.simOpenCostBasis;
-      const newEquity = simState.equitySol !== undefined ? simState.equitySol : (newCash + (newOpenCost + newUnrealized));
-
-      return {
-        simCashSol: newCash,
-        simInitialSol: newInitial,
-        simRealizedPnl: newRealized,
-        simUnrealizedPnl: newUnrealized,
-        simOpenCostBasis: newOpenCost,
-        simEquitySol: newEquity,
-        simLastUpdated: Date.now(),
-      };
-    }),
-
   setBalance: ({
     solBalance,
     availableSolBalance,
@@ -245,14 +192,10 @@ export const useBalanceStore = create<BalanceState>((set) => ({
 }));
 
 /**
- * Authoritative trading balance retriever (Strictly mode-aware)
+ * Authoritative trading balance retriever
  */
-export function getTradingBalance(isPaperTrading = false): number {
+export function getTradingBalance(): number {
   const state = useBalanceStore.getState();
-
-  if (isPaperTrading) {
-    return state.simCashSol;
-  }
 
   const avail = state.onChainAvailableSol ?? state.availableSolBalance;
   if (avail === null) {
@@ -267,17 +210,10 @@ export function getTradingBalance(isPaperTrading = false): number {
 }
 
 /**
- * Asserts sufficient live balance prior to trade execution (Mode-aware)
+ * Asserts sufficient live balance prior to trade execution
  */
-export async function assertTradeBalance(requiredSol: number, isPaperTrading = false): Promise<void> {
+export async function assertTradeBalance(requiredSol: number): Promise<void> {
   const state = useBalanceStore.getState();
-
-  if (isPaperTrading) {
-    if (state.simCashSol < requiredSol) {
-      throw new Error(`Insufficient Simulation Cash SOL balance (Available: ${state.simCashSol.toFixed(4)} SOL, Required: ${requiredSol.toFixed(4)} SOL)`);
-    }
-    return;
-  }
 
   if (state.onChainStatus !== 'live' && state.status !== 'live') {
     throw new Error('Trading blocked: on-chain wallet balance is not live');
@@ -308,3 +244,4 @@ export function assertExecutionEnvironment(
     throw new Error('BLOCKED: Mainnet execution cannot use Devnet RPC');
   }
 }
+

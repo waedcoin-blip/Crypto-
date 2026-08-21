@@ -724,83 +724,6 @@ export const calculateDynamicSlippageBps = (
   return slippageBps;
 };
 
-// ─── SIMULATION PRICE ENGINE: Realistic market dynamics ──────────────────
-interface SimPriceState {
-  basePrice: number;
-  lastPrice: number;
-  lastTick: number;
-  volatility: number;
-  trend: number;
-  trendExpiry: number;
-}
-
-const simPriceCache = new Map<string, SimPriceState>();
-
-export function clearSimPriceCache() {
-  simPriceCache.clear();
-}
-
-export function getSimulatedPrice(simMint: string, externalPriceNative?: number): number {
-  const now = Date.now();
-  let state = simPriceCache.get(simMint);
-
-  if (!state) {
-    const seed = simMint.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
-    const basePrice = externalPriceNative || (0.00008 + (seed % 200) * 0.000002);
-    state = {
-      basePrice,
-      lastPrice: basePrice,
-      lastTick: now,
-      volatility: 0.015 + (seed % 30) * 0.001,
-      trend: (seed % 3 === 0) ? 0.3 : (seed % 3 === 1) ? -0.2 : 0.1,
-      trendExpiry: now + 8000 + (seed % 12000)
-    };
-    simPriceCache.set(simMint, state);
-  }
-
-  const elapsed = now - state.lastTick;
-  if (elapsed > 400) {
-    if (now > state.trendExpiry) {
-      const trends = [0.45, -0.35, 0.2, -0.25, 0.6, -0.5, 0.12, -0.18];
-      state.trend = trends[Math.floor(Math.random() * trends.length)];
-      state.trendExpiry = now + 5000 + Math.random() * 20000;
-    }
-
-    const ticks = Math.min(Math.floor(elapsed / 400), 15);
-    for (let i = 0; i < ticks; i++) {
-      const shock = (Math.random() - 0.5) * 2 * state.volatility;
-      const trendPush = state.trend * 0.004;
-      const pctChange = shock + trendPush;
-      state.lastPrice = Math.max(state.lastPrice * (1 + pctChange), state.basePrice * 0.03);
-    }
-    state.lastTick = now;
-  }
-
-  return state.lastPrice;
-}
-
-export function updateSimPrice(simMint: string, priceNative: number) {
-  const state = simPriceCache.get(simMint);
-  if (state && priceNative > 0) {
-    state.lastPrice = state.lastPrice * 0.7 + priceNative * 0.3;
-    state.basePrice = priceNative;
-  }
-}
-
-export function resetSimPrice(simMint: string, freshPriceNative: number) {
-  if (!simMint || freshPriceNative <= 0) return;
-  const now = Date.now();
-  const seed = simMint.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
-  simPriceCache.set(simMint, {
-    basePrice: freshPriceNative,
-    lastPrice: freshPriceNative,
-    lastTick: now,
-    volatility: 0.015 + (seed % 30) * 0.001,
-    trend: 0.1,
-    trendExpiry: now + 10000
-  });
-}
-
 // ─── JUPITER QUOTE: Unified real + simulation path ────────────────────────
 export const getJupiterQuote = async (
   inputMint: string,
@@ -815,7 +738,6 @@ export const getJupiterQuote = async (
 ): Promise<QuoteResponse | null> => {
   const isValidSolanaAddress = (addr: string) => {
     if (!addr) return false;
-    if (addr.startsWith('sim')) return true;
     return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(addr);
   };
 
@@ -826,80 +748,6 @@ export const getJupiterQuote = async (
   if (inputMint === outputMint) return null;
 
   const determinedSlippage = calculateDynamicSlippageBps(liquidityUsd, currentPnLPercent);
-
-  // ── SIMULATION PATH ────────────────────────────────────────────────────────
-  if (inputMint.startsWith('sim') || outputMint.startsWith('sim')) {
-    const isBuy = outputMint.startsWith('sim');
-    const simMint = isBuy ? outputMint : inputMint;
-
-    useAppStore.getState().addJupiterLog({
-      type: 'QUOTE',
-      message: `Simulated Quote: ${isBuy ? 'BUY' : 'SELL'} ${simMint.slice(0,6)}...`,
-      details: { amount, isBuy }
-    });
-
-    let priceNative = 0.0001;
-    try {
-      const state = useAppStore.getState();
-      const m = state?.tokenMetrics?.[simMint];
-      if (m?.priceNative) priceNative = m.priceNative;
-      else if (m?.priceUsd) priceNative = m.priceUsd / 145;
-    } catch (e) {}
-
-    const simulatedPrice = getSimulatedPrice(simMint, priceNative > 0 ? priceNative : undefined);
-
-    // Market impact: larger trades vs smaller pools = more slippage
-    const tradeSizeUsd = (amount / 1_000_000_000) * 145;
-    const effectiveLiquidityUsd = liquidityUsd || 10000;
-    const marketImpactPct = Math.min(tradeSizeUsd / effectiveLiquidityUsd * 0.5, 0.15);
-
-    const priceWithImpact = isBuy
-      ? simulatedPrice * (1 + marketImpactPct)
-      : simulatedPrice * (1 - marketImpactPct);
-
-    let tokenDecimals = 6;
-    if (simMint.toLowerCase().endsWith('pump')) {
-      tokenDecimals = 6;
-    } else {
-      const state = useAppStore.getState();
-      const m = state?.tokenMetrics?.[simMint];
-      if (m && typeof (m as any).decimals === 'number' && (m as any).decimals >= 0) {
-        tokenDecimals = (m as any).decimals;
-      }
-    }
-
-    let outAmountVal = 0n;
-    if (isBuy) {
-      const inputSol = Number(amount) / 1_000_000_000;
-      const tokensOut = inputSol / Math.max(priceWithImpact, 0.000000001);
-      outAmountVal = BigInt(Math.floor(tokensOut * Math.pow(10, tokenDecimals)));
-    } else {
-      const inputTokens = Number(amount) / Math.pow(10, tokenDecimals);
-      const solOut = inputTokens * Math.max(priceWithImpact, 0.000000001);
-      outAmountVal = BigInt(Math.floor(solOut * 1_000_000_000));
-    }
-
-    if (outAmountVal <= 0n) outAmountVal = 1n;
-
-    const slippageFactor = 1 - (determinedSlippage / 10000);
-    const otherAmountThresholdVal = BigInt(Math.floor(Number(outAmountVal) * slippageFactor));
-
-    const mockQuote: QuoteResponse = {
-      inputMint,
-      inAmount: String(amount),
-      outputMint,
-      outAmount: String(outAmountVal),
-      otherAmountThreshold: String(otherAmountThresholdVal),
-      swapMode: "ExactIn",
-      slippageBps: determinedSlippage,
-      platformFee: null,
-      priceImpactPct: (marketImpactPct * 100).toFixed(3),
-      routePlan: [],
-      contextSlot: Math.floor(Date.now() / 400)
-    } as any;
-
-    return mockQuote;
-  }
 
   // ── LIVE PATH ─────────────────────────────────────────────────────────────
   useAppStore.getState().addJupiterLog({

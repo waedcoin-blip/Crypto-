@@ -23,7 +23,7 @@ export const TradeModeProvider: React.FC<{
       manager.switchMode(m);
     }
     setModeState(m);
-    const network: TradingNetwork = (m === 'mainnet' || m === 'real') ? 'mainnet' : 'devnet';
+    const network: TradingNetwork = m === 'mainnet' ? 'mainnet' : 'devnet';
     localStorage.setItem('trade_mode', m);
     localStorage.setItem('app_trading_network', network);
     localStorage.setItem('is_live_trading', String(network === 'mainnet'));
@@ -54,7 +54,7 @@ export const useTradeMode = () => {
     return {
       mode: savedMode,
       setMode: (m: TradeMode) => {
-        const network: TradingNetwork = (m === 'mainnet' || m === 'real') ? 'mainnet' : 'devnet';
+        const network: TradingNetwork = m === 'mainnet' ? 'mainnet' : 'devnet';
         localStorage.setItem('trade_mode', m);
         localStorage.setItem('app_trading_network', network);
         localStorage.setItem('is_live_trading', String(network === 'mainnet'));

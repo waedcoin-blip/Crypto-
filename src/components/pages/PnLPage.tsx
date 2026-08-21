@@ -11,8 +11,7 @@ import { useAppStore } from '../../store/appStore';
 import { TokenScanner, ScannedToken } from '../../services/tokenScanner';
 import { DEFAULT_CRITERIA } from '../../config/tokenCriteria';
 import { getTradeCount } from '../../config/rebuyGuard';
-import { useSimulationStore } from '../../store/simulationStore';
-import { getJupiterQuote, executeTxWithRPCFallback, getTokenBalanceRaw, getLatestBlockhashWithFallback, clearSimPriceCache, resetSimPrice, pingJupiterApi } from '../../services/jupiterService';
+import { getJupiterQuote, executeTxWithRPCFallback, getTokenBalanceRaw, getLatestBlockhashWithFallback, pingJupiterApi } from '../../services/jupiterService';
 import { db } from '../../lib/firebase';
 import { detectTokenStage } from '../../lib/utils';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
@@ -26,8 +25,6 @@ import { marketDataManager } from '../../services/marketDataManager';
 import { rpcHealthManager } from '../../services/rpcHealthManager';
 import { PositionExitManager } from '../../services/PositionExitManager';
 import { MasterMonitorService } from '../../services/MasterMonitorService';
-import { getSimExecutor, syncSimBalanceToStore } from '../../services/SimExecutorSingleton';
-import { PaperTradeExecutor } from '../../services/PaperTradeExecutor';
 import { RealTradeExecutor } from '../../services/RealTradeExecutor';
 import { useTradeMode } from '../../context/TradeModeContext';
 import { ITradeExecutor } from '../../services/ITradeExecutor';
@@ -1088,12 +1085,6 @@ export const PnLPage = ({
   const latestPricesRef = useRef<Record<string, number>>({});
 
   // ── Simulation Store & Background Scan Refs ──
-  const simPositions = useSimulationStore(state => state.positions);
-  const openSimPosition = useSimulationStore(state => state.openPosition);
-  const updateSimPrice = useSimulationStore(state => state.updatePrice);
-  const closeSimPosition = useSimulationStore(state => state.closePosition);
-  const markSimSignaled = useSimulationStore(state => state.markSignaled);
-  const hasSimPosition = useSimulationStore(state => state.hasPosition);
 
   const scannerRef = useRef<TokenScanner | null>(null);
   const monitoredTokensRef = useRef<Map<string, ScannedToken>>(new Map());
@@ -1301,9 +1292,7 @@ export const PnLPage = ({
     } catch { return { trades: 0, wins: 0, losses: 0, pnl: 0, bestTrade: null as number | null }; }
   });
   const { solBalance, availableSolBalance } = useBalanceStore();
-  const simWalletBalance = solBalance;
-  const setSimWalletBalance = (bal: number) => { /* no-op in real mode */ };
-  const realSolBalance = solBalance;
+      const realSolBalance = solBalance;
   const [retentionLimit, setRetentionLimit] = useState<number>(() => {
     try {
       const saved = localStorage.getItem('juipter_auto_retentionLimit');
@@ -1554,8 +1543,8 @@ export const PnLPage = ({
     criteriaPass: 0,
     buyCandidates: 0,
     buyAttempts: 0,
-    simBuySuccess: 0,
-    simBuyFailed: 0
+    buySuccess: 0,
+    buyFailed: 0
   });
 
   const [logs, setLogs] = useState<LogEvent[]>(() => {
@@ -1775,8 +1764,7 @@ export const PnLPage = ({
     ftpDir?: string;
     ftpWebUrl?: string;
     ftpSecure?: boolean;
-    simWalletBalance?: number;
-    blacklistedMints?: string;
+        blacklistedMints?: string;
     positions?: string;
     tokenMetrics?: string;
     stats?: string;
@@ -1822,18 +1810,6 @@ export const PnLPage = ({
           if (data.ftpDir !== undefined) setFtpDir(String(data.ftpDir));
           if (data.ftpWebUrl !== undefined) setFtpWebUrl(String(data.ftpWebUrl));
           if (data.ftpSecure !== undefined) setFtpSecure(data.ftpSecure === true);
-          if (data.simWalletBalance !== undefined) {
-            const fsBal = Number(data.simWalletBalance);
-            if (!isNaN(fsBal) && fsBal > 0) {
-              const localSaved = localStorage.getItem('app_authoritative_paper_balance_v1') || localStorage.getItem('app_simulationBalance_v4');
-              const localNum = localSaved ? Number(localSaved) : NaN;
-              if (!isNaN(localNum) && localNum > 0 && fsBal === 10.0 && localNum !== 10.0) {
-                // Preserve local updated balance if Firestore returned default 10
-              } else {
-                
-              }
-            }
-          }
           
           if (data.blacklistedMints !== undefined) {
             try {
@@ -1915,8 +1891,7 @@ export const PnLPage = ({
             ftpDir: data.ftpDir !== undefined ? data.ftpDir : ftpDir,
             ftpWebUrl: data.ftpWebUrl !== undefined ? data.ftpWebUrl : ftpWebUrl,
             ftpSecure: data.ftpSecure !== undefined ? data.ftpSecure : ftpSecure,
-            simWalletBalance: data.simWalletBalance !== undefined ? data.simWalletBalance : simWalletBalance,
-            blacklistedMints: data.blacklistedMints || JSON.stringify(blacklistedMints),
+                        blacklistedMints: data.blacklistedMints || JSON.stringify(blacklistedMints),
             positions: data.positions || JSON.stringify(positions),
             stats: data.stats || JSON.stringify(stats),
             tradeHistory: data.tradeHistory || JSON.stringify(tradeHistory)
@@ -1936,8 +1911,7 @@ export const PnLPage = ({
             laserstreamEnabled, laserstreamApiKey, laserstreamEndpoint,
             dexScreenerEnabled, forceUsdcRouting,
             ftpHost, ftpUser, ftpPass, ftpDir, ftpWebUrl, ftpSecure,
-            simWalletBalance,
-            blacklistedMints: JSON.stringify(blacklistedMints),
+                        blacklistedMints: JSON.stringify(blacklistedMints),
             positions: JSON.stringify(positions),
             stats: JSON.stringify(stats),
             tradeHistory: JSON.stringify(tradeHistory)
@@ -1978,8 +1952,7 @@ export const PnLPage = ({
         last.ftpDir === ftpDir &&
         last.ftpWebUrl === ftpWebUrl &&
         last.ftpSecure === ftpSecure &&
-        last.simWalletBalance === simWalletBalance &&
-        last.blacklistedMints === JSON.stringify(blacklistedMints) &&
+                last.blacklistedMints === JSON.stringify(blacklistedMints) &&
         last.positions === JSON.stringify(positions) &&
         last.stats === JSON.stringify(stats) &&
         last.tradeHistory === JSON.stringify(tradeHistory)) {
@@ -2016,8 +1989,7 @@ export const PnLPage = ({
           ftpDir,
           ftpWebUrl,
           ftpSecure,
-          simWalletBalance,
-          blacklistedMints: JSON.stringify(blacklistedMints),
+                    blacklistedMints: JSON.stringify(blacklistedMints),
           positions: JSON.stringify(positions),
           stats: JSON.stringify(stats),
           tradeHistory: JSON.stringify(tradeHistory),
@@ -2030,8 +2002,7 @@ export const PnLPage = ({
           laserstreamEnabled, laserstreamApiKey, laserstreamEndpoint,
           dexScreenerEnabled, forceUsdcRouting,
           ftpHost, ftpUser, ftpPass, ftpDir, ftpWebUrl, ftpSecure,
-          simWalletBalance,
-          blacklistedMints: JSON.stringify(blacklistedMints),
+                    blacklistedMints: JSON.stringify(blacklistedMints),
           positions: JSON.stringify(positions),
           stats: JSON.stringify(stats),
           tradeHistory: JSON.stringify(tradeHistory)
@@ -2057,7 +2028,7 @@ export const PnLPage = ({
     laserstreamEnabled, laserstreamApiKey, laserstreamEndpoint,
     dexScreenerEnabled, forceUsdcRouting,
     ftpHost, ftpUser, ftpPass, ftpDir, ftpWebUrl, ftpSecure,
-    simWalletBalance, blacklistedMints, positions, stats, tradeHistory
+    blacklistedMints, positions, stats, tradeHistory
   ]);
   useEffect(() => {
     localStorage.setItem('juipter_auto_isRunning', isRunning.toString());
@@ -3101,385 +3072,15 @@ export const PnLPage = ({
     }
 
     if (!privateKey) throw new Error("Private Key missing");
-    const keypair = useActiveWalletStore.getState().activeWallet?.keypair;
-    const connection = new Connection(jupRpcUrlToUse);
-
-    let baseUrl = 'https://api.jup.ag';
-    let apiHeaders: Record<string, string> = {};
-    if (apiKey) {
-      if (apiKey.startsWith('http')) {
-        baseUrl = apiKey;
-      } else {
-        apiHeaders['x-api-key'] = apiKey;
-      }
-    }
-
-    if (baseUrl.includes('jup.ag/portfolio') || baseUrl.includes('jup.ag/swap')) {
-      throw new Error('Please do not use your Jupiter portfolio URL. Leave the API URL blank to use the default one, or use a valid Jupiter API endpoint.');
-    }
-    const normalizedBaseUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
-
-    const singleSwapInner = async (inMint: string, outMint: string, swapAmt: number, attempt = 1): Promise<any> => {
-      addLog(`📡 [SWAP LIFECYCLE 1/5] Requesting Jupiter quote: ${inMint.slice(0,6)}... → ${outMint.slice(0,6)}...`, 'info');
-      useAppStore.getState().addJupiterLog({
-        type: 'QUOTE',
-        message: `Requesting direct quote ${inMint.slice(0,6)} -> ${outMint.slice(0,6)}`,
-        details: { amount: swapAmt }
-      });
-      const slippageToUse = customSlippageBps !== undefined ? customSlippageBps : Math.floor(slippage * 100);
-      const quoteUrl = `/api/jup/quote?baseUrl=${encodeURIComponent(normalizedBaseUrl)}&inputMint=${inMint}&outputMint=${outMint}&amount=${Math.floor(swapAmt)}&slippageBps=${slippageToUse}&t=${Date.now()}`;
-      
-      let quoteResponse;
-      const quoteRes = await fetch(quoteUrl, { headers: apiHeaders });
-      const quoteText = await quoteRes.text();
-      try {
-        if (!quoteRes.ok) {
-          let errorData: any;
-          try {
-            errorData = JSON.parse(quoteText);
-          } catch (e) {}
-
-          if (quoteRes.status === 400 && errorData?.errorCode === 'TOKEN_NOT_TRADABLE') {
-            throw new Error('Token is not tradable on Jupiter yet.');
-          }
-
-          if (quoteRes.status === 500 && typeof errorData?.error === 'string' && errorData.error.includes('Missing token program')) {
-            throw new Error('Token is missing a required program (it might not be fully launched or supported on Jupiter).');
-          }
-
-          if (quoteRes.status === 429) {
-            throw new Error('Jupiter API Rate Limited (429). Retrying or waiting may be required.');
-          }
-
-          if (quoteRes.status === 500 && errorData?.error === "Fetch failed") {
-            throw new Error(`Jupiter Proxy Error: ${errorData.message} (${errorData.detail}). Targeting: ${errorData.url}`);
-          }
-
-          if (quoteRes.status === 404) {
-             throw new Error("Jupiter Quote API returned 404. If you don't have a premium URL, please leave the API URL BLANK in settings.");
-          }
-          throw new Error(`Status ${quoteRes.status}: ${quoteText.slice(0, 100)}`);
-        }
-        quoteResponse = JSON.parse(quoteText);
-        addLog(`⚡ [SWAP LIFECYCLE 2/5] Quote success (${quoteResponse.outAmount} tokens). Building transaction...`, 'info');
-        useAppStore.getState().addJupiterLog({
-          type: 'INFO',
-          message: `Direct Quote Success: ${quoteResponse.outAmount}`,
-          details: { outAmount: quoteResponse.outAmount }
-        });
-        
-        if (minExpectedOutSol !== undefined && outMint === SOL_MINT) {
-           const guaranteedSol = Number(quoteResponse.otherAmountThreshold) / 1_000_000_000;
-           if (guaranteedSol < minExpectedOutSol) {
-             throw new Error(`PROFIT GUARD: Jupiter guaranteed out (${guaranteedSol.toFixed(4)} SOL) is lower than the required minimum (${minExpectedOutSol.toFixed(4)} SOL). Swap aborted.`);
-           }
-        }
-      } catch (e: any) {
-        useAppStore.getState().addJupiterLog({
-          type: 'ERROR',
-          message: `Direct Quote Error: ${e.message}`,
-        });
-        throw new Error(e.message.startsWith('Jupiter') ? e.message : `Jupiter Quote API Error: ${e.message}`);
-      }
-
-      if (quoteResponse.error) throw new Error(quoteResponse.error);
-
-      const swapRes = await fetch(`/api/jup/swap?baseUrl=${encodeURIComponent(normalizedBaseUrl)}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...apiHeaders
-        },
-        body: JSON.stringify({
-          quoteResponse,
-          userPublicKey: keypair.publicKey.toString(),
-          wrapAndUnwrapSol: true,
-          dynamicComputeUnitLimit: true,
-          prioritizationFeeLamports: 150000,
-        })
-      });
-      const swapText = await swapRes.text();
-      let swapTxResp;
-      try {
-        if (!swapRes.ok) {
-          let errorData: any;
-          try {
-            errorData = JSON.parse(swapText);
-          } catch (e) {}
-
-          if (swapRes.status === 500 && errorData?.error === "Fetch failed") {
-            throw new Error(`Jupiter Proxy Error: ${errorData.message} (${errorData.detail}). Targeting: ${errorData.url}`);
-          }
-          throw new Error(`Status ${swapRes.status}: ${swapText.slice(0, 100)}`);
-        }
-        swapTxResp = JSON.parse(swapText);
-        useAppStore.getState().addJupiterLog({
-          type: 'INFO',
-          message: `Direct Swap Transaction Built Successfully`,
-        });
-      } catch (e: any) {
-        useAppStore.getState().addJupiterLog({
-          type: 'ERROR',
-          message: `Direct Swap Build Error: ${e.message}`,
-        });
-        throw new Error(e.message.startsWith('Jupiter') ? e.message : `Jupiter Swap API Error: ${e.message}`);
-      }
-
-      if (swapTxResp.error) throw new Error(swapTxResp.error);
-
-      const swapTransactionBuf = Buffer.from(swapTxResp.swapTransaction, 'base64');
-      const transaction = VersionedTransaction.deserialize(swapTransactionBuf);
-
-      // ─── OPTIMIZATION: Inject super fresh blockhash to prevent expiration ───
-      try {
-        const latestBlockhash = await getLatestBlockhashWithFallback(connection);
-        transaction.message.recentBlockhash = latestBlockhash.blockhash;
-        useAppStore.getState().addJupiterLog({
-          type: 'INFO',
-          message: `Injected fresh blockhash: ${latestBlockhash.blockhash.slice(0, 8)}...`,
-        });
-      } catch (bhErr: any) {
-        console.warn("Failed to inject fresh blockhash, using Jupiter's original:", bhErr.message || bhErr);
-      }
-
-      transaction.sign([keypair]);
-      addLog(`🔐 [SWAP LIFECYCLE 3/5] Signed transaction with keypair. Broadcasting to Solana RPC...`, 'info');
-
-      try {
-        addLog(`🚀 [SWAP LIFECYCLE 4/5] Sending raw transaction to RPC pool...`, 'info');
-        const txid = await executeTxWithRPCFallback(transaction, connection);
-        addLog(`✅ [SWAP LIFECYCLE 5/5] Transaction confirmed on Solana! Txid: ${txid}`, 'success');
-        let actualOutAmountRaw = Number(quoteResponse.outAmount);
-        try {
-          let txInfo = null;
-          for (let i = 0; i < 5; i++) {
-            await new Promise(r => setTimeout(r, 800));
-            txInfo = await connection.getTransaction(txid, { maxSupportedTransactionVersion: 0, commitment: 'confirmed' });
-            if (txInfo && txInfo.meta) break;
-          }
-          if (txInfo && txInfo.meta) {
-            const userPubkeyStr = keypair.publicKey.toString();
-            if (outMint === SOL_MINT) {
-              const accountIndex = txInfo.transaction.message.staticAccountKeys.findIndex(k => k.toString() === userPubkeyStr);
-              if (accountIndex !== -1) {
-                const preBal = txInfo.meta.preBalances[accountIndex];
-                const postBal = txInfo.meta.postBalances[accountIndex];
-                const fee = txInfo.meta.fee || 0;
-                const solReceived = postBal - preBal + fee;
-                if (solReceived > 0) actualOutAmountRaw = solReceived;
-              }
-            } else {
-              const preBalances = txInfo.meta.preTokenBalances || [];
-              const postBalances = txInfo.meta.postTokenBalances || [];
-              const getBalance = (balances: any[]) => {
-                const match = balances.find(b => b.owner === userPubkeyStr && b.mint === outMint);
-                return match ? Number(match.uiTokenAmount.amount) : 0;
-              };
-              const pre = getBalance(preBalances);
-              const post = getBalance(postBalances);
-              const received = post - pre;
-              if (received > 0) actualOutAmountRaw = received;
-            }
-          }
-        } catch (parseErr) {
-          console.warn("Failed to parse actual swap transaction, falling back to quote output", parseErr);
-        }
-
-        return { 
-          txid, 
-          outputAmount: actualOutAmountRaw, 
-          actualOutputAmountRaw: actualOutAmountRaw,
-          quotedOutputAmountRaw: Number(quoteResponse.outAmount),
-          quoteOutAmountRaw: quoteResponse.outAmount, 
-          estimatedPriceSol: parseFloat(quoteResponse.inAmount) / parseFloat(quoteResponse.outAmount) 
-        };
-      } catch (execErr: any) {
-        if (execErr.message?.includes('timed out waiting for confirmation') && attempt < 3) {
-          useAppStore.getState().addJupiterLog({
-            type: 'INFO',
-            message: `Swap timeout detected. Checking on-chain status before retrying (Attempt ${attempt}/3)...`,
-          });
-
-          const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
-          // Wait 5s then check if tx actually landed
-          await sleep(5000);
-
-          try {
-            // Check all recent signatures
-            const sigs = await connection.getSignaturesForAddress(keypair.publicKey, { limit: 5 });
-            const recentTx = sigs.find(s => 
-              s.blockTime && s.blockTime > (Date.now() / 1000 - 60)
-            );
-
-            if (recentTx && !recentTx.err) {
-              // Tx landed! Don't retry
-              console.log('Tx confirmed after timeout:', recentTx.signature);
-              addLog(`✅ Tx confirmed on-chain after timeout! Txid: ${recentTx.signature}`, 'success');
-              return { 
-                signature: recentTx.signature, 
-                txid: recentTx.signature, 
-                outputAmount: Number(quoteResponse?.outAmount || 0), 
-                actualOutputAmountRaw: Number(quoteResponse?.outAmount || 0),
-                quotedOutputAmountRaw: Number(quoteResponse?.outAmount || 0),
-                quoteOutAmountRaw: quoteResponse?.outAmount,
-                confirmed: true 
-              };
-            }
-
-            // Only retry if tx definitely failed
-            if (recentTx?.err) {
-              console.log('Tx failed on-chain, retrying...');
-              return singleSwapInner(inMint, outMint, swapAmt, attempt + 1);
-            }
-          } catch (chkErr) {
-            console.warn('Failed to verify on-chain transaction status after timeout:', chkErr);
-          }
-
-          // Ambiguous — wait longer, don't retry yet
-          await sleep(10000);
-          return singleSwapInner(inMint, outMint, swapAmt, attempt + 1);
-        }
-        throw execErr;
-      }
+    
+    const slippageToUse = customSlippageBps !== undefined ? customSlippageBps : Math.floor(slippage * 100);
+    const intent = inputMint === SOL_MINT ? 'entry' : 'exit_tp';
+    
+    const res = await tradeManager.swap(inputMint, outputMint, amount, slippageToUse, intent);
+    return {
+      txid: res.signature,
+      outputAmount: res.outputAmount || 0,
     };
-
-    const isBuy = (inputMint === SOL_MINT && outputMint !== USDC_MINT && outputMint !== SOL_MINT);
-    const isSell = (inputMint !== SOL_MINT && inputMint !== USDC_MINT && outputMint === SOL_MINT);
-    const forceUsdcRouting = localStorage.getItem('force_usdc_routing') === 'true';
-
-    // True USDC-swapping logic requested by user
-    if (forceUsdcRouting && (isBuy || isSell)) {
-      if (isBuy) {
-        addLog(`[USDC ROUTE] Phase 1: Swapping ${(amount / 1e9).toFixed(4)} SOL to USDC...`, 'info');
-        const res1 = await singleSwapInner(SOL_MINT, USDC_MINT, amount);
-        addLog(`[USDC ROUTE] Phase 1 Success: Received ${res1.outputAmount} USDC | tx: ${res1.txid.slice(0, 10)}...`, 'info');
-        
-        // Short pause to allow balance indexing
-        await new Promise(resolve => setTimeout(resolve, 100));
-
-        let tradeUsdcAmount = Math.floor(res1.outputAmount);
-        try {
-          const onchainBalStr = await getTokenBalanceRaw(connection, keypair.publicKey.toBase58(), USDC_MINT);
-          const onchainBalNum = parseInt(onchainBalStr, 10);
-          if (onchainBalNum > 0) {
-            tradeUsdcAmount = onchainBalNum;
-            addLog(`[USDC ROUTE] Using on-chain balance: ${(onchainBalNum / 1e6).toFixed(4)} USDC`, 'info');
-          } else {
-            tradeUsdcAmount = parseInt(res1.quoteOutAmountRaw, 10);
-          }
-        } catch (e) {
-          tradeUsdcAmount = parseInt(res1.quoteOutAmountRaw, 10);
-        }
-
-        addLog(`[USDC ROUTE] Phase 2: Swapping USDC to target token...`, 'info');
-        const res2 = await singleSwapInner(USDC_MINT, outputMint, tradeUsdcAmount);
-        addLog(`[USDC ROUTE] Phase 2 Success: Bought target token | tx: ${res2.txid.slice(0, 10)}...`, 'buy');
-        
-        const finalTokenAmount = res2.outputAmount;
-        const finalPriceSol = (amount / 1e9) / (finalTokenAmount || 1);
-        
-        return {
-          txid: res2.txid,
-          outputAmount: finalTokenAmount,
-          quoteOutAmountRaw: res2.quoteOutAmountRaw,
-          estimatedPriceSol: finalPriceSol
-        };
-      } else {
-        addLog(`[USDC ROUTE] Sell Phase 1: Swapping target token to USDC...`, 'info');
-        const res1 = await singleSwapInner(inputMint, USDC_MINT, amount);
-        addLog(`[USDC ROUTE] Sell Phase 1 Success: Received ${res1.outputAmount} USDC | tx: ${res1.txid.slice(0, 10)}...`, 'info');
-
-        await new Promise(resolve => setTimeout(resolve, 100));
-
-        let tradeUsdcAmount = Math.floor(res1.outputAmount);
-        try {
-          const onchainBalStr = await getTokenBalanceRaw(connection, keypair.publicKey.toBase58(), USDC_MINT);
-          const onchainBalNum = parseInt(onchainBalStr, 10);
-          if (onchainBalNum > 0) {
-            tradeUsdcAmount = onchainBalNum;
-          } else {
-            tradeUsdcAmount = parseInt(res1.quoteOutAmountRaw, 10);
-          }
-        } catch (e) {
-          tradeUsdcAmount = parseInt(res1.quoteOutAmountRaw, 10);
-        }
-
-        addLog(`[USDC ROUTE] Sell Phase 2: Swapping USDC to SOL...`, 'info');
-        const res2 = await singleSwapInner(USDC_MINT, SOL_MINT, tradeUsdcAmount);
-        addLog(`[USDC ROUTE] Sell Phase 2 Success: Swap complete | tx: ${res2.txid.slice(0, 10)}...`, 'sell');
-
-        return {
-          txid: res2.txid,
-          outputAmount: res2.outputAmount,
-          quoteOutAmountRaw: res2.quoteOutAmountRaw,
-          estimatedPriceSol: res1.estimatedPriceSol
-        };
-      }
-    } else {
-      // Direct Route attempt with automatic fallback to USDC routing on failures
-      try {
-        return await singleSwapInner(inputMint, outputMint, amount);
-      } catch (err: any) {
-        const errorMsg = err.message || '';
-        const isRouteError = errorMsg.includes('NO_ROUTES_FOUND') || 
-                             errorMsg.includes('COULD_NOT_FIND_ANY_ROUTE') ||
-                             errorMsg.includes('COULD_NOT_FIND_ROUTE') ||
-                             errorMsg.includes('ROUTE_NOT_FOUND') ||
-                             errorMsg.includes('COULD_NOT_FIND') ||
-                             errorMsg.includes('Route not found') || 
-                             errorMsg.includes('Could not find any route') ||
-                             errorMsg.includes('TOKEN_NOT_TRADABLE') ||
-                             errorMsg.includes('not tradable on Jupiter') ||
-                             errorMsg.includes('Status 400') ||
-                             errorMsg.includes('Status 500');
-        
-        if (isRouteError && (isBuy || isSell)) {
-          addLog(`[AUTO USDC ROUTER] Direct route unavailable. Falling back to USDC exchange path...`, 'warn');
-          if (isBuy) {
-            addLog(`[USDC ROUTE] Phase 1: Swapping ${(amount / 1e9).toFixed(4)} SOL to USDC...`, 'info');
-            const res1 = await singleSwapInner(SOL_MINT, USDC_MINT, amount);
-            await new Promise(resolve => setTimeout(resolve, 100));
-            
-            let tradeUsdcAmount = parseInt(res1.quoteOutAmountRaw, 10);
-            try {
-              const onchainBalStr = await getTokenBalanceRaw(connection, keypair.publicKey.toBase58(), USDC_MINT);
-              const onchainBalNum = parseInt(onchainBalStr, 10);
-              if (onchainBalNum > 0) tradeUsdcAmount = onchainBalNum;
-            } catch (e) {}
-
-            addLog(`[USDC ROUTE] Phase 2: Swapping USDC to target token...`, 'info');
-            const res2 = await singleSwapInner(USDC_MINT, outputMint, tradeUsdcAmount);
-            return {
-              txid: res2.txid,
-              outputAmount: res2.outputAmount,
-              quoteOutAmountRaw: res2.quoteOutAmountRaw,
-              estimatedPriceSol: (amount / 1e9) / (res2.outputAmount || 1)
-            };
-          } else {
-            addLog(`[USDC ROUTE] Sell Phase 1: Swapping target token to USDC...`, 'info');
-            const res1 = await singleSwapInner(inputMint, USDC_MINT, amount);
-            await new Promise(resolve => setTimeout(resolve, 100));
-
-            let tradeUsdcAmount = parseInt(res1.quoteOutAmountRaw, 10);
-            try {
-              const onchainBalStr = await getTokenBalanceRaw(connection, keypair.publicKey.toBase58(), USDC_MINT);
-              const onchainBalNum = parseInt(onchainBalStr, 10);
-              if (onchainBalNum > 0) tradeUsdcAmount = onchainBalNum;
-            } catch (e) {}
-
-            addLog(`[USDC ROUTE] Sell Phase 2: Swapping USDC to SOL...`, 'info');
-            const res2 = await singleSwapInner(USDC_MINT, SOL_MINT, tradeUsdcAmount);
-            return {
-              txid: res2.txid,
-              outputAmount: res2.outputAmount,
-              quoteOutAmountRaw: res2.quoteOutAmountRaw,
-              estimatedPriceSol: res1.estimatedPriceSol
-            };
-          }
-        }
-        throw err;
-      }
-    }
   };
 
   const pendingBuysRef = useRef(0);
@@ -3847,7 +3448,6 @@ const checkTokenCriteria = (mint: string): {
         if (freshPrice && freshPrice > 0) {
           parsedPrice = freshPrice;
           price = freshPrice;
-          resetSimPrice(mint, freshPrice);
           addLog(`🔄 [REBUY RATE REFRESHED] Rebuy token ${symbol} exchange rate successfully updated to ${freshPrice.toFixed(8)} SOL`, 'info');
           if (tokenMetricsRef.current[mint]) {
             tokenMetricsRef.current[mint].priceNative = freshPrice;
@@ -3869,7 +3469,6 @@ const checkTokenCriteria = (mint: string): {
               const freshPriceFromQuote = solAmount / normalizedOut;
               parsedPrice = freshPriceFromQuote;
               price = freshPriceFromQuote;
-              resetSimPrice(mint, freshPriceFromQuote);
               addLog(`🔄 [REBUY RATE REFRESHED] Rebuy token ${symbol} exchange rate calculated from fresh exchange quote: ${freshPriceFromQuote.toFixed(8)} SOL`, 'info');
               if (tokenMetricsRef.current[mint]) {
                 tokenMetricsRef.current[mint].priceNative = freshPriceFromQuote;
@@ -3933,134 +3532,17 @@ const checkTokenCriteria = (mint: string): {
     }
     
     const storeStateForBuyMode = useAppStore.getState();
-    const tradeModeFromStorage = (typeof localStorage !== 'undefined' ? localStorage.getItem('trade_mode') : null) || (typeof localStorage !== 'undefined' && localStorage.getItem('is_live_trading') === 'true' ? 'real' : 'paper');
-    const isRealBuyMode = (storeStateForBuyMode.isLiveTrading || tradeModeFromStorage === 'real') && Boolean(privateKey) && Boolean(user);
-
-    if (!isRealBuyMode) {
-      if (tradeModeFromStorage === 'real' && !user) {
-        addLog(`⚠️ [REAL BUY BLOCKED] Real Trading requires an authenticated Google/Firebase user session. Defaulting to Paper/Simulation buy for ${symbol}.`, 'warn');
-      } else if (tradeModeFromStorage === 'real' && !privateKey) {
-        addLog(`⚠️ [REAL BUY FALLBACK] Real Trading mode selected, but no Private Key is configured in settings. Defaulting to Paper/Simulation buy for ${symbol}.`, 'warn');
-      }
-      // Simulation wallet logic via unified singleton
-      const simExecutor = getSimExecutor(simWalletBalance || 1.0, jupRpcUrlToUse);
-      const availableBalance = await simExecutor.getSolBalance();
-      if (solAmount > availableBalance) {
-        addLog(`Insufficient SIM balance (${availableBalance.toFixed(4)} < ${solAmount.toFixed(4)}) for ${symbol}`, 'err');
-        pendingBuyMintsRef.current.delete(mint);
-        return;
-      }
-
-      pendingBuysRef.current++;
-      try {
-        const isGraduated = !mint.toLowerCase().endsWith('pump');
-        addLog(`🟢 [BUY TRIGGER] All required criteria & buy limits verified for ${symbol} (${isGraduated ? 'Raydium' : 'Pump.fun'}) | Pos Limit: ${activePositionsCount + 1}/${maxPositions || '∞'}, Rebuy Limit: ${totalTradedCount + 1}/${activeMaxRebuyTimes}, Bal: ${solAmount} SOL. Executing swift-swap entry...`, 'buy');
-        addLog(`[SIM] Quoting ${symbol} for ${solAmount} SOL via Jupiter...`, 'info');
-        const lamports = Math.floor(solAmount * 1_000_000_000);
-        let quote = null;
-        try {
-          quote = await getJupiterQuote(SOL_MINT, mint, lamports, 0);
-        } catch (e) {
-          console.warn(`SIM quote failed:`, e);
-        }
-        
-        // Simulation USDC fallback (SOL -> USDC -> Target Token)
-        if (!quote) {
-          try {
-            const usdcQuote = await getJupiterQuote(SOL_MINT, USDC_MINT, lamports, 0);
-            if (usdcQuote && Number(usdcQuote.outAmount) > 0) {
-              const usdcAmount = Number(usdcQuote.outAmount);
-              const targetQuote = await getJupiterQuote(USDC_MINT, mint, usdcAmount, 0);
-              if (targetQuote) {
-                quote = targetQuote;
-                addLog(`[SIM USDC ROUTE] Successfully routed simulated quote via USDC for ${symbol}!`, 'info');
-              }
-            }
-            } catch (err) {
-            console.warn(`SIM USDC quote failed:`, err);
-          }
-        }
-        
-        let outAmountRaw = 0;
-        let tokenAmount = 0;
-        let finalDecimals = 6;
-
-        if (!quote) {
-           const isMockTokenOrSim = !privateKey || ['FU', 'MOONSHOT', 'PEPEFUN', 'DOGE2026', 'PUMPKITTY', 'CLOUDRUN', 'FROGPUMP', 'FASTSO', 'PUMPX', 'AI_SWIFT', 'NEURAL', 'GROKFUN', 'BABYGOAT', 'LASERT'].includes(symbol);
-           if (isRebuy && !isMockTokenOrSim) {
-             addLog(`⚠️ [REBUY JUPITER ROUTE FAILED] Failed to get fresh Jupiter quote for rebuy token ${symbol}. Proceeding with math fallback using current price (${parsedPrice.toFixed(8)} SOL) as fallback.`, 'warn');
-           } else {
-             addLog(`[SIM] Jupiter route failed. Using math fallback for ${symbol}.`, 'warn');
-           }
-           // Math fallback
-           tokenAmount = solAmount / parsedPrice;
-           // Resolve the real on-chain decimals instead of assuming 6 - this
-           // amountLamports value can later be reused directly as a sell input,
-           // so an assumed decimals count here silently corrupts real sells.
-           finalDecimals = await resolveDecimals(mint, rpcUrl);
-           outAmountRaw = Math.floor(tokenAmount * Math.pow(10, finalDecimals));
-        } else {
-           // Exact token amount derived from Jupiter's routing
-           outAmountRaw = Number(quote.outAmount);
-           
-           const exactMathFallback = solAmount / parsedPrice;
-           if (outAmountRaw > 0) {
-             finalDecimals = await resolveDecimals(mint, rpcUrl);
-             const impliedDecimals = Math.round(Math.log10(outAmountRaw / exactMathFallback));
-             if (Math.abs(finalDecimals - impliedDecimals) >= 2) {
-               finalDecimals = Math.max(0, impliedDecimals);
-             }
-             tokenAmount = outAmountRaw / Math.pow(10, finalDecimals);
-             parsedPrice = solAmount / tokenAmount;
-           } else {
-             tokenAmount = exactMathFallback;
-           }
-        }
-
-        await new Promise(resolve => setTimeout(resolve, 50)); // Simulate tx time
-        
-        const finalSimTxId = simExecutor.executeManualSwap(
-          SOL_MINT,
-          mint,
-          solAmount,
-          outAmountRaw,
-          'entry'
-        );
-        pipelineCountersRef.current.simBuySuccess++;
-
-        setPositions((prev) => {
-          const existing = prev[mint];
-          const newSolSpent = existing ? (existing.solSpent || 0) + solAmount : solAmount;
-          const newAmount = existing ? (existing.amount || 0) + tokenAmount : tokenAmount;
-          
-          const next = {
-            ...prev,
-            [mint]: {
-              symbol,
-              buyPrice: newAmount > 0 ? (newSolSpent / newAmount) : parsedPrice,
-              currentPrice: parsedPrice,
-              solSpent: newSolSpent,
-              amount: newAmount,
-              amountLamports: existing ? (existing.amountLamports || 0) + outAmountRaw : outAmountRaw,
-              entryTime: existing?.entryTime || Date.now(),
-              txid: finalSimTxId,
-              tpPct: existing?.tpPct ?? (configRef.current.minTakeProfit || 25),
-              slPct: existing?.slPct ?? (configRef.current.stopLossPct || 15),
-              decimals: existing?.decimals ?? finalDecimals
-            }
-          };
-          positionsRef.current = next;
-          return next;
-        });
-        syncSimBalanceToStore((b) => setSimWalletBalance(b));
-        addLog(`✅ [SIM] Bought ${symbol} @ ${parsedPrice.toFixed(8)} SOL (${tokenAmount.toFixed(2)} tokens)`, 'buy');
-      } catch (e: any) {
-         addLog(`[SIM] Failed: ${e.message}`, 'err');
-         syncSimBalanceToStore((b) => setSimWalletBalance(b));
-      } finally {
-        pendingBuysRef.current--;
-        pendingBuyMintsRef.current.delete(mint);
-      }
+    const tradeModeFromStorage = (typeof localStorage !== 'undefined' ? localStorage.getItem('trade_mode') : null) || (typeof localStorage !== 'undefined' && localStorage.getItem('is_live_trading') === 'true' ? 'mainnet' : 'devnet');
+    
+    if (tradeModeFromStorage === 'mainnet' && !user) {
+      addLog(`❌ [BUY ABORTED] Mainnet Trading requires an authenticated Google/Firebase user session.`, 'err');
+      pendingBuyMintsRef.current.delete(mint);
+      return;
+    }
+    
+    if (!privateKey) {
+      addLog(`❌ [BUY ABORTED] No Private Key configured in settings. A wallet is required for both Devnet and Mainnet trading.`, 'err');
+      pendingBuyMintsRef.current.delete(mint);
       return;
     }
 
@@ -4130,12 +3612,7 @@ const checkTokenCriteria = (mint: string): {
       }
     } catch (e: any) {
       addLog(`Buy error for ${symbol}: ${e.message}`, 'err');
-      if (!privateKey) {
-        pipelineCountersRef.current.simBuyFailed++;
-        syncSimBalanceToStore();
-      } else {
-        walletBalanceService.refreshNow();
-      }
+      walletBalanceService.refreshNow();
       if (e.message.includes('Route not found') || e.message.includes('NO_ROUTES_FOUND') || e.message.includes('Not Found') || e.message.includes('No route') || e.message.includes('TOKEN_NOT_TRADABLE')) {
         addLog(`❌ [BLACKLIST] ${symbol} added to blacklist due to unroutable liquidity/dead token.`, 'warn');
         if (!blacklistedMintsRef.current.includes(mint)) {
@@ -4207,7 +3684,6 @@ const checkTokenCriteria = (mint: string): {
       riskScore: 5
     };
 
-    openSimPosition(scannedTokenData, tradeSol);
     monitoredTokensRef.current.set(mint, scannedTokenData);
 
     // Execute direct buy into PnL active positions
@@ -4237,209 +3713,86 @@ const checkTokenCriteria = (mint: string): {
 
     // --- EXECUTE MAIN POSITION SELL ---
     if (shouldSellMain && !isMainSold) {
-      if (privateKey) {
-        // Real on-chain swap sell for main
-        addLog(`🚨 [REAL SWAP SELL] Initiating real on-chain sell for main position of ${pos.symbol} via Jupiter...`, 'warn');
-        try {
-          const lamportsToSellRaw = pos.amountLamports;
-          let lamportsToSell = lamportsToSellRaw;
-          if (!lamportsToSell || lamportsToSell <= 0) {
-            try {
-              const keypair = useActiveWalletStore.getState().activeWallet?.keypair;
-              const activeWsUrl = (customWsUrl && customWsUrl.trim() !== "") ? customWsUrl.trim() : rpcUrl.replace('https', 'wss').replace('http', 'ws');
-              const conn = new Connection(rpcUrl, { commitment: 'confirmed', wsEndpoint: activeWsUrl });
-              const accounts = await conn.getParsedTokenAccountsByOwner(
-                keypair.publicKey,
-                { mint: new PublicKey(mint) }
-              );
-              if (accounts.value.length > 0) {
-                 lamportsToSell = parseInt(accounts.value[0].account.data.parsed.info.tokenAmount.amount, 10);
-              }
-            } catch (e) {
-              console.warn("Failed to fetch balance for dynamic sell", e);
-            }
-          }
-
-          if (!pos || !lamportsToSell || lamportsToSell <= 0) {
-            addLog(`No original token lamports for ${pos?.symbol || mint}, using fallback or removing position`, 'warn');
-            isMainSold = true;
-          } else {
-            addLog(`Ordering ${pos.symbol} → SOL...`, 'sell');
-            const result = await executeJupiterSwap(mint, SOL_MINT, lamportsToSell);
-            if (result.txid) {
-              const actualSolReceived = result.outputAmount || 0;
-              const costBasisSol = pos.solSpent || 0;
-              const actualPnlSOL = costBasisSol > 0 ? actualSolReceived - costBasisSol : 0;
-              const actualPnlPct = costBasisSol > 0 ? actualPnlSOL / costBasisSol : 0;
-              
-              setStats((s) => ({
-                ...s,
-                trades: s.trades + 1,
-                wins: s.wins + (actualPnlPct > 0 ? 1 : 0),
-                losses: s.losses + (actualPnlPct <= 0 ? 1 : 0),
-                pnl: s.pnl + actualPnlSOL,
-                bestTrade: (actualPnlPct > 0 && (!s.bestTrade || actualPnlPct > s.bestTrade)) ? actualPnlPct : s.bestTrade
-              }));
-              addLog(`✅ Sold ${pos.symbol} on-chain | Received: ${actualSolReceived.toFixed(6)} SOL | P&L: ${(actualPnlPct * 100).toFixed(1)}% | tx: ${result.txid.slice(0, 12)}...`, 'sell');
-              
-              setTradeHistory(th => [{
-                id: `trade-${Date.now()}`,
-                mint: mint,
-                buyTime: pos.entryTime,
-                sellTime: Date.now(),
-                buyAmountSol: costBasisSol,
-                sellAmountSol: actualSolReceived,
-                pnlPct: Math.max(-100, actualPnlPct * 100)
-              }, ...th]);
-
-              if (pnlPct < 0) {
-                setBlacklistedMints(prev => Array.from(new Set([...prev, mint])));
-                addLog(`Blacklisted ${pos.symbol} due to negative PnL.`, 'warn');
-              }
-              isMainSold = true;
-              walletBalanceService.refreshNow();
-            } else {
-              throw new Error("Jupiter swap transaction ID missing.");
-            }
-          }
-        } catch (e: any) {
-          addLog(`Real main sell error: ${e.message}`, 'err');
-          walletBalanceService.refreshNow();
-        }
-      } else {
-        // Simulated sell for main
-        addLog(`[SIM] Selling main position for ${pos.symbol} quoting real return...`, 'info');
-        let netReceivedSOL = 0;
-        try {
-          if (pos.amountLamports) {
-            const metric = tokenMetricsRef.current[mint];
-            const poolLiquidityUsd = metric?.liquidity || 0;
-            let sellQuote = await getJupiterQuote(mint, SOL_MINT, pos.amountLamports, poolLiquidityUsd, undefined, undefined, pnlPct * 100);
-            
-            if (!sellQuote) {
-              try {
-                const sellUsdcQuote = await getJupiterQuote(mint, USDC_MINT, pos.amountLamports, poolLiquidityUsd, undefined, undefined, pnlPct * 100);
-                if (sellUsdcQuote && Number(sellUsdcQuote.outAmount) > 0) {
-                  const usdcReceived = Number(sellUsdcQuote.outAmount);
-                  const sellSolQuote = await getJupiterQuote(USDC_MINT, SOL_MINT, usdcReceived, 0, undefined, undefined, pnlPct * 100);
-                  if (sellSolQuote) {
-                    sellQuote = sellSolQuote;
-                    addLog(`[SIM USDC ROUTE] Successfully exit routed simulated sell via USDC for ${pos.symbol}!`, 'info');
-                  }
-                }
-                } catch (err) {
-                console.warn(`SIM USDC sell quote failed:`, err);
-              }
-            }
-
-            if (!sellQuote) throw new Error("No exit route found.");
-            
-            const guaranteedSolOutSell = Number(sellQuote.otherAmountThreshold) / 1_000_000_000;
-            const operationalFeesSol = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent);
-            const netReturnSell = guaranteedSolOutSell - operationalFeesSol;
-
-            const isStopLoss = reason.toLowerCase().includes('stop loss') || reason.toLowerCase().includes('recovery failed');
-            const isEmergency = reason.toLowerCase().includes('force') || reason.toLowerCase().includes('emergency') || reason.toLowerCase().includes('manual');
-            const isExitSignal = isStopLoss || isEmergency || reason.toLowerCase().includes('take profit') || reason.toLowerCase().includes('recovery');
-
-            const slippageTol = 0.005;
-            if (!isExitSignal && netReturnSell < (pos.solSpent * (1.0 - slippageTol))) {
-              addLog(`[SIM ABORT] ${pos.symbol} profit margin too thin or dropping (${(netReturnSell - pos.solSpent) > 0 ? '+' : ''}${((netReturnSell - pos.solSpent) / pos.solSpent * 100).toFixed(1)}%). Aborting sell to prevent loss.`, 'warn');
-              pendingSellMintsRef.current.delete(mint);
-              return;
-            }
-
-            netReceivedSOL = Number(sellQuote.outAmount) / 1_000_000_000;
-          } else {
-            throw new Error("No lamports stored");
-          }
-        } catch (e: any) {
-          let validSellPrice = currentPrice;
-          if (pos.buyPrice > 0 && validSellPrice > pos.buyPrice * 20) {
-            // Guard against corrupted unscaled 1.0 SOL price when buy price was ~0.000001 SOL
-            validSellPrice = pos.buyPrice * (1 + Math.max(-0.9, Math.min(pnlPct, 5)));
-          }
-
-          const grossReceived = validSellPrice * (pos.amount || 0);
-          const currentPnLPercent = pnlPct * 100;
-          let dynamicSlippage = slippage;
-          if (currentPnLPercent > 0) {
-            dynamicSlippage = Math.max(0.3, Math.min(slippage, currentPnLPercent * 0.3));
-          } else {
-            dynamicSlippage = Math.min(slippage, 1.0);
-          }
-          
-          const slippageFee = grossReceived * (dynamicSlippage / 100);
-          let fallbackNet = grossReceived - slippageFee;
-          
-          const operationalFeesSol = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent);
-          const netReturnSell = fallbackNet - operationalFeesSol;
-          const slippageTol = 0.005;
-
-          const isStopLoss = reason.toLowerCase().includes('stop loss') || reason.toLowerCase().includes('recovery failed');
-          const isEmergency = reason.toLowerCase().includes('force') || reason.toLowerCase().includes('emergency') || reason.toLowerCase().includes('manual');
-          const isExitSignal = isStopLoss || isEmergency || reason.toLowerCase().includes('take profit') || reason.toLowerCase().includes('recovery');
-
-          if (!isExitSignal && netReturnSell < (pos.solSpent * (1.0 - slippageTol))) {
-            addLog(`[SIM ABORT fallback] ${pos.symbol} fallback profit margin too thin (${((netReturnSell - pos.solSpent) / pos.solSpent * 100).toFixed(1)}%). Aborting sell to prevent loss.`, 'warn');
-            pendingSellMintsRef.current.delete(mint);
-            return;
-          }
-          
-          netReceivedSOL = Math.max(0, fallbackNet);
-        }
-
-        // Sanity guard on netReceivedSOL to prevent storing corrupt token counts as SOL amounts
-        if (pos.solSpent > 0 && netReceivedSOL > pos.solSpent * 50 && pos.buyPrice > 0 && currentPrice < pos.buyPrice * 20) {
-          netReceivedSOL = pos.solSpent * (1 + Math.min(pnlPct, 5));
-        }
-
-        const actualPnlAmount = netReceivedSOL - pos.solSpent;
-        const actualPnlPct = actualPnlAmount / pos.solSpent;
-
-        const realWalletReturn = Math.max(0, netReceivedSOL - getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent));
-        const walletNetPnlPct = (realWalletReturn - pos.solSpent) / pos.solSpent;
-        const simExecManual = getSimExecutor();
-        const amountTokensRaw = pos.amountLamports || Math.floor((pos.amount || 0) * Math.pow(10, pos.decimals || 6));
-        const expectedLamports = Math.floor(realWalletReturn * 1e9);
-
-        // Authoritatively execute the simulated token -> SOL swap in the ledger
-        try {
-          simExecManual.executeManualSwap(mint, SOL_MINT, amountTokensRaw, expectedLamports, 'exit_manual');
-        } catch {
-          // Fallback if token was not in ledger map
-          simExecManual.getSolBalance().then(curBal => {
-            simExecManual.setVirtualSol(curBal + realWalletReturn);
-          });
-        }
-        syncSimBalanceToStore((b) => setSimWalletBalance(b));
-
-        setStats((s) => ({
-          trades: s.trades + 1,
-          wins: s.wins + (walletNetPnlPct > 0 ? 1 : 0),
-          losses: s.losses + (walletNetPnlPct <= 0 ? 1 : 0),
-          pnl: s.pnl + (realWalletReturn - pos.solSpent), 
-          bestTrade: (walletNetPnlPct > 0 && (!s.bestTrade || walletNetPnlPct > s.bestTrade)) ? walletNetPnlPct : s.bestTrade
-        }));
-
-        addLog(`✅ [SIM] Sold ${pos.symbol} | Net P&L: ${(walletNetPnlPct * 100).toFixed(1)}% (Wallet)`, 'sell');
-        
-        setTradeHistory(th => [{
-          id: `sim-sell-${Date.now()}`,
-          mint: mint,
-          buyTime: pos.entryTime,
-          sellTime: Date.now(),
-          buyAmountSol: pos.solSpent,
-          sellAmountSol: realWalletReturn, 
-          pnlPct: walletNetPnlPct * 100
-        }, ...th]);
-
-        if (actualPnlPct < 0) {
-          setBlacklistedMints(prev => Array.from(new Set([...prev, mint])));
-          addLog(`Blacklisted ${pos.symbol} due to negative PnL.`, 'warn');
-        }
-        isMainSold = true;
+      if (!privateKey) {
+        addLog('❌ [SELL ABORTED] No Private Key configured. A wallet is required for both Devnet and Mainnet trading.', 'err');
+        return;
       }
+
+      // Real on-chain swap sell for main
+      addLog(`🚨 [REAL SWAP SELL] Initiating real on-chain sell for main position of ${pos.symbol} via Jupiter...`, 'warn');
+      try {
+        const lamportsToSellRaw = pos.amountLamports;
+        let lamportsToSell = lamportsToSellRaw;
+        if (!lamportsToSell || lamportsToSell <= 0) {
+          try {
+            const keypair = useActiveWalletStore.getState().activeWallet?.keypair;
+            const activeWsUrl = (customWsUrl && customWsUrl.trim() !== "") ? customWsUrl.trim() : rpcUrl.replace('https', 'wss').replace('http', 'ws');
+            const conn = new Connection(rpcUrl, { commitment: 'confirmed', wsEndpoint: activeWsUrl });
+            const accounts = await conn.getParsedTokenAccountsByOwner(
+              keypair.publicKey,
+              { mint: new PublicKey(mint) }
+            );
+            if (accounts.value.length > 0) {
+                lamportsToSell = parseInt(accounts.value[0].account.data.parsed.info.tokenAmount.amount, 10);
+            }
+          } catch (e) {
+            console.warn("Failed to fetch balance for dynamic sell", e);
+          }
+        }
+
+        if (!pos || !lamportsToSell || lamportsToSell <= 0) {
+          addLog(`No original token lamports for ${pos?.symbol || mint}, using fallback or removing position`, 'warn');
+          isMainSold = true;
+        } else {
+          addLog(`Ordering ${pos.symbol} → SOL...`, 'sell');
+          const result = await executeJupiterSwap(mint, SOL_MINT, lamportsToSell);
+          if (result.txid) {
+            const actualSolReceived = result.outputAmount || 0;
+            const costBasisSol = pos.solSpent || 0;
+            const actualPnlSOL = costBasisSol > 0 ? actualSolReceived - costBasisSol : 0;
+            const actualPnlPct = costBasisSol > 0 ? actualPnlSOL / costBasisSol : 0;
+            
+            setStats((s) => ({
+              ...s,
+              trades: s.trades + 1,
+              wins: s.wins + (actualPnlPct > 0 ? 1 : 0),
+              losses: s.losses + (actualPnlPct <= 0 ? 1 : 0),
+              pnl: s.pnl + actualPnlSOL,
+              bestTrade: (actualPnlPct > 0 && (!s.bestTrade || actualPnlPct > s.bestTrade)) ? actualPnlPct : s.bestTrade
+            }));
+            addLog(`✅ Sold ${pos.symbol} on-chain | Received: ${actualSolReceived.toFixed(6)} SOL | P&L: ${(actualPnlPct * 100).toFixed(1)}% | tx: ${result.txid.slice(0, 12)}...`, 'sell');
+            
+            setTradeHistory(th => [{
+              id: `trade-${Date.now()}`,
+              mint: mint,
+              buyTime: pos.entryTime,
+              sellTime: Date.now(),
+              buyAmountSol: costBasisSol,
+              sellAmountSol: actualSolReceived,
+              pnlPct: Math.max(-100, actualPnlPct * 100)
+            }, ...th]);
+
+            if (pnlPct < 0) {
+              setBlacklistedMints(prev => Array.from(new Set([...prev, mint])));
+              addLog(`Blacklisted ${pos.symbol} due to negative PnL.`, 'warn');
+            }
+            isMainSold = true;
+            walletBalanceService.refreshNow();
+          } else {
+            throw new Error("Jupiter swap transaction ID missing.");
+          }
+        }
+      } catch (e: any) {
+        addLog(`Real main sell error: ${e.message}`, 'err');
+        walletBalanceService.refreshNow();
+      }
+    }
+    
+    // Fallback for actualPnlPct < 0 block that comes after
+    const actualPnlPct = pnlPct;
+    if (actualPnlPct < 0) {
+      setBlacklistedMints(prev => Array.from(new Set([...prev, mint])));
+      addLog(`Blacklisted ${pos.symbol} due to negative PnL.`, 'warn');
     }
 
     // 3. Update Positions state based on what was sold
@@ -4483,11 +3836,8 @@ const checkTokenCriteria = (mint: string): {
       return;
     }
 
-    const tradeModeFromStorage = (typeof localStorage !== 'undefined' ? localStorage.getItem('trade_mode') : null) || (typeof localStorage !== 'undefined' && localStorage.getItem('is_live_trading') === 'true' ? 'real' : 'paper');
-    const isRealMode = tradeModeFromStorage === 'real' && !!useActiveWalletStore.getState().activeWallet?.keypair;
     const currentJup = jupiterRpcUrl || 'https://api.jup.ag/swap/v1';
-
-    let executor: ITradeExecutor = isRealMode ? new RealTradeExecutor({ network: (tradingNetwork as any) || 'devnet' }) : getSimExecutor(simWalletBalance || 1.0, currentJup);
+    const executor = tradeManager.getExecutor();
 
     const exitMgr = new PositionExitManager(
       executor,
@@ -4521,13 +3871,8 @@ const checkTokenCriteria = (mint: string): {
         // recalculate pnlPct purely based on actual real return
         pnlPct = costBasisSol > 0 ? (actualPnlSOL / costBasisSol) * 100 : pnlPct;
 
-        // Sync returned SOL to simulation wallet balance (already authoritatively credited by executor.swap)
-        const isRealModeActive = (useAppStore.getState().isLiveTrading || localStorage.getItem('juipter_auto_tradeMode') === 'real') && Boolean(privateKey) && Boolean(user);
-        if (!isRealModeActive) {
-          syncSimBalanceToStore((b) => setSimWalletBalance(b));
-        } else {
-          walletBalanceService.refreshNow();
-        }
+        // Refresh wallet balance
+        walletBalanceService.refreshNow();
 
         setStats((s) => ({
           ...s,
@@ -4781,7 +4126,7 @@ const checkTokenCriteria = (mint: string): {
          } else {
             const counters = pipelineCountersRef.current;
             addLog(`📡 [SCANNER HEARTBEAT] Monitoring ${Object.keys(tokenMetricsRef.current).length} active tokens | Positions: ${activeMints.length}/${maxPositions} | Required Match: ${matchRate}%
-  ↳ PIPELINE METRICS: Discovered: ${counters.discovered} | Solana: ${counters.solana} | Valid Metrics: ${counters.validMetrics} | Criteria Pass: ${counters.criteriaPass} | Buy Candidates: ${counters.buyCandidates} | Buy Attempts: ${counters.buyAttempts} | Sim Success: ${counters.simBuySuccess} | Sim Failed: ${counters.simBuyFailed}`, 'info');
+  ↳ PIPELINE METRICS: Discovered: ${counters.discovered} | Solana: ${counters.solana} | Valid Metrics: ${counters.validMetrics} | Criteria Pass: ${counters.criteriaPass} | Buy Candidates: ${counters.buyCandidates} | Buy Attempts: ${counters.buyAttempts} | Buy Success: ${counters.buySuccess} | Buy Failed: ${counters.buyFailed}`, 'info');
          }
       }
 
@@ -5057,7 +4402,6 @@ const checkTokenCriteria = (mint: string): {
                 isRugSafe: true,
                 riskScore: 5
               };
-              openSimPosition(scannedTokenData, configRef.current.tradeAmount || tradeAmount || 0.1);
               monitoredTokensRef.current.set(mint, scannedTokenData);
               addLog(`📌 [MONITORING ADDED] Graduated token ${item.symbol} added to PnLPage active positions first for active monitoring.`, 'info');
             } else {
@@ -5416,8 +4760,7 @@ const checkTokenCriteria = (mint: string): {
         tokenMetrics: JSON.stringify({}),
         tradeHistory: JSON.stringify([]),
         stats: JSON.stringify({ trades: 0, wins: 0, losses: 0, pnl: 0, bestTrade: null }),
-        simWalletBalance: 10.0,
-      };
+              };
     }
     
     // Clear global store state without reloading
@@ -5431,8 +4774,6 @@ const checkTokenCriteria = (mint: string): {
     store.setTelemetryBits([false, false, false, false, false, false]);
     
     // Clear simulation store and scanner monitored tokens
-    useSimulationStore.getState().clearPositions();
-    useSimulationStore.setState({ positions: {}, closedPositions: [] });
     monitoredTokensRef.current.clear();
     signaledPositions.current.clear();
     pendingBuyMintsRef.current.clear();
@@ -5441,8 +4782,7 @@ const checkTokenCriteria = (mint: string): {
     
     // Completely clear all cache and reset balances to exactly 10.0 SOL
     localStorage.setItem('app_simulationBalance_v4', '10.0');
-    localStorage.setItem('juipter_auto_simWalletBalance', '10.0');
-    localStorage.setItem('app_mySniperTrades', JSON.stringify([]));
+        localStorage.setItem('app_mySniperTrades', JSON.stringify([]));
     localStorage.setItem('juipter_auto_isRunning', 'false'); // Stopped on reset
     localStorage.setItem('app_activePositions', JSON.stringify({}));
     
@@ -5471,15 +4811,13 @@ const checkTokenCriteria = (mint: string): {
     localStorage.setItem('app_activePositions', JSON.stringify({}));
     localStorage.setItem('juipter_auto_positions', JSON.stringify({}));
 
-    clearSimPriceCache();
     clearPriceHistories();
 
     if (user) {
       try {
         const docRef = doc(db, 'settings', user.uid);
         await setDoc(docRef, {
-          simWalletBalance: 10.0,
-          blacklistedMints: JSON.stringify([]),
+                    blacklistedMints: JSON.stringify([]),
           positions: JSON.stringify({}),
           tokenMetrics: JSON.stringify({}),
           stats: JSON.stringify({ trades: 0, wins: 0, losses: 0, pnl: 0, bestTrade: null }),
@@ -6855,25 +6193,7 @@ const checkTokenCriteria = (mint: string): {
               <button onClick={resetSession} className="text-[10px] text-[#64748b] hover:text-white uppercase font-bold tracking-wider">Reset</button>
             </div>
             <div className="p-4 space-y-0 text-[12px]">
-              <div className="flex flex-col gap-1 p-4 bg-amber-500/5 rounded-xl border border-amber-500/20 mb-4">
-                <div className="flex justify-between items-center">
-                  <span className="text-[#94a3b8] text-[10px] font-bold uppercase tracking-widest flex items-center gap-2">
-                     <ShieldCheck className="w-3 h-3 text-amber-500" /> SIM WALLET BALANCE
-                  </span>
-                  <span className="bg-amber-500/10 text-amber-500 text-[9px] px-1.5 py-0.5 rounded font-black tracking-tighter">
-                    ACTIVE
-                  </span>
-                </div>
-                <div className="flex items-baseline justify-between mt-1">
-                  <span className="text-3xl font-black text-amber-400 font-mono tracking-tighter leading-none">
-                    {(simWalletBalance || 0).toFixed(4)}
-                  </span>
-                  <span className="text-amber-500/60 font-bold text-xs ml-1">SOL</span>
-                </div>
-                <p className="text-[10px] text-slate-500 mt-2 font-medium leading-relaxed italic">
-                  Simulation mode active. Live feedback during trades.
-                </p>
-              </div>
+
               <div className="flex justify-between items-center py-2.5 border-b border-[#1f212e]">
                 <span className="text-[#64748b] uppercase font-medium">Total Trades</span>
                 <span className="font-mono font-semibold text-[#e2e8f0] text-[14px]">{stats.trades}</span>

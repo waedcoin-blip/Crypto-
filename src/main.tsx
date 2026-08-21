@@ -255,15 +255,7 @@ function Root() {
   ], []);
 
   const tradeManager = useMemo(() => new TradeManager({
-    mode: (localStorage.getItem('trade_mode') as TradeMode) || 'paper',
-    paperConfig: {
-      jupiterEndpoint: 'https://api.jup.ag/swap/v1',
-      jupiterApiKey: localStorage.getItem('jupiter_api_key') || '',
-      initialSolBalance: 10,
-      failureRate: 0.03,
-      latencyRange: [250, 900],
-      priorityFeeMicroLamports: 10_000,
-    },
+    mode: (localStorage.getItem('trade_mode') as TradeMode) || 'devnet',
     realConfig: {
       hybridEngine: null as any,
     },

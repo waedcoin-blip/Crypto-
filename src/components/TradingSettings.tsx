@@ -141,29 +141,29 @@ export const TradingSettings: React.FC = () => {
         </span>
         <div className="flex items-center gap-2">
           <button
-            onClick={() => setMode('paper')}
+            onClick={() => setMode('devnet')}
             className={`px-3 py-1.5 rounded-md text-[12px] font-semibold transition-all cursor-pointer ${
-              mode === 'paper'
+              mode === 'devnet'
                 ? 'bg-white text-black shadow'
                 : 'text-gray-400 hover:text-white'
             }`}
           >
-            Paper
+            Devnet
           </button>
           <button
-            onClick={() => setMode('real')}
+            onClick={() => setMode('mainnet')}
             className={`px-3 py-1.5 rounded-md text-[12px] font-semibold transition-all cursor-pointer ${
-              mode === 'real'
+              mode === 'mainnet'
                 ? 'bg-rose-600 text-white shadow'
                 : 'text-gray-400 hover:text-rose-400'
             }`}
           >
-            Live
+            Mainnet
           </button>
         </div>
       </div>
 
-      {mode === 'real' && (
+      {mode === 'mainnet' && (
         <div className="rounded-[10px] border border-rose-500/30 bg-rose-500/10 p-3">
           <p className="text-[11px] text-rose-400 font-medium">
             ⚠️ Live mode uses real funds. Double-check all settings before saving.
