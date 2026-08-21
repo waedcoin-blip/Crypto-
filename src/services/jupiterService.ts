@@ -1,9 +1,11 @@
-import { Connection, PublicKey, Transaction, VersionedTransaction, TransactionMessage, SystemProgram } from '@solana/web3.js';
+import { Connection, PublicKey, Transaction, VersionedTransaction, TransactionMessage, SystemProgram, TransactionInstruction } from '@solana/web3.js';
 import { createJupiterApiClient, QuoteResponse } from '@jup-ag/api';
 import { useAppStore } from '../store/appStore';
 import { detectTokenStage } from '../lib/utils';
 import { DEFAULT_HELIUS_RPC } from '../constants/solana';
 import { telemetryService } from './telemetryService';
+import { DevnetAmmExecutor } from './DevnetAmmExecutor';
+import { getNetworkConfig } from '../config/network';
 
 // ─── RPC POOL: Smart multi-endpoint with health tracking ───────────────────
 export interface RpcEndpoint {
@@ -749,6 +751,22 @@ export const getJupiterQuote = async (
 
   const determinedSlippage = calculateDynamicSlippageBps(liquidityUsd, currentPnLPercent);
 
+  const isDevnet = localStorage.getItem('trade_mode') === 'devnet' || localStorage.getItem('app_trading_network') === 'devnet';
+  if (isDevnet) {
+    try {
+      const devnetExecutor = new DevnetAmmExecutor();
+      return await devnetExecutor.getQuote({
+        inputMint,
+        outputMint,
+        amount,
+        slippageBps: determinedSlippage,
+      });
+    } catch (e) {
+      console.warn('[DevnetAmmQuote] Devnet quote error:', e);
+      return null;
+    }
+  }
+
   // ── LIVE PATH ─────────────────────────────────────────────────────────────
   useAppStore.getState().addJupiterLog({
     type: 'QUOTE',
@@ -883,6 +901,41 @@ export const createJupiterSwapTransaction = async (
     message: `Building swap tx for ${userPublicKey.slice(0,6)}...`,
     details: { prioritiyFee: prioritizationFeeLamports, useDynamicSlippage }
   });
+
+  const isDevnet = localStorage.getItem('trade_mode') === 'devnet' || localStorage.getItem('app_trading_network') === 'devnet';
+  if (isDevnet) {
+    try {
+      const userPk = new PublicKey(userPublicKey);
+      const activeConn = connection || new Connection(getNetworkConfig('devnet').rpcUrl || 'https://api.devnet.solana.com', 'confirmed');
+      const { blockhash } = await activeConn.getLatestBlockhash('confirmed');
+
+      const memoText = `[Devnet AMM Swap] ${userPublicKey.slice(0, 6)}... ${quoteResponse.inAmount} -> ${quoteResponse.outAmount}`;
+      const instructions = [
+        new TransactionInstruction({
+          keys: [{ pubkey: userPk, isSigner: true, isWritable: true }],
+          programId: new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr'),
+          data: Buffer.from(memoText, 'utf-8'),
+        }),
+        SystemProgram.transfer({
+          fromPubkey: userPk,
+          toPubkey: userPk,
+          lamports: 5000,
+        }),
+      ];
+
+      const messageV0 = new TransactionMessage({
+        payerKey: userPk,
+        recentBlockhash: blockhash,
+        instructions,
+      }).compileToV0Message();
+
+      return new VersionedTransaction(messageV0);
+    } catch (e) {
+      console.error('[DevnetSwapTx] Failed to build Devnet swap transaction:', e);
+      return null;
+    }
+  }
+
   try {
     const swapRequest: any = {
       quoteResponse,
