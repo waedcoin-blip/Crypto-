@@ -9,8 +9,14 @@ import {
   SystemProgram,
   LAMPORTS_PER_SOL,
   TransactionInstruction,
+  SendTransactionError,
 } from '@solana/web3.js';
-import { getAssociatedTokenAddress, createAssociatedTokenAccountIdempotentInstruction } from '@solana/spl-token';
+import {
+  TOKEN_PROGRAM_ID,
+  TOKEN_2022_PROGRAM_ID,
+  getAssociatedTokenAddressSync,
+  createAssociatedTokenAccountIdempotentInstruction,
+} from '@solana/spl-token';
 import { useActiveWalletStore } from '../store/activeWalletStore';
 import { useBalanceStore, assertTradeBalance } from '../store/balanceStore';
 import { walletBalanceService } from './WalletBalanceService';
@@ -50,6 +56,43 @@ export class DevnetAmmExecutor implements ITradeExecutor {
     const pk = this.publicKey;
     if (!pk) throw new Error('Active wallet has no valid address');
     return pk;
+  }
+
+  /**
+   * Validates if a mint account exists on Devnet RPC and determines its exact token program owner
+   */
+  async validateDevnetMint(mintPk: PublicKey): Promise<{
+    exists: boolean;
+    tokenProgram?: PublicKey;
+    isToken2022?: boolean;
+  }> {
+    if (mintPk.toBase58() === 'So11111111111111111111111111111111111111112') {
+      return { exists: true, tokenProgram: TOKEN_PROGRAM_ID, isToken2022: false };
+    }
+
+    try {
+      const info = await this.connection.getAccountInfo(mintPk, 'confirmed');
+      if (!info) {
+        return { exists: false };
+      }
+
+      const isLegacy = info.owner.equals(TOKEN_PROGRAM_ID);
+      const isToken2022 = info.owner.equals(TOKEN_2022_PROGRAM_ID);
+
+      if (!isLegacy && !isToken2022) {
+        console.warn(`[DevnetAmmExecutor] Unrecognized owner for mint ${mintPk.toBase58()}: ${info.owner.toBase58()}`);
+        return { exists: false };
+      }
+
+      return {
+        exists: true,
+        tokenProgram: info.owner,
+        isToken2022,
+      };
+    } catch (e: any) {
+      console.warn(`[DevnetAmmExecutor] Failed to query mint info for ${mintPk.toBase58()}:`, e?.message || e);
+      return { exists: false };
+    }
   }
 
   async getQuote(params: QuoteGetRequest): Promise<QuoteResponse> {
@@ -156,21 +199,36 @@ export class DevnetAmmExecutor implements ITradeExecutor {
         })
       );
 
-      // 2. ATA preparation if target is SPL Token on Devnet
+      // 2. Dynamic ATA preparation using on-chain mint token program validation
       const targetMintStr = isSolBuy ? outputMint : inputMint;
       if (targetMintStr !== 'So11111111111111111111111111111111111111112') {
-        try {
-          const targetMintPk = new PublicKey(targetMintStr);
-          const ata = await getAssociatedTokenAddress(targetMintPk, userPk);
-          instructions.push(
-            createAssociatedTokenAccountIdempotentInstruction(userPk, ata, userPk, targetMintPk)
+        const targetMintPk = new PublicKey(targetMintStr);
+        const mintValidation = await this.validateDevnetMint(targetMintPk);
+
+        if (mintValidation.exists && mintValidation.tokenProgram) {
+          const ata = getAssociatedTokenAddressSync(
+            targetMintPk,
+            userPk,
+            false,
+            mintValidation.tokenProgram
           );
-        } catch (e) {
-          console.warn('[DevnetAmmExecutor] ATA instruction skip:', e);
+          instructions.push(
+            createAssociatedTokenAccountIdempotentInstruction(
+              userPk,
+              ata,
+              userPk,
+              targetMintPk,
+              mintValidation.tokenProgram
+            )
+          );
+        } else {
+          console.log(
+            `[DevnetAmmExecutor] Target mint ${targetMintStr} does not exist on Devnet RPC. Skipping ATA instruction.`
+          );
         }
       }
 
-      // 3. Devnet SOL trading fee / vault deposit instruction (0.00001 SOL network / swap fee)
+      // 3. Devnet SOL trading fee / vault deposit instruction (0.000005 SOL network / swap fee)
       instructions.push(
         SystemProgram.transfer({
           fromPubkey: userPk,
@@ -237,8 +295,21 @@ export class DevnetAmmExecutor implements ITradeExecutor {
       };
     } catch (err: any) {
       this.telemetryFailedSwaps++;
-      console.error('[DevnetAmmExecutor] Swap failed:', err);
-      throw new Error(`Devnet swap execution failed: ${err.message || String(err)}`);
+      let detailsStr = err?.message || String(err);
+
+      if (err instanceof SendTransactionError || (err && typeof err.getLogs === 'function')) {
+        try {
+          const logs = typeof err.getLogs === 'function' ? await err.getLogs(this.connection) : err.logs;
+          if (logs && logs.length > 0) {
+            detailsStr = `Simulation/Execution Logs:\n${logs.join('\n')}`;
+          }
+        } catch (logErr) {
+          console.warn('[DevnetAmmExecutor] Unable to fetch SendTransactionError logs:', logErr);
+        }
+      }
+
+      console.error('[DevnetAmmExecutor] Swap failed:', detailsStr, err);
+      throw new Error(`Devnet swap execution failed: ${detailsStr}`);
     }
   }
 
@@ -312,14 +383,21 @@ export class DevnetAmmExecutor implements ITradeExecutor {
       const solLamports = await this.connection.getBalance(new PublicKey(activePublicKey), 'confirmed');
       const sol = solLamports / LAMPORTS_PER_SOL;
 
-      const tokenAccounts = await this.connection.getParsedTokenAccountsByOwner(
-        new PublicKey(activePublicKey),
-        { programId: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA') },
-        'confirmed'
-      );
+      const [legacyAccounts, token2022Accounts] = await Promise.all([
+        this.connection.getParsedTokenAccountsByOwner(
+          new PublicKey(activePublicKey),
+          { programId: TOKEN_PROGRAM_ID },
+          'confirmed'
+        ).catch(() => ({ value: [] })),
+        this.connection.getParsedTokenAccountsByOwner(
+          new PublicKey(activePublicKey),
+          { programId: TOKEN_2022_PROGRAM_ID },
+          'confirmed'
+        ).catch(() => ({ value: [] })),
+      ]);
 
       const tokenBalances: Record<string, number> = {};
-      for (const { account } of tokenAccounts.value) {
+      for (const { account } of [...legacyAccounts.value, ...token2022Accounts.value]) {
         const info = account.data.parsed.info;
         const mint = info.mint;
         const ta = info.tokenAmount;
