@@ -85,6 +85,9 @@ export class RealTradeExecutor implements ITradeExecutor {
   }
 
   async getQuote(params: QuoteGetRequest): Promise<QuoteResponse> {
+    if (this.network === 'devnet') {
+      throw new Error("Jupiter API is not available on Solana Devnet. Cannot fetch quotes for Devnet execution.");
+    }
     if (this.hybrid) {
       return this.hybrid.jupiterApi.quoteGet(params);
     }
@@ -122,117 +125,7 @@ export class RealTradeExecutor implements ITradeExecutor {
       const activePublicKey = this.getActivePublicKey();
 
       if (this.network === 'devnet') {
-        // Fetch real Jupiter quote to see if route exists on Devnet (or Mainnet API accessed under Devnet mode)
-        const quote = await this.getQuote({
-          inputMint,
-          outputMint,
-          amount,
-          slippageBps,
-          restrictIntermediateTokens: true,
-        }).catch(e => {
-          throw new Error(`Devnet swap unavailable: No route found. ${e.message || String(e)}`);
-        });
-
-        if (!quote) {
-          throw new Error("Devnet swap unavailable: Jupiter returned no quote.");
-        }
-
-        const activeWallet = this.getActiveWallet();
-        const kp = activeWallet?.keypair;
-        if (!kp) throw new Error('RealTradeExecutor failed: No private key available to sign Devnet transaction.');
-
-        const swapBuild = await this.jupiterApi.swapPost({
-          swapRequest: {
-            quoteResponse: quote,
-            userPublicKey: activePublicKey,
-            dynamicComputeUnitLimit: true,
-            prioritizationFeeLamports: 10_000 as any,
-          },
-        }).catch(e => {
-          throw new Error(`Devnet swap unavailable: Failed to build swap transaction. ${e.message || String(e)}`);
-        });
-
-        const txBuf = Buffer.from(swapBuild.swapTransaction, 'base64');
-        const tx = VersionedTransaction.deserialize(txBuf);
-        tx.sign([kp]);
-
-        // Record pre-transaction token and SOL balances
-        const targetMint = isSolBuy ? outputMint : inputMint;
-        const preTokenBalance = await this.getTokenBalance(targetMint);
-        const preSolBalance = await this.getSolBalance();
-
-        sig = await this.connection.sendRawTransaction(tx.serialize(), {
-          skipPreflight: false,
-          maxRetries: 3,
-        });
-
-        const confirmation = await this.connection.confirmTransaction({
-          signature: sig,
-          blockhash: tx.message.recentBlockhash,
-          lastValidBlockHeight: swapBuild.lastValidBlockHeight || (await this.connection.getLatestBlockhash()).lastValidBlockHeight
-        }, 'confirmed');
-
-        if (confirmation.value.err) {
-          throw new Error(`Devnet transaction failed on-chain: ${JSON.stringify(confirmation.value.err)}`);
-        }
-
-        slot = confirmation.context.slot;
-
-        // Poll/fetch post-transaction balances to verify exact changes
-        let postTokenBalance = preTokenBalance;
-        let postSolBalance = preSolBalance;
-        let actualTokensChange = 0;
-
-        for (let attempt = 0; attempt < 3; attempt++) {
-          postTokenBalance = await this.getTokenBalance(targetMint);
-          postSolBalance = await this.getSolBalance();
-          actualTokensChange = postTokenBalance - preTokenBalance;
-          if (isSolBuy ? actualTokensChange > 0 : actualTokensChange < 0) {
-            break;
-          }
-          await new Promise(resolve => setTimeout(resolve, 1000));
-        }
-
-        // Parse confirmed transaction for precise numbers
-        let parsedTokensReceived = 0;
-        let parsedSolSpent = 0;
-        let parsedFee = 0.000005;
-
-        try {
-          const txDetails = await this.connection.getParsedTransaction(sig, {
-            maxSupportedTransactionVersion: 0,
-            commitment: 'confirmed'
-          });
-          if (txDetails && txDetails.meta) {
-            parsedFee = txDetails.meta.fee / LAMPORTS_PER_SOL;
-            const accountKeys = txDetails.transaction.message.accountKeys;
-            const ourIndex = accountKeys.findIndex(k => k.pubkey.toBase58() === activePublicKey);
-            if (ourIndex !== -1) {
-              const preBalance = txDetails.meta.preBalances[ourIndex];
-              const postBalance = txDetails.meta.postBalances[ourIndex];
-              parsedSolSpent = Math.max(0, (preBalance - postBalance) / LAMPORTS_PER_SOL);
-            }
-            const preTokenBalances = txDetails.meta.preTokenBalances || [];
-            const postTokenBalances = txDetails.meta.postTokenBalances || [];
-            const ourPreToken = preTokenBalances.find(b => b.owner === activePublicKey && b.mint === targetMint);
-            const ourPostToken = postTokenBalances.find(b => b.owner === activePublicKey && b.mint === targetMint);
-            const preAmount = ourPreToken ? Number(ourPreToken.uiTokenAmount.amount) : 0;
-            const postAmount = ourPostToken ? Number(ourPostToken.uiTokenAmount.amount) : 0;
-            parsedTokensReceived = Math.abs(postAmount - preAmount);
-          }
-        } catch (parseErr) {
-          console.warn("Failed to parse transaction for balance changes:", parseErr);
-        }
-
-        const finalTokensChange = parsedTokensReceived > 0 ? parsedTokensReceived : Math.abs(actualTokensChange);
-
-        if (finalTokensChange <= 0) {
-          throw new Error("TRADE FAILED: Devnet transaction confirmed but expected token balance change was not detected.");
-        }
-
-        outAmountNum = finalTokensChange;
-        actualFee = parsedFee;
-
+        throw new Error("Devnet swap unavailable: Jupiter aggregator is not deployed on Solana Devnet. A Mainnet Jupiter transaction cannot be executed on Devnet. Please switch to Mainnet for live trading, or implement a Devnet-specific AMM (e.g., Raydium Devnet AMM).");
       } else {
         // Mainnet Execution Venue: Jupiter Swap Aggregator API
         const quote = await this.getQuote({
@@ -250,7 +143,7 @@ export class RealTradeExecutor implements ITradeExecutor {
               quoteResponse: quote,
               userPublicKey: activePublicKey,
               dynamicComputeUnitLimit: true,
-              prioritizationFeeLamports: 10_000 as any,
+              prioritizationFeeLamports: { priorityLevelWithMaxLamports: { priorityLevel: 'medium', maxLamports: 10000, global: false } } as any,
             },
           });
 
@@ -282,7 +175,7 @@ export class RealTradeExecutor implements ITradeExecutor {
               quoteResponse: quote,
               userPublicKey: activePublicKey || '11111111111111111111111111111111',
               dynamicComputeUnitLimit: true,
-              prioritizationFeeLamports: 10_000 as any,
+              prioritizationFeeLamports: { priorityLevelWithMaxLamports: { priorityLevel: 'medium', maxLamports: 10000, global: false } } as any,
             },
           });
 

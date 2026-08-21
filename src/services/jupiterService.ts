@@ -890,7 +890,7 @@ export const createJupiterSwapTransaction = async (
       wrapAndUnwrapSol: true,
       dynamicComputeUnitLimit: true,
       trackingAccount: "FE2vyoM5CbGcTXSHUsPj79eKAd8fvMzuy3jgr9pYBCLv",
-      prioritizationFeeLamports: prioritizationFeeLamports as any,
+      prioritizationFeeLamports: { priorityLevelWithMaxLamports: { priorityLevel: 'medium', maxLamports: typeof prioritizationFeeLamports === 'number' ? prioritizationFeeLamports : 100000, global: false } } as any,
     };
 
     if (useDynamicSlippage) {
