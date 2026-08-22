@@ -342,8 +342,28 @@ const TerminalConsole: React.FC<TerminalConsoleProps> = ({ logs, setLogs, retent
       navigator.clipboard.writeText(JSON.stringify(meta, null, 2));
       setCopiedId(id);
       setTimeout(() => setCopiedId(null), 2000);
-      } catch (err) {
+    } catch (err) {
       console.warn("Failed to copy metadata", err);
+    }
+  };
+
+  const handleCopyText = (text: string, id: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    try {
+      if (navigator && navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text);
+      } else {
+        const textArea = document.createElement("textarea");
+        textArea.value = text;
+        document.body.appendChild(textArea);
+        textArea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textArea);
+      }
+      setCopiedId(id);
+      setTimeout(() => setCopiedId(null), 2000);
+    } catch (err) {
+      console.warn("Failed to copy text", err);
     }
   };
 
@@ -1096,6 +1116,27 @@ export const PnLPage = ({
 
   const scannerRef = useRef<TokenScanner | null>(null);
   const monitoredTokensRef = useRef<Map<string, ScannedToken>>(new Map());
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  const handleCopyText = (text: string, id: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    try {
+      if (navigator && navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text);
+      } else {
+        const textArea = document.createElement("textarea");
+        textArea.value = text;
+        document.body.appendChild(textArea);
+        textArea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textArea);
+      }
+      setCopiedId(id);
+      setTimeout(() => setCopiedId(null), 2000);
+    } catch (err) {
+      console.warn("Failed to copy text", err);
+    }
+  };
   
   const stopLossPct = Math.abs(stopLoss);
   const bondingCurveStopLossPct = Math.abs(bondingCurveStopLoss);
@@ -6096,9 +6137,30 @@ const checkTokenCriteria = (mint: string): {
                     return (
                       <div key={mint} className="bg-[#0a0b14] border border-[#1f212e] rounded-xl p-4 grid grid-cols-2 gap-x-2 gap-y-3">
                         <div className="col-span-2 flex items-center gap-2 mb-1 flex-wrap">
-                          <div className="w-6 h-6 rounded-full bg-indigo-500 shrink-0"></div>
+                          <div className="w-6 h-6 rounded-full bg-indigo-500 shrink-0 flex items-center justify-center text-[10px] font-black text-white">
+                            {(pos.symbol || 'T').slice(0, 1).toUpperCase()}
+                          </div>
                           <div className="font-bold text-[14px] text-white flex items-center gap-1.5 flex-wrap">
-                            {pos.symbol} <span className="text-[#64748b] text-[12px] font-normal hidden sm:inline">/ SOL</span>
+                            <span>{pos.symbol}</span>
+                            <span className="text-[#64748b] text-[12px] font-normal hidden sm:inline">/ SOL</span>
+
+                            {/* Token Address Copy by Press */}
+                            <button
+                              type="button"
+                              onClick={(e) => handleCopyText(mint, `mint-hdr-${mint}`, e)}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#161824] hover:bg-[#222538] active:scale-95 border border-[#2a2d42] hover:border-indigo-500/50 text-[10px] font-mono text-[#94a3b8] hover:text-[#e2e8f0] transition-all cursor-pointer select-none group"
+                              title={`Click to copy address:\n${mint}`}
+                            >
+                              <span>{mint.length > 10 ? `${mint.slice(0, 4)}...${mint.slice(-4)}` : mint}</span>
+                              {copiedId === `mint-hdr-${mint}` || copiedId === `mint-ftr-${mint}` ? (
+                                <span className="inline-flex items-center text-emerald-400 font-sans font-bold text-[9px] gap-0.5">
+                                  <Check className="w-2.5 h-2.5 text-emerald-400" />
+                                  <span>Copied!</span>
+                                </span>
+                              ) : (
+                                <Copy className="w-2.5 h-2.5 text-[#64748b] group-hover:text-[#c7f284] transition-colors" />
+                              )}
+                            </button>
                             
                             {/* Stage badge */}
                             {stage.isBonding ? (
@@ -6217,14 +6279,34 @@ const checkTokenCriteria = (mint: string): {
                           <div className="text-[#64748b] text-[10px] uppercase font-bold tracking-wider">
                             Buy: <span className="text-[#e2e8f0] ml-1">{new Date(pos.entryTime).toLocaleTimeString()}</span>
                           </div>
-                          <a 
-                            href={`https://dexscreener.com/solana/${mint}`}
-                            target="_blank"
-                            rel="noopener noreferrer" 
-                            className="flex items-center gap-1 text-[10px] font-bold text-[#94a3b8] hover:text-indigo-400 uppercase tracking-wider transition-colors"
-                          >
-                            DexScreener <Search className="w-3 h-3" />
-                          </a>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={(e) => handleCopyText(mint, `mint-ftr-${mint}`, e)}
+                              className="flex items-center gap-1 text-[10px] font-mono text-[#94a3b8] hover:text-[#e2e8f0] bg-[#141622] hover:bg-[#1f2233] px-2 py-1 rounded border border-[#24273a] hover:border-indigo-500/40 transition-all cursor-pointer active:scale-95"
+                              title={`Click to copy token address:\n${mint}`}
+                            >
+                              {copiedId === `mint-ftr-${mint}` || copiedId === `mint-hdr-${mint}` ? (
+                                <>
+                                  <Check className="w-3 h-3 text-emerald-400" />
+                                  <span className="text-emerald-400 font-sans font-bold">Copied CA!</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="w-3 h-3 text-[#64748b]" />
+                                  <span>Copy CA</span>
+                                </>
+                              )}
+                            </button>
+                            <a 
+                              href={`https://dexscreener.com/solana/${mint}`}
+                              target="_blank"
+                              rel="noopener noreferrer" 
+                              className="flex items-center gap-1 text-[10px] font-bold text-[#94a3b8] hover:text-indigo-400 uppercase tracking-wider transition-colors"
+                            >
+                              DexScreener <Search className="w-3 h-3" />
+                            </a>
+                          </div>
                         </div>
                       </div>
                     );
@@ -6462,9 +6544,19 @@ const checkTokenCriteria = (mint: string): {
                               <div className="text-[9px] text-[#64748b] whitespace-nowrap">{new Date(alert.timestamp).toLocaleTimeString()}</div>
                             </div>
                             <div className="text-[10px] uppercase font-bold tracking-wider text-indigo-400/80 mt-0.5">{alert.type.replace('_', ' ')}</div>
-                            <div className="text-[10px] text-[#94a3b8] truncate mt-1">
-                              {alert.address.slice(0, 12)}...{alert.address.slice(-6)}
-                            </div>
+                            <button
+                              type="button"
+                              onClick={(e) => handleCopyText(alert.address, `telem-${alert.id}-${alert.address}`, e)}
+                              className="text-[10px] font-mono text-[#94a3b8] hover:text-[#e2e8f0] truncate mt-1 inline-flex items-center gap-1 cursor-pointer group/ca"
+                              title={`Click to copy: ${alert.address}`}
+                            >
+                              <span>{alert.address.slice(0, 12)}...{alert.address.slice(-6)}</span>
+                              {copiedId === `telem-${alert.id}-${alert.address}` ? (
+                                <Check className="w-2.5 h-2.5 text-emerald-400 shrink-0" />
+                              ) : (
+                                <Copy className="w-2.5 h-2.5 text-[#64748b] group-hover/ca:text-indigo-400 transition-colors opacity-70 group-hover/ca:opacity-100 shrink-0" />
+                              )}
+                            </button>
                           </div>
                         </div>
                       ))
@@ -6549,7 +6641,19 @@ const checkTokenCriteria = (mint: string): {
                                     {isRaydium ? 'Raydium' : 'Pump.fun'}
                                   </span>
                                 </div>
-                                <div className="text-[9px] text-[#64748b] truncate max-w-[170px] mt-0.5">{mint}</div>
+                                <button
+                                  type="button"
+                                  onClick={(e) => handleCopyText(mint, `prospect-${mint}`, e)}
+                                  className="text-[9px] font-mono text-[#64748b] hover:text-[#e2e8f0] truncate max-w-[170px] mt-0.5 inline-flex items-center gap-1 cursor-pointer text-left group/pca"
+                                  title={`Click to copy: ${mint}`}
+                                >
+                                  <span className="truncate">{mint.slice(0, 8)}...{mint.slice(-6)}</span>
+                                  {copiedId === `prospect-${mint}` ? (
+                                    <Check className="w-2.5 h-2.5 text-emerald-400 shrink-0" />
+                                  ) : (
+                                    <Copy className="w-2.5 h-2.5 text-[#64748b] group-hover/pca:text-indigo-400 transition-colors opacity-70 group-hover/pca:opacity-100 shrink-0" />
+                                  )}
+                                </button>
                               </div>
                               <div className="text-right">
                                 <span className="text-[11px] font-bold text-[#c7f284]">
@@ -7082,7 +7186,21 @@ const checkTokenCriteria = (mint: string): {
                   const mintDisplay = mintStr.length > 12 ? `${mintStr.slice(0, 6)}...${mintStr.slice(-6)}` : mintStr || 'Unknown';
                   return (
                   <tr key={trade.id} className="border-b border-[#1f212e]/50 last:border-0 hover:bg-[#1f212e]/30 transition-colors">
-                    <td className="py-2 text-[#e2e8f0] pr-4">{mintDisplay}</td>
+                    <td className="py-2 text-[#e2e8f0] pr-4">
+                      <button
+                        type="button"
+                        onClick={(e) => handleCopyText(mintStr, `th-${trade.id}-${mintStr}`, e)}
+                        className="inline-flex items-center gap-1 text-[#e2e8f0] hover:text-indigo-300 font-mono transition-colors cursor-pointer group"
+                        title={`Click to copy address:\n${mintStr}`}
+                      >
+                        <span>{mintDisplay}</span>
+                        {copiedId === `th-${trade.id}-${mintStr}` ? (
+                          <Check className="w-3 h-3 text-emerald-400" />
+                        ) : (
+                          <Copy className="w-2.5 h-2.5 text-[#64748b] group-hover:text-indigo-400 transition-colors opacity-70 group-hover:opacity-100" />
+                        )}
+                      </button>
+                    </td>
                     <td className="py-2 text-[#e2e8f0] pr-4">{new Date(buyTime).toLocaleTimeString()}</td>
                     <td className="py-2 text-[#64748b] pr-4">{durationStr}</td>
                     <td className="py-2 text-[#e2e8f0] text-right pr-4">{buySol.toFixed(4)} SOL</td>
