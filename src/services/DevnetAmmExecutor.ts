@@ -23,6 +23,8 @@ import { walletBalanceService } from './WalletBalanceService';
 import { getNetworkConfig } from '../config/network';
 import { useAppStore } from '../store/appStore';
 
+import { connectedWalletService } from './connectedWalletService';
+
 export class DevnetAmmExecutor implements ITradeExecutor {
   readonly mode = 'devnet' as const;
   private connection: Connection;
@@ -171,13 +173,22 @@ export class DevnetAmmExecutor implements ITradeExecutor {
 
     try {
       const activeWallet = this.getActiveWallet();
-      const kp = activeWallet.keypair;
-      if (!kp) {
-        throw new Error('DevnetAmmExecutor failed: Active wallet private key is missing for on-chain Devnet signing.');
-      }
+      const isConnectedWallet = activeWallet.source === 'connected';
+      let userPk: PublicKey;
+      let kp = activeWallet.keypair;
 
-      const activePublicKey = this.getActivePublicKey();
-      const userPk = kp.publicKey;
+      if (isConnectedWallet) {
+        const verify = connectedWalletService.verifySigner(activeWallet.address);
+        if (!verify.valid) {
+          throw new Error(`DevnetAmmExecutor failed: ${verify.error}`);
+        }
+        userPk = new PublicKey(activeWallet.address);
+      } else {
+        if (!kp) {
+          throw new Error('DevnetAmmExecutor failed: Session keypair missing for Devnet transaction.');
+        }
+        userPk = kp.publicKey;
+      }
 
       const isSolBuy = inputMint === 'So11111111111111111111111111111111111111112';
       const requiredSol = isSolBuy ? amount / LAMPORTS_PER_SOL + 0.002 : 0.002;
@@ -248,13 +259,29 @@ export class DevnetAmmExecutor implements ITradeExecutor {
       }).compileToV0Message();
 
       const tx = new VersionedTransaction(messageV0);
-      tx.sign([kp]);
 
-      // 6. Send raw transaction to Devnet RPC
-      const sig = await this.connection.sendRawTransaction(tx.serialize(), {
-        skipPreflight: false,
-        maxRetries: 3,
-      });
+      let sig: string;
+
+      if (isConnectedWallet) {
+        const connectedSigner = connectedWalletService.getSigner()!;
+        if (connectedSigner.signTransaction) {
+          const signedTx = await connectedSigner.signTransaction(tx);
+          sig = await this.connection.sendRawTransaction(signedTx.serialize(), {
+            skipPreflight: false,
+            maxRetries: 3,
+          });
+        } else if (connectedSigner.sendTransaction) {
+          sig = await connectedSigner.sendTransaction(tx, this.connection);
+        } else {
+          throw new Error('Connected browser wallet does not support transaction signing or sending.');
+        }
+      } else {
+        tx.sign([kp!]);
+        sig = await this.connection.sendRawTransaction(tx.serialize(), {
+          skipPreflight: false,
+          maxRetries: 3,
+        });
+      }
 
       // 7. Confirm transaction on Devnet RPC
       const confirmation = await this.connection.confirmTransaction(
@@ -269,7 +296,7 @@ export class DevnetAmmExecutor implements ITradeExecutor {
       const slot = confirmation.context.slot;
 
       // 8. Authoritative Post-Trade State Refresh against Devnet RPC
-      await this.syncStoreBalances(activePublicKey, targetMintStr);
+      await this.syncStoreBalances(userPk.toBase58(), targetMintStr);
 
       const landingTimeMs = Date.now() - start;
       const actualFee = 0.000005;

@@ -245,21 +245,28 @@ window.fetch = async (...args) => {
   return originalFetch(args[0], args[1]);
 };
 
+import { useTradingEnvironmentStore } from './store/tradingEnvironmentStore';
+import { WalletSignerSync } from './components/WalletSignerSync';
+
 function Root() {
-  const network = WalletAdapterNetwork.Mainnet;
-  const endpoint = HELIUS_RPC;
+  const currentNetwork = useTradingEnvironmentStore((s) => s.network);
+  const currentRpcUrl = useTradingEnvironmentStore((s) => s.rpcUrl);
+
+  const adapterNetwork = currentNetwork === 'devnet' ? WalletAdapterNetwork.Devnet : WalletAdapterNetwork.Mainnet;
+  const endpoint = currentRpcUrl || (currentNetwork === 'devnet' ? 'https://api.devnet.solana.com' : HELIUS_RPC);
+
   const wallets = useMemo(() => [
-    new PhantomWalletAdapter(),
-    new TrustWalletAdapter(),
-    new SolflareWalletAdapter(),
-  ], []);
+    new PhantomWalletAdapter({ network: adapterNetwork }),
+    new TrustWalletAdapter({ network: adapterNetwork }),
+    new SolflareWalletAdapter({ network: adapterNetwork }),
+  ], [adapterNetwork]);
 
   const tradeManager = useMemo(() => new TradeManager({
-    mode: (localStorage.getItem('trade_mode') as TradeMode) || 'devnet',
+    mode: (localStorage.getItem('trade_mode') as TradeMode) || currentNetwork,
     realConfig: {
       hybridEngine: null as any,
     },
-  }), []);
+  }), [currentNetwork]);
 
   useEffect(() => {
     startAlertManager();
@@ -269,6 +276,7 @@ function Root() {
     <ConnectionProvider endpoint={endpoint}>
       <WalletProvider wallets={wallets} autoConnect>
         <WalletModalProvider>
+          <WalletSignerSync />
           <TradeModeProvider manager={tradeManager}>
             <BrowserRouter>
               <App />

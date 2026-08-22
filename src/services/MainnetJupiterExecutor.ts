@@ -8,6 +8,7 @@ import { useActiveWalletStore } from '../store/activeWalletStore';
 import { useBalanceStore, assertTradeBalance } from '../store/balanceStore';
 import { walletBalanceService } from './WalletBalanceService';
 import { useAppStore } from '../store/appStore';
+import { connectedWalletService } from './connectedWalletService';
 
 export class MainnetJupiterExecutor implements ITradeExecutor {
   readonly mode = 'mainnet' as const;
@@ -39,7 +40,9 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
 
   private getActiveWallet() {
     const wallet = useActiveWalletStore.getState().activeWallet;
-    if (!wallet) throw new Error('No active wallet selected for Mainnet trading');
+    if (!wallet || (!wallet.address && !wallet.keypair)) {
+      throw new Error('No active wallet selected for Mainnet trading');
+    }
     return wallet;
   }
 
@@ -65,12 +68,23 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
 
     try {
       const activeWallet = this.getActiveWallet();
-      const kp = activeWallet.keypair;
-      if (!kp) {
-        throw new Error('MainnetJupiterExecutor failed: Active wallet private key missing for Mainnet transaction.');
+      const isConnectedWallet = activeWallet.source === 'connected';
+      let activePublicKey = activeWallet.address;
+      let kp = activeWallet.keypair;
+
+      if (isConnectedWallet) {
+        const verify = connectedWalletService.verifySigner(activeWallet.address);
+        if (!verify.valid) {
+          throw new Error(`MainnetJupiterExecutor failed: ${verify.error}`);
+        }
+        activePublicKey = activeWallet.address;
+      } else {
+        if (!kp) {
+          throw new Error('MainnetJupiterExecutor failed: Session keypair missing for Mainnet transaction.');
+        }
+        activePublicKey = kp.publicKey.toBase58();
       }
 
-      const activePublicKey = this.getActivePublicKey();
       const isSolBuy = inputMint === 'So11111111111111111111111111111111111111112';
 
       await assertTradeBalance(isSolBuy ? amount / LAMPORTS_PER_SOL + 0.005 : 0.005);
@@ -115,12 +129,29 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
 
       const txBuf = Buffer.from(swapBuild.swapTransaction, 'base64');
       const tx = VersionedTransaction.deserialize(txBuf);
-      tx.sign([kp]);
 
-      const sig = await this.connection.sendRawTransaction(tx.serialize(), {
-        skipPreflight: false,
-        maxRetries: 3,
-      });
+      let sig: string;
+
+      if (isConnectedWallet) {
+        const connectedSigner = connectedWalletService.getSigner()!;
+        if (connectedSigner.signTransaction) {
+          const signedTx = await connectedSigner.signTransaction(tx);
+          sig = await this.connection.sendRawTransaction(signedTx.serialize(), {
+            skipPreflight: false,
+            maxRetries: 3,
+          });
+        } else if (connectedSigner.sendTransaction) {
+          sig = await connectedSigner.sendTransaction(tx, this.connection);
+        } else {
+          throw new Error('Connected browser wallet does not support transaction signing or sending.');
+        }
+      } else {
+        tx.sign([kp!]);
+        sig = await this.connection.sendRawTransaction(tx.serialize(), {
+          skipPreflight: false,
+          maxRetries: 3,
+        });
+      }
 
       const confirmation = await this.connection.confirmTransaction(
         {

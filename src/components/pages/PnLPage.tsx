@@ -2596,16 +2596,16 @@ export const PnLPage = ({
   }, [getTokenPrices]);
 
   const fetchWalletTokens = useCallback(async () => {
-    if (!privateKey || !rpcUrl) return;
+    const activeWallet = useActiveWalletStore.getState().activeWallet;
+    const activeAddress = activeWallet?.address;
+    if (!activeAddress || !rpcUrl) return;
     setIsFetchingTokens(true);
     try {
-      const keypair = useActiveWalletStore.getState().activeWallet?.keypair;
       const activeWsUrl = (customWsUrl && customWsUrl.trim() !== "") ? customWsUrl.trim() : rpcUrl.replace('https', 'wss').replace('http', 'ws');
       const conn = new Connection(rpcUrl, { commitment: 'confirmed', wsEndpoint: activeWsUrl });
       
-      // Parallelize fetching if we had multiple wallets, but for one we use the fastest method
       const accounts = await conn.getParsedTokenAccountsByOwner(
-        keypair.publicKey,
+        new PublicKey(activeAddress),
         { programId: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA') },
         'confirmed'
       );
@@ -2620,7 +2620,6 @@ export const PnLPage = ({
       
       const enrichedTokens = await Promise.all(tokens.map(async t => {
         const metric = tokenMetricsRef.current[t.mint];
-        // Fetch cached cost basis if needed, mock for now
         const costBasis = (metric?.priceNative || metric?.priceUsd) ? (metric.priceNative || metric.priceUsd || 0) * 0.8 : 0; 
         return { 
           ...t, 
@@ -2630,15 +2629,13 @@ export const PnLPage = ({
       }));
       
       setWalletTokens(enrichedTokens);
-
-      // Kick off initial price fetch in parallel
       updateWalletTokenPrices(enrichedTokens.map(t => t.mint));
     } catch (e) {
       console.warn("Failed to fetch wallet tokens", e);
     } finally {
       setIsFetchingTokens(false);
     }
-  }, [privateKey, rpcUrl, customWsUrl]);
+  }, [rpcUrl, customWsUrl]);
 
   // Live Price Polling for Wallet Tokens
   // Depend on the actual mint set, not just walletTokens.length - if the wallet's
@@ -2845,9 +2842,12 @@ export const PnLPage = ({
   }, [retentionLimit]);
 
   useEffect(() => {
-    if (!privateKey) {
+    const activeWallet = useActiveWalletStore.getState().activeWallet;
+    const activeAddress = activeWallet?.address;
+
+    if (!activeAddress) {
       if (lastLoggedKeyRef.current) {
-        addLog(`[JUPITER WALLET] Status: Disconnected (No private key provided)`, 'warn');
+        addLog(`[JUPITER WALLET] Status: Disconnected (No wallet connected or keypair configured)`, 'warn');
         lastLoggedKeyRef.current = '';
       }
       setJupiterStatus('DISCONNECTED');
@@ -2860,22 +2860,10 @@ export const PnLPage = ({
     const checkWallet = async () => {
       try {
         setJupiterStatus('CONNECTING');
-        let keypair;
-        try {
-          keypair = useActiveWalletStore.getState().activeWallet?.keypair;
-        } catch (e: any) {
-          setJupiterStatus('ERROR');
-          setJupiterAddress('');
-          setJupiterBalance(null);
-          if (lastLoggedKeyRef.current !== privateKey) {
-            addLog(`[JUPITER WALLET] Status: Error | Invalid private key format: ${e.message}`, 'err');
-            lastLoggedKeyRef.current = privateKey;
-          }
-          return;
-        }
+        const currentActiveWallet = useActiveWalletStore.getState().activeWallet;
+        const currentAddress = currentActiveWallet?.address || activeAddress;
 
-        const pubKeyStr = keypair.publicKey.toBase58();
-        setJupiterAddress(pubKeyStr);
+        setJupiterAddress(currentAddress);
 
         if (!rpcUrl) {
           setJupiterStatus('ERROR');
@@ -2885,7 +2873,7 @@ export const PnLPage = ({
         const activeWsUrl = (customWsUrl && customWsUrl.trim() !== "") ? customWsUrl.trim() : rpcUrl.replace('https', 'wss').replace('http', 'ws');
         const conn = new Connection(rpcUrl, { commitment: 'confirmed', wsEndpoint: activeWsUrl });
 
-        const lamports = await conn.getBalance(keypair.publicKey, 'confirmed');
+        const lamports = await conn.getBalance(new PublicKey(currentAddress), 'confirmed');
         const solBal = lamports / 1_000_000_000;
 
         if (isMounted) {
@@ -2895,21 +2883,21 @@ export const PnLPage = ({
           let effectiveBal = solBal;
           const isZeroBal = solBal === 0;
 
-          if (lastLoggedKeyRef.current !== privateKey) {
+          if (lastLoggedKeyRef.current !== currentAddress) {
             if (isZeroBal) {
-              addLog(`⚠️ [JUPITER WALLET] Connected | Balance is 0.0000 SOL. RESUMING TRADING WITH SIMULATION (Virtual funds: ${effectiveBal.toFixed(4)} SOL).`, 'warn');
+              addLog(`⚠️ [JUPITER WALLET] Connected (${currentActiveWallet?.source === 'connected' ? 'Browser Wallet' : 'Session Keypair'}) | Balance is 0.0000 SOL.`, 'warn');
             } else {
-              addLog(`[JUPITER WALLET] Status: Connected | Address: ${pubKeyStr.slice(0, 8)}...${pubKeyStr.slice(-8)} | Balance: ${solBal.toFixed(4)} SOL`, 'info');
+              addLog(`[JUPITER WALLET] Status: Connected (${currentActiveWallet?.source === 'connected' ? 'Browser Wallet' : 'Session Keypair'}) | Address: ${currentAddress.slice(0, 8)}...${currentAddress.slice(-8)} | Balance: ${solBal.toFixed(4)} SOL`, 'info');
             }
-            lastLoggedKeyRef.current = privateKey;
+            lastLoggedKeyRef.current = currentAddress;
           }
         }
       } catch (err: any) {
         if (isMounted) {
           setJupiterStatus('ERROR');
-          if (lastLoggedKeyRef.current !== privateKey) {
+          if (lastLoggedKeyRef.current !== activeAddress) {
             addLog(`[JUPITER WALLET] Status: Connection Error | ${err.message}`, 'err');
-            lastLoggedKeyRef.current = privateKey;
+            lastLoggedKeyRef.current = activeAddress;
           }
         }
       }
@@ -2922,7 +2910,7 @@ export const PnLPage = ({
       isMounted = false;
       clearInterval(interval);
     };
-  }, [privateKey, rpcUrl, customWsUrl, addLog]);
+  }, [rpcUrl, customWsUrl, addLog]);
 
   const updateUptime = useCallback(() => {
     if (!startTimeRef.current) {
@@ -3072,7 +3060,10 @@ export const PnLPage = ({
       throw new Error("Authentication required: Please sign in with Google/Firebase before placing real on-chain orders.");
     }
 
-    if (!privateKey) throw new Error("Private Key missing");
+    const activeWallet = useActiveWalletStore.getState().activeWallet;
+    if (!activeWallet || (!activeWallet.address && !activeWallet.keypair)) {
+      throw new Error("No active wallet connected or configured");
+    }
     
     const slippageToUse = customSlippageBps !== undefined ? customSlippageBps : Math.floor(slippage * 100);
     const intent = inputMint === SOL_MINT ? 'entry' : 'exit_tp';
@@ -3541,8 +3532,9 @@ const checkTokenCriteria = (mint: string): {
       return;
     }
     
-    if (!privateKey) {
-      addLog(`❌ [BUY ABORTED] No Private Key configured in settings. A wallet is required for both Devnet and Mainnet trading.`, 'err');
+    const activeWallet = useActiveWalletStore.getState().activeWallet;
+    if (!activeWallet || (!activeWallet.address && !activeWallet.keypair)) {
+      addLog(`❌ [BUY ABORTED] No active wallet connected or configured. A wallet is required for both Devnet and Mainnet trading.`, 'err');
       pendingBuyMintsRef.current.delete(mint);
       return;
     }
@@ -3714,8 +3706,9 @@ const checkTokenCriteria = (mint: string): {
 
     // --- EXECUTE MAIN POSITION SELL ---
     if (shouldSellMain && !isMainSold) {
-      if (!privateKey) {
-        addLog('❌ [SELL ABORTED] No Private Key configured. A wallet is required for both Devnet and Mainnet trading.', 'err');
+      const activeWallet = useActiveWalletStore.getState().activeWallet;
+      if (!activeWallet || (!activeWallet.address && !activeWallet.keypair)) {
+        addLog('❌ [SELL ABORTED] No active wallet connected or configured. A wallet is required for both Devnet and Mainnet trading.', 'err');
         return;
       }
 
@@ -3726,15 +3719,17 @@ const checkTokenCriteria = (mint: string): {
         let lamportsToSell = lamportsToSellRaw;
         if (!lamportsToSell || lamportsToSell <= 0) {
           try {
-            const keypair = useActiveWalletStore.getState().activeWallet?.keypair;
-            const activeWsUrl = (customWsUrl && customWsUrl.trim() !== "") ? customWsUrl.trim() : rpcUrl.replace('https', 'wss').replace('http', 'ws');
-            const conn = new Connection(rpcUrl, { commitment: 'confirmed', wsEndpoint: activeWsUrl });
-            const accounts = await conn.getParsedTokenAccountsByOwner(
-              keypair.publicKey,
-              { mint: new PublicKey(mint) }
-            );
-            if (accounts.value.length > 0) {
-                lamportsToSell = parseInt(accounts.value[0].account.data.parsed.info.tokenAmount.amount, 10);
+            const activeAddress = activeWallet.address || tradeManager.getExecutor().publicKey;
+            if (activeAddress) {
+              const activeWsUrl = (customWsUrl && customWsUrl.trim() !== "") ? customWsUrl.trim() : rpcUrl.replace('https', 'wss').replace('http', 'ws');
+              const conn = new Connection(rpcUrl, { commitment: 'confirmed', wsEndpoint: activeWsUrl });
+              const accounts = await conn.getParsedTokenAccountsByOwner(
+                new PublicKey(activeAddress),
+                { mint: new PublicKey(mint) }
+              );
+              if (accounts.value.length > 0) {
+                  lamportsToSell = parseInt(accounts.value[0].account.data.parsed.info.tokenAmount.amount, 10);
+              }
             }
           } catch (e) {
             console.warn("Failed to fetch balance for dynamic sell", e);
