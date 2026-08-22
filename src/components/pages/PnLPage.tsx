@@ -1282,6 +1282,12 @@ export const PnLPage = ({
     try {
       const saved = localStorage.getItem('juipter_auto_stats');
       const parsed = saved ? JSON.parse(saved) : null;
+      
+      // Auto-fix for previous lamport scaling bug that corrupted stats
+      if (parsed && (parsed.pnl > 1000000 || (parsed.bestTrade && parsed.bestTrade > 10000))) {
+        return { trades: 0, wins: 0, losses: 0, pnl: 0, bestTrade: null };
+      }
+
       return {
         trades: parsed?.trades ?? 0,
         wins: parsed?.wins ?? 0,
@@ -3747,7 +3753,7 @@ const checkTokenCriteria = (mint: string): {
           addLog(`Ordering ${pos.symbol} → SOL...`, 'sell');
           const result = await executeJupiterSwap(mint, SOL_MINT, lamportsToSell);
           if (result.txid) {
-            const actualSolReceived = result.outputAmount || 0;
+            const actualSolReceived = (result.outputAmount || 0) / 1e9;
             const costBasisSol = pos.solSpent || 0;
             const actualPnlSOL = costBasisSol > 0 ? actualSolReceived - costBasisSol : 0;
             const actualPnlPct = costBasisSol > 0 ? actualPnlSOL / costBasisSol : 0;
