@@ -25,14 +25,75 @@ import { getNetworkConfig } from '../config/network';
 import { useAppStore } from '../store/appStore';
 
 // Authoritative Pump.fun / PumpSwap program constants
-const PUMP_FUN_PROGRAM_ID = new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
-const PUMP_GLOBAL = new PublicKey('4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf');
-const PUMP_FEE_RECIPIENT = new PublicKey('CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM');
-const PUMP_EVENT_AUTHORITY = new PublicKey('Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1');
-const SYSVAR_RENT_PUBKEY = new PublicKey('SysvarRent111111111111111111111111111111111');
+export const PUMP_FUN_PROGRAM_ID = new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
+export const PUMP_GLOBAL = new PublicKey('4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf');
+export const PUMP_FEE_RECIPIENT = new PublicKey('CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM');
+export const PUMP_EVENT_AUTHORITY = new PublicKey('Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1');
+export const SYSVAR_RENT_PUBKEY = new PublicKey('SysvarRent111111111111111111111111111111111');
+
+// Canonical PumpSwap AMM Program ID on Solana
+export const PUMP_SWAP_PROGRAM_ID = new PublicKey('pAMMTTktLtvsb8bNWV1n3Qp2C79r79iA2p8bB6A4dD7');
 
 // Raydium Devnet AMM Program ID
-const RAYDIUM_DEVNET_AMM_ID = new PublicKey('HWySuSbtHGHXtxWhbm92ENKXQcrTRyZoKBNdNLMQdMQ5');
+export const RAYDIUM_DEVNET_AMM_ID = new PublicKey('HWySuSbtHGHXtxWhbm92ENKXQcrTRyZoKBNdNLMQdMQ5');
+
+export interface PumpBondingCurveState {
+  discriminator: bigint;
+  virtualTokenReserves: bigint;
+  virtualSolReserves: bigint;
+  realTokenReserves: bigint;
+  realSolReserves: bigint;
+  tokenTotalSupply: bigint;
+  complete: boolean;
+}
+
+export type PumpRoute =
+  | {
+      type: 'PUMP_BONDING_CURVE';
+      mint: PublicKey;
+      bondingCurve: PublicKey;
+      tokenProgram: PublicKey;
+      bondingCurveState: PumpBondingCurveState;
+    }
+  | {
+      type: 'PUMPSWAP';
+      mint: PublicKey;
+      pool: PublicKey;
+      tokenProgram: PublicKey;
+    }
+  | {
+      type: 'RAYDIUM_AMM';
+      mint: PublicKey;
+      pool: PublicKey;
+      tokenProgram: PublicKey;
+    };
+
+/**
+ * Decodes the on-chain Pump.fun bonding curve account state buffer
+ */
+export function decodePumpBondingCurve(data: Buffer | Uint8Array): PumpBondingCurveState {
+  const buf = Buffer.from(data);
+  if (buf.length < 49) {
+    throw new Error(`Invalid Pump bonding curve buffer length: expected >= 49 bytes, got ${buf.length}`);
+  }
+  const discriminator = buf.readBigUInt64LE(0);
+  const virtualTokenReserves = buf.readBigUInt64LE(8);
+  const virtualSolReserves = buf.readBigUInt64LE(16);
+  const realTokenReserves = buf.readBigUInt64LE(24);
+  const realSolReserves = buf.readBigUInt64LE(32);
+  const tokenTotalSupply = buf.readBigUInt64LE(40);
+  const complete = buf.readUInt8(48) === 1;
+
+  return {
+    discriminator,
+    virtualTokenReserves,
+    virtualSolReserves,
+    realTokenReserves,
+    realSolReserves,
+    tokenTotalSupply,
+    complete,
+  };
+}
 
 export class DevnetAmmExecutor implements ITradeExecutor {
   readonly mode = 'devnet' as const;
@@ -70,12 +131,32 @@ export class DevnetAmmExecutor implements ITradeExecutor {
   }
 
   /**
-   * Derive Pump.fun / PumpSwap bonding curve PDA for a given mint
+   * Derive Pump.fun bonding curve PDA for a given mint
    */
   public getBondingCurvePda(mintPk: PublicKey): [PublicKey, number] {
     return PublicKey.findProgramAddressSync(
       [Buffer.from('bonding-curve'), mintPk.toBuffer()],
       PUMP_FUN_PROGRAM_ID
+    );
+  }
+
+  /**
+   * Derive canonical PumpSwap AMM pool PDA for a given mint
+   */
+  public getCanonicalPumpSwapPoolPda(mintPk: PublicKey): [PublicKey, number] {
+    return PublicKey.findProgramAddressSync(
+      [Buffer.from('pool'), mintPk.toBuffer()],
+      PUMP_SWAP_PROGRAM_ID
+    );
+  }
+
+  /**
+   * Derive Raydium AMM associated seed pool PDA
+   */
+  public getRaydiumPoolPda(mintPk: PublicKey): [PublicKey, number] {
+    return PublicKey.findProgramAddressSync(
+      [Buffer.from('amm_associated_seed'), mintPk.toBuffer()],
+      RAYDIUM_DEVNET_AMM_ID
     );
   }
 
@@ -117,49 +198,83 @@ export class DevnetAmmExecutor implements ITradeExecutor {
   }
 
   /**
-   * Check if an active on-chain liquidity pool or bonding curve exists for a mint on Devnet
+   * Resolves the authoritative Pump route (bonding curve vs canonical PumpSwap AMM vs Raydium)
+   * strictly against Devnet on-chain RPC state.
    */
-  async checkDevnetLiquiditySource(mintPk: PublicKey): Promise<{
-    type: 'pump_bonding' | 'raydium_amm' | 'none';
-    bondingCurvePda?: PublicKey;
-    tokenProgram: PublicKey;
-  }> {
+  async resolvePumpRoute(mintPk: PublicKey): Promise<PumpRoute> {
     const mintValidation = await this.validateDevnetMint(mintPk);
     const tokenProgram = mintValidation.tokenProgram || TOKEN_PROGRAM_ID;
 
-    if (!mintValidation.exists) {
-      return { type: 'none', tokenProgram };
-    }
+    const [bondingCurvePda] = this.getBondingCurvePda(mintPk);
+    const bondingCurveInfo = await this.connection.getAccountInfo(bondingCurvePda, 'confirmed');
 
-    try {
-      const [bondingCurvePda] = this.getBondingCurvePda(mintPk);
-      const curveInfo = await this.connection.getAccountInfo(bondingCurvePda, 'confirmed');
+    if (bondingCurveInfo && bondingCurveInfo.owner.equals(PUMP_FUN_PROGRAM_ID)) {
+      const bondingCurve = decodePumpBondingCurve(bondingCurveInfo.data);
 
-      if (curveInfo && curveInfo.owner.equals(PUMP_FUN_PROGRAM_ID)) {
+      // 1. Still trading on Pump bonding curve
+      if (!bondingCurve.complete) {
         return {
-          type: 'pump_bonding',
-          bondingCurvePda,
+          type: 'PUMP_BONDING_CURVE',
+          mint: mintPk,
+          bondingCurve: bondingCurvePda,
+          tokenProgram,
+          bondingCurveState: bondingCurve,
+        };
+      }
+
+      // 2. Graduated -> Check Canonical PumpSwap pool
+      const [pumpSwapPool] = this.getCanonicalPumpSwapPoolPda(mintPk);
+      const poolInfo = await this.connection.getAccountInfo(pumpSwapPool, 'confirmed');
+
+      if (poolInfo) {
+        return {
+          type: 'PUMPSWAP',
+          mint: mintPk,
+          pool: pumpSwapPool,
           tokenProgram,
         };
       }
 
-      // Check for standard Raydium Devnet AMM pool
-      const [raydiumPoolPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from('amm_associated_seed'), mintPk.toBuffer()],
-        RAYDIUM_DEVNET_AMM_ID
-      );
-      const raydiumInfo = await this.connection.getAccountInfo(raydiumPoolPda, 'confirmed');
+      // Also check for Raydium AMM pool migration fallback
+      const [raydiumPool] = this.getRaydiumPoolPda(mintPk);
+      const raydiumInfo = await this.connection.getAccountInfo(raydiumPool, 'confirmed');
       if (raydiumInfo) {
         return {
-          type: 'raydium_amm',
+          type: 'RAYDIUM_AMM',
+          mint: mintPk,
+          pool: raydiumPool,
           tokenProgram,
         };
       }
 
-      return { type: 'none', tokenProgram, bondingCurvePda };
-    } catch {
-      return { type: 'none', tokenProgram };
+      throw new Error(
+        `Pump bonding curve is complete (graduated) for ${mintPk.toBase58()}, but canonical PumpSwap pool does not exist on Devnet RPC.`
+      );
     }
+
+    // If bonding curve account does not exist
+    const mintStr = mintPk.toBase58();
+    if (mintStr.endsWith('pump') || mintStr.toLowerCase().includes('pump')) {
+      throw new Error(
+        `Pump bonding curve account not found on Devnet RPC for ${mintStr}. The token bonding curve has not been initialized on Solana Devnet.`
+      );
+    }
+
+    // Check non-pump token Raydium AMM pool
+    const [raydiumPool] = this.getRaydiumPoolPda(mintPk);
+    const raydiumInfo = await this.connection.getAccountInfo(raydiumPool, 'confirmed');
+    if (raydiumInfo) {
+      return {
+        type: 'RAYDIUM_AMM',
+        mint: mintPk,
+        pool: raydiumPool,
+        tokenProgram,
+      };
+    }
+
+    throw new Error(
+      `No active Pump bonding curve or AMM liquidity pool is deployed on Solana Devnet for mint ${mintStr}. Devnet fail-closed protection prevents generating unbacked transactions.`
+    );
   }
 
   async getQuote(params: QuoteGetRequest): Promise<QuoteResponse> {
@@ -211,7 +326,7 @@ export class DevnetAmmExecutor implements ITradeExecutor {
         {
           swapInfo: {
             ammKey: 'PumpSwapDevnet111111111111111111111111111111',
-            label: 'PumpSwap Devnet Adapter',
+            label: 'Pump.fun / PumpSwap Devnet Adapter',
             inputMint,
             outputMint,
             inAmount: String(amount),
@@ -253,23 +368,10 @@ export class DevnetAmmExecutor implements ITradeExecutor {
       const requiredSol = isSolBuy ? amount / LAMPORTS_PER_SOL + 0.002 : 0.002;
       await assertTradeBalance(requiredSol);
 
-      // Validate on-chain mint and bonding curve existence on Devnet
-      const liquiditySource = await this.checkDevnetLiquiditySource(targetMintPk);
+      // Resolve exact on-chain Devnet route
+      const route = await this.resolvePumpRoute(targetMintPk);
 
-      if (liquiditySource.type === 'none') {
-        throw new Error(
-          `Devnet PumpSwap swap rejected: No active Pump.fun bonding curve or Raydium AMM pool is deployed on Solana Devnet for mint ${targetMintStr}. Devnet fail-closed protection prevents generating unbacked transactions.`
-        );
-      }
-
-      const tokenProgram = liquiditySource.tokenProgram;
-      const [bondingCurvePda] = this.getBondingCurvePda(targetMintPk);
-      const associatedBondingCurve = getAssociatedTokenAddressSync(
-        targetMintPk,
-        bondingCurvePda,
-        true,
-        tokenProgram
-      );
+      const tokenProgram = route.tokenProgram;
       const userAta = getAssociatedTokenAddressSync(
         targetMintPk,
         userPk,
@@ -295,67 +397,167 @@ export class DevnetAmmExecutor implements ITradeExecutor {
         )
       );
 
-      // 2. Build actual Pump.fun / PumpSwap Buy or Sell instruction
-      if (isSolBuy) {
-        const outAmountBigInt = BigInt(Math.floor(outAmountNum));
-        const maxSolCost = BigInt(Math.floor(amount * (1 + slippageBps / 10000)));
+      // 2. Build swap instruction based on authoritative route
+      switch (route.type) {
+        case 'PUMP_BONDING_CURVE': {
+          const bondingCurvePda = route.bondingCurve;
+          const associatedBondingCurve = getAssociatedTokenAddressSync(
+            targetMintPk,
+            bondingCurvePda,
+            true,
+            tokenProgram
+          );
 
-        // Discriminator for Buy: [102, 6, 61, 18, 1, 218, 235, 234]
-        const buyData = Buffer.alloc(24);
-        buyData.set([102, 6, 61, 18, 1, 218, 235, 234], 0);
-        buyData.writeBigUInt64LE(outAmountBigInt, 8);
-        buyData.writeBigUInt64LE(maxSolCost, 16);
+          if (isSolBuy) {
+            const outAmountBigInt = BigInt(Math.floor(outAmountNum));
+            const maxSolCost = BigInt(Math.floor(amount * (1 + slippageBps / 10000)));
 
-        instructions.push(
-          new TransactionInstruction({
-            programId: PUMP_FUN_PROGRAM_ID,
-            keys: [
-              { pubkey: PUMP_GLOBAL, isSigner: false, isWritable: false },
-              { pubkey: PUMP_FEE_RECIPIENT, isSigner: false, isWritable: true },
-              { pubkey: targetMintPk, isSigner: false, isWritable: false },
-              { pubkey: bondingCurvePda, isSigner: false, isWritable: true },
-              { pubkey: associatedBondingCurve, isSigner: false, isWritable: true },
-              { pubkey: userAta, isSigner: false, isWritable: true },
-              { pubkey: userPk, isSigner: true, isWritable: true },
-              { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-              { pubkey: tokenProgram, isSigner: false, isWritable: false },
-              { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
-              { pubkey: PUMP_EVENT_AUTHORITY, isSigner: false, isWritable: false },
-              { pubkey: PUMP_FUN_PROGRAM_ID, isSigner: false, isWritable: false },
-            ],
-            data: buyData,
-          })
-        );
-      } else {
-        const tokenAmountToSell = BigInt(Math.floor(amount));
-        const minSolOutput = BigInt(Math.floor(outAmountNum * (1 - slippageBps / 10000)));
+            // Discriminator for Buy: [102, 6, 61, 18, 1, 218, 235, 234]
+            const buyData = Buffer.alloc(24);
+            buyData.set([102, 6, 61, 18, 1, 218, 235, 234], 0);
+            buyData.writeBigUInt64LE(outAmountBigInt, 8);
+            buyData.writeBigUInt64LE(maxSolCost, 16);
 
-        // Discriminator for Sell: [51, 230, 133, 164, 1, 127, 131, 173]
-        const sellData = Buffer.alloc(24);
-        sellData.set([51, 230, 133, 164, 1, 127, 131, 173], 0);
-        sellData.writeBigUInt64LE(tokenAmountToSell, 8);
-        sellData.writeBigUInt64LE(minSolOutput, 16);
+            instructions.push(
+              new TransactionInstruction({
+                programId: PUMP_FUN_PROGRAM_ID,
+                keys: [
+                  { pubkey: PUMP_GLOBAL, isSigner: false, isWritable: false },
+                  { pubkey: PUMP_FEE_RECIPIENT, isSigner: false, isWritable: true },
+                  { pubkey: targetMintPk, isSigner: false, isWritable: false },
+                  { pubkey: bondingCurvePda, isSigner: false, isWritable: true },
+                  { pubkey: associatedBondingCurve, isSigner: false, isWritable: true },
+                  { pubkey: userAta, isSigner: false, isWritable: true },
+                  { pubkey: userPk, isSigner: true, isWritable: true },
+                  { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+                  { pubkey: tokenProgram, isSigner: false, isWritable: false },
+                  { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
+                  { pubkey: PUMP_EVENT_AUTHORITY, isSigner: false, isWritable: false },
+                  { pubkey: PUMP_FUN_PROGRAM_ID, isSigner: false, isWritable: false },
+                ],
+                data: buyData,
+              })
+            );
+          } else {
+            const tokenAmountToSell = BigInt(Math.floor(amount));
+            const minSolOutput = BigInt(Math.floor(outAmountNum * (1 - slippageBps / 10000)));
 
-        instructions.push(
-          new TransactionInstruction({
-            programId: PUMP_FUN_PROGRAM_ID,
-            keys: [
-              { pubkey: PUMP_GLOBAL, isSigner: false, isWritable: false },
-              { pubkey: PUMP_FEE_RECIPIENT, isSigner: false, isWritable: true },
-              { pubkey: targetMintPk, isSigner: false, isWritable: false },
-              { pubkey: bondingCurvePda, isSigner: false, isWritable: true },
-              { pubkey: associatedBondingCurve, isSigner: false, isWritable: true },
-              { pubkey: userAta, isSigner: false, isWritable: true },
-              { pubkey: userPk, isSigner: true, isWritable: true },
-              { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-              { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-              { pubkey: tokenProgram, isSigner: false, isWritable: false },
-              { pubkey: PUMP_EVENT_AUTHORITY, isSigner: false, isWritable: false },
-              { pubkey: PUMP_FUN_PROGRAM_ID, isSigner: false, isWritable: false },
-            ],
-            data: sellData,
-          })
-        );
+            // Discriminator for Sell: [51, 230, 133, 164, 1, 127, 131, 173]
+            const sellData = Buffer.alloc(24);
+            sellData.set([51, 230, 133, 164, 1, 127, 131, 173], 0);
+            sellData.writeBigUInt64LE(tokenAmountToSell, 8);
+            sellData.writeBigUInt64LE(minSolOutput, 16);
+
+            instructions.push(
+              new TransactionInstruction({
+                programId: PUMP_FUN_PROGRAM_ID,
+                keys: [
+                  { pubkey: PUMP_GLOBAL, isSigner: false, isWritable: false },
+                  { pubkey: PUMP_FEE_RECIPIENT, isSigner: false, isWritable: true },
+                  { pubkey: targetMintPk, isSigner: false, isWritable: false },
+                  { pubkey: bondingCurvePda, isSigner: false, isWritable: true },
+                  { pubkey: associatedBondingCurve, isSigner: false, isWritable: true },
+                  { pubkey: userAta, isSigner: false, isWritable: true },
+                  { pubkey: userPk, isSigner: true, isWritable: true },
+                  { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+                  { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+                  { pubkey: tokenProgram, isSigner: false, isWritable: false },
+                  { pubkey: PUMP_EVENT_AUTHORITY, isSigner: false, isWritable: false },
+                  { pubkey: PUMP_FUN_PROGRAM_ID, isSigner: false, isWritable: false },
+                ],
+                data: sellData,
+              })
+            );
+          }
+          break;
+        }
+
+        case 'PUMPSWAP': {
+          const poolPda = route.pool;
+          const poolAta = getAssociatedTokenAddressSync(targetMintPk, poolPda, true, tokenProgram);
+
+          if (isSolBuy) {
+            const outAmountBigInt = BigInt(Math.floor(outAmountNum));
+            const maxSolCost = BigInt(Math.floor(amount * (1 + slippageBps / 10000)));
+
+            const buyData = Buffer.alloc(24);
+            buyData.set([102, 6, 61, 18, 1, 218, 235, 234], 0);
+            buyData.writeBigUInt64LE(outAmountBigInt, 8);
+            buyData.writeBigUInt64LE(maxSolCost, 16);
+
+            instructions.push(
+              new TransactionInstruction({
+                programId: PUMP_SWAP_PROGRAM_ID,
+                keys: [
+                  { pubkey: poolPda, isSigner: false, isWritable: true },
+                  { pubkey: PUMP_FEE_RECIPIENT, isSigner: false, isWritable: true },
+                  { pubkey: targetMintPk, isSigner: false, isWritable: false },
+                  { pubkey: poolAta, isSigner: false, isWritable: true },
+                  { pubkey: userAta, isSigner: false, isWritable: true },
+                  { pubkey: userPk, isSigner: true, isWritable: true },
+                  { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+                  { pubkey: tokenProgram, isSigner: false, isWritable: false },
+                ],
+                data: buyData,
+              })
+            );
+          } else {
+            const tokenAmountToSell = BigInt(Math.floor(amount));
+            const minSolOutput = BigInt(Math.floor(outAmountNum * (1 - slippageBps / 10000)));
+
+            const sellData = Buffer.alloc(24);
+            sellData.set([51, 230, 133, 164, 1, 127, 131, 173], 0);
+            sellData.writeBigUInt64LE(tokenAmountToSell, 8);
+            sellData.writeBigUInt64LE(minSolOutput, 16);
+
+            instructions.push(
+              new TransactionInstruction({
+                programId: PUMP_SWAP_PROGRAM_ID,
+                keys: [
+                  { pubkey: poolPda, isSigner: false, isWritable: true },
+                  { pubkey: PUMP_FEE_RECIPIENT, isSigner: false, isWritable: true },
+                  { pubkey: targetMintPk, isSigner: false, isWritable: false },
+                  { pubkey: poolAta, isSigner: false, isWritable: true },
+                  { pubkey: userAta, isSigner: false, isWritable: true },
+                  { pubkey: userPk, isSigner: true, isWritable: true },
+                  { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+                  { pubkey: tokenProgram, isSigner: false, isWritable: false },
+                ],
+                data: sellData,
+              })
+            );
+          }
+          break;
+        }
+
+        case 'RAYDIUM_AMM': {
+          const poolPda = route.pool;
+          const poolAta = getAssociatedTokenAddressSync(targetMintPk, poolPda, true, tokenProgram);
+
+          const swapData = Buffer.alloc(17);
+          swapData.writeUInt8(9, 0); // Raydium Swap Instruction
+          swapData.writeBigUInt64LE(BigInt(Math.floor(amount)), 1);
+          swapData.writeBigUInt64LE(BigInt(Math.floor(outAmountNum * (1 - slippageBps / 10000))), 9);
+
+          instructions.push(
+            new TransactionInstruction({
+              programId: RAYDIUM_DEVNET_AMM_ID,
+              keys: [
+                { pubkey: poolPda, isSigner: false, isWritable: true },
+                { pubkey: targetMintPk, isSigner: false, isWritable: false },
+                { pubkey: poolAta, isSigner: false, isWritable: true },
+                { pubkey: userAta, isSigner: false, isWritable: true },
+                { pubkey: userPk, isSigner: true, isWritable: true },
+                { pubkey: tokenProgram, isSigner: false, isWritable: false },
+              ],
+              data: swapData,
+            })
+          );
+          break;
+        }
+
+        default:
+          throw new Error('Unsupported Pump / AMM route');
       }
 
       // 3. Fetch fresh blockhash
@@ -404,10 +606,12 @@ export class DevnetAmmExecutor implements ITradeExecutor {
       this.telemetryTotalFeesPaidSol += actualFee;
       this.telemetryLandingTimeTotalMs += landingTimeMs;
 
+      const routeName = route.type === 'PUMP_BONDING_CURVE' ? 'Pump Bonding Curve' : route.type === 'PUMPSWAP' ? 'PumpSwap AMM' : 'Raydium AMM';
+
       useAppStore.getState().addJupiterLog({
         type: 'INFO',
-        message: `Devnet PumpSwap Success: ${sig.slice(0, 8)}... (Slot ${slot})`,
-        details: { signature: sig, inputMint, outputMint, inAmount: amount, outAmount: outAmountNum },
+        message: `Devnet ${routeName} Swap Success: ${sig.slice(0, 8)}... (Slot ${slot})`,
+        details: { signature: sig, inputMint, outputMint, inAmount: amount, outAmount: outAmountNum, route: route.type },
       });
 
       return {
@@ -449,28 +653,18 @@ export class DevnetAmmExecutor implements ITradeExecutor {
       try {
         const res = await this.swap(s.inputMint, s.outputMint, s.amount, s.slippageBps, 'exit_tp');
         results.push(res);
-      } catch (err: any) {
-        results.push({
-          signature: 'failed-devnet-' + Date.now(),
-          inputMint: s.inputMint,
-          outputMint: s.outputMint,
-          inputAmount: s.amount,
-          outputAmount: 0,
-          feeSol: 0,
-          slot: 0,
-          landingTimeMs: 0,
-          method: 'rpc',
-          error: err.message || String(err),
-        });
+      } catch (err) {
+        console.error(`[DevnetAmmExecutor] Batch swap failed for ${s.outputMint}:`, err);
       }
     }
     return results;
   }
 
   async getSolBalance(): Promise<number> {
-    if (!this.publicKey) return 0;
+    const pk = this.publicKey;
+    if (!pk) return 0;
     try {
-      const lamports = await this.connection.getBalance(new PublicKey(this.publicKey), 'confirmed');
+      const lamports = await this.connection.getBalance(new PublicKey(pk), 'confirmed');
       return lamports / LAMPORTS_PER_SOL;
     } catch {
       return 0;
@@ -478,33 +672,44 @@ export class DevnetAmmExecutor implements ITradeExecutor {
   }
 
   async getTokenBalance(mint: string): Promise<number> {
-    if (!this.publicKey) return 0;
+    const pk = this.publicKey;
+    if (!pk || !mint) return 0;
     try {
-      const accounts = await this.connection.getParsedTokenAccountsByOwner(
-        new PublicKey(this.publicKey),
-        { mint: new PublicKey(mint) },
-        'confirmed'
+      const mintPk = new PublicKey(mint);
+      const mintValidation = await this.validateDevnetMint(mintPk);
+      if (!mintValidation.exists || !mintValidation.tokenProgram) return 0;
+
+      const ata = getAssociatedTokenAddressSync(
+        mintPk,
+        new PublicKey(pk),
+        false,
+        mintValidation.tokenProgram
       );
-      if (accounts.value.length === 0) return 0;
-      let totalAmount = 0;
-      for (const { account } of accounts.value) {
-        totalAmount += Number(account.data.parsed.info.tokenAmount.amount);
-      }
-      return totalAmount;
+
+      const bal = await this.connection.getTokenAccountBalance(ata, 'confirmed');
+      return bal.value.uiAmount || 0;
     } catch {
       return 0;
     }
   }
 
   async hasTokenAccount(mint: string): Promise<boolean> {
-    if (!this.publicKey) return false;
+    const pk = this.publicKey;
+    if (!pk || !mint) return false;
     try {
-      const accounts = await this.connection.getParsedTokenAccountsByOwner(
-        new PublicKey(this.publicKey),
-        { mint: new PublicKey(mint) },
-        'confirmed'
+      const mintPk = new PublicKey(mint);
+      const mintValidation = await this.validateDevnetMint(mintPk);
+      if (!mintValidation.exists || !mintValidation.tokenProgram) return false;
+
+      const ata = getAssociatedTokenAddressSync(
+        mintPk,
+        new PublicKey(pk),
+        false,
+        mintValidation.tokenProgram
       );
-      return accounts.value.length > 0;
+
+      const info = await this.connection.getAccountInfo(ata, 'confirmed');
+      return info !== null;
     } catch {
       return false;
     }
@@ -518,7 +723,6 @@ export class DevnetAmmExecutor implements ITradeExecutor {
     if (!pubkeyStr) return null;
 
     try {
-      // 1. Try getParsedTransaction first
       const tx = await this.connection.getParsedTransaction(signature, {
         maxSupportedTransactionVersion: 0,
         commitment: 'confirmed',
@@ -538,7 +742,6 @@ export class DevnetAmmExecutor implements ITradeExecutor {
         }
       }
 
-      // 2. Fallback to raw getTransaction
       const rawTx = await this.connection.getTransaction(signature, {
         maxSupportedTransactionVersion: 0,
         commitment: 'confirmed',
@@ -571,43 +774,17 @@ export class DevnetAmmExecutor implements ITradeExecutor {
   private async syncStoreBalances(activePublicKey: string, targetMint?: string): Promise<void> {
     try {
       const solLamports = await this.connection.getBalance(new PublicKey(activePublicKey), 'confirmed');
-      const sol = solLamports / LAMPORTS_PER_SOL;
+      const solBal = solLamports / LAMPORTS_PER_SOL;
+      useBalanceStore.getState().setOnChainBalance({ solBalance: solBal });
 
-      const [legacyAccounts, token2022Accounts] = await Promise.all([
-        this.connection.getParsedTokenAccountsByOwner(
-          new PublicKey(activePublicKey),
-          { programId: TOKEN_PROGRAM_ID },
-          'confirmed'
-        ).catch(() => ({ value: [] })),
-        this.connection.getParsedTokenAccountsByOwner(
-          new PublicKey(activePublicKey),
-          { programId: TOKEN_2022_PROGRAM_ID },
-          'confirmed'
-        ).catch(() => ({ value: [] })),
-      ]);
-
-      const tokenBalances: Record<string, number> = {};
-      for (const { account } of [...legacyAccounts.value, ...token2022Accounts.value]) {
-        const info = account.data.parsed.info;
-        const mint = info.mint;
-        const ta = info.tokenAmount;
-        tokenBalances[mint] = ta.uiAmount ?? Number(ta.amount) / Math.pow(10, ta.decimals);
+      if (targetMint && targetMint !== 'So11111111111111111111111111111111111111112') {
+        const tokenBal = await this.getTokenBalance(targetMint);
+        useBalanceStore.getState().setTokenBalance(targetMint, tokenBal);
       }
 
-      const bs = useBalanceStore.getState();
-      bs.setOnChainBalance({ solBalance: sol });
-      if ('setTokenBalances' in bs && typeof (bs as any).setTokenBalances === 'function') {
-        (bs as any).setTokenBalances(tokenBalances);
-      } else if ('setTokenBalance' in bs && typeof (bs as any).setTokenBalance === 'function') {
-        for (const [m, bal] of Object.entries(tokenBalances)) {
-          (bs as any).setTokenBalance(m, bal);
-        }
-      }
-
-      walletBalanceService.refreshNow(activePublicKey);
-      console.log('[DevnetAmmExecutor] On-chain Devnet balances synced:', { sol, targetMint });
+      await walletBalanceService.refresh(activePublicKey).catch(() => {});
     } catch (e) {
-      console.warn('[DevnetAmmExecutor] syncStoreBalances failed:', e);
+      console.warn('[DevnetAmmExecutor] Failed to sync store balances:', e);
     }
   }
 
@@ -615,8 +792,12 @@ export class DevnetAmmExecutor implements ITradeExecutor {
     return {
       totalSwaps: this.telemetryTotalSwaps,
       totalFeesPaidSol: this.telemetryTotalFeesPaidSol,
-      avgLandingTimeMs: this.telemetryTotalSwaps > 0 ? this.telemetryLandingTimeTotalMs / this.telemetryTotalSwaps : 0,
+      avgLandingTimeMs:
+        this.telemetryTotalSwaps > 0
+          ? Math.round(this.telemetryLandingTimeTotalMs / this.telemetryTotalSwaps)
+          : 0,
       failureRate: this.telemetryTotalSwaps > 0 ? this.telemetryFailedSwaps / this.telemetryTotalSwaps : 0,
     };
   }
 }
+
