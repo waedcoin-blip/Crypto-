@@ -121,7 +121,13 @@ export class HybridExecutionEngine {
         quoteResponse: quote,
         userPublicKey: this.publicKey.toBase58(),
         dynamicComputeUnitLimit: true,
-        prioritizationFeeLamports: { jitoTipLamports: 0 } as any,
+        prioritizationFeeLamports: {
+          priorityLevelWithMaxLamports: {
+            priorityLevel: 'medium',
+            maxLamports: 100000,
+            global: false,
+          },
+        } as any,
       },
     });
 
@@ -301,7 +307,7 @@ export class HybridExecutionEngine {
         prioritizationFeeLamports: {
           priorityLevelWithMaxLamports: {
             maxLamports: Math.floor(this.config.heliusMinTipSol * LAMPORTS_PER_SOL),
-            priorityLevel: 'very_high',
+            priorityLevel: 'veryHigh',
           },
         } as any,
       },

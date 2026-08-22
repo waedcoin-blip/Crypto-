@@ -937,13 +937,23 @@ export const createJupiterSwapTransaction = async (
   }
 
   try {
+    const formattedFee = typeof prioritizationFeeLamports === 'object' && prioritizationFeeLamports !== null
+      ? prioritizationFeeLamports
+      : {
+          priorityLevelWithMaxLamports: {
+            priorityLevel: 'medium',
+            maxLamports: typeof prioritizationFeeLamports === 'number' ? prioritizationFeeLamports : 100000,
+            global: false,
+          },
+        };
+
     const swapRequest: any = {
       quoteResponse,
       userPublicKey,
       wrapAndUnwrapSol: true,
       dynamicComputeUnitLimit: true,
       trackingAccount: "FE2vyoM5CbGcTXSHUsPj79eKAd8fvMzuy3jgr9pYBCLv",
-      prioritizationFeeLamports: { priorityLevelWithMaxLamports: { priorityLevel: 'medium', maxLamports: typeof prioritizationFeeLamports === 'number' ? prioritizationFeeLamports : 100000, global: false } } as any,
+      prioritizationFeeLamports: formattedFee as any,
     };
 
     if (useDynamicSlippage) {
