@@ -62,6 +62,10 @@ export class RealTradeExecutor implements ITradeExecutor {
     return this.delegate.hasTokenAccount(mint);
   }
 
+  async getConfirmedSolDelta(signature: string): Promise<number | null> {
+    return this.delegate.getConfirmedSolDelta(signature);
+  }
+
   getTelemetry(): ExecutorTelemetry {
     return this.delegate.getTelemetry();
   }

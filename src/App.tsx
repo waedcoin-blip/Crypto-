@@ -437,6 +437,7 @@ function App() {
   const [stopLoss, setStopLoss] = useState(() => Number(localStorage.getItem('app_stopLoss')) || -15);
   const [bondingCurveStopLoss, setBondingCurveStopLoss] = useState(() => Number(localStorage.getItem('app_bondingCurveStopLoss')) || -15);
   const [pumpSwapStopLoss, setPumpSwapStopLoss] = useState(() => Number(localStorage.getItem('app_pumpSwapStopLoss')) || -15);
+  const [pumpSwapTakeProfit, setPumpSwapTakeProfit] = useState(() => Number(localStorage.getItem('app_pumpSwapTakeProfit')) || 25);
   const [unknownStopLoss, setUnknownStopLoss] = useState(() => Number(localStorage.getItem('app_unknownStopLoss')) || -20);
   const [maxPositions, setMaxPositions] = useState(() => Number(localStorage.getItem('app_maxPositions')) || 5);
   
@@ -529,9 +530,10 @@ function App() {
     localStorage.setItem('app_stopLoss', stopLoss.toString());
     localStorage.setItem('app_bondingCurveStopLoss', bondingCurveStopLoss.toString());
     localStorage.setItem('app_pumpSwapStopLoss', pumpSwapStopLoss.toString());
+    localStorage.setItem('app_pumpSwapTakeProfit', pumpSwapTakeProfit.toString());
     localStorage.setItem('app_unknownStopLoss', unknownStopLoss.toString());
     localStorage.setItem('app_maxPositions', maxPositions.toString());
-  }, [buyAmountSol, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, moonbagStrategy, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, unknownStopLoss, maxPositions]);
+  }, [buyAmountSol, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, moonbagStrategy, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, pumpSwapTakeProfit, unknownStopLoss, maxPositions]);
 
   useEffect(() => {
     localStorage.setItem('tg_bot_token', telegramBotToken);
@@ -1114,13 +1116,13 @@ function App() {
   }, [tokenMetrics]);
 
   const latestState = useRef({ 
-    tokenMetrics, autoSniperEnabled, isLiveTrading, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, unknownStopLoss, activePositions, maxPositions, slippage, moonbagStrategy, telegramBotToken, telegramChatId, mySniperTrades,
+    tokenMetrics, autoSniperEnabled, isLiveTrading, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, pumpSwapTakeProfit, unknownStopLoss, activePositions, maxPositions, slippage, moonbagStrategy, telegramBotToken, telegramChatId, mySniperTrades,
     hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax, hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore, hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s, hardenedMinBuyCount30s, hardenedMaxBuyCount30s, hardenedMinBuySellRatio, hardenedMaxBuySellRatio, hardenedMaxPriceChange1m,
     hardenedMinBondingProgress, hardenedMaxBondingProgress, hardenedMinAge, hardenedMaxAge,
     hardenedMinLatency, hardenedMaxLatency, hardenedMatchRequirement, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown, hardenedMinProfit5m, enableLatencyGuard, maxRebuyTimes,
   });
   latestState.current = { 
-    tokenMetrics, autoSniperEnabled, isLiveTrading, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, unknownStopLoss, activePositions, maxPositions, slippage, moonbagStrategy, telegramBotToken, telegramChatId, mySniperTrades,
+    tokenMetrics, autoSniperEnabled, isLiveTrading, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, pumpSwapTakeProfit, unknownStopLoss, activePositions, maxPositions, slippage, moonbagStrategy, telegramBotToken, telegramChatId, mySniperTrades,
     hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax, hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore, hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s, hardenedMinBuyCount30s, hardenedMaxBuyCount30s, hardenedMinBuySellRatio, hardenedMaxBuySellRatio, hardenedMaxPriceChange1m,
     hardenedMinBondingProgress, hardenedMaxBondingProgress, hardenedMinAge, hardenedMaxAge,
     hardenedMinLatency, hardenedMaxLatency, hardenedMatchRequirement, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown, hardenedMinProfit5m, enableLatencyGuard, maxRebuyTimes,
@@ -1254,9 +1256,16 @@ function App() {
           const trailingSL = peakPnL > 20 ? peakPnL - 15 : baseSL;
           const effectiveSL = Math.max(baseSL, trailingSL); // never looser than base SL
 
-          let activeTakeProfit = position.tpPct ?? (stage.isBonding 
-            ? (typeof state.bondingCurveTakeProfit === 'number' ? state.bondingCurveTakeProfit : 25) 
-            : (state.moonbagStrategy ? (position.soldPartial ? state.maxTakeProfit : state.minTakeProfit) : state.minTakeProfit));
+          let activeTakeProfit = position.tpPct;
+          if (activeTakeProfit === undefined) {
+             if (stage.isBonding) {
+                 activeTakeProfit = typeof state.bondingCurveTakeProfit === 'number' ? state.bondingCurveTakeProfit : 25;
+             } else if (stage.platform === 'PUMPSWAP') {
+                 activeTakeProfit = typeof state.pumpSwapTakeProfit === 'number' ? state.pumpSwapTakeProfit : 25;
+             } else {
+                 activeTakeProfit = state.moonbagStrategy ? (position.soldPartial ? state.maxTakeProfit : state.minTakeProfit) : state.minTakeProfit;
+             }
+          }
             
           const trackingVerdict = await processActiveTrackingFrame(
             connection,
@@ -3383,13 +3392,16 @@ function App() {
   }, [user]);
 
   // Firestore Loading & Saving for App.tsx States
-  const isFirestoreLoading = useRef(false);
+  const [settingsHydrationStatus, setSettingsHydrationStatus] = useState<'idle'|'loading'|'hydrated'>('idle');
   useEffect(() => {
-    if (!user) return;
-
+    if (!authLoaded) return;
+    if (!user) {
+      setSettingsHydrationStatus('hydrated');
+      return;
+    }
     const loadSettings = async () => {
       try {
-        isFirestoreLoading.current = true;
+        setSettingsHydrationStatus('loading');
         const docRef = doc(db, 'settings', user.uid);
         const docSnap = await getDoc(docRef);
         if (docSnap.exists()) {
@@ -3401,6 +3413,7 @@ function App() {
           if (data.stopLoss !== undefined) setStopLoss(Number(data.stopLoss));
           if (data.bondingCurveStopLoss !== undefined) setBondingCurveStopLoss(Number(data.bondingCurveStopLoss));
           if (data.pumpSwapStopLoss !== undefined) setPumpSwapStopLoss(Number(data.pumpSwapStopLoss));
+          if (data.pumpSwapTakeProfit !== undefined) setPumpSwapTakeProfit(Number(data.pumpSwapTakeProfit));
           if (data.unknownStopLoss !== undefined) setUnknownStopLoss(Number(data.unknownStopLoss));
           if (data.maxPositions !== undefined) setMaxPositions(Number(data.maxPositions));
           if (data.telegramBotToken !== undefined) setTelegramBotToken(String(data.telegramBotToken));
@@ -3442,7 +3455,7 @@ function App() {
           if (data.hardenedMinProfit5m !== undefined) setHardenedMinProfit5m(Number(data.hardenedMinProfit5m));
           if (data.maxRebuyTimes !== undefined) {
             const val = Number(data.maxRebuyTimes);
-            setMaxRebuyTimes(val === 2 ? 3 : val);
+            setMaxRebuyTimes(val);
           }
           if (data.rpcUrl !== undefined) setRpcUrl(String(data.rpcUrl));
           if (data.rpcUrl2 !== undefined) setRpcUrl2(String(data.rpcUrl2));
@@ -3453,15 +3466,15 @@ function App() {
       } catch (err) {
         console.error('Error loading settings from Firestore in App.tsx:', err);
       } finally {
-        isFirestoreLoading.current = false;
+        setSettingsHydrationStatus('hydrated');
       }
     };
 
     loadSettings();
-  }, [user]);
+  }, [user, authLoaded]);
 
   useEffect(() => {
-    if (isFirestoreLoading.current) return;
+    if (settingsHydrationStatus !== 'hydrated') return;
 
     const payload = {
       buyAmountSol,
@@ -3471,6 +3484,7 @@ function App() {
       stopLoss,
       bondingCurveStopLoss,
       pumpSwapStopLoss,
+      pumpSwapTakeProfit,
       unknownStopLoss,
       maxPositions,
       telegramBotToken,
@@ -3522,7 +3536,7 @@ function App() {
     // Immediately sync to Render and Firebase database
     syncManager.triggerSync(payload, user?.uid, false);
   }, [
-    user, buyAmountSol, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, unknownStopLoss, maxPositions,
+    user, buyAmountSol, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, pumpSwapTakeProfit, unknownStopLoss, maxPositions,
     telegramBotToken, telegramChatId, hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax,
     hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore, hardenedMaxDevOwnership,
     hardenedMaxTop10, hardenedMinUniqueBuyers30s, hardenedMinBuyCount30s, hardenedMaxBuyCount30s,
@@ -6078,7 +6092,7 @@ function App() {
           bondingCurveTakeProfit, setBondingCurveTakeProfit,
           stopLoss, setStopLoss,
           bondingCurveStopLoss, setBondingCurveStopLoss,
-          pumpSwapStopLoss, setPumpSwapStopLoss,
+          pumpSwapStopLoss, setPumpSwapStopLoss, pumpSwapTakeProfit, setPumpSwapTakeProfit,
           unknownStopLoss, setUnknownStopLoss,
           maxPositions, setMaxPositions,
           slippage, setSlippage,

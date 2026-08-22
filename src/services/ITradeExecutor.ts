@@ -32,6 +32,7 @@ export interface ITradeExecutor {
   getSolBalance(): Promise<number>;
   getTokenBalance(mint: string): Promise<number>;
   hasTokenAccount(mint: string): Promise<boolean>;
+  getConfirmedSolDelta(signature: string): Promise<number | null>;
 
   batchSwap(
     swaps: Array<{

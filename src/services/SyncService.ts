@@ -50,6 +50,7 @@ export interface CriteriaSyncPayload {
   stopLoss?: number;
   bondingCurveStopLoss?: number;
   pumpSwapStopLoss?: number;
+  pumpSwapTakeProfit?: number;
   unknownStopLoss?: number;
   maxPositions?: number;
   moonbagStrategy?: boolean;

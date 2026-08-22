@@ -234,6 +234,64 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
     }
   }
 
+  async getConfirmedSolDelta(signature: string): Promise<number | null> {
+    if (!signature || signature.startsWith('simulated') || signature.startsWith('mock') || signature === 'exit-tx' || signature === 'recovered-exit-tx') {
+      return null;
+    }
+    const pubkeyStr = this.publicKey;
+    if (!pubkeyStr) return null;
+
+    try {
+      // 1. Try getParsedTransaction first
+      const tx = await this.connection.getParsedTransaction(signature, {
+        maxSupportedTransactionVersion: 0,
+        commitment: 'confirmed',
+      });
+
+      if (tx && tx.meta && tx.meta.preBalances && tx.meta.postBalances) {
+        const accountKeys = tx.transaction.message.accountKeys;
+        const idx = accountKeys.findIndex((acc: any) => {
+          const key = typeof acc === 'string' ? acc : (acc.pubkey ? acc.pubkey.toBase58() : '');
+          return key === pubkeyStr;
+        });
+
+        if (idx !== -1) {
+          const preLamports = tx.meta.preBalances[idx];
+          const postLamports = tx.meta.postBalances[idx];
+          return (postLamports - preLamports) / LAMPORTS_PER_SOL;
+        }
+      }
+
+      // 2. Fallback to raw getTransaction
+      const rawTx = await this.connection.getTransaction(signature, {
+        maxSupportedTransactionVersion: 0,
+        commitment: 'confirmed',
+      });
+
+      if (rawTx && rawTx.meta && rawTx.meta.preBalances && rawTx.meta.postBalances) {
+        const staticKeys = rawTx.transaction.message.staticAccountKeys;
+        let idx = staticKeys ? staticKeys.findIndex(pk => pk.toBase58() === pubkeyStr) : -1;
+
+        if (idx === -1 && rawTx.meta.loadedAddresses) {
+          const { writable, readonly } = rawTx.meta.loadedAddresses;
+          const allKeys = [...(staticKeys || []), ...(writable || []), ...(readonly || [])];
+          idx = allKeys.findIndex(pk => (typeof pk === 'string' ? pk : pk.toBase58()) === pubkeyStr);
+        }
+
+        if (idx !== -1) {
+          const preLamports = rawTx.meta.preBalances[idx];
+          const postLamports = rawTx.meta.postBalances[idx];
+          return (postLamports - preLamports) / LAMPORTS_PER_SOL;
+        }
+      }
+
+      return null;
+    } catch (err) {
+      console.warn(`[MainnetJupiterExecutor] Error fetching confirmed tx delta for ${signature}:`, err);
+      return null;
+    }
+  }
+
   private async syncStoreBalances(activePublicKey: string, targetMint?: string): Promise<void> {
     try {
       const solLamports = await this.connection.getBalance(new PublicKey(activePublicKey), 'confirmed');

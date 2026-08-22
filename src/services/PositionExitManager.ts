@@ -221,6 +221,7 @@ export class PositionExitManager {
 
       console.log(`[ExitManager] ⚡ Executing ${side.toUpperCase()} exit for ${mint} at PnL: ${pnlPct.toFixed(2)}% (Amount: ${pos.amount})`);
 
+      const preSolBalance = await this.executor.getSolBalance().catch(() => 0);
       const result = await this.executor.swap(
         mint,
         'So11111111111111111111111111111111111111112',
@@ -228,6 +229,21 @@ export class PositionExitManager {
         slippageBps,
         label
       );
+      
+      // Calculate actual SOL received based on confirmed transaction metadata (authoritative)
+      let actualSolReceived: number | null = null;
+      if (result.signature && typeof this.executor.getConfirmedSolDelta === 'function') {
+        actualSolReceived = await this.executor.getConfirmedSolDelta(result.signature).catch(() => null);
+      }
+
+      if (actualSolReceived === null) {
+        const postSolBalance = await this.executor.getSolBalance().catch(() => 0);
+        if (postSolBalance > 0 && preSolBalance > 0) {
+          actualSolReceived = postSolBalance - preSolBalance;
+        } else {
+          actualSolReceived = (result.outputAmount / 1e9) - result.feeSol;
+        }
+      }
 
       pos.state = 'CLOSED';
       this.exitingMints.delete(mint);
@@ -237,7 +253,7 @@ export class PositionExitManager {
       walletBalanceService.refreshNow();
 
       if (this.onExitCallback) {
-        this.onExitCallback(mint, side, result.signature || 'exit-tx', pnlPct, (result.outputAmount / 1e9) - result.feeSol);
+        this.onExitCallback(mint, side, result.signature || 'exit-tx', pnlPct, actualSolReceived);
       }
     } catch (err: any) {
       console.error(`[ExitManager] ❌ Exit error for ${mint}:`, err);

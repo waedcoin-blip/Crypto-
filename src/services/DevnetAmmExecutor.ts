@@ -14,6 +14,7 @@ import {
 import {
   TOKEN_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
   getAssociatedTokenAddressSync,
   createAssociatedTokenAccountIdempotentInstruction,
 } from '@solana/spl-token';
@@ -22,6 +23,16 @@ import { useBalanceStore, assertTradeBalance } from '../store/balanceStore';
 import { walletBalanceService } from './WalletBalanceService';
 import { getNetworkConfig } from '../config/network';
 import { useAppStore } from '../store/appStore';
+
+// Authoritative Pump.fun / PumpSwap program constants
+const PUMP_FUN_PROGRAM_ID = new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
+const PUMP_GLOBAL = new PublicKey('4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf');
+const PUMP_FEE_RECIPIENT = new PublicKey('CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM');
+const PUMP_EVENT_AUTHORITY = new PublicKey('Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1');
+const SYSVAR_RENT_PUBKEY = new PublicKey('SysvarRent111111111111111111111111111111111');
+
+// Raydium Devnet AMM Program ID
+const RAYDIUM_DEVNET_AMM_ID = new PublicKey('HWySuSbtHGHXtxWhbm92ENKXQcrTRyZoKBNdNLMQdMQ5');
 
 export class DevnetAmmExecutor implements ITradeExecutor {
   readonly mode = 'devnet' as const;
@@ -59,6 +70,16 @@ export class DevnetAmmExecutor implements ITradeExecutor {
   }
 
   /**
+   * Derive Pump.fun / PumpSwap bonding curve PDA for a given mint
+   */
+  public getBondingCurvePda(mintPk: PublicKey): [PublicKey, number] {
+    return PublicKey.findProgramAddressSync(
+      [Buffer.from('bonding-curve'), mintPk.toBuffer()],
+      PUMP_FUN_PROGRAM_ID
+    );
+  }
+
+  /**
    * Validates if a mint account exists on Devnet RPC and determines its exact token program owner
    */
   async validateDevnetMint(mintPk: PublicKey): Promise<{
@@ -92,6 +113,52 @@ export class DevnetAmmExecutor implements ITradeExecutor {
     } catch (e: any) {
       console.warn(`[DevnetAmmExecutor] Failed to query mint info for ${mintPk.toBase58()}:`, e?.message || e);
       return { exists: false };
+    }
+  }
+
+  /**
+   * Check if an active on-chain liquidity pool or bonding curve exists for a mint on Devnet
+   */
+  async checkDevnetLiquiditySource(mintPk: PublicKey): Promise<{
+    type: 'pump_bonding' | 'raydium_amm' | 'none';
+    bondingCurvePda?: PublicKey;
+    tokenProgram: PublicKey;
+  }> {
+    const mintValidation = await this.validateDevnetMint(mintPk);
+    const tokenProgram = mintValidation.tokenProgram || TOKEN_PROGRAM_ID;
+
+    if (!mintValidation.exists) {
+      return { type: 'none', tokenProgram };
+    }
+
+    try {
+      const [bondingCurvePda] = this.getBondingCurvePda(mintPk);
+      const curveInfo = await this.connection.getAccountInfo(bondingCurvePda, 'confirmed');
+
+      if (curveInfo && curveInfo.owner.equals(PUMP_FUN_PROGRAM_ID)) {
+        return {
+          type: 'pump_bonding',
+          bondingCurvePda,
+          tokenProgram,
+        };
+      }
+
+      // Check for standard Raydium Devnet AMM pool
+      const [raydiumPoolPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from('amm_associated_seed'), mintPk.toBuffer()],
+        RAYDIUM_DEVNET_AMM_ID
+      );
+      const raydiumInfo = await this.connection.getAccountInfo(raydiumPoolPda, 'confirmed');
+      if (raydiumInfo) {
+        return {
+          type: 'raydium_amm',
+          tokenProgram,
+        };
+      }
+
+      return { type: 'none', tokenProgram, bondingCurvePda };
+    } catch {
+      return { type: 'none', tokenProgram };
     }
   }
 
@@ -143,8 +210,8 @@ export class DevnetAmmExecutor implements ITradeExecutor {
       routePlan: [
         {
           swapInfo: {
-            ammKey: 'DevnetAmmPool1111111111111111111111111111111',
-            label: 'Devnet AMM',
+            ammKey: 'PumpSwapDevnet111111111111111111111111111111',
+            label: 'PumpSwap Devnet Adapter',
             inputMint,
             outputMint,
             inAmount: String(amount),
@@ -180,67 +247,121 @@ export class DevnetAmmExecutor implements ITradeExecutor {
       const userPk = kp.publicKey;
 
       const isSolBuy = inputMint === 'So11111111111111111111111111111111111111112';
-      const requiredSol = isSolBuy ? amount / LAMPORTS_PER_SOL + 0.002 : 0.002;
+      const targetMintStr = isSolBuy ? outputMint : inputMint;
+      const targetMintPk = new PublicKey(targetMintStr);
 
+      const requiredSol = isSolBuy ? amount / LAMPORTS_PER_SOL + 0.002 : 0.002;
       await assertTradeBalance(requiredSol);
+
+      // Validate on-chain mint and bonding curve existence on Devnet
+      const liquiditySource = await this.checkDevnetLiquiditySource(targetMintPk);
+
+      if (liquiditySource.type === 'none') {
+        throw new Error(
+          `Devnet PumpSwap swap rejected: No active Pump.fun bonding curve or Raydium AMM pool is deployed on Solana Devnet for mint ${targetMintStr}. Devnet fail-closed protection prevents generating unbacked transactions.`
+        );
+      }
+
+      const tokenProgram = liquiditySource.tokenProgram;
+      const [bondingCurvePda] = this.getBondingCurvePda(targetMintPk);
+      const associatedBondingCurve = getAssociatedTokenAddressSync(
+        targetMintPk,
+        bondingCurvePda,
+        true,
+        tokenProgram
+      );
+      const userAta = getAssociatedTokenAddressSync(
+        targetMintPk,
+        userPk,
+        false,
+        tokenProgram
+      );
+
+      const preTradeTokenBalance = await this.getTokenBalance(targetMintStr).catch(() => 0);
 
       const quote = await this.getQuote({ inputMint, outputMint, amount, slippageBps });
       const outAmountNum = Number(quote.outAmount);
 
       const instructions: TransactionInstruction[] = [];
 
-      // 1. Memo / trade record instruction
-      const memoText = `[Devnet AMM ${label.toUpperCase()}] ${isSolBuy ? 'BUY' : 'SELL'} ${amount} -> ${quote.outAmount}`;
+      // 1. Create User ATA if not existing
       instructions.push(
-        new TransactionInstruction({
-          keys: [{ pubkey: userPk, isSigner: true, isWritable: true }],
-          programId: new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr'),
-          data: Buffer.from(memoText, 'utf-8'),
-        })
+        createAssociatedTokenAccountIdempotentInstruction(
+          userPk,
+          userAta,
+          userPk,
+          targetMintPk,
+          tokenProgram
+        )
       );
 
-      // 2. Dynamic ATA preparation using on-chain mint token program validation
-      const targetMintStr = isSolBuy ? outputMint : inputMint;
-      if (targetMintStr !== 'So11111111111111111111111111111111111111112') {
-        const targetMintPk = new PublicKey(targetMintStr);
-        const mintValidation = await this.validateDevnetMint(targetMintPk);
+      // 2. Build actual Pump.fun / PumpSwap Buy or Sell instruction
+      if (isSolBuy) {
+        const outAmountBigInt = BigInt(Math.floor(outAmountNum));
+        const maxSolCost = BigInt(Math.floor(amount * (1 + slippageBps / 10000)));
 
-        if (mintValidation.exists && mintValidation.tokenProgram) {
-          const ata = getAssociatedTokenAddressSync(
-            targetMintPk,
-            userPk,
-            false,
-            mintValidation.tokenProgram
-          );
-          instructions.push(
-            createAssociatedTokenAccountIdempotentInstruction(
-              userPk,
-              ata,
-              userPk,
-              targetMintPk,
-              mintValidation.tokenProgram
-            )
-          );
-        } else {
-          console.log(
-            `[DevnetAmmExecutor] Target mint ${targetMintStr} does not exist on Devnet RPC. Skipping ATA instruction.`
-          );
-        }
+        // Discriminator for Buy: [102, 6, 61, 18, 1, 218, 235, 234]
+        const buyData = Buffer.alloc(24);
+        buyData.set([102, 6, 61, 18, 1, 218, 235, 234], 0);
+        buyData.writeBigUInt64LE(outAmountBigInt, 8);
+        buyData.writeBigUInt64LE(maxSolCost, 16);
+
+        instructions.push(
+          new TransactionInstruction({
+            programId: PUMP_FUN_PROGRAM_ID,
+            keys: [
+              { pubkey: PUMP_GLOBAL, isSigner: false, isWritable: false },
+              { pubkey: PUMP_FEE_RECIPIENT, isSigner: false, isWritable: true },
+              { pubkey: targetMintPk, isSigner: false, isWritable: false },
+              { pubkey: bondingCurvePda, isSigner: false, isWritable: true },
+              { pubkey: associatedBondingCurve, isSigner: false, isWritable: true },
+              { pubkey: userAta, isSigner: false, isWritable: true },
+              { pubkey: userPk, isSigner: true, isWritable: true },
+              { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+              { pubkey: tokenProgram, isSigner: false, isWritable: false },
+              { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
+              { pubkey: PUMP_EVENT_AUTHORITY, isSigner: false, isWritable: false },
+              { pubkey: PUMP_FUN_PROGRAM_ID, isSigner: false, isWritable: false },
+            ],
+            data: buyData,
+          })
+        );
+      } else {
+        const tokenAmountToSell = BigInt(Math.floor(amount));
+        const minSolOutput = BigInt(Math.floor(outAmountNum * (1 - slippageBps / 10000)));
+
+        // Discriminator for Sell: [51, 230, 133, 164, 1, 127, 131, 173]
+        const sellData = Buffer.alloc(24);
+        sellData.set([51, 230, 133, 164, 1, 127, 131, 173], 0);
+        sellData.writeBigUInt64LE(tokenAmountToSell, 8);
+        sellData.writeBigUInt64LE(minSolOutput, 16);
+
+        instructions.push(
+          new TransactionInstruction({
+            programId: PUMP_FUN_PROGRAM_ID,
+            keys: [
+              { pubkey: PUMP_GLOBAL, isSigner: false, isWritable: false },
+              { pubkey: PUMP_FEE_RECIPIENT, isSigner: false, isWritable: true },
+              { pubkey: targetMintPk, isSigner: false, isWritable: false },
+              { pubkey: bondingCurvePda, isSigner: false, isWritable: true },
+              { pubkey: associatedBondingCurve, isSigner: false, isWritable: true },
+              { pubkey: userAta, isSigner: false, isWritable: true },
+              { pubkey: userPk, isSigner: true, isWritable: true },
+              { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+              { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+              { pubkey: tokenProgram, isSigner: false, isWritable: false },
+              { pubkey: PUMP_EVENT_AUTHORITY, isSigner: false, isWritable: false },
+              { pubkey: PUMP_FUN_PROGRAM_ID, isSigner: false, isWritable: false },
+            ],
+            data: sellData,
+          })
+        );
       }
 
-      // 3. Devnet SOL trading fee / vault deposit instruction (0.000005 SOL network / swap fee)
-      instructions.push(
-        SystemProgram.transfer({
-          fromPubkey: userPk,
-          toPubkey: userPk, // self-transfer with memo to register on-chain signature cleanly
-          lamports: isSolBuy ? Math.min(amount, 10000) : 5000,
-        })
-      );
-
-      // 4. Get fresh Devnet blockhash
+      // 3. Fetch fresh blockhash
       const { blockhash, lastValidBlockHeight } = await this.connection.getLatestBlockhash('confirmed');
 
-      // 5. Compile and sign VersionedTransaction on Devnet
+      // 4. Compile and sign VersionedTransaction on Devnet
       const messageV0 = new TransactionMessage({
         payerKey: userPk,
         recentBlockhash: blockhash,
@@ -250,13 +371,13 @@ export class DevnetAmmExecutor implements ITradeExecutor {
       const tx = new VersionedTransaction(messageV0);
       tx.sign([kp]);
 
-      // 6. Send raw transaction to Devnet RPC
+      // 5. Send raw transaction to Devnet RPC
       const sig = await this.connection.sendRawTransaction(tx.serialize(), {
         skipPreflight: false,
         maxRetries: 3,
       });
 
-      // 7. Confirm transaction on Devnet RPC
+      // 6. Confirm transaction on Devnet RPC
       const confirmation = await this.connection.confirmTransaction(
         { signature: sig, blockhash, lastValidBlockHeight },
         'confirmed'
@@ -268,8 +389,15 @@ export class DevnetAmmExecutor implements ITradeExecutor {
 
       const slot = confirmation.context.slot;
 
-      // 8. Authoritative Post-Trade State Refresh against Devnet RPC
+      // 7. Authoritative Post-Trade State Refresh against Devnet RPC
       await this.syncStoreBalances(activePublicKey, targetMintStr);
+
+      const postTradeTokenBalance = await this.getTokenBalance(targetMintStr);
+      if (isSolBuy && postTradeTokenBalance <= preTradeTokenBalance) {
+        throw new Error(`Devnet trade rejected: Transaction confirmed but token balance did not increase. (Pre: ${preTradeTokenBalance}, Post: ${postTradeTokenBalance})`);
+      } else if (!isSolBuy && postTradeTokenBalance >= preTradeTokenBalance && amount > 0) {
+        throw new Error(`Devnet trade rejected: Transaction confirmed but token balance did not decrease. (Pre: ${preTradeTokenBalance}, Post: ${postTradeTokenBalance})`);
+      }
 
       const landingTimeMs = Date.now() - start;
       const actualFee = 0.000005;
@@ -278,7 +406,7 @@ export class DevnetAmmExecutor implements ITradeExecutor {
 
       useAppStore.getState().addJupiterLog({
         type: 'INFO',
-        message: `Devnet Swap Success: ${sig.slice(0, 8)}... (Slot ${slot})`,
+        message: `Devnet PumpSwap Success: ${sig.slice(0, 8)}... (Slot ${slot})`,
         details: { signature: sig, inputMint, outputMint, inAmount: amount, outAmount: outAmountNum },
       });
 
@@ -358,7 +486,11 @@ export class DevnetAmmExecutor implements ITradeExecutor {
         'confirmed'
       );
       if (accounts.value.length === 0) return 0;
-      return Number(accounts.value[0].account.data.parsed.info.tokenAmount.amount);
+      let totalAmount = 0;
+      for (const { account } of accounts.value) {
+        totalAmount += Number(account.data.parsed.info.tokenAmount.amount);
+      }
+      return totalAmount;
     } catch {
       return 0;
     }
@@ -375,6 +507,64 @@ export class DevnetAmmExecutor implements ITradeExecutor {
       return accounts.value.length > 0;
     } catch {
       return false;
+    }
+  }
+
+  async getConfirmedSolDelta(signature: string): Promise<number | null> {
+    if (!signature || signature.startsWith('simulated') || signature.startsWith('mock') || signature === 'exit-tx' || signature === 'recovered-exit-tx') {
+      return null;
+    }
+    const pubkeyStr = this.publicKey;
+    if (!pubkeyStr) return null;
+
+    try {
+      // 1. Try getParsedTransaction first
+      const tx = await this.connection.getParsedTransaction(signature, {
+        maxSupportedTransactionVersion: 0,
+        commitment: 'confirmed',
+      });
+
+      if (tx && tx.meta && tx.meta.preBalances && tx.meta.postBalances) {
+        const accountKeys = tx.transaction.message.accountKeys;
+        const idx = accountKeys.findIndex((acc: any) => {
+          const key = typeof acc === 'string' ? acc : (acc.pubkey ? acc.pubkey.toBase58() : '');
+          return key === pubkeyStr;
+        });
+
+        if (idx !== -1) {
+          const preLamports = tx.meta.preBalances[idx];
+          const postLamports = tx.meta.postBalances[idx];
+          return (postLamports - preLamports) / LAMPORTS_PER_SOL;
+        }
+      }
+
+      // 2. Fallback to raw getTransaction
+      const rawTx = await this.connection.getTransaction(signature, {
+        maxSupportedTransactionVersion: 0,
+        commitment: 'confirmed',
+      });
+
+      if (rawTx && rawTx.meta && rawTx.meta.preBalances && rawTx.meta.postBalances) {
+        const staticKeys = rawTx.transaction.message.staticAccountKeys;
+        let idx = staticKeys ? staticKeys.findIndex(pk => pk.toBase58() === pubkeyStr) : -1;
+
+        if (idx === -1 && rawTx.meta.loadedAddresses) {
+          const { writable, readonly } = rawTx.meta.loadedAddresses;
+          const allKeys = [...(staticKeys || []), ...(writable || []), ...(readonly || [])];
+          idx = allKeys.findIndex(pk => (typeof pk === 'string' ? pk : pk.toBase58()) === pubkeyStr);
+        }
+
+        if (idx !== -1) {
+          const preLamports = rawTx.meta.preBalances[idx];
+          const postLamports = rawTx.meta.postBalances[idx];
+          return (postLamports - preLamports) / LAMPORTS_PER_SOL;
+        }
+      }
+
+      return null;
+    } catch (err) {
+      console.warn(`[DevnetAmmExecutor] Error fetching confirmed tx delta for ${signature}:`, err);
+      return null;
     }
   }
 

@@ -880,6 +880,8 @@ export const PnLPage = ({
     bondingCurveStopLoss?: number;
     setBondingCurveStopLoss?: (v: number) => void;
     pumpSwapStopLoss?: number;
+    pumpSwapTakeProfit?: number;
+    setPumpSwapTakeProfit?: (val: number) => void;
     setPumpSwapStopLoss?: (v: number) => void;
     unknownStopLoss?: number;
     setUnknownStopLoss?: (v: number) => void;
@@ -992,6 +994,7 @@ export const PnLPage = ({
     stopLoss, setStopLoss,
     bondingCurveStopLoss = -15, setBondingCurveStopLoss = () => {},
     pumpSwapStopLoss = -15, setPumpSwapStopLoss = () => {},
+    pumpSwapTakeProfit = 25, setPumpSwapTakeProfit = () => {},
     unknownStopLoss = -20, setUnknownStopLoss = () => {},
     maxPositions, setMaxPositions,
     slippage, setSlippage,
@@ -1092,6 +1095,7 @@ export const PnLPage = ({
   const stopLossPct = Math.abs(stopLoss);
   const bondingCurveStopLossPct = Math.abs(bondingCurveStopLoss);
   const pumpSwapStopLossPct = Math.abs(pumpSwapStopLoss);
+  const pumpSwapTakeProfitPct = Math.abs(pumpSwapTakeProfit);
   const unknownStopLossPct = Math.abs(unknownStopLoss);
   
   // Helius Sender (Ultra-Low Latency Broadcast) Configurations
@@ -1604,10 +1608,7 @@ export const PnLPage = ({
             let pnl = t.pnlPct !== undefined && t.pnlPct !== null ? Number(t.pnlPct) : 0;
 
             // Sanitize corrupt historical trade where sell SOL stored raw token count
-            if (buySol > 0 && sellSol > buySol * 50 && pnl > 5000) {
-              pnl = Math.min(pnl, 100);
-              sellSol = buySol * (1 + (pnl / 100));
-            }
+            
 
             return {
               id: t.id || Math.random().toString(),
@@ -1672,7 +1673,7 @@ export const PnLPage = ({
   }, [blacklistedMints]);
 
   const configRef = useRef({
-    takeProfitPct, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct, slippage, privateKey, tradeAmount, maxPositions,
+    takeProfitPct, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, pumpSwapTakeProfitPct, unknownStopLossPct, slippage, privateKey, tradeAmount, maxPositions,
     hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax,
     hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore,
     hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s,
@@ -1684,7 +1685,7 @@ export const PnLPage = ({
   });
 
   configRef.current = {
-    takeProfitPct, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct, slippage, privateKey, tradeAmount, maxPositions,
+    takeProfitPct, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, pumpSwapTakeProfitPct, unknownStopLossPct, slippage, privateKey, tradeAmount, maxPositions,
     hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax,
     hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore,
     hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s,
@@ -1748,6 +1749,7 @@ export const PnLPage = ({
     return () => { active = false; };
   }, [privateKey, user?.uid]);
 
+  const [settingsHydrationStatus, setSettingsHydrationStatus] = useState<'idle' | 'loading' | 'hydrated'>('idle');
   const isFirestoreLoading = useRef(false);
   const lastLoadedSettingsRef = useRef<{
     rpcUrl?: string;
@@ -1782,7 +1784,7 @@ export const PnLPage = ({
     
     const loadSettings = async () => {
       try {
-        isFirestoreLoading.current = true;
+        setSettingsHydrationStatus('loading');
         const docRef = doc(db, 'settings', user.uid);
         const docSnap = await getDoc(docRef);
         if (docSnap.exists()) {
@@ -1926,7 +1928,7 @@ export const PnLPage = ({
         } catch (err) {
         console.error('Error loading settings from Firestore:', err);
       } finally {
-        isFirestoreLoading.current = false;
+        setSettingsHydrationStatus('hydrated');
       }
     };
     
@@ -1965,7 +1967,7 @@ export const PnLPage = ({
       return; // No actual change, skip saving
     }
 
-    if (isFirestoreLoading.current) {
+    if (settingsHydrationStatus !== 'hydrated') {
       return;
     }
     
@@ -3751,9 +3753,46 @@ const checkTokenCriteria = (mint: string): {
           isMainSold = true;
         } else {
           addLog(`Ordering ${pos.symbol} → SOL...`, 'sell');
+          
+          let preSol = 0;
+          try {
+             if (useActiveWalletStore.getState().activeWallet) {
+                const conn = new Connection(rpcUrl, { commitment: 'confirmed' });
+                preSol = await conn.getBalance(useActiveWalletStore.getState().activeWallet.keypair.publicKey) / 1e9;
+             }
+          } catch (e) {}
+          
           const result = await executeJupiterSwap(mint, SOL_MINT, lamportsToSell);
           if (result.txid) {
-            const actualSolReceived = (result.outputAmount || 0) / 1e9;
+            let actualSolReceived: number | null = null;
+
+            // 1. Check executor confirmed SOL delta (from confirmed transaction metadata)
+            const executor = tradeManager.getExecutor();
+            if (executor && typeof executor.getConfirmedSolDelta === 'function') {
+              actualSolReceived = await executor.getConfirmedSolDelta(result.txid).catch(() => null);
+            }
+
+            // 2. Fallback to pre/post balance difference
+            if (actualSolReceived === null) {
+              try {
+                if (useActiveWalletStore.getState().activeWallet) {
+                  const conn = new Connection(rpcUrl, { commitment: 'confirmed' });
+                  const postSol = await conn.getBalance(useActiveWalletStore.getState().activeWallet.keypair.publicKey) / 1e9;
+                  const delta = postSol - preSol;
+                  if (delta > 0) actualSolReceived = delta;
+                }
+              } catch (e) {}
+            }
+
+            // 3. For emergency exit, never fake PnL if confirmed delta cannot be established
+            if (actualSolReceived === null) {
+              if (reason && reason.toUpperCase().includes('EMERGENCY')) {
+                addLog(`⚠️ [EMERGENCY EXIT] Transaction ${result.txid.slice(0, 10)}... confirmed on-chain, but verified SOL delta is pending indexer confirmation. Position kept open for safety.`, 'warn');
+                return;
+              }
+              actualSolReceived = (result.outputAmount || 0) / 1e9;
+            }
+
             const costBasisSol = pos.solSpent || 0;
             const actualPnlSOL = costBasisSol > 0 ? actualSolReceived - costBasisSol : 0;
             const actualPnlPct = costBasisSol > 0 ? actualPnlSOL / costBasisSol : 0;
@@ -4109,7 +4148,7 @@ const checkTokenCriteria = (mint: string): {
     
     try {
       const {
-        maxPositions, tradeAmount, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct,
+        maxPositions, tradeAmount, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, pumpSwapTakeProfitPct, unknownStopLossPct,
         hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax,
         hardenedLiquidityMin, hardenedMaxRiskScore, hardenedMinProfit5m
       } = configRef.current;
@@ -7002,12 +7041,9 @@ const checkTokenCriteria = (mint: string): {
                 {tradeHistory.map(trade => {
                   const buySol = trade.buyAmountSol || 0;
                   let sellSol = trade.sellAmountSol || 0;
-                  let pnl = trade.pnlPct || 0;
+                  let pnl = (trade.buyAmountSol && trade.buyAmountSol > 0) ? (((trade.sellAmountSol || 0) - trade.buyAmountSol) / trade.buyAmountSol) * 100 : (trade.pnlPct || 0);
 
-                  if (buySol > 0 && sellSol > buySol * 50 && pnl > 5000) {
-                    pnl = Math.min(pnl, 100);
-                    sellSol = buySol * (1 + (pnl / 100));
-                  }
+                  
 
                   const profitSol = sellSol - buySol;
                   const buyTime = trade.buyTime || Date.now();
