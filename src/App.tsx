@@ -71,6 +71,8 @@ import {
   getTokenBalanceRaw, 
   processActiveTrackingFrame, 
   verifyHardenedScannerCriteria,
+  getSimulatedPrice,
+  updateSimPrice,
   rpcPool,
   AdvancedTokenMetrics,
   ActivePosition, 
@@ -437,7 +439,6 @@ function App() {
   const [stopLoss, setStopLoss] = useState(() => Number(localStorage.getItem('app_stopLoss')) || -15);
   const [bondingCurveStopLoss, setBondingCurveStopLoss] = useState(() => Number(localStorage.getItem('app_bondingCurveStopLoss')) || -15);
   const [pumpSwapStopLoss, setPumpSwapStopLoss] = useState(() => Number(localStorage.getItem('app_pumpSwapStopLoss')) || -15);
-  const [pumpSwapTakeProfit, setPumpSwapTakeProfit] = useState(() => Number(localStorage.getItem('app_pumpSwapTakeProfit')) || 25);
   const [unknownStopLoss, setUnknownStopLoss] = useState(() => Number(localStorage.getItem('app_unknownStopLoss')) || -20);
   const [maxPositions, setMaxPositions] = useState(() => Number(localStorage.getItem('app_maxPositions')) || 5);
   
@@ -530,10 +531,9 @@ function App() {
     localStorage.setItem('app_stopLoss', stopLoss.toString());
     localStorage.setItem('app_bondingCurveStopLoss', bondingCurveStopLoss.toString());
     localStorage.setItem('app_pumpSwapStopLoss', pumpSwapStopLoss.toString());
-    localStorage.setItem('app_pumpSwapTakeProfit', pumpSwapTakeProfit.toString());
     localStorage.setItem('app_unknownStopLoss', unknownStopLoss.toString());
     localStorage.setItem('app_maxPositions', maxPositions.toString());
-  }, [buyAmountSol, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, moonbagStrategy, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, pumpSwapTakeProfit, unknownStopLoss, maxPositions]);
+  }, [buyAmountSol, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, moonbagStrategy, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, unknownStopLoss, maxPositions]);
 
   useEffect(() => {
     localStorage.setItem('tg_bot_token', telegramBotToken);
@@ -1116,13 +1116,13 @@ function App() {
   }, [tokenMetrics]);
 
   const latestState = useRef({ 
-    tokenMetrics, autoSniperEnabled, isLiveTrading, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, pumpSwapTakeProfit, unknownStopLoss, activePositions, maxPositions, slippage, moonbagStrategy, telegramBotToken, telegramChatId, mySniperTrades,
+    tokenMetrics, autoSniperEnabled, isLiveTrading, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, unknownStopLoss, activePositions, maxPositions, slippage, moonbagStrategy, telegramBotToken, telegramChatId, mySniperTrades,
     hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax, hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore, hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s, hardenedMinBuyCount30s, hardenedMaxBuyCount30s, hardenedMinBuySellRatio, hardenedMaxBuySellRatio, hardenedMaxPriceChange1m,
     hardenedMinBondingProgress, hardenedMaxBondingProgress, hardenedMinAge, hardenedMaxAge,
     hardenedMinLatency, hardenedMaxLatency, hardenedMatchRequirement, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown, hardenedMinProfit5m, enableLatencyGuard, maxRebuyTimes,
   });
   latestState.current = { 
-    tokenMetrics, autoSniperEnabled, isLiveTrading, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, pumpSwapTakeProfit, unknownStopLoss, activePositions, maxPositions, slippage, moonbagStrategy, telegramBotToken, telegramChatId, mySniperTrades,
+    tokenMetrics, autoSniperEnabled, isLiveTrading, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, unknownStopLoss, activePositions, maxPositions, slippage, moonbagStrategy, telegramBotToken, telegramChatId, mySniperTrades,
     hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax, hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore, hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s, hardenedMinBuyCount30s, hardenedMaxBuyCount30s, hardenedMinBuySellRatio, hardenedMaxBuySellRatio, hardenedMaxPriceChange1m,
     hardenedMinBondingProgress, hardenedMaxBondingProgress, hardenedMinAge, hardenedMaxAge,
     hardenedMinLatency, hardenedMaxLatency, hardenedMatchRequirement, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown, hardenedMinProfit5m, enableLatencyGuard, maxRebuyTimes,
@@ -1181,13 +1181,13 @@ function App() {
           // Set to false to disable minimum hold time delay so stop loss/take profit execute instantly
           const isHoldProtected = false;
           
-          const walletAddress = (true && activeAddress) 
+          const walletAddress = (isLiveTrading && activeAddress) 
             ? activeAddress!
             : '11111111111111111111111111111111';
 
           let amountLamports = position.amountLamports;
 
-          if (true && activeAddress) {
+          if (isLiveTrading && activeAddress) {
             if (!position.amountLamports) {
                 getTokenBalanceRaw(connection, walletAddress, token.address).then(bal => {
                     setActivePositions(prev => ({
@@ -1197,7 +1197,7 @@ function App() {
                 });
                 continue;
             }
-          } else if (false) {
+          } else if (!isLiveTrading) {
             // Simulate amount lamports for accurate Jupiter routing
             amountLamports = Math.floor(position.amount * 1_000_000);
           }
@@ -1240,7 +1240,7 @@ function App() {
           // e.g. up 50% → stop at 35%; up 100% → stop at 75%
           const currentPriceSol = (token.priceNative || 0);
           const posTokensQty = position.amount || 0;
-          const netPnlResult = calcNetPnl(currentPriceSol, posTokensQty, realCostBasis, state.slippage, position.recoveryMode, true);
+          const netPnlResult = calcNetPnl(currentPriceSol, posTokensQty, realCostBasis, state.slippage, position.recoveryMode, isLiveTrading);
           const currentPnLPct = netPnlResult.netPnlPct;
 
           // Track peak PnL in position metadata
@@ -1256,16 +1256,9 @@ function App() {
           const trailingSL = peakPnL > 20 ? peakPnL - 15 : baseSL;
           const effectiveSL = Math.max(baseSL, trailingSL); // never looser than base SL
 
-          let activeTakeProfit = position.tpPct;
-          if (activeTakeProfit === undefined) {
-             if (stage.isBonding) {
-                 activeTakeProfit = typeof state.bondingCurveTakeProfit === 'number' ? state.bondingCurveTakeProfit : 25;
-             } else if (stage.platform === 'PUMPSWAP') {
-                 activeTakeProfit = typeof state.pumpSwapTakeProfit === 'number' ? state.pumpSwapTakeProfit : 25;
-             } else {
-                 activeTakeProfit = state.moonbagStrategy ? (position.soldPartial ? state.maxTakeProfit : state.minTakeProfit) : state.minTakeProfit;
-             }
-          }
+          let activeTakeProfit = position.tpPct ?? (stage.isBonding 
+            ? (typeof state.bondingCurveTakeProfit === 'number' ? state.bondingCurveTakeProfit : 25) 
+            : (state.moonbagStrategy ? (position.soldPartial ? state.maxTakeProfit : state.minTakeProfit) : state.minTakeProfit));
             
           const trackingVerdict = await processActiveTrackingFrame(
             connection,
@@ -1280,7 +1273,7 @@ function App() {
 
           if (trackingVerdict.shouldExit) {
             const slType = effectiveSL !== baseSL ? 'TRAILING SL' : trackingVerdict.reason;
-            console.log(`[EXIT BY ENGINE] (LIVE): ${token.symbol} clearing. Reason: ${slType}`);
+            console.log(`[EXIT BY ENGINE] (${isLiveTrading ? 'LIVE' : 'SIM'}): ${token.symbol} clearing. Reason: ${slType}`);
             fns.current.executeAutoSell(tokenAddress, token.symbol, trackingVerdict.quote);
           }
         }
@@ -1759,7 +1752,7 @@ function App() {
     optimisticPositions.current.add(tokenAddress);
 
 
-    if (false && getTradingBalance() < buyAmountSol) {
+    if (!isLiveTrading && getTradingBalance() < buyAmountSol) {
       addNotification(`Insufficient Simulation Balance (Need ${buyAmountSol} SOL)`);
       return;
     }
@@ -1767,7 +1760,7 @@ function App() {
     setTradingStatus(`Executing Matrix Buy: ${symbol}...`);
     try {
       let signature = 'SIM_MANUAL_BUY_' + Math.random().toString(36).substring(7);
-      
+      let isSimulated = !isLiveTrading;
       const lamports = Math.floor(buyAmountSol * 1_000_000_000);
       const liquidityUsd = tokenMetrics[tokenAddress]?.liquidity || 0;
       
@@ -1781,7 +1774,7 @@ function App() {
 
       let outTokensRaw = quote.outAmount;
 
-      if (true) {
+      if (isLiveTrading) {
         if (!activeAddress) {
           throw new Error("No wallet connected for Live Trading");
         }
@@ -1872,7 +1865,7 @@ function App() {
         };
       });
       
-      addNotification(`MANUAL EXECUTION SUCCESS: ${symbol} (Slippage: ${slippage}%) `, symbol, tokenAddress);
+      addNotification(`MANUAL EXECUTION SUCCESS: ${symbol} (Slippage: ${slippage}%) ${!isSimulated ? '(LIVE)' : '(SIMULATED)'}`, symbol, tokenAddress);
       setTradingStatus(null);
     } catch (e: any) {
       setTradingStatus(null);
@@ -1894,10 +1887,10 @@ function App() {
     setTradingStatus(`Partial Sell ${symbol} (${(percent*100).toFixed(0)}%)...`);
     
     try {
-      
+      let isSimulated = !isLiveTrading;
       let signature = 'SIM_PS_' + Math.random().toString(36).substring(7);
 
-      if (true) {
+      if (isLiveTrading) {
         if (!activeAddress) throw new Error("Wallet not connected");
         
         const walletAddress = activeAddress!;
@@ -1905,7 +1898,7 @@ function App() {
         const sellAmountRaw = Math.floor(Number(balanceRaw) * percent);
         
         if (sellAmountRaw === 0) {
-           
+           isSimulated = true;
         } else {
            // PROFIT PROTECTION LOGIC
            const targetProfit = minTakeProfit; // Use min profit for Tier 1 partial sell
@@ -2046,14 +2039,16 @@ function App() {
     
     try {
       let signature = 'SIM_SELL_' + Math.random().toString(36).substring(7);
-      
-      const walletAddress = (true && activeAddress) 
+      let isSimulated = !isLiveTrading;
+      const walletAddress = (isLiveTrading && activeAddress) 
          ? activeAddress!
          : '11111111111111111111111111111111';
       let balanceRaw: string | number = 0;
-      balanceRaw = await getTokenBalanceRaw(connection, walletAddress, tokenAddress);
-      if (balanceRaw === '0') {
-         console.warn(`No on-chain balance found for ${tokenAddress}`);
+      if (isLiveTrading) {
+          balanceRaw = await getTokenBalanceRaw(connection, walletAddress, tokenAddress);
+          if (balanceRaw === '0') isSimulated = true;
+      } else {
+          balanceRaw = position.tokenQuantityRaw || Math.floor((position.amount ?? 0) * 1_000_000);
       }
       const sellRawAmount = Math.floor(Number(balanceRaw));
       if (sellRawAmount <= 0) {
@@ -2078,7 +2073,7 @@ function App() {
 
       // Unify Profit Guard for both LIVE and SIM
       if (curPnLPercent >= minTakeProfit && realNetReturnSol <= currentCostBasisSol) {
-         console.log(`⚠️ REJECTED (LIVE): Paper profit drops net return into a loss (${realNetReturnSol} SOL vs ${currentCostBasisSol} SOL).`);
+         console.log(`⚠️ REJECTED (${isSimulated ? 'SIM' : 'LIVE'}): Paper profit drops net return into a loss (${realNetReturnSol} SOL vs ${currentCostBasisSol} SOL).`);
          addNotification(`Profit Guard: Aborted ${symbol} sell. Network slippage overrides return.`);
          pendingTrades.current.delete(tokenAddress);
          setTradingStatus('Idle');
@@ -2088,7 +2083,7 @@ function App() {
       const realNetProfitPct = ((realNetReturnSol - currentCostBasisSol) / currentCostBasisSol) * 100.0;
       console.log(`✅ APPROVED EXECUTION: Realized returns projected at ${realNetProfitPct.toFixed(2)}%`);
 
-      
+      if (!isSimulated) {
           const priorityTip = curPnLPercent >= minTakeProfit ? 2000000 : 1000000;
           if (sessionWallet) {
              const tx = await createJupiterSwapTransaction(sessionWallet.publicKey.toBase58(), quote, priorityTip);
@@ -2103,18 +2098,26 @@ function App() {
                 await pollSignatureStatus(connection, signature);
              }
           }
-      
+      } else {
+         // Fast simulation execution (10-50ms) for instant paper trading strategy feedback
+         const simLatency = 10 + Math.random() * 40;
+         await new Promise(resolve => setTimeout(resolve, simLatency));
+         // Simulate 0.1% chance of slippage failure (realistic for illiquid tokens)
+         if (Math.random() < 0.001) {
+           throw new Error("SIM: Slippage exceeded — transaction rejected by AMM");
+         }
+      }
 
       // Standardize uniform exact final calculation mappings
       const realizedPnL = realNetProfitPct;
       const totalReturned = realNetReturnSol;
 
-      addNotification(`EXIT COMPLETED: ${symbol} (Realized PnL: ${realizedPnL >= 0 ? '+' : ''}${realizedPnL.toFixed(2)}%) `);
+      addNotification(`EXIT COMPLETED: ${symbol} (Realized PnL: ${realizedPnL >= 0 ? '+' : ''}${realizedPnL.toFixed(2)}%) ${!isSimulated ? '(LIVE)' : '(SIMULATED)'}`);
       
       const portLink = `${window.location.origin}${window.location.pathname}?sell=${tokenAddress}&auto=true`;
       const pnlEmoji = realizedPnL >= 0 ? '🟢' : '🔴';
       sendTelegramAlert(
-        `${pnlEmoji} <b>EXIT EXECUTED</b>\n\n` +
+        `${pnlEmoji} <b>${!isSimulated ? 'LIVE' : 'SIM'} EXIT EXECUTED</b>\n\n` +
         `Token: <b>$${symbol}</b>\n` +
         `PnL: <b>${realizedPnL >= 0 ? '+' : ''}${realizedPnL.toFixed(2)}%</b>\n` +
         `Realized: <b>${totalReturned.toFixed(4)} SOL</b>\n\n` +
@@ -2135,7 +2138,9 @@ function App() {
       };
       
       setMySniperTrades(prev => [newTrade, ...prev]);
-      
+      if (isSimulated) {
+        // Simulation balance update removed for real trading
+      }
 
       setActivePositions(prev => {
         const next = { ...prev };
@@ -2188,7 +2193,7 @@ function App() {
     // Set optimistic position to prevent concurrent duplicate buys
     optimisticPositions.current.add(tokenAddress);
     
-    if (false && getTradingBalance() < buyAmountSol) {
+    if (!isLiveTrading && getTradingBalance() < buyAmountSol) {
       console.log("Auto-Sniper: Insufficient simulation balance");
       return;
     }
@@ -2212,7 +2217,7 @@ function App() {
     try {
       let signature = 'SIM_BN_' + Math.random().toString(36).substring(7);
 
-      
+      let isSimulated = !isLiveTrading;
       const lamports = Math.floor(actualBuyAmountSol * 1_000_000_000);
       const liquidityUsd = tokenMetrics[tokenAddress]?.liquidity || 0;
       
@@ -2225,7 +2230,7 @@ function App() {
       if (!quote) throw new Error("Token not yet listed, indexed, or no routes available on Jupiter (MARKET_NOT_FOUND / NO_ROUTES_FOUND).");
       let outTokensRaw = quote.outAmount;
 
-      if (true) {
+      if (isLiveTrading) {
         if (!activeAddress) {
           throw new Error("No wallet connected for Live Trading");
         }
@@ -2234,7 +2239,7 @@ function App() {
                 
         if (solBalance < lamports) {
           addNotification("⚠️ Insufficient real SOL balance. Falling back to Simulation mode.");
-          
+          isSimulated = true;
         } else {
             const priorityTipLamports = 2000000;
             if (sessionWallet) {
@@ -2255,7 +2260,17 @@ function App() {
         }
       }
 
-      
+      if (isSimulated) {
+        const simLatency = 150 + Math.random() * 1200;
+        await new Promise(resolve => setTimeout(resolve, simLatency));
+        if (Math.random() < 0.002) {
+          throw new Error("SIM: Transaction not included — try increasing Jito tip");
+        }
+        if (getTradingBalance() < actualBuyAmountSol) {
+          throw new Error("SIM: Insufficient simulation balance — top up via Settings.");
+        }
+        // Simulation balance update removed for real trading
+      }
       
       // Force fresh price for accuracy
       const security = await fetchTokenSecurityData(tokenAddress);
@@ -2300,7 +2315,7 @@ function App() {
             entryPriceSol: newEntryPriceSol,
             tpPct: existing?.tpPct ?? minTakeProfit,
             slPct: existing?.slPct ?? stopLoss,
-            entryFeesSol: (existing ? (existing.entryFeesSol || 0) + 0.003 : 0.003), // Tip + Tx
+            entryFeesSol: isLiveTrading ? (existing ? (existing.entryFeesSol || 0) + 0.003 : 0.003) : 0, // Tip + Tx
             soldPartial: false,
             isScalp: true
           }
@@ -2318,11 +2333,11 @@ function App() {
       };
       setMySniperTrades(prev => [newTrade, ...prev]);
       
-      addNotification(`SNIPED: ${symbol} for ${actualBuyAmountSol.toFixed(4)} SOL `, symbol, tokenAddress);
+      addNotification(`SNIPED: ${symbol} for ${actualBuyAmountSol.toFixed(4)} SOL ${!isSimulated ? '(LIVE)' : '(SIMULATED)'}`, symbol, tokenAddress);
       
       const sellLink = `${window.location.origin}${window.location.pathname}?sell=${tokenAddress}&auto=true`;
       sendTelegramAlert(
-        `🎯 <b>SNIPE EXECUTED</b>\n\n` +
+        `🎯 <b>${!isSimulated ? 'LIVE' : 'SIM'} SNIPE EXECUTED</b>\n\n` +
         `Token: <b>$${symbol}</b>\n` +
         `Amount: <b>${buyAmountSol} SOL</b>\n` +
         `Status: <b>SUCCESS ✅</b>\n` +
@@ -3170,6 +3185,7 @@ function App() {
 
               // Keep simulation prices anchored to real on-chain prices when available
               if (security.priceNative && security.priceNative > 0) {
+                updateSimPrice(trade.tokenAddress, security.priceNative);
               }
               
               setTokenMetrics(m => {
@@ -3392,16 +3408,13 @@ function App() {
   }, [user]);
 
   // Firestore Loading & Saving for App.tsx States
-  const [settingsHydrationStatus, setSettingsHydrationStatus] = useState<'idle'|'loading'|'hydrated'>('idle');
+  const isFirestoreLoading = useRef(false);
   useEffect(() => {
-    if (!authLoaded) return;
-    if (!user) {
-      setSettingsHydrationStatus('hydrated');
-      return;
-    }
+    if (!user) return;
+
     const loadSettings = async () => {
       try {
-        setSettingsHydrationStatus('loading');
+        isFirestoreLoading.current = true;
         const docRef = doc(db, 'settings', user.uid);
         const docSnap = await getDoc(docRef);
         if (docSnap.exists()) {
@@ -3413,7 +3426,6 @@ function App() {
           if (data.stopLoss !== undefined) setStopLoss(Number(data.stopLoss));
           if (data.bondingCurveStopLoss !== undefined) setBondingCurveStopLoss(Number(data.bondingCurveStopLoss));
           if (data.pumpSwapStopLoss !== undefined) setPumpSwapStopLoss(Number(data.pumpSwapStopLoss));
-          if (data.pumpSwapTakeProfit !== undefined) setPumpSwapTakeProfit(Number(data.pumpSwapTakeProfit));
           if (data.unknownStopLoss !== undefined) setUnknownStopLoss(Number(data.unknownStopLoss));
           if (data.maxPositions !== undefined) setMaxPositions(Number(data.maxPositions));
           if (data.telegramBotToken !== undefined) setTelegramBotToken(String(data.telegramBotToken));
@@ -3455,7 +3467,7 @@ function App() {
           if (data.hardenedMinProfit5m !== undefined) setHardenedMinProfit5m(Number(data.hardenedMinProfit5m));
           if (data.maxRebuyTimes !== undefined) {
             const val = Number(data.maxRebuyTimes);
-            setMaxRebuyTimes(val);
+            setMaxRebuyTimes(val === 2 ? 3 : val);
           }
           if (data.rpcUrl !== undefined) setRpcUrl(String(data.rpcUrl));
           if (data.rpcUrl2 !== undefined) setRpcUrl2(String(data.rpcUrl2));
@@ -3466,15 +3478,15 @@ function App() {
       } catch (err) {
         console.error('Error loading settings from Firestore in App.tsx:', err);
       } finally {
-        setSettingsHydrationStatus('hydrated');
+        isFirestoreLoading.current = false;
       }
     };
 
     loadSettings();
-  }, [user, authLoaded]);
+  }, [user]);
 
   useEffect(() => {
-    if (settingsHydrationStatus !== 'hydrated') return;
+    if (isFirestoreLoading.current) return;
 
     const payload = {
       buyAmountSol,
@@ -3484,7 +3496,6 @@ function App() {
       stopLoss,
       bondingCurveStopLoss,
       pumpSwapStopLoss,
-      pumpSwapTakeProfit,
       unknownStopLoss,
       maxPositions,
       telegramBotToken,
@@ -3536,7 +3547,7 @@ function App() {
     // Immediately sync to Render and Firebase database
     syncManager.triggerSync(payload, user?.uid, false);
   }, [
-    user, buyAmountSol, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, pumpSwapTakeProfit, unknownStopLoss, maxPositions,
+    user, buyAmountSol, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, unknownStopLoss, maxPositions,
     telegramBotToken, telegramChatId, hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax,
     hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore, hardenedMaxDevOwnership,
     hardenedMaxTop10, hardenedMinUniqueBuyers30s, hardenedMinBuyCount30s, hardenedMaxBuyCount30s,
@@ -6092,7 +6103,7 @@ function App() {
           bondingCurveTakeProfit, setBondingCurveTakeProfit,
           stopLoss, setStopLoss,
           bondingCurveStopLoss, setBondingCurveStopLoss,
-          pumpSwapStopLoss, setPumpSwapStopLoss, pumpSwapTakeProfit, setPumpSwapTakeProfit,
+          pumpSwapStopLoss, setPumpSwapStopLoss,
           unknownStopLoss, setUnknownStopLoss,
           maxPositions, setMaxPositions,
           slippage, setSlippage,

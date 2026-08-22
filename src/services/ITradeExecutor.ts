@@ -16,7 +16,7 @@ export interface SwapResult {
 }
 
 export interface ITradeExecutor {
-  readonly mode: 'devnet' | 'mainnet';
+  readonly mode: 'real' | 'paper' | 'devnet' | 'mainnet';
   readonly publicKey: string;
 
   getQuote(params: QuoteGetRequest): Promise<QuoteResponse>;
@@ -32,7 +32,6 @@ export interface ITradeExecutor {
   getSolBalance(): Promise<number>;
   getTokenBalance(mint: string): Promise<number>;
   hasTokenAccount(mint: string): Promise<boolean>;
-  getConfirmedSolDelta(signature: string): Promise<number | null>;
 
   batchSwap(
     swaps: Array<{

@@ -11,7 +11,8 @@ import { useAppStore } from '../../store/appStore';
 import { TokenScanner, ScannedToken } from '../../services/tokenScanner';
 import { DEFAULT_CRITERIA } from '../../config/tokenCriteria';
 import { getTradeCount } from '../../config/rebuyGuard';
-import { getJupiterQuote, executeTxWithRPCFallback, getTokenBalanceRaw, getLatestBlockhashWithFallback, pingJupiterApi } from '../../services/jupiterService';
+import { useSimulationStore } from '../../store/simulationStore';
+import { getJupiterQuote, executeTxWithRPCFallback, getTokenBalanceRaw, getLatestBlockhashWithFallback, clearSimPriceCache, resetSimPrice, pingJupiterApi } from '../../services/jupiterService';
 import { db } from '../../lib/firebase';
 import { detectTokenStage } from '../../lib/utils';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
@@ -25,6 +26,7 @@ import { marketDataManager } from '../../services/marketDataManager';
 import { rpcHealthManager } from '../../services/rpcHealthManager';
 import { PositionExitManager } from '../../services/PositionExitManager';
 import { MasterMonitorService } from '../../services/MasterMonitorService';
+import { getSimExecutor, syncSimBalanceToStore } from '../../services/SimExecutorSingleton';
 import { RealTradeExecutor } from '../../services/RealTradeExecutor';
 import { useTradeMode } from '../../context/TradeModeContext';
 import { ITradeExecutor } from '../../services/ITradeExecutor';
@@ -880,8 +882,6 @@ export const PnLPage = ({
     bondingCurveStopLoss?: number;
     setBondingCurveStopLoss?: (v: number) => void;
     pumpSwapStopLoss?: number;
-    pumpSwapTakeProfit?: number;
-    setPumpSwapTakeProfit?: (val: number) => void;
     setPumpSwapStopLoss?: (v: number) => void;
     unknownStopLoss?: number;
     setUnknownStopLoss?: (v: number) => void;
@@ -994,7 +994,6 @@ export const PnLPage = ({
     stopLoss, setStopLoss,
     bondingCurveStopLoss = -15, setBondingCurveStopLoss = () => {},
     pumpSwapStopLoss = -15, setPumpSwapStopLoss = () => {},
-    pumpSwapTakeProfit = 25, setPumpSwapTakeProfit = () => {},
     unknownStopLoss = -20, setUnknownStopLoss = () => {},
     maxPositions, setMaxPositions,
     slippage, setSlippage,
@@ -1088,6 +1087,12 @@ export const PnLPage = ({
   const latestPricesRef = useRef<Record<string, number>>({});
 
   // ── Simulation Store & Background Scan Refs ──
+  const simPositions = useSimulationStore(state => state.positions);
+  const openSimPosition = useSimulationStore(state => state.openPosition);
+  const updateSimPrice = useSimulationStore(state => state.updatePrice);
+  const closeSimPosition = useSimulationStore(state => state.closePosition);
+  const markSimSignaled = useSimulationStore(state => state.markSignaled);
+  const hasSimPosition = useSimulationStore(state => state.hasPosition);
 
   const scannerRef = useRef<TokenScanner | null>(null);
   const monitoredTokensRef = useRef<Map<string, ScannedToken>>(new Map());
@@ -1095,7 +1100,6 @@ export const PnLPage = ({
   const stopLossPct = Math.abs(stopLoss);
   const bondingCurveStopLossPct = Math.abs(bondingCurveStopLoss);
   const pumpSwapStopLossPct = Math.abs(pumpSwapStopLoss);
-  const pumpSwapTakeProfitPct = Math.abs(pumpSwapTakeProfit);
   const unknownStopLossPct = Math.abs(unknownStopLoss);
   
   // Helius Sender (Ultra-Low Latency Broadcast) Configurations
@@ -1286,12 +1290,6 @@ export const PnLPage = ({
     try {
       const saved = localStorage.getItem('juipter_auto_stats');
       const parsed = saved ? JSON.parse(saved) : null;
-      
-      // Auto-fix for previous lamport scaling bug that corrupted stats
-      if (parsed && (parsed.pnl > 1000000 || (parsed.bestTrade && parsed.bestTrade > 10000))) {
-        return { trades: 0, wins: 0, losses: 0, pnl: 0, bestTrade: null };
-      }
-
       return {
         trades: parsed?.trades ?? 0,
         wins: parsed?.wins ?? 0,
@@ -1302,7 +1300,9 @@ export const PnLPage = ({
     } catch { return { trades: 0, wins: 0, losses: 0, pnl: 0, bestTrade: null as number | null }; }
   });
   const { solBalance, availableSolBalance } = useBalanceStore();
-      const realSolBalance = solBalance;
+  const simWalletBalance = solBalance;
+  const setSimWalletBalance = (bal: number) => { /* no-op in real mode */ };
+  const realSolBalance = solBalance;
   const [retentionLimit, setRetentionLimit] = useState<number>(() => {
     try {
       const saved = localStorage.getItem('juipter_auto_retentionLimit');
@@ -1553,8 +1553,8 @@ export const PnLPage = ({
     criteriaPass: 0,
     buyCandidates: 0,
     buyAttempts: 0,
-    buySuccess: 0,
-    buyFailed: 0
+    simBuySuccess: 0,
+    simBuyFailed: 0
   });
 
   const [logs, setLogs] = useState<LogEvent[]>(() => {
@@ -1608,7 +1608,10 @@ export const PnLPage = ({
             let pnl = t.pnlPct !== undefined && t.pnlPct !== null ? Number(t.pnlPct) : 0;
 
             // Sanitize corrupt historical trade where sell SOL stored raw token count
-            
+            if (buySol > 0 && sellSol > buySol * 50 && pnl > 5000) {
+              pnl = Math.min(pnl, 100);
+              sellSol = buySol * (1 + (pnl / 100));
+            }
 
             return {
               id: t.id || Math.random().toString(),
@@ -1673,7 +1676,7 @@ export const PnLPage = ({
   }, [blacklistedMints]);
 
   const configRef = useRef({
-    takeProfitPct, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, pumpSwapTakeProfitPct, unknownStopLossPct, slippage, privateKey, tradeAmount, maxPositions,
+    takeProfitPct, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct, slippage, privateKey, tradeAmount, maxPositions,
     hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax,
     hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore,
     hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s,
@@ -1685,7 +1688,7 @@ export const PnLPage = ({
   });
 
   configRef.current = {
-    takeProfitPct, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, pumpSwapTakeProfitPct, unknownStopLossPct, slippage, privateKey, tradeAmount, maxPositions,
+    takeProfitPct, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct, slippage, privateKey, tradeAmount, maxPositions,
     hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax,
     hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore,
     hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s,
@@ -1749,7 +1752,6 @@ export const PnLPage = ({
     return () => { active = false; };
   }, [privateKey, user?.uid]);
 
-  const [settingsHydrationStatus, setSettingsHydrationStatus] = useState<'idle' | 'loading' | 'hydrated'>('idle');
   const isFirestoreLoading = useRef(false);
   const lastLoadedSettingsRef = useRef<{
     rpcUrl?: string;
@@ -1772,7 +1774,8 @@ export const PnLPage = ({
     ftpDir?: string;
     ftpWebUrl?: string;
     ftpSecure?: boolean;
-        blacklistedMints?: string;
+    simWalletBalance?: number;
+    blacklistedMints?: string;
     positions?: string;
     tokenMetrics?: string;
     stats?: string;
@@ -1784,7 +1787,7 @@ export const PnLPage = ({
     
     const loadSettings = async () => {
       try {
-        setSettingsHydrationStatus('loading');
+        isFirestoreLoading.current = true;
         const docRef = doc(db, 'settings', user.uid);
         const docSnap = await getDoc(docRef);
         if (docSnap.exists()) {
@@ -1818,6 +1821,18 @@ export const PnLPage = ({
           if (data.ftpDir !== undefined) setFtpDir(String(data.ftpDir));
           if (data.ftpWebUrl !== undefined) setFtpWebUrl(String(data.ftpWebUrl));
           if (data.ftpSecure !== undefined) setFtpSecure(data.ftpSecure === true);
+          if (data.simWalletBalance !== undefined) {
+            const fsBal = Number(data.simWalletBalance);
+            if (!isNaN(fsBal) && fsBal > 0) {
+              const localSaved = localStorage.getItem('app_authoritative_paper_balance_v1') || localStorage.getItem('app_simulationBalance_v4');
+              const localNum = localSaved ? Number(localSaved) : NaN;
+              if (!isNaN(localNum) && localNum > 0 && fsBal === 10.0 && localNum !== 10.0) {
+                // Preserve local updated balance if Firestore returned default 10
+              } else {
+                
+              }
+            }
+          }
           
           if (data.blacklistedMints !== undefined) {
             try {
@@ -1899,7 +1914,8 @@ export const PnLPage = ({
             ftpDir: data.ftpDir !== undefined ? data.ftpDir : ftpDir,
             ftpWebUrl: data.ftpWebUrl !== undefined ? data.ftpWebUrl : ftpWebUrl,
             ftpSecure: data.ftpSecure !== undefined ? data.ftpSecure : ftpSecure,
-                        blacklistedMints: data.blacklistedMints || JSON.stringify(blacklistedMints),
+            simWalletBalance: data.simWalletBalance !== undefined ? data.simWalletBalance : simWalletBalance,
+            blacklistedMints: data.blacklistedMints || JSON.stringify(blacklistedMints),
             positions: data.positions || JSON.stringify(positions),
             stats: data.stats || JSON.stringify(stats),
             tradeHistory: data.tradeHistory || JSON.stringify(tradeHistory)
@@ -1919,7 +1935,8 @@ export const PnLPage = ({
             laserstreamEnabled, laserstreamApiKey, laserstreamEndpoint,
             dexScreenerEnabled, forceUsdcRouting,
             ftpHost, ftpUser, ftpPass, ftpDir, ftpWebUrl, ftpSecure,
-                        blacklistedMints: JSON.stringify(blacklistedMints),
+            simWalletBalance,
+            blacklistedMints: JSON.stringify(blacklistedMints),
             positions: JSON.stringify(positions),
             stats: JSON.stringify(stats),
             tradeHistory: JSON.stringify(tradeHistory)
@@ -1928,7 +1945,7 @@ export const PnLPage = ({
         } catch (err) {
         console.error('Error loading settings from Firestore:', err);
       } finally {
-        setSettingsHydrationStatus('hydrated');
+        isFirestoreLoading.current = false;
       }
     };
     
@@ -1960,14 +1977,15 @@ export const PnLPage = ({
         last.ftpDir === ftpDir &&
         last.ftpWebUrl === ftpWebUrl &&
         last.ftpSecure === ftpSecure &&
-                last.blacklistedMints === JSON.stringify(blacklistedMints) &&
+        last.simWalletBalance === simWalletBalance &&
+        last.blacklistedMints === JSON.stringify(blacklistedMints) &&
         last.positions === JSON.stringify(positions) &&
         last.stats === JSON.stringify(stats) &&
         last.tradeHistory === JSON.stringify(tradeHistory)) {
       return; // No actual change, skip saving
     }
 
-    if (settingsHydrationStatus !== 'hydrated') {
+    if (isFirestoreLoading.current) {
       return;
     }
     
@@ -1997,7 +2015,8 @@ export const PnLPage = ({
           ftpDir,
           ftpWebUrl,
           ftpSecure,
-                    blacklistedMints: JSON.stringify(blacklistedMints),
+          simWalletBalance,
+          blacklistedMints: JSON.stringify(blacklistedMints),
           positions: JSON.stringify(positions),
           stats: JSON.stringify(stats),
           tradeHistory: JSON.stringify(tradeHistory),
@@ -2010,7 +2029,8 @@ export const PnLPage = ({
           laserstreamEnabled, laserstreamApiKey, laserstreamEndpoint,
           dexScreenerEnabled, forceUsdcRouting,
           ftpHost, ftpUser, ftpPass, ftpDir, ftpWebUrl, ftpSecure,
-                    blacklistedMints: JSON.stringify(blacklistedMints),
+          simWalletBalance,
+          blacklistedMints: JSON.stringify(blacklistedMints),
           positions: JSON.stringify(positions),
           stats: JSON.stringify(stats),
           tradeHistory: JSON.stringify(tradeHistory)
@@ -2036,7 +2056,7 @@ export const PnLPage = ({
     laserstreamEnabled, laserstreamApiKey, laserstreamEndpoint,
     dexScreenerEnabled, forceUsdcRouting,
     ftpHost, ftpUser, ftpPass, ftpDir, ftpWebUrl, ftpSecure,
-    blacklistedMints, positions, stats, tradeHistory
+    simWalletBalance, blacklistedMints, positions, stats, tradeHistory
   ]);
   useEffect(() => {
     localStorage.setItem('juipter_auto_isRunning', isRunning.toString());
@@ -3456,6 +3476,7 @@ const checkTokenCriteria = (mint: string): {
         if (freshPrice && freshPrice > 0) {
           parsedPrice = freshPrice;
           price = freshPrice;
+          resetSimPrice(mint, freshPrice);
           addLog(`🔄 [REBUY RATE REFRESHED] Rebuy token ${symbol} exchange rate successfully updated to ${freshPrice.toFixed(8)} SOL`, 'info');
           if (tokenMetricsRef.current[mint]) {
             tokenMetricsRef.current[mint].priceNative = freshPrice;
@@ -3477,6 +3498,7 @@ const checkTokenCriteria = (mint: string): {
               const freshPriceFromQuote = solAmount / normalizedOut;
               parsedPrice = freshPriceFromQuote;
               price = freshPriceFromQuote;
+              resetSimPrice(mint, freshPriceFromQuote);
               addLog(`🔄 [REBUY RATE REFRESHED] Rebuy token ${symbol} exchange rate calculated from fresh exchange quote: ${freshPriceFromQuote.toFixed(8)} SOL`, 'info');
               if (tokenMetricsRef.current[mint]) {
                 tokenMetricsRef.current[mint].priceNative = freshPriceFromQuote;
@@ -3620,7 +3642,12 @@ const checkTokenCriteria = (mint: string): {
       }
     } catch (e: any) {
       addLog(`Buy error for ${symbol}: ${e.message}`, 'err');
-      walletBalanceService.refreshNow();
+      if (!privateKey) {
+        pipelineCountersRef.current.simBuyFailed++;
+        syncSimBalanceToStore();
+      } else {
+        walletBalanceService.refreshNow();
+      }
       if (e.message.includes('Route not found') || e.message.includes('NO_ROUTES_FOUND') || e.message.includes('Not Found') || e.message.includes('No route') || e.message.includes('TOKEN_NOT_TRADABLE')) {
         addLog(`❌ [BLACKLIST] ${symbol} added to blacklist due to unroutable liquidity/dead token.`, 'warn');
         if (!blacklistedMintsRef.current.includes(mint)) {
@@ -3692,6 +3719,7 @@ const checkTokenCriteria = (mint: string): {
       riskScore: 5
     };
 
+    openSimPosition(scannedTokenData, tradeSol);
     monitoredTokensRef.current.set(mint, scannedTokenData);
 
     // Execute direct buy into PnL active positions
@@ -3753,46 +3781,9 @@ const checkTokenCriteria = (mint: string): {
           isMainSold = true;
         } else {
           addLog(`Ordering ${pos.symbol} → SOL...`, 'sell');
-          
-          let preSol = 0;
-          try {
-             if (useActiveWalletStore.getState().activeWallet) {
-                const conn = new Connection(rpcUrl, { commitment: 'confirmed' });
-                preSol = await conn.getBalance(useActiveWalletStore.getState().activeWallet.keypair.publicKey) / 1e9;
-             }
-          } catch (e) {}
-          
           const result = await executeJupiterSwap(mint, SOL_MINT, lamportsToSell);
           if (result.txid) {
-            let actualSolReceived: number | null = null;
-
-            // 1. Check executor confirmed SOL delta (from confirmed transaction metadata)
-            const executor = tradeManager.getExecutor();
-            if (executor && typeof executor.getConfirmedSolDelta === 'function') {
-              actualSolReceived = await executor.getConfirmedSolDelta(result.txid).catch(() => null);
-            }
-
-            // 2. Fallback to pre/post balance difference
-            if (actualSolReceived === null) {
-              try {
-                if (useActiveWalletStore.getState().activeWallet) {
-                  const conn = new Connection(rpcUrl, { commitment: 'confirmed' });
-                  const postSol = await conn.getBalance(useActiveWalletStore.getState().activeWallet.keypair.publicKey) / 1e9;
-                  const delta = postSol - preSol;
-                  if (delta > 0) actualSolReceived = delta;
-                }
-              } catch (e) {}
-            }
-
-            // 3. For emergency exit, never fake PnL if confirmed delta cannot be established
-            if (actualSolReceived === null) {
-              if (reason && reason.toUpperCase().includes('EMERGENCY')) {
-                addLog(`⚠️ [EMERGENCY EXIT] Transaction ${result.txid.slice(0, 10)}... confirmed on-chain, but verified SOL delta is pending indexer confirmation. Position kept open for safety.`, 'warn');
-                return;
-              }
-              actualSolReceived = (result.outputAmount || 0) / 1e9;
-            }
-
+            const actualSolReceived = result.outputAmount || 0;
             const costBasisSol = pos.solSpent || 0;
             const actualPnlSOL = costBasisSol > 0 ? actualSolReceived - costBasisSol : 0;
             const actualPnlPct = costBasisSol > 0 ? actualPnlSOL / costBasisSol : 0;
@@ -3881,8 +3872,11 @@ const checkTokenCriteria = (mint: string): {
       return;
     }
 
+    const tradeModeFromStorage = (typeof localStorage !== 'undefined' ? localStorage.getItem('trade_mode') : null) || (typeof localStorage !== 'undefined' && localStorage.getItem('is_live_trading') === 'true' ? 'real' : 'paper');
+    const isRealMode = tradeModeFromStorage === 'real' && !!useActiveWalletStore.getState().activeWallet?.keypair;
     const currentJup = jupiterRpcUrl || 'https://api.jup.ag/swap/v1';
-    const executor = tradeManager.getExecutor();
+
+    let executor: ITradeExecutor = isRealMode ? new RealTradeExecutor({ network: (tradingNetwork as any) || 'devnet' }) : getSimExecutor(simWalletBalance || 1.0, currentJup);
 
     const exitMgr = new PositionExitManager(
       executor,
@@ -3916,8 +3910,13 @@ const checkTokenCriteria = (mint: string): {
         // recalculate pnlPct purely based on actual real return
         pnlPct = costBasisSol > 0 ? (actualPnlSOL / costBasisSol) * 100 : pnlPct;
 
-        // Refresh wallet balance
-        walletBalanceService.refreshNow();
+        // Sync returned SOL to simulation wallet balance (already authoritatively credited by executor.swap)
+        const isRealModeActive = (useAppStore.getState().isLiveTrading || localStorage.getItem('juipter_auto_tradeMode') === 'real') && Boolean(privateKey) && Boolean(user);
+        if (!isRealModeActive) {
+          syncSimBalanceToStore((b) => setSimWalletBalance(b));
+        } else {
+          walletBalanceService.refreshNow();
+        }
 
         setStats((s) => ({
           ...s,
@@ -4148,7 +4147,7 @@ const checkTokenCriteria = (mint: string): {
     
     try {
       const {
-        maxPositions, tradeAmount, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, pumpSwapTakeProfitPct, unknownStopLossPct,
+        maxPositions, tradeAmount, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct,
         hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax,
         hardenedLiquidityMin, hardenedMaxRiskScore, hardenedMinProfit5m
       } = configRef.current;
@@ -4171,7 +4170,7 @@ const checkTokenCriteria = (mint: string): {
          } else {
             const counters = pipelineCountersRef.current;
             addLog(`📡 [SCANNER HEARTBEAT] Monitoring ${Object.keys(tokenMetricsRef.current).length} active tokens | Positions: ${activeMints.length}/${maxPositions} | Required Match: ${matchRate}%
-  ↳ PIPELINE METRICS: Discovered: ${counters.discovered} | Solana: ${counters.solana} | Valid Metrics: ${counters.validMetrics} | Criteria Pass: ${counters.criteriaPass} | Buy Candidates: ${counters.buyCandidates} | Buy Attempts: ${counters.buyAttempts} | Buy Success: ${counters.buySuccess} | Buy Failed: ${counters.buyFailed}`, 'info');
+  ↳ PIPELINE METRICS: Discovered: ${counters.discovered} | Solana: ${counters.solana} | Valid Metrics: ${counters.validMetrics} | Criteria Pass: ${counters.criteriaPass} | Buy Candidates: ${counters.buyCandidates} | Buy Attempts: ${counters.buyAttempts} | Sim Success: ${counters.simBuySuccess} | Sim Failed: ${counters.simBuyFailed}`, 'info');
          }
       }
 
@@ -4447,6 +4446,7 @@ const checkTokenCriteria = (mint: string): {
                 isRugSafe: true,
                 riskScore: 5
               };
+              openSimPosition(scannedTokenData, configRef.current.tradeAmount || tradeAmount || 0.1);
               monitoredTokensRef.current.set(mint, scannedTokenData);
               addLog(`📌 [MONITORING ADDED] Graduated token ${item.symbol} added to PnLPage active positions first for active monitoring.`, 'info');
             } else {
@@ -4805,7 +4805,8 @@ const checkTokenCriteria = (mint: string): {
         tokenMetrics: JSON.stringify({}),
         tradeHistory: JSON.stringify([]),
         stats: JSON.stringify({ trades: 0, wins: 0, losses: 0, pnl: 0, bestTrade: null }),
-              };
+        simWalletBalance: 10.0,
+      };
     }
     
     // Clear global store state without reloading
@@ -4819,6 +4820,8 @@ const checkTokenCriteria = (mint: string): {
     store.setTelemetryBits([false, false, false, false, false, false]);
     
     // Clear simulation store and scanner monitored tokens
+    useSimulationStore.getState().clearPositions();
+    useSimulationStore.setState({ positions: {}, closedPositions: [] });
     monitoredTokensRef.current.clear();
     signaledPositions.current.clear();
     pendingBuyMintsRef.current.clear();
@@ -4827,7 +4830,8 @@ const checkTokenCriteria = (mint: string): {
     
     // Completely clear all cache and reset balances to exactly 10.0 SOL
     localStorage.setItem('app_simulationBalance_v4', '10.0');
-        localStorage.setItem('app_mySniperTrades', JSON.stringify([]));
+    localStorage.setItem('juipter_auto_simWalletBalance', '10.0');
+    localStorage.setItem('app_mySniperTrades', JSON.stringify([]));
     localStorage.setItem('juipter_auto_isRunning', 'false'); // Stopped on reset
     localStorage.setItem('app_activePositions', JSON.stringify({}));
     
@@ -4856,13 +4860,15 @@ const checkTokenCriteria = (mint: string): {
     localStorage.setItem('app_activePositions', JSON.stringify({}));
     localStorage.setItem('juipter_auto_positions', JSON.stringify({}));
 
+    clearSimPriceCache();
     clearPriceHistories();
 
     if (user) {
       try {
         const docRef = doc(db, 'settings', user.uid);
         await setDoc(docRef, {
-                    blacklistedMints: JSON.stringify([]),
+          simWalletBalance: 10.0,
+          blacklistedMints: JSON.stringify([]),
           positions: JSON.stringify({}),
           tokenMetrics: JSON.stringify({}),
           stats: JSON.stringify({ trades: 0, wins: 0, losses: 0, pnl: 0, bestTrade: null }),
@@ -6238,7 +6244,25 @@ const checkTokenCriteria = (mint: string): {
               <button onClick={resetSession} className="text-[10px] text-[#64748b] hover:text-white uppercase font-bold tracking-wider">Reset</button>
             </div>
             <div className="p-4 space-y-0 text-[12px]">
-
+              <div className="flex flex-col gap-1 p-4 bg-amber-500/5 rounded-xl border border-amber-500/20 mb-4">
+                <div className="flex justify-between items-center">
+                  <span className="text-[#94a3b8] text-[10px] font-bold uppercase tracking-widest flex items-center gap-2">
+                     <ShieldCheck className="w-3 h-3 text-amber-500" /> SIM WALLET BALANCE
+                  </span>
+                  <span className="bg-amber-500/10 text-amber-500 text-[9px] px-1.5 py-0.5 rounded font-black tracking-tighter">
+                    ACTIVE
+                  </span>
+                </div>
+                <div className="flex items-baseline justify-between mt-1">
+                  <span className="text-3xl font-black text-amber-400 font-mono tracking-tighter leading-none">
+                    {(simWalletBalance || 0).toFixed(4)}
+                  </span>
+                  <span className="text-amber-500/60 font-bold text-xs ml-1">SOL</span>
+                </div>
+                <p className="text-[10px] text-slate-500 mt-2 font-medium leading-relaxed italic">
+                  Simulation mode active. Live feedback during trades.
+                </p>
+              </div>
               <div className="flex justify-between items-center py-2.5 border-b border-[#1f212e]">
                 <span className="text-[#64748b] uppercase font-medium">Total Trades</span>
                 <span className="font-mono font-semibold text-[#e2e8f0] text-[14px]">{stats.trades}</span>
@@ -7041,9 +7065,12 @@ const checkTokenCriteria = (mint: string): {
                 {tradeHistory.map(trade => {
                   const buySol = trade.buyAmountSol || 0;
                   let sellSol = trade.sellAmountSol || 0;
-                  let pnl = (trade.buyAmountSol && trade.buyAmountSol > 0) ? (((trade.sellAmountSol || 0) - trade.buyAmountSol) / trade.buyAmountSol) * 100 : (trade.pnlPct || 0);
+                  let pnl = trade.pnlPct || 0;
 
-                  
+                  if (buySol > 0 && sellSol > buySol * 50 && pnl > 5000) {
+                    pnl = Math.min(pnl, 100);
+                    sellSol = buySol * (1 + (pnl / 100));
+                  }
 
                   const profitSol = sellSol - buySol;
                   const buyTime = trade.buyTime || Date.now();

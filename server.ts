@@ -22,7 +22,6 @@ import ftpRouter from "./server/routes/ftp.js";
 import telegramRouter from "./server/routes/telegram.js";
 import laserstreamRouter from "./server/routes/laserstream.js";
 import criteriaRouter from "./server/routes/criteria.js";
-import devnetRouter from "./server/routes/devnet.js";
 
 // Process level crash guard
 process.on("uncaughtException", (err: any) => {
@@ -79,7 +78,6 @@ async function startServer() {
   app.use("/api/laserstream", laserstreamRouter);
   app.use("/api/criteria", criteriaRouter);
   app.use("/api/config", criteriaRouter);
-  app.use("/api/devnet", devnetRouter);
 
   // API Catch-all 404 Handler
   app.all("/api/*", (req, res) => {
