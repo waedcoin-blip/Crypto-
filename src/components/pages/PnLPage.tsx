@@ -5957,14 +5957,30 @@ const checkTokenCriteria = (mint: string): {
                 <div className="bg-[#050509]/60 border border-[#2d2e3d] rounded-xl p-4 space-y-3.5 animate-fadeIn">
                   <div className="flex items-center justify-between flex-wrap gap-2">
                     <div>
-                      <div className="text-[14px] font-bold text-white flex items-center gap-1.5">
+                      <div className="text-[14px] font-bold text-white flex items-center gap-1.5 flex-wrap">
                         <span className="text-white">{scannedResult.name}</span>
                         <span className="text-[#c7f284] font-mono text-[11px] bg-[#c7f284]/10 px-1.5 py-0.5 rounded leading-none">
                           {scannedResult.symbol}
                         </span>
+                        <button
+                          type="button"
+                          onClick={(e) => handleCopyText(scannedResult.address, `scanned-${scannedResult.address}`, e)}
+                          className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-[#161824] hover:bg-[#222538] active:scale-95 border border-[#2a2d42] hover:border-[#c7f284]/50 text-[10px] font-mono text-[#94a3b8] hover:text-[#e2e8f0] transition-all cursor-pointer select-none"
+                          title={`Click to copy contract address:\n${scannedResult.address}`}
+                        >
+                          <span>{scannedResult.address.slice(0, 4)}...{scannedResult.address.slice(-4)}</span>
+                          {copiedId === `scanned-${scannedResult.address}` ? (
+                            <span className="inline-flex items-center text-emerald-400 font-sans font-bold text-[9px] gap-0.5">
+                              <Check className="w-2.5 h-2.5 text-emerald-400" />
+                              <span>Copied!</span>
+                            </span>
+                          ) : (
+                            <Copy className="w-2.5 h-2.5 text-[#64748b] hover:text-[#c7f284] transition-colors" />
+                          )}
+                        </button>
                       </div>
-                      <div className="text-[10px] text-[#64748b] font-mono select-all select-none hover:text-slate-400 mt-0.5">
-                        Mint: {scannedResult.address}
+                      <div className="text-[10px] text-[#64748b] font-mono mt-0.5 flex items-center gap-1.5">
+                        <span>Mint: {scannedResult.address}</span>
                       </div>
                     </div>
                     <div className="flex gap-1.5">
@@ -6135,57 +6151,60 @@ const checkTokenCriteria = (mint: string): {
                     }
 
                     return (
-                      <div key={mint} className="bg-[#0a0b14] border border-[#1f212e] rounded-xl p-4 grid grid-cols-2 gap-x-2 gap-y-3">
-                        <div className="col-span-2 flex items-center gap-2 mb-1 flex-wrap">
-                          <div className="w-6 h-6 rounded-full bg-indigo-500 shrink-0 flex items-center justify-center text-[10px] font-black text-white">
-                            {(pos.symbol || 'T').slice(0, 1).toUpperCase()}
-                          </div>
-                          <div className="font-bold text-[14px] text-white flex items-center gap-1.5 flex-wrap">
-                            <span>{pos.symbol}</span>
-                            <span className="text-[#64748b] text-[12px] font-normal hidden sm:inline">/ SOL</span>
+                      <div key={mint} className="bg-[#0a0b14] border border-[#1f212e] rounded-xl p-4 flex flex-col gap-3">
+                        {/* Top Header Row */}
+                        <div className="flex items-start justify-between gap-2 flex-wrap border-b border-[#1f212e]/50 pb-2.5">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <div className="w-7 h-7 rounded-full bg-indigo-600 shrink-0 flex items-center justify-center text-[11px] font-black text-white shadow-md">
+                              {(pos.symbol || 'T').slice(0, 1).toUpperCase()}
+                            </div>
+                            <div className="font-bold text-[14px] text-white flex items-center gap-1.5 flex-wrap">
+                              <span className="text-white">{pos.symbol}</span>
+                              <span className="text-[#64748b] text-[12px] font-normal hidden sm:inline">/ SOL</span>
 
-                            {/* Token Address Copy by Press */}
-                            <button
-                              type="button"
-                              onClick={(e) => handleCopyText(mint, `mint-hdr-${mint}`, e)}
-                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#161824] hover:bg-[#222538] active:scale-95 border border-[#2a2d42] hover:border-indigo-500/50 text-[10px] font-mono text-[#94a3b8] hover:text-[#e2e8f0] transition-all cursor-pointer select-none group"
-                              title={`Click to copy address:\n${mint}`}
-                            >
-                              <span>{mint.length > 10 ? `${mint.slice(0, 4)}...${mint.slice(-4)}` : mint}</span>
-                              {copiedId === `mint-hdr-${mint}` || copiedId === `mint-ftr-${mint}` ? (
-                                <span className="inline-flex items-center text-emerald-400 font-sans font-bold text-[9px] gap-0.5">
-                                  <Check className="w-2.5 h-2.5 text-emerald-400" />
-                                  <span>Copied!</span>
+                              {/* Token Address Copy by Press */}
+                              <button
+                                type="button"
+                                onClick={(e) => handleCopyText(mint, `mint-hdr-${mint}`, e)}
+                                className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-[#161824] hover:bg-[#222538] active:scale-95 border border-[#2a2d42] hover:border-[#c7f284]/50 text-[10px] font-mono text-[#94a3b8] hover:text-[#e2e8f0] transition-all cursor-pointer select-none group"
+                                title={`Click to copy address:\n${mint}`}
+                              >
+                                <Copy className="w-2.5 h-2.5 text-[#64748b] group-hover:text-[#c7f284] transition-colors" />
+                                <span>{mint.length > 10 ? `${mint.slice(0, 4)}...${mint.slice(-4)}` : mint}</span>
+                                {copiedId === `mint-hdr-${mint}` || copiedId === `mint-ftr-${mint}` ? (
+                                  <span className="inline-flex items-center text-emerald-400 font-sans font-bold text-[9px] gap-0.5 bg-emerald-500/10 px-1 py-0.2 rounded">
+                                    <Check className="w-2.5 h-2.5 text-emerald-400" />
+                                    <span>Copied!</span>
+                                  </span>
+                                ) : null}
+                              </button>
+                              
+                              {/* Stage badge */}
+                              {stage.isBonding ? (
+                                <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-orange-500/20 text-orange-400 border border-orange-500/30 whitespace-nowrap">
+                                  BONDING {stage.bondingProgress.toFixed(0)}%
                                 </span>
                               ) : (
-                                <Copy className="w-2.5 h-2.5 text-[#64748b] group-hover:text-[#c7f284] transition-colors" />
+                                <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-blue-500/20 text-blue-400 border border-blue-500/30 whitespace-nowrap">
+                                  {stage.platform}
+                                </span>
                               )}
-                            </button>
-                            
-                            {/* Stage badge */}
-                            {stage.isBonding ? (
-                              <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-orange-500/20 text-orange-400 border border-orange-500/30 whitespace-nowrap">
-                                BONDING {stage.bondingProgress.toFixed(0)}%
-                              </span>
-                            ) : (
-                              <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-blue-500/20 text-blue-400 border border-blue-500/30 whitespace-nowrap">
-                                {stage.platform}
-                              </span>
-                            )}
 
-                            {/* Which stop loss is active */}
-                            <span className="text-rose-400 text-[9px] whitespace-nowrap bg-rose-500/10 px-1.5 py-0.5 rounded border border-rose-500/20">
-                              SL: {activeSL}%
-                            </span>
-
-                            {/* Near migration warning */}
-                            {stage.isNearMigration && (
-                              <span className="text-yellow-400 text-[9px] animate-pulse whitespace-nowrap border border-yellow-400/30 bg-yellow-400/10 px-1.5 py-0.5 rounded">
-                                ⚡ MIGRATING SOON
+                              {/* Which stop loss is active */}
+                              <span className="text-rose-400 text-[9px] whitespace-nowrap bg-rose-500/10 px-1.5 py-0.5 rounded border border-rose-500/20">
+                                SL: {activeSL}%
                               </span>
-                            )}
+
+                              {/* Near migration warning */}
+                              {stage.isNearMigration && (
+                                <span className="text-yellow-400 text-[9px] animate-pulse whitespace-nowrap border border-yellow-400/30 bg-yellow-400/10 px-1.5 py-0.5 rounded">
+                                  ⚡ MIGRATING SOON
+                                </span>
+                              )}
+                            </div>
                           </div>
-                          <div className="ml-auto text-right font-mono">
+
+                          <div className="text-right font-mono shrink-0">
                             {isStalePos ? (
                               <div className="flex flex-col items-end">
                                 <span className="text-amber-500 font-bold text-[13px] animate-pulse">MIGRATING...</span>
@@ -6204,36 +6223,40 @@ const checkTokenCriteria = (mint: string): {
                             )}
                           </div>
                         </div>
-                        <div>
-                          <div className="text-[#64748b] text-[11px] mb-1 uppercase font-medium">Entry Price</div>
-                          <div className="font-mono text-[14px] font-semibold text-[#e2e8f0]">
-                            {pos.buyPrice?.toFixed(8) ?? '...'} SOL
-                          </div>
-                          <div className="text-[10px] text-[#64748b] mt-0.5">
-                            {pos.amount?.toLocaleString(undefined, { maximumFractionDigits: 4 })} tokens for {(pos.solSpent || 0).toFixed(4)} SOL
-                          </div>
-                        </div>
-                        <div className="flex justify-between items-center">
-                          <div>
-                            <div className="text-[#64748b] text-[11px] mb-1 uppercase font-medium">Current</div>
-                            <div className="font-mono text-[14px] font-semibold text-[#e2e8f0]">
-                              {isStalePos ? (
-                                <span className="text-amber-500 font-bold animate-pulse text-[12px]">STALE (Gaping)</span>
-                              ) : (
-                                `${displayPrice.toFixed(8)} SOL`
-                              )}
+
+                        {/* Middle Stats & Action Row */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
+                          <div className="grid grid-cols-2 gap-2 bg-[#10111a]/40 p-2 rounded-lg border border-[#1f212e]/50">
+                            <div>
+                              <div className="text-[#64748b] text-[10px] uppercase font-medium">Entry Price</div>
+                              <div className="font-mono text-[13px] font-semibold text-[#e2e8f0]">
+                                {pos.buyPrice?.toFixed(8) ?? '...'} SOL
+                              </div>
+                              <div className="text-[9px] text-[#64748b] mt-0.5 truncate">
+                                {pos.amount?.toLocaleString(undefined, { maximumFractionDigits: 2 })} tkns ({(pos.solSpent || 0).toFixed(4)} SOL)
+                              </div>
+                            </div>
+                            <div>
+                              <div className="text-[#64748b] text-[10px] uppercase font-medium">Current</div>
+                              <div className="font-mono text-[13px] font-semibold text-[#e2e8f0]">
+                                {isStalePos ? (
+                                  <span className="text-amber-500 font-bold animate-pulse text-[11px]">STALE</span>
+                                ) : (
+                                  `${displayPrice.toFixed(8)} SOL`
+                                )}
+                              </div>
                             </div>
                           </div>
-                          <div className="flex gap-2 w-full">
-                             <button 
-                               onClick={() => executeSell(mint, pos.currentPrice || pos.buyPrice, pnlPct, 'EMERGENCY FORCE EXIT')}
-                               className="flex-1 bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 transition-colors px-3 py-2 rounded-lg text-xs font-black uppercase tracking-widest border border-rose-500/20 group"
-                             >
-                               <span className="flex items-center justify-center gap-2">
-                                  <Square className="w-3 h-3 group-hover:scale-110 transition-transform" />
-                                  Emergency Force Exit
-                               </span>
-                             </button>
+
+                          <div>
+                            <button 
+                              type="button"
+                              onClick={() => executeSell(mint, pos.currentPrice || pos.buyPrice, pnlPct, 'EMERGENCY FORCE EXIT')}
+                              className="w-full bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 transition-colors px-3 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider border border-rose-500/20 group cursor-pointer flex items-center justify-center gap-2"
+                            >
+                              <Square className="w-3.5 h-3.5 group-hover:scale-110 transition-transform" />
+                              <span>Emergency Force Exit</span>
+                            </button>
                           </div>
                         </div>
                         
