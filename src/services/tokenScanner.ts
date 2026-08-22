@@ -1,4 +1,6 @@
 import { TokenCriteria, DEFAULT_CRITERIA } from '../config/tokenCriteria';
+import { devnetTokenSource } from './devnetTokenSource';
+import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
 
 export interface ScannedToken {
   address: string;
@@ -52,6 +54,12 @@ export class TokenScanner {
    */
   async scanForNewTokens(): Promise<ScannedToken[]> {
     try {
+      const isDevnet = useTradingEnvironmentStore.getState().network === 'devnet';
+      if (isDevnet) {
+        const devnetTokens = await devnetTokenSource.getScannedTokens();
+        return devnetTokens.filter(t => !this.criteria.excludedMints.has(t.address));
+      }
+
       // Use your existing server-side proxy for DEXScreener
       const response = await fetch('/api/dex/tokens/trending');
 

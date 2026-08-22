@@ -4,6 +4,7 @@ import { TokenMetric, TelemetryAlert } from '../types';
 export type AppEvents = {
   // Scanner Events
   NEW_TOKEN: { tokenAddress: string, symbol: string, data: any };
+  PRICE_UPDATE: { tokenAddress: string, symbol: string, priceUsd: number, priceSol?: number, marketCap?: number };
   PUMPFUN_MIGRATION: { tokenAddress: string, symbol: string };
   VOLUME_SPIKE: { tokenAddress: string, symbol: string, volume: number };
   

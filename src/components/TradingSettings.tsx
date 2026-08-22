@@ -6,6 +6,8 @@ import { SecureInput } from './SecureInput';
 import { useTradeMode } from '../context/TradeModeContext';
 import { MasterMonitorPanel } from './MasterMonitorPanel';
 import { masterMonitorHealthManager } from '../services/MasterMonitorHealthManager';
+import { DevnetTokenGeneratorModal } from './DevnetTokenGeneratorModal';
+import { Coins, Sparkles } from 'lucide-react';
 
 // Simple encryption using a user password + AES-GCM via Web Crypto
 export async function encryptData(plaintext: string, password: string): Promise<string> {
@@ -60,6 +62,7 @@ export const TradingSettings: React.FC = () => {
   const [password, setPassword] = useState('');
   const [saved, setSaved] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [showDevnetModal, setShowDevnetModal] = useState(false);
 
   // Load encrypted keys on mount
   useEffect(() => {
@@ -162,6 +165,28 @@ export const TradingSettings: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {mode === 'devnet' && (
+        <div className="rounded-[10px] border border-cyan-500/30 bg-cyan-950/30 p-3.5 flex items-center justify-between gap-3">
+          <div className="space-y-0.5">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-cyan-300">
+              <Coins className="w-4 h-4 text-cyan-400" />
+              <span>Devnet Native Pump Tokens</span>
+            </div>
+            <p className="text-[11px] text-slate-400">
+              Generate test tokens with on-chain bonding curves or test AMM routes.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowDevnetModal(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/40 text-xs font-bold transition-all shrink-0 cursor-pointer"
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>Open Generator</span>
+          </button>
+        </div>
+      )}
 
       {mode === 'mainnet' && (
         <div className="rounded-[10px] border border-rose-500/30 bg-rose-500/10 p-3">
@@ -270,6 +295,11 @@ export const TradingSettings: React.FC = () => {
           {loading ? 'Encrypting...' : saved ? '✓ Saved' : 'Save & Encrypt'}
         </button>
       </div>
+
+      <DevnetTokenGeneratorModal
+        isOpen={showDevnetModal}
+        onClose={() => setShowDevnetModal(false)}
+      />
     </div>
   );
 };

@@ -19,12 +19,14 @@ import {
   ChevronDown,
   ExternalLink,
   Sparkles,
-  Shield
+  Shield,
+  Coins
 } from 'lucide-react';
 import { useAppStore } from '../store/appStore';
 import { useBalanceStore } from '../store/balanceStore';
 import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
 import { WalletBalanceService } from '../services/WalletBalanceService';
+import { DevnetTokenGeneratorModal } from './DevnetTokenGeneratorModal';
 import { cn } from '../lib/utils';
 
 export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className }) => {
@@ -33,6 +35,7 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
   const { sessionWallet, setSessionWallet } = useAppStore();
   const { network, setNetwork, switching } = useTradingEnvironmentStore();
   const isDevnet = network === 'devnet';
+  const [showDevnetModal, setShowDevnetModal] = useState(false);
 
   const {
     onChainSolBalance,
@@ -212,6 +215,20 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
           <span>Mainnet</span>
         </button>
       </div>
+
+      {/* Devnet Token Source & Generator Button (Active in Devnet mode) */}
+      {isDevnet && (
+        <button
+          id="btn-devnet-token-generator"
+          type="button"
+          onClick={() => setShowDevnetModal(true)}
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-cyan-950/80 hover:bg-cyan-900/90 text-cyan-300 border border-cyan-500/40 text-[11px] font-bold transition-all shadow-sm cursor-pointer"
+          title="Devnet Native Token Source & Test Generator"
+        >
+          <Coins className="w-3.5 h-3.5 text-cyan-400" />
+          <span>Devnet Tokens</span>
+        </button>
+      )}
 
       {/* Connected Wallet Status / Button */}
       {activeAddress ? (
@@ -503,6 +520,12 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
           </button>
         </div>
       )}
+
+      {/* Devnet Token Source & Generator Modal */}
+      <DevnetTokenGeneratorModal
+        isOpen={showDevnetModal}
+        onClose={() => setShowDevnetModal(false)}
+      />
     </div>
   );
 };
