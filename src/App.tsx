@@ -56,6 +56,7 @@ import { SafetyPage } from './components/pages/SafetyPage';
 import { PredictionPage } from './components/pages/PredictionPage';
 import { PnLPage } from './components/pages/PnLPage';
 import { WalletStatusWidget } from './components/WalletStatusWidget';
+import { MintCopyBadge } from './components/MintCopyBadge';
 import { marketDataManager } from './services/marketDataManager';
 import { rpcHealthManager } from './services/rpcHealthManager';
 import { masterMonitorHealthManager } from './services/MasterMonitorHealthManager';
@@ -71,8 +72,6 @@ import {
   getTokenBalanceRaw, 
   processActiveTrackingFrame, 
   verifyHardenedScannerCriteria,
-  getSimulatedPrice,
-  updateSimPrice,
   rpcPool,
   AdvancedTokenMetrics,
   ActivePosition, 
@@ -1181,13 +1180,13 @@ function App() {
           // Set to false to disable minimum hold time delay so stop loss/take profit execute instantly
           const isHoldProtected = false;
           
-          const walletAddress = (isLiveTrading && activeAddress) 
+          const walletAddress = (true && activeAddress) 
             ? activeAddress!
             : '11111111111111111111111111111111';
 
           let amountLamports = position.amountLamports;
 
-          if (isLiveTrading && activeAddress) {
+          if (true && activeAddress) {
             if (!position.amountLamports) {
                 getTokenBalanceRaw(connection, walletAddress, token.address).then(bal => {
                     setActivePositions(prev => ({
@@ -1197,7 +1196,7 @@ function App() {
                 });
                 continue;
             }
-          } else if (!isLiveTrading) {
+          } else if (false) {
             // Simulate amount lamports for accurate Jupiter routing
             amountLamports = Math.floor(position.amount * 1_000_000);
           }
@@ -1240,7 +1239,7 @@ function App() {
           // e.g. up 50% → stop at 35%; up 100% → stop at 75%
           const currentPriceSol = (token.priceNative || 0);
           const posTokensQty = position.amount || 0;
-          const netPnlResult = calcNetPnl(currentPriceSol, posTokensQty, realCostBasis, state.slippage, position.recoveryMode, isLiveTrading);
+          const netPnlResult = calcNetPnl(currentPriceSol, posTokensQty, realCostBasis, state.slippage, position.recoveryMode, true);
           const currentPnLPct = netPnlResult.netPnlPct;
 
           // Track peak PnL in position metadata
@@ -1273,7 +1272,7 @@ function App() {
 
           if (trackingVerdict.shouldExit) {
             const slType = effectiveSL !== baseSL ? 'TRAILING SL' : trackingVerdict.reason;
-            console.log(`[EXIT BY ENGINE] (${isLiveTrading ? 'LIVE' : 'SIM'}): ${token.symbol} clearing. Reason: ${slType}`);
+            console.log(`[EXIT BY ENGINE] (LIVE): ${token.symbol} clearing. Reason: ${slType}`);
             fns.current.executeAutoSell(tokenAddress, token.symbol, trackingVerdict.quote);
           }
         }
@@ -1752,7 +1751,7 @@ function App() {
     optimisticPositions.current.add(tokenAddress);
 
 
-    if (!isLiveTrading && getTradingBalance() < buyAmountSol) {
+    if (false && getTradingBalance() < buyAmountSol) {
       addNotification(`Insufficient Simulation Balance (Need ${buyAmountSol} SOL)`);
       return;
     }
@@ -1760,7 +1759,7 @@ function App() {
     setTradingStatus(`Executing Matrix Buy: ${symbol}...`);
     try {
       let signature = 'SIM_MANUAL_BUY_' + Math.random().toString(36).substring(7);
-      let isSimulated = !isLiveTrading;
+      
       const lamports = Math.floor(buyAmountSol * 1_000_000_000);
       const liquidityUsd = tokenMetrics[tokenAddress]?.liquidity || 0;
       
@@ -1774,7 +1773,7 @@ function App() {
 
       let outTokensRaw = quote.outAmount;
 
-      if (isLiveTrading) {
+      if (true) {
         if (!activeAddress) {
           throw new Error("No wallet connected for Live Trading");
         }
@@ -1865,7 +1864,7 @@ function App() {
         };
       });
       
-      addNotification(`MANUAL EXECUTION SUCCESS: ${symbol} (Slippage: ${slippage}%) ${!isSimulated ? '(LIVE)' : '(SIMULATED)'}`, symbol, tokenAddress);
+      addNotification(`MANUAL EXECUTION SUCCESS: ${symbol} (Slippage: ${slippage}%) `, symbol, tokenAddress);
       setTradingStatus(null);
     } catch (e: any) {
       setTradingStatus(null);
@@ -1887,10 +1886,10 @@ function App() {
     setTradingStatus(`Partial Sell ${symbol} (${(percent*100).toFixed(0)}%)...`);
     
     try {
-      let isSimulated = !isLiveTrading;
+      
       let signature = 'SIM_PS_' + Math.random().toString(36).substring(7);
 
-      if (isLiveTrading) {
+      if (true) {
         if (!activeAddress) throw new Error("Wallet not connected");
         
         const walletAddress = activeAddress!;
@@ -1898,7 +1897,7 @@ function App() {
         const sellAmountRaw = Math.floor(Number(balanceRaw) * percent);
         
         if (sellAmountRaw === 0) {
-           isSimulated = true;
+           
         } else {
            // PROFIT PROTECTION LOGIC
            const targetProfit = minTakeProfit; // Use min profit for Tier 1 partial sell
@@ -2039,16 +2038,14 @@ function App() {
     
     try {
       let signature = 'SIM_SELL_' + Math.random().toString(36).substring(7);
-      let isSimulated = !isLiveTrading;
-      const walletAddress = (isLiveTrading && activeAddress) 
+      
+      const walletAddress = (true && activeAddress) 
          ? activeAddress!
          : '11111111111111111111111111111111';
       let balanceRaw: string | number = 0;
-      if (isLiveTrading) {
-          balanceRaw = await getTokenBalanceRaw(connection, walletAddress, tokenAddress);
-          if (balanceRaw === '0') isSimulated = true;
-      } else {
-          balanceRaw = position.tokenQuantityRaw || Math.floor((position.amount ?? 0) * 1_000_000);
+      balanceRaw = await getTokenBalanceRaw(connection, walletAddress, tokenAddress);
+      if (balanceRaw === '0') {
+         console.warn(`No on-chain balance found for ${tokenAddress}`);
       }
       const sellRawAmount = Math.floor(Number(balanceRaw));
       if (sellRawAmount <= 0) {
@@ -2073,7 +2070,7 @@ function App() {
 
       // Unify Profit Guard for both LIVE and SIM
       if (curPnLPercent >= minTakeProfit && realNetReturnSol <= currentCostBasisSol) {
-         console.log(`⚠️ REJECTED (${isSimulated ? 'SIM' : 'LIVE'}): Paper profit drops net return into a loss (${realNetReturnSol} SOL vs ${currentCostBasisSol} SOL).`);
+         console.log(`⚠️ REJECTED (LIVE): Paper profit drops net return into a loss (${realNetReturnSol} SOL vs ${currentCostBasisSol} SOL).`);
          addNotification(`Profit Guard: Aborted ${symbol} sell. Network slippage overrides return.`);
          pendingTrades.current.delete(tokenAddress);
          setTradingStatus('Idle');
@@ -2083,7 +2080,7 @@ function App() {
       const realNetProfitPct = ((realNetReturnSol - currentCostBasisSol) / currentCostBasisSol) * 100.0;
       console.log(`✅ APPROVED EXECUTION: Realized returns projected at ${realNetProfitPct.toFixed(2)}%`);
 
-      if (!isSimulated) {
+      
           const priorityTip = curPnLPercent >= minTakeProfit ? 2000000 : 1000000;
           if (sessionWallet) {
              const tx = await createJupiterSwapTransaction(sessionWallet.publicKey.toBase58(), quote, priorityTip);
@@ -2098,26 +2095,18 @@ function App() {
                 await pollSignatureStatus(connection, signature);
              }
           }
-      } else {
-         // Fast simulation execution (10-50ms) for instant paper trading strategy feedback
-         const simLatency = 10 + Math.random() * 40;
-         await new Promise(resolve => setTimeout(resolve, simLatency));
-         // Simulate 0.1% chance of slippage failure (realistic for illiquid tokens)
-         if (Math.random() < 0.001) {
-           throw new Error("SIM: Slippage exceeded — transaction rejected by AMM");
-         }
-      }
+      
 
       // Standardize uniform exact final calculation mappings
       const realizedPnL = realNetProfitPct;
       const totalReturned = realNetReturnSol;
 
-      addNotification(`EXIT COMPLETED: ${symbol} (Realized PnL: ${realizedPnL >= 0 ? '+' : ''}${realizedPnL.toFixed(2)}%) ${!isSimulated ? '(LIVE)' : '(SIMULATED)'}`);
+      addNotification(`EXIT COMPLETED: ${symbol} (Realized PnL: ${realizedPnL >= 0 ? '+' : ''}${realizedPnL.toFixed(2)}%) `);
       
       const portLink = `${window.location.origin}${window.location.pathname}?sell=${tokenAddress}&auto=true`;
       const pnlEmoji = realizedPnL >= 0 ? '🟢' : '🔴';
       sendTelegramAlert(
-        `${pnlEmoji} <b>${!isSimulated ? 'LIVE' : 'SIM'} EXIT EXECUTED</b>\n\n` +
+        `${pnlEmoji} <b>EXIT EXECUTED</b>\n\n` +
         `Token: <b>$${symbol}</b>\n` +
         `PnL: <b>${realizedPnL >= 0 ? '+' : ''}${realizedPnL.toFixed(2)}%</b>\n` +
         `Realized: <b>${totalReturned.toFixed(4)} SOL</b>\n\n` +
@@ -2138,9 +2127,7 @@ function App() {
       };
       
       setMySniperTrades(prev => [newTrade, ...prev]);
-      if (isSimulated) {
-        // Simulation balance update removed for real trading
-      }
+      
 
       setActivePositions(prev => {
         const next = { ...prev };
@@ -2193,7 +2180,7 @@ function App() {
     // Set optimistic position to prevent concurrent duplicate buys
     optimisticPositions.current.add(tokenAddress);
     
-    if (!isLiveTrading && getTradingBalance() < buyAmountSol) {
+    if (false && getTradingBalance() < buyAmountSol) {
       console.log("Auto-Sniper: Insufficient simulation balance");
       return;
     }
@@ -2217,7 +2204,7 @@ function App() {
     try {
       let signature = 'SIM_BN_' + Math.random().toString(36).substring(7);
 
-      let isSimulated = !isLiveTrading;
+      
       const lamports = Math.floor(actualBuyAmountSol * 1_000_000_000);
       const liquidityUsd = tokenMetrics[tokenAddress]?.liquidity || 0;
       
@@ -2230,7 +2217,7 @@ function App() {
       if (!quote) throw new Error("Token not yet listed, indexed, or no routes available on Jupiter (MARKET_NOT_FOUND / NO_ROUTES_FOUND).");
       let outTokensRaw = quote.outAmount;
 
-      if (isLiveTrading) {
+      if (true) {
         if (!activeAddress) {
           throw new Error("No wallet connected for Live Trading");
         }
@@ -2239,7 +2226,7 @@ function App() {
                 
         if (solBalance < lamports) {
           addNotification("⚠️ Insufficient real SOL balance. Falling back to Simulation mode.");
-          isSimulated = true;
+          
         } else {
             const priorityTipLamports = 2000000;
             if (sessionWallet) {
@@ -2260,17 +2247,7 @@ function App() {
         }
       }
 
-      if (isSimulated) {
-        const simLatency = 150 + Math.random() * 1200;
-        await new Promise(resolve => setTimeout(resolve, simLatency));
-        if (Math.random() < 0.002) {
-          throw new Error("SIM: Transaction not included — try increasing Jito tip");
-        }
-        if (getTradingBalance() < actualBuyAmountSol) {
-          throw new Error("SIM: Insufficient simulation balance — top up via Settings.");
-        }
-        // Simulation balance update removed for real trading
-      }
+      
       
       // Force fresh price for accuracy
       const security = await fetchTokenSecurityData(tokenAddress);
@@ -2315,7 +2292,7 @@ function App() {
             entryPriceSol: newEntryPriceSol,
             tpPct: existing?.tpPct ?? minTakeProfit,
             slPct: existing?.slPct ?? stopLoss,
-            entryFeesSol: isLiveTrading ? (existing ? (existing.entryFeesSol || 0) + 0.003 : 0.003) : 0, // Tip + Tx
+            entryFeesSol: (existing ? (existing.entryFeesSol || 0) + 0.003 : 0.003), // Tip + Tx
             soldPartial: false,
             isScalp: true
           }
@@ -2333,11 +2310,11 @@ function App() {
       };
       setMySniperTrades(prev => [newTrade, ...prev]);
       
-      addNotification(`SNIPED: ${symbol} for ${actualBuyAmountSol.toFixed(4)} SOL ${!isSimulated ? '(LIVE)' : '(SIMULATED)'}`, symbol, tokenAddress);
+      addNotification(`SNIPED: ${symbol} for ${actualBuyAmountSol.toFixed(4)} SOL `, symbol, tokenAddress);
       
       const sellLink = `${window.location.origin}${window.location.pathname}?sell=${tokenAddress}&auto=true`;
       sendTelegramAlert(
-        `🎯 <b>${!isSimulated ? 'LIVE' : 'SIM'} SNIPE EXECUTED</b>\n\n` +
+        `🎯 <b>SNIPE EXECUTED</b>\n\n` +
         `Token: <b>$${symbol}</b>\n` +
         `Amount: <b>${buyAmountSol} SOL</b>\n` +
         `Status: <b>SUCCESS ✅</b>\n` +
@@ -3185,7 +3162,6 @@ function App() {
 
               // Keep simulation prices anchored to real on-chain prices when available
               if (security.priceNative && security.priceNative > 0) {
-                updateSimPrice(trade.tokenAddress, security.priceNative);
               }
               
               setTokenMetrics(m => {
@@ -4756,24 +4732,9 @@ function App() {
                           <div className="flex items-center gap-2 mt-1">
                             <div className="flex items-center gap-1.5 bg-slate-950/50 px-2 py-0.5 rounded border border-slate-800 group/addr font-mono">
                               <span className="text-[8px] lg:text-[9px] text-indigo-400 font-medium">ADDR:</span>
-                              <p 
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  window.open(`https://solscan.io/token/${trade.tokenAddress}`, '_blank');
-                                }}
-                                className="text-[8px] lg:text-[9px] text-slate-400 hover:text-white transition-colors truncate max-w-[120px] lg:max-w-none cursor-pointer"
-                              >
-                                {trade.tokenAddress}
-                              </p>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  copyToClipboard(trade.tokenAddress, `${trade.id}-token`);
-                                }}
-                                className="p-0.5 rounded bg-slate-900 border border-slate-800 hover:bg-slate-800 transition-colors text-slate-500 font-sans"
-                              >
-                                {copiedId === `${trade.id}-token` ? <Check className="w-2.5 h-2.5 text-emerald-400" /> : <Copy className="w-2.5 h-2.5" />}
-                              </button>
+                              <div className="flex items-center gap-1.5 mt-0.5">
+                                <MintCopyBadge mint={trade.tokenAddress} size="sm" />
+                              </div>
                             </div>
                           </div>
                         </div>
@@ -5838,11 +5799,8 @@ function App() {
                   </div>
                   <div>
                     <h3 className="text-xl font-black text-white uppercase leading-none mb-1">{metric.symbol || 'Unknown Token'}</h3>
-                    <div className="flex items-center gap-2">
-                       <span className="text-[10px] font-mono text-slate-500">{metric.address?.slice(0, 12)}...</span>
-                       <button onClick={() => copyToClipboard(metric.address, metric.address)} className="text-slate-600 hover:text-white transition-colors">
-                         <Copy className="w-3 h-3" />
-                       </button>
+                    <div className="flex items-center gap-2 mt-1">
+                      <MintCopyBadge mint={metric.address} size="sm" />
                     </div>
                   </div>
                 </div>
@@ -6455,11 +6413,8 @@ function App() {
                                     </div>
                                   )}
                                 </div>
-                                <div className="flex items-center gap-1">
-                                  <span className="text-[10px] font-mono text-slate-500">{(metric.address || '').slice(0, 6)}...{(metric.address || '').slice(-4)}</span>
-                                  <button onClick={() => copyToClipboard(metric.address, metric.address)} className="text-slate-600 hover:text-white transition-colors">
-                                    {copiedId === metric.address ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                                  </button>
+                                <div className="flex items-center gap-1 mt-0.5">
+                                  <MintCopyBadge mint={metric.address} size="sm" />
                                 </div>
                               </div>
                             </div>
@@ -6776,16 +6731,8 @@ function App() {
                       </div>
                       
                       <div className="grid grid-cols-2 gap-3 pt-3 border-t border-slate-800/50">
-                        <div className="flex items-center gap-2 bg-slate-900/50 px-2 py-1.5 rounded-xl border border-slate-700 min-w-0">
-                          <code className="text-[10px] font-mono text-indigo-200 truncate flex-1 leading-relaxed">
-                            {(metric.address || '').slice(0, 6)}...{(metric.address || '').slice(-6)}
-                          </code>
-                          <button 
-                            onClick={() => copyToClipboard(metric.address, metric.address)}
-                            className="p-1 rounded bg-slate-800 text-slate-500 active:text-indigo-400 transition-colors"
-                          >
-                            {copiedId === metric.address ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                          </button>
+                        <div className="flex items-center gap-2 min-w-0">
+                          <MintCopyBadge mint={metric.address} size="sm" />
                         </div>
                         <button 
                           onClick={() => handleManualBuy(metric.address, metric.symbol)}

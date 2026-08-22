@@ -1,31 +1,10 @@
-import React, { useState } from 'react';
-import { ShieldCheck, Target, BrainCircuit, Activity, AlertTriangle, Zap, BarChart3, Users, Copy, Check } from 'lucide-react';
+import React from 'react';
+import { ShieldCheck, Target, BrainCircuit, Activity, AlertTriangle, Zap, BarChart3, Users } from 'lucide-react';
 import { TokenMetric } from '../../types';
 import { cn } from '../../lib/utils';
 
 export const SafetyPage = ({ tokenMetrics }: { tokenMetrics: Record<string, TokenMetric> }) => {
-  const [copiedAddress, setCopiedAddress] = useState<string | null>(null);
   const tokens = Object.values(tokenMetrics || {});
-
-  const handleCopy = (address: string) => {
-    if (!address) return;
-    try {
-      if (navigator && navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(address);
-      } else {
-        const textArea = document.createElement("textarea");
-        textArea.value = address;
-        document.body.appendChild(textArea);
-        textArea.select();
-        document.execCommand("copy");
-        document.body.removeChild(textArea);
-      }
-      setCopiedAddress(address);
-      setTimeout(() => setCopiedAddress(null), 2000);
-    } catch (err) {
-      console.warn("Failed to copy address", err);
-    }
-  };
 
   const getAge = (timestamp: number) => {
     const minutes = Math.floor((Date.now() - timestamp) / 60000);
@@ -62,26 +41,13 @@ export const SafetyPage = ({ tokenMetrics }: { tokenMetrics: Record<string, Toke
                 <div key={token.address} className="bg-gray-900 border border-gray-800 p-4 rounded-xl flex items-center justify-between">
                   <div>
                     <h4 className="font-bold text-lg">{token.symbol || 'UNKNOWN'}</h4>
-                    <div className="flex items-center gap-1.5 mt-0.5">
-                      <button 
-                        type="button"
-                        className="text-xs text-gray-400 hover:text-white font-mono cursor-pointer inline-flex items-center gap-1 bg-black/40 hover:bg-black/60 px-2 py-0.5 rounded border border-gray-800 transition-all active:scale-95 group"
-                        onClick={() => token.address && handleCopy(token.address)}
-                        title={`Click to copy address:\n${token.address}`}
-                      >
-                        <span className="group-hover:text-emerald-400 transition-colors">
-                          {token.address ? `${token.address.slice(0, 6)}...${token.address.slice(-4)}` : 'N/A'}
-                        </span>
-                        {copiedAddress === token.address ? (
-                          <span className="inline-flex items-center text-emerald-400 font-sans font-bold text-[10px] gap-0.5">
-                            <Check className="w-3 h-3 text-emerald-400" />
-                            <span>Copied</span>
-                          </span>
-                        ) : (
-                          <Copy className="w-3 h-3 text-gray-500 group-hover:text-emerald-400 transition-colors" />
-                        )}
-                      </button>
-                    </div>
+                    <p 
+                      className="text-xs text-gray-400 font-mono cursor-pointer hover:text-white"
+                      onClick={() => token.address && navigator.clipboard.writeText(token.address)}
+                      title="Click to copy address"
+                    >
+                      {token.address ? `${token.address.slice(0, 6)}...${token.address.slice(-4)}` : 'N/A'}
+                    </p>
                     <div className="text-[10px] text-gray-500 mt-1">
                       Age: {token.discoveredAt ? getAge(token.discoveredAt) : 'N/A'}
                     </div>

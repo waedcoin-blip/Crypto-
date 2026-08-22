@@ -1,21 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { Activity, BrainCircuit, LineChart, MessageSquare, AlertTriangle, Globe, Newspaper, Copy, Check } from 'lucide-react';
+import { Activity, BrainCircuit, LineChart, MessageSquare, AlertTriangle, Globe, Newspaper } from 'lucide-react';
 import { TokenMetric } from '../../types';
 import { cn } from '../../lib/utils';
 
 export const PredictionPage = ({ tokenMetrics }: { tokenMetrics: Record<string, TokenMetric> }) => {
   const [activeTab, setActiveTab] = useState<'sentiment' | 'market' | 'alerts'>('sentiment');
-  const [copiedAddr, setCopiedAddr] = useState<string | null>(null);
-
-  const handleCopy = (addr: string) => {
-    try {
-      navigator.clipboard.writeText(addr);
-      setCopiedAddr(addr);
-      setTimeout(() => setCopiedAddr(null), 2000);
-    } catch (e) {
-      console.warn("Failed to copy", e);
-    }
-  };
   
   // Real implementation would fetch from real APIs. For the scope of this frontend, we aggregate
   // from our AI-driven token metrics
@@ -99,21 +88,7 @@ export const PredictionPage = ({ tokenMetrics }: { tokenMetrics: Record<string, 
                     </span>
                   </div>
                   <h3 className="text-xl font-bold mb-1">{token.symbol}</h3>
-                  <button
-                    type="button"
-                    onClick={() => handleCopy(token.address)}
-                    className="text-sm font-mono text-gray-400 hover:text-white mb-4 inline-flex items-center gap-1.5 cursor-pointer bg-black/40 hover:bg-black/70 px-2 py-1 rounded border border-gray-800 transition-all group/ca"
-                    title={`Click to copy: ${token.address}`}
-                  >
-                    <span>{token.address}</span>
-                    {copiedAddr === token.address ? (
-                      <span className="text-xs text-emerald-400 font-sans flex items-center gap-0.5">
-                        <Check className="w-3.5 h-3.5 text-emerald-400" /> Copied!
-                      </span>
-                    ) : (
-                      <Copy className="w-3.5 h-3.5 text-gray-500 group-hover/ca:text-emerald-400 transition-colors" />
-                    )}
-                  </button>
+                  <div className="text-sm font-mono text-gray-500 mb-4">{token.address}</div>
                   
                   <div className="grid grid-cols-2 gap-4 text-sm mt-4">
                     <div className="bg-black/50 p-3 rounded-lg">

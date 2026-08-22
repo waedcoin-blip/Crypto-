@@ -3,6 +3,7 @@ import { getKeypairFromPrivateKey } from '../../utils/keypairUtils';
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Play, Square, Search, ShieldCheck, ShieldAlert, AlertTriangle, Shield, TrendingUp, ChevronDown, ChevronUp, BookOpen, X, Zap, Activity, ChevronRight, Download, Trash2, Settings, Pause, Database, Copy, Check, Terminal, ArrowUpDown, SlidersHorizontal, Eye, EyeOff, Clock, Info, Bug, Filter, Server, Globe, RefreshCw, Wifi, CloudUpload } from 'lucide-react';
+import { MintCopyBadge } from '../MintCopyBadge';
 import { Connection, Keypair, VersionedTransaction, PublicKey } from '@solana/web3.js';
 import bs58 from 'bs58';
 import { Buffer } from 'buffer';
@@ -11,8 +12,7 @@ import { useAppStore } from '../../store/appStore';
 import { TokenScanner, ScannedToken } from '../../services/tokenScanner';
 import { DEFAULT_CRITERIA } from '../../config/tokenCriteria';
 import { getTradeCount } from '../../config/rebuyGuard';
-import { useSimulationStore } from '../../store/simulationStore';
-import { getJupiterQuote, executeTxWithRPCFallback, getTokenBalanceRaw, getLatestBlockhashWithFallback, clearSimPriceCache, resetSimPrice, pingJupiterApi } from '../../services/jupiterService';
+import { getJupiterQuote, executeTxWithRPCFallback, getTokenBalanceRaw, getLatestBlockhashWithFallback, pingJupiterApi } from '../../services/jupiterService';
 import { db } from '../../lib/firebase';
 import { detectTokenStage } from '../../lib/utils';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
@@ -26,7 +26,6 @@ import { marketDataManager } from '../../services/marketDataManager';
 import { rpcHealthManager } from '../../services/rpcHealthManager';
 import { PositionExitManager } from '../../services/PositionExitManager';
 import { MasterMonitorService } from '../../services/MasterMonitorService';
-import { getSimExecutor, syncSimBalanceToStore } from '../../services/SimExecutorSingleton';
 import { RealTradeExecutor } from '../../services/RealTradeExecutor';
 import { useTradeMode } from '../../context/TradeModeContext';
 import { ITradeExecutor } from '../../services/ITradeExecutor';
@@ -342,28 +341,8 @@ const TerminalConsole: React.FC<TerminalConsoleProps> = ({ logs, setLogs, retent
       navigator.clipboard.writeText(JSON.stringify(meta, null, 2));
       setCopiedId(id);
       setTimeout(() => setCopiedId(null), 2000);
-    } catch (err) {
+      } catch (err) {
       console.warn("Failed to copy metadata", err);
-    }
-  };
-
-  const handleCopyText = (text: string, id: string, e?: React.MouseEvent) => {
-    if (e) e.stopPropagation();
-    try {
-      if (navigator && navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text);
-      } else {
-        const textArea = document.createElement("textarea");
-        textArea.value = text;
-        document.body.appendChild(textArea);
-        textArea.select();
-        document.execCommand("copy");
-        document.body.removeChild(textArea);
-      }
-      setCopiedId(id);
-      setTimeout(() => setCopiedId(null), 2000);
-    } catch (err) {
-      console.warn("Failed to copy text", err);
     }
   };
 
@@ -1107,36 +1086,9 @@ export const PnLPage = ({
   const latestPricesRef = useRef<Record<string, number>>({});
 
   // ── Simulation Store & Background Scan Refs ──
-  const simPositions = useSimulationStore(state => state.positions);
-  const openSimPosition = useSimulationStore(state => state.openPosition);
-  const updateSimPrice = useSimulationStore(state => state.updatePrice);
-  const closeSimPosition = useSimulationStore(state => state.closePosition);
-  const markSimSignaled = useSimulationStore(state => state.markSignaled);
-  const hasSimPosition = useSimulationStore(state => state.hasPosition);
 
   const scannerRef = useRef<TokenScanner | null>(null);
   const monitoredTokensRef = useRef<Map<string, ScannedToken>>(new Map());
-  const [copiedId, setCopiedId] = useState<string | null>(null);
-
-  const handleCopyText = (text: string, id: string, e?: React.MouseEvent) => {
-    if (e) e.stopPropagation();
-    try {
-      if (navigator && navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text);
-      } else {
-        const textArea = document.createElement("textarea");
-        textArea.value = text;
-        document.body.appendChild(textArea);
-        textArea.select();
-        document.execCommand("copy");
-        document.body.removeChild(textArea);
-      }
-      setCopiedId(id);
-      setTimeout(() => setCopiedId(null), 2000);
-    } catch (err) {
-      console.warn("Failed to copy text", err);
-    }
-  };
   
   const stopLossPct = Math.abs(stopLoss);
   const bondingCurveStopLossPct = Math.abs(bondingCurveStopLoss);
@@ -1341,9 +1293,7 @@ export const PnLPage = ({
     } catch { return { trades: 0, wins: 0, losses: 0, pnl: 0, bestTrade: null as number | null }; }
   });
   const { solBalance, availableSolBalance } = useBalanceStore();
-  const simWalletBalance = solBalance;
-  const setSimWalletBalance = (bal: number) => { /* no-op in real mode */ };
-  const realSolBalance = solBalance;
+      const realSolBalance = solBalance;
   const [retentionLimit, setRetentionLimit] = useState<number>(() => {
     try {
       const saved = localStorage.getItem('juipter_auto_retentionLimit');
@@ -1594,8 +1544,8 @@ export const PnLPage = ({
     criteriaPass: 0,
     buyCandidates: 0,
     buyAttempts: 0,
-    simBuySuccess: 0,
-    simBuyFailed: 0
+    buySuccess: 0,
+    buyFailed: 0
   });
 
   const [logs, setLogs] = useState<LogEvent[]>(() => {
@@ -1815,8 +1765,7 @@ export const PnLPage = ({
     ftpDir?: string;
     ftpWebUrl?: string;
     ftpSecure?: boolean;
-    simWalletBalance?: number;
-    blacklistedMints?: string;
+        blacklistedMints?: string;
     positions?: string;
     tokenMetrics?: string;
     stats?: string;
@@ -1862,18 +1811,6 @@ export const PnLPage = ({
           if (data.ftpDir !== undefined) setFtpDir(String(data.ftpDir));
           if (data.ftpWebUrl !== undefined) setFtpWebUrl(String(data.ftpWebUrl));
           if (data.ftpSecure !== undefined) setFtpSecure(data.ftpSecure === true);
-          if (data.simWalletBalance !== undefined) {
-            const fsBal = Number(data.simWalletBalance);
-            if (!isNaN(fsBal) && fsBal > 0) {
-              const localSaved = localStorage.getItem('app_authoritative_paper_balance_v1') || localStorage.getItem('app_simulationBalance_v4');
-              const localNum = localSaved ? Number(localSaved) : NaN;
-              if (!isNaN(localNum) && localNum > 0 && fsBal === 10.0 && localNum !== 10.0) {
-                // Preserve local updated balance if Firestore returned default 10
-              } else {
-                
-              }
-            }
-          }
           
           if (data.blacklistedMints !== undefined) {
             try {
@@ -1955,8 +1892,7 @@ export const PnLPage = ({
             ftpDir: data.ftpDir !== undefined ? data.ftpDir : ftpDir,
             ftpWebUrl: data.ftpWebUrl !== undefined ? data.ftpWebUrl : ftpWebUrl,
             ftpSecure: data.ftpSecure !== undefined ? data.ftpSecure : ftpSecure,
-            simWalletBalance: data.simWalletBalance !== undefined ? data.simWalletBalance : simWalletBalance,
-            blacklistedMints: data.blacklistedMints || JSON.stringify(blacklistedMints),
+                        blacklistedMints: data.blacklistedMints || JSON.stringify(blacklistedMints),
             positions: data.positions || JSON.stringify(positions),
             stats: data.stats || JSON.stringify(stats),
             tradeHistory: data.tradeHistory || JSON.stringify(tradeHistory)
@@ -1976,8 +1912,7 @@ export const PnLPage = ({
             laserstreamEnabled, laserstreamApiKey, laserstreamEndpoint,
             dexScreenerEnabled, forceUsdcRouting,
             ftpHost, ftpUser, ftpPass, ftpDir, ftpWebUrl, ftpSecure,
-            simWalletBalance,
-            blacklistedMints: JSON.stringify(blacklistedMints),
+                        blacklistedMints: JSON.stringify(blacklistedMints),
             positions: JSON.stringify(positions),
             stats: JSON.stringify(stats),
             tradeHistory: JSON.stringify(tradeHistory)
@@ -2018,8 +1953,7 @@ export const PnLPage = ({
         last.ftpDir === ftpDir &&
         last.ftpWebUrl === ftpWebUrl &&
         last.ftpSecure === ftpSecure &&
-        last.simWalletBalance === simWalletBalance &&
-        last.blacklistedMints === JSON.stringify(blacklistedMints) &&
+                last.blacklistedMints === JSON.stringify(blacklistedMints) &&
         last.positions === JSON.stringify(positions) &&
         last.stats === JSON.stringify(stats) &&
         last.tradeHistory === JSON.stringify(tradeHistory)) {
@@ -2056,8 +1990,7 @@ export const PnLPage = ({
           ftpDir,
           ftpWebUrl,
           ftpSecure,
-          simWalletBalance,
-          blacklistedMints: JSON.stringify(blacklistedMints),
+                    blacklistedMints: JSON.stringify(blacklistedMints),
           positions: JSON.stringify(positions),
           stats: JSON.stringify(stats),
           tradeHistory: JSON.stringify(tradeHistory),
@@ -2070,8 +2003,7 @@ export const PnLPage = ({
           laserstreamEnabled, laserstreamApiKey, laserstreamEndpoint,
           dexScreenerEnabled, forceUsdcRouting,
           ftpHost, ftpUser, ftpPass, ftpDir, ftpWebUrl, ftpSecure,
-          simWalletBalance,
-          blacklistedMints: JSON.stringify(blacklistedMints),
+                    blacklistedMints: JSON.stringify(blacklistedMints),
           positions: JSON.stringify(positions),
           stats: JSON.stringify(stats),
           tradeHistory: JSON.stringify(tradeHistory)
@@ -2097,7 +2029,7 @@ export const PnLPage = ({
     laserstreamEnabled, laserstreamApiKey, laserstreamEndpoint,
     dexScreenerEnabled, forceUsdcRouting,
     ftpHost, ftpUser, ftpPass, ftpDir, ftpWebUrl, ftpSecure,
-    simWalletBalance, blacklistedMints, positions, stats, tradeHistory
+    blacklistedMints, positions, stats, tradeHistory
   ]);
   useEffect(() => {
     localStorage.setItem('juipter_auto_isRunning', isRunning.toString());
@@ -3517,7 +3449,6 @@ const checkTokenCriteria = (mint: string): {
         if (freshPrice && freshPrice > 0) {
           parsedPrice = freshPrice;
           price = freshPrice;
-          resetSimPrice(mint, freshPrice);
           addLog(`🔄 [REBUY RATE REFRESHED] Rebuy token ${symbol} exchange rate successfully updated to ${freshPrice.toFixed(8)} SOL`, 'info');
           if (tokenMetricsRef.current[mint]) {
             tokenMetricsRef.current[mint].priceNative = freshPrice;
@@ -3539,7 +3470,6 @@ const checkTokenCriteria = (mint: string): {
               const freshPriceFromQuote = solAmount / normalizedOut;
               parsedPrice = freshPriceFromQuote;
               price = freshPriceFromQuote;
-              resetSimPrice(mint, freshPriceFromQuote);
               addLog(`🔄 [REBUY RATE REFRESHED] Rebuy token ${symbol} exchange rate calculated from fresh exchange quote: ${freshPriceFromQuote.toFixed(8)} SOL`, 'info');
               if (tokenMetricsRef.current[mint]) {
                 tokenMetricsRef.current[mint].priceNative = freshPriceFromQuote;
@@ -3683,12 +3613,7 @@ const checkTokenCriteria = (mint: string): {
       }
     } catch (e: any) {
       addLog(`Buy error for ${symbol}: ${e.message}`, 'err');
-      if (!privateKey) {
-        pipelineCountersRef.current.simBuyFailed++;
-        syncSimBalanceToStore();
-      } else {
-        walletBalanceService.refreshNow();
-      }
+      walletBalanceService.refreshNow();
       if (e.message.includes('Route not found') || e.message.includes('NO_ROUTES_FOUND') || e.message.includes('Not Found') || e.message.includes('No route') || e.message.includes('TOKEN_NOT_TRADABLE')) {
         addLog(`❌ [BLACKLIST] ${symbol} added to blacklist due to unroutable liquidity/dead token.`, 'warn');
         if (!blacklistedMintsRef.current.includes(mint)) {
@@ -3760,7 +3685,6 @@ const checkTokenCriteria = (mint: string): {
       riskScore: 5
     };
 
-    openSimPosition(scannedTokenData, tradeSol);
     monitoredTokensRef.current.set(mint, scannedTokenData);
 
     // Execute direct buy into PnL active positions
@@ -3913,11 +3837,8 @@ const checkTokenCriteria = (mint: string): {
       return;
     }
 
-    const tradeModeFromStorage = (typeof localStorage !== 'undefined' ? localStorage.getItem('trade_mode') : null) || (typeof localStorage !== 'undefined' && localStorage.getItem('is_live_trading') === 'true' ? 'real' : 'paper');
-    const isRealMode = tradeModeFromStorage === 'real' && !!useActiveWalletStore.getState().activeWallet?.keypair;
     const currentJup = jupiterRpcUrl || 'https://api.jup.ag/swap/v1';
-
-    let executor: ITradeExecutor = isRealMode ? new RealTradeExecutor({ network: (tradingNetwork as any) || 'devnet' }) : getSimExecutor(simWalletBalance || 1.0, currentJup);
+    const executor = tradeManager.getExecutor();
 
     const exitMgr = new PositionExitManager(
       executor,
@@ -3951,13 +3872,8 @@ const checkTokenCriteria = (mint: string): {
         // recalculate pnlPct purely based on actual real return
         pnlPct = costBasisSol > 0 ? (actualPnlSOL / costBasisSol) * 100 : pnlPct;
 
-        // Sync returned SOL to simulation wallet balance (already authoritatively credited by executor.swap)
-        const isRealModeActive = (useAppStore.getState().isLiveTrading || localStorage.getItem('juipter_auto_tradeMode') === 'real') && Boolean(privateKey) && Boolean(user);
-        if (!isRealModeActive) {
-          syncSimBalanceToStore((b) => setSimWalletBalance(b));
-        } else {
-          walletBalanceService.refreshNow();
-        }
+        // Refresh wallet balance
+        walletBalanceService.refreshNow();
 
         setStats((s) => ({
           ...s,
@@ -4211,7 +4127,7 @@ const checkTokenCriteria = (mint: string): {
          } else {
             const counters = pipelineCountersRef.current;
             addLog(`📡 [SCANNER HEARTBEAT] Monitoring ${Object.keys(tokenMetricsRef.current).length} active tokens | Positions: ${activeMints.length}/${maxPositions} | Required Match: ${matchRate}%
-  ↳ PIPELINE METRICS: Discovered: ${counters.discovered} | Solana: ${counters.solana} | Valid Metrics: ${counters.validMetrics} | Criteria Pass: ${counters.criteriaPass} | Buy Candidates: ${counters.buyCandidates} | Buy Attempts: ${counters.buyAttempts} | Sim Success: ${counters.simBuySuccess} | Sim Failed: ${counters.simBuyFailed}`, 'info');
+  ↳ PIPELINE METRICS: Discovered: ${counters.discovered} | Solana: ${counters.solana} | Valid Metrics: ${counters.validMetrics} | Criteria Pass: ${counters.criteriaPass} | Buy Candidates: ${counters.buyCandidates} | Buy Attempts: ${counters.buyAttempts} | Buy Success: ${counters.buySuccess} | Buy Failed: ${counters.buyFailed}`, 'info');
          }
       }
 
@@ -4487,7 +4403,6 @@ const checkTokenCriteria = (mint: string): {
                 isRugSafe: true,
                 riskScore: 5
               };
-              openSimPosition(scannedTokenData, configRef.current.tradeAmount || tradeAmount || 0.1);
               monitoredTokensRef.current.set(mint, scannedTokenData);
               addLog(`📌 [MONITORING ADDED] Graduated token ${item.symbol} added to PnLPage active positions first for active monitoring.`, 'info');
             } else {
@@ -4846,8 +4761,7 @@ const checkTokenCriteria = (mint: string): {
         tokenMetrics: JSON.stringify({}),
         tradeHistory: JSON.stringify([]),
         stats: JSON.stringify({ trades: 0, wins: 0, losses: 0, pnl: 0, bestTrade: null }),
-        simWalletBalance: 10.0,
-      };
+              };
     }
     
     // Clear global store state without reloading
@@ -4861,8 +4775,6 @@ const checkTokenCriteria = (mint: string): {
     store.setTelemetryBits([false, false, false, false, false, false]);
     
     // Clear simulation store and scanner monitored tokens
-    useSimulationStore.getState().clearPositions();
-    useSimulationStore.setState({ positions: {}, closedPositions: [] });
     monitoredTokensRef.current.clear();
     signaledPositions.current.clear();
     pendingBuyMintsRef.current.clear();
@@ -4871,8 +4783,7 @@ const checkTokenCriteria = (mint: string): {
     
     // Completely clear all cache and reset balances to exactly 10.0 SOL
     localStorage.setItem('app_simulationBalance_v4', '10.0');
-    localStorage.setItem('juipter_auto_simWalletBalance', '10.0');
-    localStorage.setItem('app_mySniperTrades', JSON.stringify([]));
+        localStorage.setItem('app_mySniperTrades', JSON.stringify([]));
     localStorage.setItem('juipter_auto_isRunning', 'false'); // Stopped on reset
     localStorage.setItem('app_activePositions', JSON.stringify({}));
     
@@ -4901,15 +4812,13 @@ const checkTokenCriteria = (mint: string): {
     localStorage.setItem('app_activePositions', JSON.stringify({}));
     localStorage.setItem('juipter_auto_positions', JSON.stringify({}));
 
-    clearSimPriceCache();
     clearPriceHistories();
 
     if (user) {
       try {
         const docRef = doc(db, 'settings', user.uid);
         await setDoc(docRef, {
-          simWalletBalance: 10.0,
-          blacklistedMints: JSON.stringify([]),
+                    blacklistedMints: JSON.stringify([]),
           positions: JSON.stringify({}),
           tokenMetrics: JSON.stringify({}),
           stats: JSON.stringify({ trades: 0, wins: 0, losses: 0, pnl: 0, bestTrade: null }),
@@ -4998,7 +4907,7 @@ const checkTokenCriteria = (mint: string): {
               {/* Scanned Result Card */}
               {scannedResult && (
                 <div className="bg-[#050509] border border-[#2d2e3d] rounded-xl p-3 space-y-2.5">
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between flex-wrap gap-1.5">
                     <div>
                       <div className="text-[13px] font-bold text-white flex items-center gap-1">
                         {scannedResult.symbol}{' '}
@@ -5010,9 +4919,12 @@ const checkTokenCriteria = (mint: string): {
                         {scannedResult.name}
                       </div>
                     </div>
-                    <span className="text-[9px] bg-emerald-500/10 text-[#c7f284] border border-[#c7f284]/30 rounded px-1.5 py-0.5 font-bold uppercase">
-                      {scannedResult.isGraduated ? 'Raydium' : 'Pump.fun'}
-                    </span>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <MintCopyBadge mint={scannedResult.address} size="sm" />
+                      <span className="text-[9px] bg-emerald-500/10 text-[#c7f284] border border-[#c7f284]/30 rounded px-1.5 py-0.5 font-bold uppercase">
+                        {scannedResult.isGraduated ? 'Raydium' : 'Pump.fun'}
+                      </span>
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-2 gap-x-2 gap-y-1.5 border-t border-[#1f212e] pt-2 text-[10px] font-mono">
@@ -5957,30 +5869,14 @@ const checkTokenCriteria = (mint: string): {
                 <div className="bg-[#050509]/60 border border-[#2d2e3d] rounded-xl p-4 space-y-3.5 animate-fadeIn">
                   <div className="flex items-center justify-between flex-wrap gap-2">
                     <div>
-                      <div className="text-[14px] font-bold text-white flex items-center gap-1.5 flex-wrap">
+                      <div className="text-[14px] font-bold text-white flex items-center gap-1.5">
                         <span className="text-white">{scannedResult.name}</span>
                         <span className="text-[#c7f284] font-mono text-[11px] bg-[#c7f284]/10 px-1.5 py-0.5 rounded leading-none">
                           {scannedResult.symbol}
                         </span>
-                        <button
-                          type="button"
-                          onClick={(e) => handleCopyText(scannedResult.address, `scanned-${scannedResult.address}`, e)}
-                          className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-[#161824] hover:bg-[#222538] active:scale-95 border border-[#2a2d42] hover:border-[#c7f284]/50 text-[10px] font-mono text-[#94a3b8] hover:text-[#e2e8f0] transition-all cursor-pointer select-none"
-                          title={`Click to copy contract address:\n${scannedResult.address}`}
-                        >
-                          <span>{scannedResult.address.slice(0, 4)}...{scannedResult.address.slice(-4)}</span>
-                          {copiedId === `scanned-${scannedResult.address}` ? (
-                            <span className="inline-flex items-center text-emerald-400 font-sans font-bold text-[9px] gap-0.5">
-                              <Check className="w-2.5 h-2.5 text-emerald-400" />
-                              <span>Copied!</span>
-                            </span>
-                          ) : (
-                            <Copy className="w-2.5 h-2.5 text-[#64748b] hover:text-[#c7f284] transition-colors" />
-                          )}
-                        </button>
                       </div>
-                      <div className="text-[10px] text-[#64748b] font-mono mt-0.5 flex items-center gap-1.5">
-                        <span>Mint: {scannedResult.address}</span>
+                      <div className="mt-1">
+                        <MintCopyBadge mint={scannedResult.address} label="Mint:" size="sm" />
                       </div>
                     </div>
                     <div className="flex gap-1.5">
@@ -6151,34 +6047,15 @@ const checkTokenCriteria = (mint: string): {
                     }
 
                     return (
-                      <div key={mint} className="bg-[#0a0b14] border border-[#1f212e] rounded-xl p-4 flex flex-col gap-3">
-                        {/* Top Header Row */}
-                        <div className="flex items-start justify-between gap-2 flex-wrap border-b border-[#1f212e]/50 pb-2.5">
+                      <div key={mint} className="bg-[#0a0b14] border border-[#1f212e] rounded-xl p-4 grid grid-cols-2 gap-x-2 gap-y-3">
+                        <div className="col-span-2 flex items-center gap-2 mb-1 flex-wrap justify-between">
                           <div className="flex items-center gap-2 flex-wrap">
-                            <div className="w-7 h-7 rounded-full bg-indigo-600 shrink-0 flex items-center justify-center text-[11px] font-black text-white shadow-md">
-                              {(pos.symbol || 'T').slice(0, 1).toUpperCase()}
-                            </div>
+                            <div className="w-6 h-6 rounded-full bg-indigo-500 shrink-0"></div>
                             <div className="font-bold text-[14px] text-white flex items-center gap-1.5 flex-wrap">
-                              <span className="text-white">{pos.symbol}</span>
-                              <span className="text-[#64748b] text-[12px] font-normal hidden sm:inline">/ SOL</span>
-
-                              {/* Token Address Copy by Press */}
-                              <button
-                                type="button"
-                                onClick={(e) => handleCopyText(mint, `mint-hdr-${mint}`, e)}
-                                className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-[#161824] hover:bg-[#222538] active:scale-95 border border-[#2a2d42] hover:border-[#c7f284]/50 text-[10px] font-mono text-[#94a3b8] hover:text-[#e2e8f0] transition-all cursor-pointer select-none group"
-                                title={`Click to copy address:\n${mint}`}
-                              >
-                                <Copy className="w-2.5 h-2.5 text-[#64748b] group-hover:text-[#c7f284] transition-colors" />
-                                <span>{mint.length > 10 ? `${mint.slice(0, 4)}...${mint.slice(-4)}` : mint}</span>
-                                {copiedId === `mint-hdr-${mint}` || copiedId === `mint-ftr-${mint}` ? (
-                                  <span className="inline-flex items-center text-emerald-400 font-sans font-bold text-[9px] gap-0.5 bg-emerald-500/10 px-1 py-0.2 rounded">
-                                    <Check className="w-2.5 h-2.5 text-emerald-400" />
-                                    <span>Copied!</span>
-                                  </span>
-                                ) : null}
-                              </button>
+                              {pos.symbol} <span className="text-[#64748b] text-[12px] font-normal hidden sm:inline">/ SOL</span>
                               
+                              <MintCopyBadge mint={mint} size="sm" />
+
                               {/* Stage badge */}
                               {stage.isBonding ? (
                                 <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-orange-500/20 text-orange-400 border border-orange-500/30 whitespace-nowrap">
@@ -6203,8 +6080,7 @@ const checkTokenCriteria = (mint: string): {
                               )}
                             </div>
                           </div>
-
-                          <div className="text-right font-mono shrink-0">
+                          <div className="ml-auto text-right font-mono">
                             {isStalePos ? (
                               <div className="flex flex-col items-end">
                                 <span className="text-amber-500 font-bold text-[13px] animate-pulse">MIGRATING...</span>
@@ -6223,40 +6099,36 @@ const checkTokenCriteria = (mint: string): {
                             )}
                           </div>
                         </div>
-
-                        {/* Middle Stats & Action Row */}
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
-                          <div className="grid grid-cols-2 gap-2 bg-[#10111a]/40 p-2 rounded-lg border border-[#1f212e]/50">
-                            <div>
-                              <div className="text-[#64748b] text-[10px] uppercase font-medium">Entry Price</div>
-                              <div className="font-mono text-[13px] font-semibold text-[#e2e8f0]">
-                                {pos.buyPrice?.toFixed(8) ?? '...'} SOL
-                              </div>
-                              <div className="text-[9px] text-[#64748b] mt-0.5 truncate">
-                                {pos.amount?.toLocaleString(undefined, { maximumFractionDigits: 2 })} tkns ({(pos.solSpent || 0).toFixed(4)} SOL)
-                              </div>
-                            </div>
-                            <div>
-                              <div className="text-[#64748b] text-[10px] uppercase font-medium">Current</div>
-                              <div className="font-mono text-[13px] font-semibold text-[#e2e8f0]">
-                                {isStalePos ? (
-                                  <span className="text-amber-500 font-bold animate-pulse text-[11px]">STALE</span>
-                                ) : (
-                                  `${displayPrice.toFixed(8)} SOL`
-                                )}
-                              </div>
+                        <div>
+                          <div className="text-[#64748b] text-[11px] mb-1 uppercase font-medium">Entry Price</div>
+                          <div className="font-mono text-[14px] font-semibold text-[#e2e8f0]">
+                            {pos.buyPrice?.toFixed(8) ?? '...'} SOL
+                          </div>
+                          <div className="text-[10px] text-[#64748b] mt-0.5">
+                            {pos.amount?.toLocaleString(undefined, { maximumFractionDigits: 4 })} tokens for {(pos.solSpent || 0).toFixed(4)} SOL
+                          </div>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <div>
+                            <div className="text-[#64748b] text-[11px] mb-1 uppercase font-medium">Current</div>
+                            <div className="font-mono text-[14px] font-semibold text-[#e2e8f0]">
+                              {isStalePos ? (
+                                <span className="text-amber-500 font-bold animate-pulse text-[12px]">STALE (Gaping)</span>
+                              ) : (
+                                `${displayPrice.toFixed(8)} SOL`
+                              )}
                             </div>
                           </div>
-
-                          <div>
-                            <button 
-                              type="button"
-                              onClick={() => executeSell(mint, pos.currentPrice || pos.buyPrice, pnlPct, 'EMERGENCY FORCE EXIT')}
-                              className="w-full bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 transition-colors px-3 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider border border-rose-500/20 group cursor-pointer flex items-center justify-center gap-2"
-                            >
-                              <Square className="w-3.5 h-3.5 group-hover:scale-110 transition-transform" />
-                              <span>Emergency Force Exit</span>
-                            </button>
+                          <div className="flex gap-2 w-full">
+                             <button 
+                               onClick={() => executeSell(mint, pos.currentPrice || pos.buyPrice, pnlPct, 'EMERGENCY FORCE EXIT')}
+                               className="flex-1 bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 transition-colors px-3 py-2 rounded-lg text-xs font-black uppercase tracking-widest border border-rose-500/20 group"
+                             >
+                               <span className="flex items-center justify-center gap-2">
+                                  <Square className="w-3 h-3 group-hover:scale-110 transition-transform" />
+                                  Emergency Force Exit
+                               </span>
+                             </button>
                           </div>
                         </div>
                         
@@ -6302,34 +6174,14 @@ const checkTokenCriteria = (mint: string): {
                           <div className="text-[#64748b] text-[10px] uppercase font-bold tracking-wider">
                             Buy: <span className="text-[#e2e8f0] ml-1">{new Date(pos.entryTime).toLocaleTimeString()}</span>
                           </div>
-                          <div className="flex items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={(e) => handleCopyText(mint, `mint-ftr-${mint}`, e)}
-                              className="flex items-center gap-1 text-[10px] font-mono text-[#94a3b8] hover:text-[#e2e8f0] bg-[#141622] hover:bg-[#1f2233] px-2 py-1 rounded border border-[#24273a] hover:border-indigo-500/40 transition-all cursor-pointer active:scale-95"
-                              title={`Click to copy token address:\n${mint}`}
-                            >
-                              {copiedId === `mint-ftr-${mint}` || copiedId === `mint-hdr-${mint}` ? (
-                                <>
-                                  <Check className="w-3 h-3 text-emerald-400" />
-                                  <span className="text-emerald-400 font-sans font-bold">Copied CA!</span>
-                                </>
-                              ) : (
-                                <>
-                                  <Copy className="w-3 h-3 text-[#64748b]" />
-                                  <span>Copy CA</span>
-                                </>
-                              )}
-                            </button>
-                            <a 
-                              href={`https://dexscreener.com/solana/${mint}`}
-                              target="_blank"
-                              rel="noopener noreferrer" 
-                              className="flex items-center gap-1 text-[10px] font-bold text-[#94a3b8] hover:text-indigo-400 uppercase tracking-wider transition-colors"
-                            >
-                              DexScreener <Search className="w-3 h-3" />
-                            </a>
-                          </div>
+                          <a 
+                            href={`https://dexscreener.com/solana/${mint}`}
+                            target="_blank"
+                            rel="noopener noreferrer" 
+                            className="flex items-center gap-1 text-[10px] font-bold text-[#94a3b8] hover:text-indigo-400 uppercase tracking-wider transition-colors"
+                          >
+                            DexScreener <Search className="w-3 h-3" />
+                          </a>
                         </div>
                       </div>
                     );
@@ -6349,25 +6201,7 @@ const checkTokenCriteria = (mint: string): {
               <button onClick={resetSession} className="text-[10px] text-[#64748b] hover:text-white uppercase font-bold tracking-wider">Reset</button>
             </div>
             <div className="p-4 space-y-0 text-[12px]">
-              <div className="flex flex-col gap-1 p-4 bg-amber-500/5 rounded-xl border border-amber-500/20 mb-4">
-                <div className="flex justify-between items-center">
-                  <span className="text-[#94a3b8] text-[10px] font-bold uppercase tracking-widest flex items-center gap-2">
-                     <ShieldCheck className="w-3 h-3 text-amber-500" /> SIM WALLET BALANCE
-                  </span>
-                  <span className="bg-amber-500/10 text-amber-500 text-[9px] px-1.5 py-0.5 rounded font-black tracking-tighter">
-                    ACTIVE
-                  </span>
-                </div>
-                <div className="flex items-baseline justify-between mt-1">
-                  <span className="text-3xl font-black text-amber-400 font-mono tracking-tighter leading-none">
-                    {(simWalletBalance || 0).toFixed(4)}
-                  </span>
-                  <span className="text-amber-500/60 font-bold text-xs ml-1">SOL</span>
-                </div>
-                <p className="text-[10px] text-slate-500 mt-2 font-medium leading-relaxed italic">
-                  Simulation mode active. Live feedback during trades.
-                </p>
-              </div>
+
               <div className="flex justify-between items-center py-2.5 border-b border-[#1f212e]">
                 <span className="text-[#64748b] uppercase font-medium">Total Trades</span>
                 <span className="font-mono font-semibold text-[#e2e8f0] text-[14px]">{stats.trades}</span>
@@ -6567,19 +6401,9 @@ const checkTokenCriteria = (mint: string): {
                               <div className="text-[9px] text-[#64748b] whitespace-nowrap">{new Date(alert.timestamp).toLocaleTimeString()}</div>
                             </div>
                             <div className="text-[10px] uppercase font-bold tracking-wider text-indigo-400/80 mt-0.5">{alert.type.replace('_', ' ')}</div>
-                            <button
-                              type="button"
-                              onClick={(e) => handleCopyText(alert.address, `telem-${alert.id}-${alert.address}`, e)}
-                              className="text-[10px] font-mono text-[#94a3b8] hover:text-[#e2e8f0] truncate mt-1 inline-flex items-center gap-1 cursor-pointer group/ca"
-                              title={`Click to copy: ${alert.address}`}
-                            >
-                              <span>{alert.address.slice(0, 12)}...{alert.address.slice(-6)}</span>
-                              {copiedId === `telem-${alert.id}-${alert.address}` ? (
-                                <Check className="w-2.5 h-2.5 text-emerald-400 shrink-0" />
-                              ) : (
-                                <Copy className="w-2.5 h-2.5 text-[#64748b] group-hover/ca:text-indigo-400 transition-colors opacity-70 group-hover/ca:opacity-100 shrink-0" />
-                              )}
-                            </button>
+                            <div className="text-[10px] text-[#94a3b8] truncate mt-1">
+                              {alert.address.slice(0, 12)}...{alert.address.slice(-6)}
+                            </div>
                           </div>
                         </div>
                       ))
@@ -6664,19 +6488,9 @@ const checkTokenCriteria = (mint: string): {
                                     {isRaydium ? 'Raydium' : 'Pump.fun'}
                                   </span>
                                 </div>
-                                <button
-                                  type="button"
-                                  onClick={(e) => handleCopyText(mint, `prospect-${mint}`, e)}
-                                  className="text-[9px] font-mono text-[#64748b] hover:text-[#e2e8f0] truncate max-w-[170px] mt-0.5 inline-flex items-center gap-1 cursor-pointer text-left group/pca"
-                                  title={`Click to copy: ${mint}`}
-                                >
-                                  <span className="truncate">{mint.slice(0, 8)}...{mint.slice(-6)}</span>
-                                  {copiedId === `prospect-${mint}` ? (
-                                    <Check className="w-2.5 h-2.5 text-emerald-400 shrink-0" />
-                                  ) : (
-                                    <Copy className="w-2.5 h-2.5 text-[#64748b] group-hover/pca:text-indigo-400 transition-colors opacity-70 group-hover/pca:opacity-100 shrink-0" />
-                                  )}
-                                </button>
+                                <div className="mt-1">
+                                  <MintCopyBadge mint={mint} size="sm" />
+                                </div>
                               </div>
                               <div className="text-right">
                                 <span className="text-[11px] font-bold text-[#c7f284]">
@@ -7209,20 +7023,8 @@ const checkTokenCriteria = (mint: string): {
                   const mintDisplay = mintStr.length > 12 ? `${mintStr.slice(0, 6)}...${mintStr.slice(-6)}` : mintStr || 'Unknown';
                   return (
                   <tr key={trade.id} className="border-b border-[#1f212e]/50 last:border-0 hover:bg-[#1f212e]/30 transition-colors">
-                    <td className="py-2 text-[#e2e8f0] pr-4">
-                      <button
-                        type="button"
-                        onClick={(e) => handleCopyText(mintStr, `th-${trade.id}-${mintStr}`, e)}
-                        className="inline-flex items-center gap-1 text-[#e2e8f0] hover:text-indigo-300 font-mono transition-colors cursor-pointer group"
-                        title={`Click to copy address:\n${mintStr}`}
-                      >
-                        <span>{mintDisplay}</span>
-                        {copiedId === `th-${trade.id}-${mintStr}` ? (
-                          <Check className="w-3 h-3 text-emerald-400" />
-                        ) : (
-                          <Copy className="w-2.5 h-2.5 text-[#64748b] group-hover:text-indigo-400 transition-colors opacity-70 group-hover:opacity-100" />
-                        )}
-                      </button>
+                    <td className="py-2 pr-4">
+                      <MintCopyBadge mint={mintStr} size="sm" />
                     </td>
                     <td className="py-2 text-[#e2e8f0] pr-4">{new Date(buyTime).toLocaleTimeString()}</td>
                     <td className="py-2 text-[#64748b] pr-4">{durationStr}</td>
