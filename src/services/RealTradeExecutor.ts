@@ -8,6 +8,7 @@ import { TradingNetwork } from '../config/network';
 export interface RealTradeConfig {
   network?: TradingNetwork;
   verbose?: boolean;
+  hybridEngine?: any;
 }
 
 export class RealTradeExecutor implements ITradeExecutor {

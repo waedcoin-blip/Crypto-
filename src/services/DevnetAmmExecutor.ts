@@ -156,7 +156,7 @@ export class DevnetAmmExecutor implements ITradeExecutor {
         },
       ],
       contextSlot: Math.floor(Date.now() / 400),
-    } as QuoteResponse;
+    } as unknown as QuoteResponse;
   }
 
   async swap(
