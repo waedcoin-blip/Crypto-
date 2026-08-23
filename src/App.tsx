@@ -2479,12 +2479,17 @@ function App() {
           const next = { ...prev };
           prices.forEach((tp, addr) => {
             if (positions[addr]) {
+              const existingMetric = next[addr];
+              const incomingTime = tp.updatedAt || Date.now();
+              if (existingMetric?.lastUpdated && incomingTime < existingMetric.lastUpdated) {
+                return;
+              }
               next[addr] = {
                 ...next[addr],
                 address: addr,
                 priceUsd: tp.priceUsd ?? undefined,
                 priceNative: tp.priceNative || 0,
-                lastUpdated: Date.now()
+                lastUpdated: incomingTime
               };
             }
           });

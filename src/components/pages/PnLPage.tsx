@@ -113,6 +113,7 @@ interface Position {
   symbol: string;
   buyPrice: number;
   currentPrice: number;
+  lastPriceTimestamp?: number;
   solSpent: number;
   amount: number;
   amountLamports?: number;
@@ -2642,7 +2643,14 @@ export const PnLPage = ({
           const freshPrice = metric.priceNative
             ? (typeof metric.priceNative === 'number' ? metric.priceNative : parseFloat(String(metric.priceNative)))
             : (metric.priceUsd ? parseFloat(String(metric.priceUsd)) / getSolPriceUsd() : 0);
-          if (freshPrice > 0 && next[mint].currentPrice !== freshPrice) {
+          const freshTimestamp = metric.lastUpdated || 0;
+          const currentTimestamp = next[mint].lastPriceTimestamp || 0;
+
+          if (freshTimestamp < currentTimestamp) {
+            return;
+          }
+
+          if (freshPrice > 0 && (next[mint].currentPrice !== freshPrice || freshTimestamp > currentTimestamp)) {
             const currentGrossSol = freshPrice * (next[mint].amount || 0);
             let netSolIfSold = currentGrossSol;
             if (!privateKey) {
@@ -2656,6 +2664,7 @@ export const PnLPage = ({
             next[mint] = {
               ...next[mint],
               currentPrice: freshPrice,
+              lastPriceTimestamp: freshTimestamp || Date.now(),
               isStale: false,
               realNetPnl: calcNetPnlPct,
               realNetSol: calcNetSol
@@ -4228,36 +4237,6 @@ const checkTokenCriteria = (mint: string): {
             lastDiagnosticsRef.current = now;
             addLog(`🛑 [MAX POSITIONS LIMIT] Active slots filled (${activeMints.length}/${maxPositions}). Stopped searching new tokens.`, 'warn');
          }
-      }
-
-      // 2. Fetch prices for active positions for UI display sync (Exits managed unified by PositionExitManager)
-      const mintsToFetch = activeMints;
-      if (mintsToFetch.length > 0) {
-        const batchedPrices = await getTokenPrices(mintsToFetch);
-        for (const [m, item] of Object.entries(batchedPrices)) {
-          const p = item as { price?: number | string };
-          if (p && p.price !== undefined) {
-            const newPrice = typeof p.price === 'number' ? p.price : parseFloat(p.price);
-            if (newPrice > 0 && masterMonitorRef.current) {
-              masterMonitorRef.current.pushPriceUpdate(m, newPrice, Date.now(), 'price_tracker');
-            }
-          }
-        }
-        useAppStore.getState().setTokenMetrics(prev => {
-          let changed = false;
-          const next = { ...prev };
-          for (const [m, item] of Object.entries(batchedPrices)) {
-            const p = item as { price?: number | string };
-            if (p && p.price !== undefined) {
-              const newPrice = typeof p.price === 'number' ? p.price : parseFloat(p.price);
-              if (next[m] && next[m].priceNative !== newPrice) {
-                next[m] = { ...next[m], priceNative: newPrice, lastUpdated: Date.now() };
-                changed = true;
-              }
-            }
-          }
-          return changed ? next : prev;
-        });
       }
     } finally {
       isCheckingRef.current = false;
@@ -6009,7 +5988,7 @@ const checkTokenCriteria = (mint: string): {
                     }
 
                     const token = tokenMetrics[mint];
-                    const displayPrice = (token?.priceNative ? parseFloat(String(token.priceNative)) : 0) || pos.currentPrice || pos.buyPrice || 0;
+                    const displayPrice = pos.currentPrice || (token?.priceNative ? parseFloat(String(token.priceNative)) : 0) || pos.buyPrice || 0;
                     const netCalc = calcNetPnl(displayPrice, pos.amount || 0, pos.solSpent || 0, slippage, pos.recoveryMode, !!privateKey);
                     let netSolIfSold = netCalc.netSol;
                     let pnlPct = netCalc.netPnlPct / 100;
@@ -6022,7 +6001,7 @@ const checkTokenCriteria = (mint: string): {
                     return !isNaN(pnlPct) && isFinite(pnlPct);
                   }).map(([mint, pos]: [string, Position]) => {
                     const token = tokenMetrics[mint];
-                    const displayPrice = (token?.priceNative ? parseFloat(String(token.priceNative)) : 0) || pos.currentPrice || pos.buyPrice || 0;
+                    const displayPrice = pos.currentPrice || (token?.priceNative ? parseFloat(String(token.priceNative)) : 0) || pos.buyPrice || 0;
                     const netCalc = calcNetPnl(displayPrice, pos.amount || 0, pos.solSpent || 0, slippage, pos.recoveryMode, !!privateKey);
                     let netSolIfSold = netCalc.netSol;
                     let pnlPct = netCalc.netPnlPct / 100;

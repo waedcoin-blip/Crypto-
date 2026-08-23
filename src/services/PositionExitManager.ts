@@ -13,6 +13,7 @@ export interface ManagedExitPosition {
   slippageBpsTp?: number;
   slippageBpsSl?: number;
   currentPrice: number;
+  lastPriceTimestamp?: number;
   peakPrice?: number;
   highestPnLPct?: number;
   state: 'PENDING_BUY' | 'OPEN' | 'CLOSING' | 'CLOSED';
@@ -183,10 +184,15 @@ export class PositionExitManager {
     return Array.from(this.positions.values());
   }
 
-  public onPriceUpdate(mint: string, currentPrice: number, _timestamp: number): void {
+  public onPriceUpdate(mint: string, currentPrice: number, timestamp: number): void {
     const pos = this.positions.get(mint);
     if (!pos || pos.state === 'CLOSED') return;
 
+    if (pos.lastPriceTimestamp && timestamp < pos.lastPriceTimestamp) {
+      return;
+    }
+
+    pos.lastPriceTimestamp = timestamp;
     pos.currentPrice = currentPrice;
 
     if (!pos.peakPrice || currentPrice > pos.peakPrice) {

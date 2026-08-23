@@ -131,11 +131,14 @@ export class MarketDataManager {
     mint: string,
     priceNative: number,
     priceUsd?: number,
-    source: TokenPrice['source'] = 'jupiter'
+    source: TokenPrice['source'] = 'jupiter',
+    updatedAt: number = Date.now()
   ): void {
     if (!mint || priceNative <= 0) return;
-    const now = Date.now();
     const existing = this.cache.get(mint)?.price;
+    if (existing && existing.updatedAt && updatedAt < existing.updatedAt) {
+      return;
+    }
     const updated: TokenPrice = {
       mint,
       priceUsd: priceUsd ?? existing?.priceUsd ?? null,
@@ -143,14 +146,14 @@ export class MarketDataManager {
       liquidityUsd: existing?.liquidityUsd || 0,
       symbol: existing?.symbol,
       name: existing?.name,
-      updatedAt: now,
+      updatedAt,
       source,
       isStale: false,
     };
     this.cache.set(mint, {
       price: updated,
-      fetchedAt: now,
-      expiresAt: now + 3000,
+      fetchedAt: updatedAt,
+      expiresAt: updatedAt + 3000,
     });
     const updatedMap = new Map<string, TokenPrice>();
     updatedMap.set(mint, updated);

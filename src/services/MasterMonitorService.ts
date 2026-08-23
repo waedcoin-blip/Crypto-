@@ -107,7 +107,8 @@ export class MasterMonitorService {
       mint,
       priceNative,
       undefined,
-      source === 'dexscreener' ? 'dexscreener' : 'jupiter'
+      source === 'dexscreener' ? 'dexscreener' : 'jupiter',
+      timestamp
     );
 
     // 🔥 INSTANT DIRECT PATH: Price update -> Exit Manager (<1ms evaluation)
