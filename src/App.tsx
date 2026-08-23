@@ -32,6 +32,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { cn, detectTokenStage } from './lib/utils';
 import { setSolPriceUsd, getSolPriceUsd, calcNetPnl, getDynamicOperationalFeeSol } from './utils/pnlCalculator';
+import { validateTokenAge, formatTokenAge } from './utils/tokenAge';
 import { DEFAULT_HELIUS_RPC, HELIUS_API_KEY } from './constants/solana';
 import { encryptPrivateKey, decryptPrivateKey } from './lib/crypto';
 import { auth, db, signInWithGoogle, signInWithEmailAndPassword, createUserWithEmailAndPassword, authPersistencePromise } from './lib/firebase';
@@ -255,20 +256,7 @@ const normalizeTimestamp = (ts: number | undefined): number => {
 };
 
 const formatAge = (createdAt: number | undefined, discoveredAt: number | undefined) => {
-  const timestamp = createdAt ? normalizeTimestamp(createdAt) : (discoveredAt || Date.now());
-  const diff = Date.now() - timestamp;
-  
-  if (diff < 0) return 'Just now';
-  
-  const seconds = Math.floor(diff / 1000);
-  const minutes = Math.floor(seconds / 60);
-  const hours = Math.floor(minutes / 60);
-  const days = Math.floor(hours / 24);
-  
-  if (days > 0) return `${days}d ${hours % 24}h`;
-  if (hours > 0) return `${hours}h ${minutes % 60}m`;
-  if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
-  return `${seconds}s`;
+  return formatTokenAge({ pairCreatedAt: createdAt, discoveredAt });
 };
 
 const calculateMinimumSellOutput = (
@@ -1320,10 +1308,7 @@ function App() {
           const now = Date.now();
           const recentBuys = (token.recentBuysTimeline || []).filter((t: any) => t && t.t && (now - t.t < 30000));
           
-          const tokenTime = token.pairCreatedAt 
-            ? (token.pairCreatedAt < 1000000000000 ? token.pairCreatedAt * 1000 : token.pairCreatedAt) 
-            : (token.discoveredAt || now);
-          const ageMinutes = (now - tokenTime) / 60000;
+          const ageMinutes = getTokenAgeMinutes(token) ?? 0;
 
           const metrics: AdvancedTokenMetrics = {
             mintAddress: token.address,
@@ -2858,7 +2843,8 @@ function App() {
         }
 
         const priceChange = pair.priceChange?.m5 || 0;
-        const pairCreatedAt = pair.pairCreatedAt || 0;
+        const normCreatedAt = normalizeTimestamp(pair.pairCreatedAt);
+        const pairCreatedAt = normCreatedAt || 0;
         const symbol = pair.baseToken?.symbol || "TOKEN";
         const category = categorizeToken(symbol, mint);
         
@@ -3270,13 +3256,14 @@ function App() {
                 const isRiskValid = tokenRisk <= maxRisk;
                 const isLiquidityValid = liquidity >= minLiq && liquidityRatio >= minLiqRatio;
 
-                const createdAtRaw = updated.pairCreatedAt || security.security?.pairCreatedAt;
-                const normCreatedAt = createdAtRaw ? (createdAtRaw < 1000000000000 ? createdAtRaw * 1000 : createdAtRaw) : null;
-                const tokenTime = normCreatedAt || updated.discoveredAt || now;
-                const tokenAgeMin = (now - tokenTime) / 60000;
                 const minAge = latestState.current.hardenedMinAge ?? 0;
-                const maxAge = latestState.current.hardenedMaxAge ?? 120;
-                const isAgeValid = tokenAgeMin >= minAge && tokenAgeMin <= maxAge;
+                const maxAge = latestState.current.hardenedMaxAge ?? 240;
+                const ageRes = validateTokenAge(updated, {
+                  minAgeMinutes: minAge,
+                  maxAgeMinutes: maxAge,
+                  allowUnknownAge: false,
+                });
+                const isAgeValid = ageRes.isValid;
 
                 const isMassiveStrength = hasHighProgress && 
                                           isHealthyPool &&
@@ -5764,9 +5751,8 @@ function App() {
                      </div>
                    )}
                    {(() => {
-                     const timestamp = metric.pairCreatedAt ? normalizeTimestamp(metric.pairCreatedAt) : (metric.discoveredAt || Date.now());
-                     const age = Date.now() - timestamp;
-                     if (age < 600000) {
+                     const ageMins = getTokenAgeMinutes(metric);
+                     if (ageMins !== null && ageMins < 10) {
                        return (
                          <div className="px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest bg-amber-500/20 text-amber-400 border border-amber-500/30 animate-pulse">
                            JUST LAUNCHED

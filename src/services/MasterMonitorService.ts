@@ -2,6 +2,8 @@
 import { Connection } from '@solana/web3.js';
 import { PositionExitManager } from './PositionExitManager';
 import { masterMonitorHealthManager } from './MasterMonitorHealthManager';
+import { marketDataManager } from './marketDataManager';
+import { recordCandidatePrice } from './priceTracker';
 
 export interface TokenPriceUpdate {
   mint: string;
@@ -97,6 +99,12 @@ export class MasterMonitorService {
       updatedAt: timestamp,
     });
 
+    // Record price tick in shared price history
+    recordCandidatePrice(mint, priceNative);
+
+    // 🔥 INSTANT APP STORE UPDATE: Immediately update central marketDataManager store & notify UI
+    marketDataManager.updateTokenPrice(mint, priceNative, undefined, source === 'rpc_ws' ? 'jupiter' : source);
+
     // 🔥 INSTANT DIRECT PATH: Price update -> Exit Manager (<1ms evaluation)
     this.exitManager.onPriceUpdate(mint, priceNative, timestamp);
   }
@@ -171,8 +179,8 @@ export class MasterMonitorService {
     // Initial poll
     pollBatch();
 
-    // Single relaxed unified ticker for ALL active tokens (4000ms)
-    this.batchInterval = setInterval(pollBatch, 4000);
+    // Single fast unified ticker for ALL active tokens (1000ms / 1s)
+    this.batchInterval = setInterval(pollBatch, 1000);
   }
 
   private setupWsSubscriptions(): void {

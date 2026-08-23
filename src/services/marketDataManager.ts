@@ -125,6 +125,39 @@ export class MarketDataManager {
   }
 
   /**
+   * Directly update a token's price in cache and immediately notify all subscribers.
+   */
+  public updateTokenPrice(
+    mint: string,
+    priceNative: number,
+    priceUsd?: number,
+    source: TokenPrice['source'] = 'jupiter'
+  ): void {
+    if (!mint || priceNative <= 0) return;
+    const now = Date.now();
+    const existing = this.cache.get(mint)?.price;
+    const updated: TokenPrice = {
+      mint,
+      priceUsd: priceUsd ?? existing?.priceUsd ?? null,
+      priceNative,
+      liquidityUsd: existing?.liquidityUsd || 0,
+      symbol: existing?.symbol,
+      name: existing?.name,
+      updatedAt: now,
+      source,
+      isStale: false,
+    };
+    this.cache.set(mint, {
+      price: updated,
+      fetchedAt: now,
+      expiresAt: now + 3000,
+    });
+    const updatedMap = new Map<string, TokenPrice>();
+    updatedMap.set(mint, updated);
+    this.notifySubscribers(updatedMap);
+  }
+
+  /**
    * Get single price, utilizing cache & deduplication
    */
   public async getPrice(

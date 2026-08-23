@@ -35,6 +35,7 @@ import { SyncStatusBadge } from '../SyncStatusBadge';
 import { useBalanceStore } from '../../store/balanceStore';
 import { useTradingEnvironmentStore } from '../../store/tradingEnvironmentStore';
 import { walletBalanceService } from '../../services/WalletBalanceService';
+import { validateTokenAge, getTokenAgeMinutes, formatTokenAge } from '../../utils/tokenAge';
 
 import { DEFAULT_HELIUS_RPC, DEFAULT_HELIUS_WS, HELIUS_API_KEY, SOL_MINT, USDC_MINT } from '../../constants/solana';
 
@@ -999,7 +1000,7 @@ export const PnLPage = ({
     hardenedMinBondingProgress = 0, setHardenedMinBondingProgress = () => {},
     hardenedMaxBondingProgress = 100, setHardenedMaxBondingProgress = () => {},
     hardenedMinAge = 0, setHardenedMinAge = () => {},
-    hardenedMaxAge = 120, setHardenedMaxAge = () => {},
+    hardenedMaxAge = 240, setHardenedMaxAge = () => {},
     hardenedMinLatency = 0, setHardenedMinLatency = () => {},
     hardenedMaxLatency = 250, setHardenedMaxLatency = () => {},
     hardenedMatchRequirement = 100, setHardenedMatchRequirement = () => {},
@@ -2474,33 +2475,7 @@ export const PnLPage = ({
         if (mint === 'So11111111111111111111111111111111111111112') continue;
 
         let finalPriceInSol = tp.priceNative || (tp.priceUsd ? tp.priceUsd / solPriceInUsd : 0);
-        let isStale = false;
-
-        // Liquidity-aware sanity check comparing against a fresh Jupiter quote, not a hardcoded multiplier
-        const activePos = positionsRef.current[mint];
-        if (activePos && activePos.buyPrice > 0) {
-          try {
-            const rawAmount = activePos.amountLamports || Math.floor((activePos.amount || 1) * Math.pow(10, activePos.decimals || 6));
-            const validationQuote = await getJupiterQuote(
-              mint,
-              'So11111111111111111111111111111111111111112',
-              rawAmount,
-              activePos.liquidityUsd || 0
-            );
-            if (validationQuote && validationQuote.outAmount && activePos.amount > 0) {
-              const quotedPrice = Number(validationQuote.outAmount) / activePos.amount / 1e9;
-              if (quotedPrice > 0) {
-                // If our price source diverges >10× from Jupiter, use Jupiter's price
-                if (finalPriceInSol > quotedPrice * 10 || finalPriceInSol < quotedPrice / 10) {
-                  finalPriceInSol = quotedPrice;
-                }
-              }
-            }
-          } catch {
-            // If Jupiter fails, keep the price but mark as STALE
-            isStale = true;
-          }
-        }
+        const isStale = tp.isStale || false;
 
         if (finalPriceInSol > 0) {
           prices[mint] = {
@@ -3234,22 +3209,20 @@ const checkTokenCriteria = (mint: string): {
       }
 
       // 10. Token Age limits (applies to ALL tokens)
-      const now = Date.now();
-      const createdAtRaw = metric.pairCreatedAt;
-      const discoveredAtRaw = metric.discoveredAt;
-      const normCreatedAt = createdAtRaw ? (createdAtRaw < 1000000000000 ? createdAtRaw * 1000 : createdAtRaw) : null;
-      const normDiscoveredAt = discoveredAtRaw ? (discoveredAtRaw < 1000000000000 ? discoveredAtRaw * 1000 : discoveredAtRaw) : null;
-      const tokenTime = normCreatedAt || normDiscoveredAt || now;
-      const tokenAgeMin = (now - tokenTime) / 60000;
-
       const minAg = hardenedMinAge !== undefined ? hardenedMinAge : 0;
-      const maxAg = hardenedMaxAge !== undefined ? hardenedMaxAge : 120;
-      const isAgeValid = tokenAgeMin >= minAg && tokenAgeMin <= maxAg;
+      const maxAg = hardenedMaxAge !== undefined ? hardenedMaxAge : 240;
+      const ageRes = validateTokenAge(metric, {
+        minAgeMinutes: minAg,
+        maxAgeMinutes: maxAg,
+        allowUnknownAge: false,
+      });
+      const isAgeValid = ageRes.isValid;
+      const tokenAgeMin = ageRes.ageMinutes;
 
       addCheckResult(
         "Token Age (Minutes)",
         isAgeValid,
-        `${tokenAgeMin.toFixed(1)}m`,
+        tokenAgeMin !== null ? `${tokenAgeMin.toFixed(1)}m` : 'Unknown',
         `${minAg}m - ${maxAg}m`
       );
 
@@ -4090,16 +4063,13 @@ const checkTokenCriteria = (mint: string): {
         const progress = metric.bondingCurveProgress || 0;
         const isProgressValid = isGraduated || (progress >= hardenedMinBondingProgress && progress <= hardenedMaxBondingProgress);
 
-        const createdAtRaw = metric.pairCreatedAt;
-        const discoveredAtRaw = metric.discoveredAt;
-        const normCreatedAt = createdAtRaw ? (createdAtRaw < 1000000000000 ? createdAtRaw * 1000 : createdAtRaw) : null;
-        const normDiscoveredAt = discoveredAtRaw ? (discoveredAtRaw < 1000000000000 ? discoveredAtRaw * 1000 : discoveredAtRaw) : null;
-        const tokenTime = normCreatedAt || normDiscoveredAt || now;
-        const tokenAgeMin = (now - tokenTime) / 60000;
-
-        const isAgeValid = tokenAgeMin >= hardenedMinAge && tokenAgeMin <= hardenedMaxAge;
-        if (!isAgeValid) {
-          addLog(`❌ [ALERT FILTERED] ${alert.token} age (${tokenAgeMin.toFixed(1)}m) exceeds Max Age limit (${hardenedMaxAge}m)`, 'warn');
+        const ageRes = validateTokenAge(metric, {
+          minAgeMinutes: hardenedMinAge,
+          maxAgeMinutes: hardenedMaxAge,
+          allowUnknownAge: false,
+        });
+        if (!ageRes.isValid) {
+          addLog(`❌ [ALERT FILTERED] ${alert.token} age check failed: ${ageRes.reason || 'Invalid age'}`, 'warn');
           return;
         }
 

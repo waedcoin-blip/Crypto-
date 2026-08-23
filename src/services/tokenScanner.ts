@@ -1,4 +1,5 @@
 import { TokenCriteria, DEFAULT_CRITERIA } from '../config/tokenCriteria';
+import { validateTokenAge } from '../utils/tokenAge';
 
 export interface ScannedToken {
   address: string;
@@ -138,16 +139,17 @@ export class TokenScanner {
       };
     }
 
-    // Token age
-    if (token.pairCreatedAt > 0) {
-      const age = Date.now() - token.pairCreatedAt;
-      if (age > this.criteria.maxTokenAgeMs) {
-        return {
-          token,
-          meetsCriteria: false,
-          rejectionReason: `Too old: ${(age / 3600000).toFixed(1)}h > ${(this.criteria.maxTokenAgeMs / 3600000)}h`,
-        };
-      }
+    // Token age check via canonical utility
+    const ageRes = validateTokenAge({ pairCreatedAt: token.pairCreatedAt }, {
+      maxAgeMinutes: this.criteria.maxTokenAgeMs / 60000,
+      allowUnknownAge: false,
+    });
+    if (!ageRes.isValid) {
+      return {
+        token,
+        meetsCriteria: false,
+        rejectionReason: `Age check failed: ${ageRes.reason || 'Too old or invalid creation time'}`,
+      };
     }
 
     // Momentum (price change 5m)
