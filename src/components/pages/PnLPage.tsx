@@ -3943,17 +3943,24 @@ const checkTokenCriteria = (mint: string): {
     if (positionExitManagerRef.current) {
       for (const mint of activeMints) {
         const pos = positionsRef.current[mint];
-        if (pos && !positionExitManagerRef.current.getPosition(mint)) {
-          positionExitManagerRef.current.addPosition({
-            mint,
-            amount: pos.amountLamports || Math.floor((pos.amount || 0) * (pos.decimals ? Math.pow(10, pos.decimals) : 1e6)),
-            buyPrice: pos.buyPrice || 0,
-            solSpent: pos.solSpent || 0.1,
-            tpPct: pos.tpPct ?? (configRef.current.minTakeProfit || 25),
-            slPct: pos.slPct ?? (configRef.current.stopLossPct || 15),
-          });
-          if (pos.txid && pos.txid !== 'init-sig') {
-            positionExitManagerRef.current.confirmBuy(mint, pos.txid, pos.buySlot || 0);
+        if (pos) {
+          const tpValue = pos.tpPct ?? (configRef.current.minTakeProfit || minTakeProfit || 25);
+          const slValue = pos.slPct ?? (configRef.current.stopLossPct || stopLossPct || 15);
+          const existingPos = positionExitManagerRef.current.getPosition(mint);
+          if (existingPos) {
+            positionExitManagerRef.current.updatePositionTpSl(mint, tpValue, slValue);
+          } else {
+            positionExitManagerRef.current.addPosition({
+              mint,
+              amount: pos.amountLamports || Math.floor((pos.amount || 0) * (pos.decimals ? Math.pow(10, pos.decimals) : 1e6)),
+              buyPrice: pos.buyPrice || 0,
+              solSpent: pos.solSpent || 0.1,
+              tpPct: tpValue,
+              slPct: slValue,
+            });
+            if (pos.txid && pos.txid !== 'init-sig') {
+              positionExitManagerRef.current.confirmBuy(mint, pos.txid, pos.buySlot || 0);
+            }
           }
         }
       }
@@ -3962,7 +3969,7 @@ const checkTokenCriteria = (mint: string): {
     if (masterMonitorRef.current && activeMints.length > 0) {
       masterMonitorRef.current.startMonitoring(activeMints);
     }
-  }, [positions, isRunning]);
+  }, [positions, isRunning, minTakeProfit, stopLossPct]);
 
   const processedAlerts = useRef<Set<string>>(new Set());
   useEffect(() => {

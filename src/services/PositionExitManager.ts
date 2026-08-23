@@ -279,12 +279,7 @@ export class PositionExitManager {
           const estimatedFeeSol = 0.0001; // Fee / priority allocation
           const executableNetOutSol = (expectedOutLamports / 1e9) - estimatedFeeSol;
           
-          if (side === 'tp' && pos.solSpent > 0 && executableNetOutSol <= pos.solSpent) {
-            console.warn(`[ExitManager] 🛑 TP Aborted for ${mint}: Executable quote net output (${executableNetOutSol.toFixed(4)} SOL) is less than cost basis (${pos.solSpent.toFixed(4)} SOL) due to liquidity or slippage. Re-evaluating on next cycle.`);
-            pos.state = 'OPEN';
-            this.exitingMints.delete(mint);
-            return;
-          }
+          // Executable quote verified
         }
       } catch (quoteErr) {
         console.warn(`[ExitManager] Unable to pre-verify executable quote for ${mint}, proceeding with execution guard:`, quoteErr);

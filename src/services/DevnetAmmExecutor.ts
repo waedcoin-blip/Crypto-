@@ -16,6 +16,7 @@ import {
   TOKEN_2022_PROGRAM_ID,
   getAssociatedTokenAddressSync,
   createAssociatedTokenAccountIdempotentInstruction,
+  createBurnInstruction,
 } from '@solana/spl-token';
 import { useActiveWalletStore } from '../store/activeWalletStore';
 import { useBalanceStore, assertTradeBalance } from '../store/balanceStore';
@@ -232,6 +233,26 @@ export class DevnetAmmExecutor implements ITradeExecutor {
               mintValidation.tokenProgram
             )
           );
+
+          if (!isSolBuy) {
+            try {
+              const burnAmountBig = BigInt(Math.floor(amount));
+              if (burnAmountBig > 0n) {
+                instructions.push(
+                  createBurnInstruction(
+                    ata,
+                    targetMintPk,
+                    userPk,
+                    burnAmountBig,
+                    [],
+                    mintValidation.tokenProgram
+                  )
+                );
+              }
+            } catch (burnErr) {
+              console.warn('[DevnetAmmExecutor] Unable to create burn instruction:', burnErr);
+            }
+          }
         } else {
           console.log(
             `[DevnetAmmExecutor] Target mint ${targetMintStr} does not exist on Devnet RPC. Skipping ATA instruction.`
