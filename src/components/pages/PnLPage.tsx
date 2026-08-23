@@ -3722,9 +3722,28 @@ const checkTokenCriteria = (mint: string): {
           isMainSold = true;
         } else {
           addLog(`Ordering ${pos.symbol} → SOL...`, 'sell');
+          let solBefore = 0;
+          try {
+            solBefore = await walletBalanceService.getSolBalance();
+          } catch (e) {
+            console.warn("Unable to fetch solBefore balance for sell", e);
+          }
+
           const result = await executeJupiterSwap(mint, SOL_MINT, lamportsToSell);
           if (result.txid) {
-            const actualSolReceived = result.outputAmount || 0;
+            await walletBalanceService.refreshNow();
+            let solAfter = 0;
+            try {
+              solAfter = await walletBalanceService.getSolBalance();
+            } catch (e) {
+              console.warn("Unable to fetch solAfter balance for sell", e);
+            }
+
+            const verifiedSolDelta = solAfter - solBefore;
+            const actualSolReceived = (solBefore > 0 && solAfter > 0 && verifiedSolDelta > 0)
+              ? verifiedSolDelta
+              : (result.outputAmount || 0);
+
             const costBasisSol = pos.solSpent || 0;
             const actualPnlSOL = costBasisSol > 0 ? actualSolReceived - costBasisSol : 0;
             const actualPnlPct = costBasisSol > 0 ? actualPnlSOL / costBasisSol : 0;
@@ -3732,8 +3751,8 @@ const checkTokenCriteria = (mint: string): {
             setStats((s) => ({
               ...s,
               trades: s.trades + 1,
-              wins: s.wins + (actualPnlPct > 0 ? 1 : 0),
-              losses: s.losses + (actualPnlPct <= 0 ? 1 : 0),
+              wins: s.wins + (actualPnlSOL > 0 ? 1 : 0),
+              losses: s.losses + (actualPnlSOL <= 0 ? 1 : 0),
               pnl: s.pnl + actualPnlSOL,
               bestTrade: (actualPnlPct > 0 && (!s.bestTrade || actualPnlPct > s.bestTrade)) ? actualPnlPct : s.bestTrade
             }));
@@ -3944,8 +3963,10 @@ const checkTokenCriteria = (mint: string): {
       for (const mint of activeMints) {
         const pos = positionsRef.current[mint];
         if (pos) {
-          const tpValue = pos.tpPct ?? (configRef.current.minTakeProfit || minTakeProfit || 25);
-          const slValue = pos.slPct ?? (configRef.current.stopLossPct || stopLossPct || 15);
+          const stage = detectTokenStage({ address: mint, dexId: pos.dexId, bondingCurveProgress: pos.bondingCurveProgress });
+          const isPump = stage.isBonding || stage.platform === 'PUMP_FUN' || mint.toLowerCase().endsWith('pump');
+          const tpValue = pos.tpPct ?? (isPump ? (configRef.current.bondingCurveTakeProfit || bondingCurveTakeProfit || 25) : (configRef.current.minTakeProfit || minTakeProfit || 25));
+          const slValue = pos.slPct ?? (isPump ? (configRef.current.bondingCurveStopLossPct || bondingCurveStopLoss || 15) : (configRef.current.stopLossPct || stopLossPct || 15));
           const existingPos = positionExitManagerRef.current.getPosition(mint);
           if (existingPos) {
             positionExitManagerRef.current.updatePositionTpSl(mint, tpValue, slValue);

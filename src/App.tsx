@@ -1843,8 +1843,8 @@ function App() {
             tokenQuantityRaw: existing && existing.tokenQuantityRaw ? (BigInt(existing.tokenQuantityRaw) + BigInt(outTokensRaw)).toString() : outTokensRaw, 
             entryPrice: newEntryPriceUsd,
             entryPriceSol: newEntryPriceSol,
-            tpPct: existing?.tpPct ?? minTakeProfit,
-            slPct: existing?.slPct ?? stopLoss
+            tpPct: existing?.tpPct ?? ((detectTokenStage({ address: tokenAddress, dexId: tokenMetrics[tokenAddress]?.dexId, bondingCurveProgress: tokenMetrics[tokenAddress]?.bondingCurveProgress }).isBonding || tokenAddress.toLowerCase().endsWith('pump')) ? bondingCurveTakeProfit : minTakeProfit),
+            slPct: existing?.slPct ?? ((detectTokenStage({ address: tokenAddress, dexId: tokenMetrics[tokenAddress]?.dexId, bondingCurveProgress: tokenMetrics[tokenAddress]?.bondingCurveProgress }).isBonding || tokenAddress.toLowerCase().endsWith('pump')) ? bondingCurveStopLoss : stopLoss)
           }
         };
       });
@@ -2267,8 +2267,8 @@ function App() {
             tokenQuantityRaw: existing && existing.tokenQuantityRaw ? (BigInt(existing.tokenQuantityRaw) + BigInt(outTokensRaw)).toString() : outTokensRaw,
             entryPrice: newEntryPriceUsd,
             entryPriceSol: newEntryPriceSol,
-            tpPct: existing?.tpPct ?? minTakeProfit,
-            slPct: existing?.slPct ?? stopLoss,
+            tpPct: existing?.tpPct ?? ((detectTokenStage({ address: tokenAddress, dexId: tokenMetrics[tokenAddress]?.dexId, bondingCurveProgress: tokenMetrics[tokenAddress]?.bondingCurveProgress }).isBonding || tokenAddress.toLowerCase().endsWith('pump')) ? bondingCurveTakeProfit : minTakeProfit),
+            slPct: existing?.slPct ?? ((detectTokenStage({ address: tokenAddress, dexId: tokenMetrics[tokenAddress]?.dexId, bondingCurveProgress: tokenMetrics[tokenAddress]?.bondingCurveProgress }).isBonding || tokenAddress.toLowerCase().endsWith('pump')) ? bondingCurveStopLoss : stopLoss),
             entryFeesSol: (existing ? (existing.entryFeesSol || 0) + 0.003 : 0.003), // Tip + Tx
             soldPartial: false,
             isScalp: true

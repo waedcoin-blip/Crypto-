@@ -244,6 +244,12 @@ export class PositionExitManager {
       return;
     }
 
+    const now = Date.now();
+    if (!pos.lastPriceTimestamp || (now - pos.lastPriceTimestamp > 5000)) {
+      // Stale price > 5 seconds old: cannot trigger exit
+      return;
+    }
+
     const pnlPct = this.calculatePnLPct(pos);
     const tpPct = pos.tpPct ?? this.defaultConfig.tpPct;
     const slPct = pos.slPct ?? this.defaultConfig.slPct;
@@ -305,6 +311,14 @@ export class PositionExitManager {
         console.warn(`[ExitManager] Unable to pre-verify executable quote for ${mint}, proceeding with execution guard:`, quoteErr);
       }
 
+      // Capture SOL balance before executing sell
+      let solBefore = 0;
+      try {
+        solBefore = await walletBalanceService.getSolBalance();
+      } catch (e) {
+        console.warn(`[ExitManager] Unable to fetch solBefore balance for ${mint}:`, e);
+      }
+
       console.log(`[ExitManager] ⚡ Executing ${side.toUpperCase()} exit for ${mint} at PnL: ${pnlPct.toFixed(2)}% (Amount: ${pos.amount})`);
 
       const result = await this.executor.swap(
@@ -315,17 +329,31 @@ export class PositionExitManager {
         label
       );
 
+      if (!result || !result.signature) {
+        throw new Error(`Swap execution returned no transaction signature for ${mint}`);
+      }
+
+      // Instantly refresh on-chain wallet balance and capture solAfter
+      await walletBalanceService.refreshNow();
+      let solAfter = 0;
+      try {
+        solAfter = await walletBalanceService.getSolBalance();
+      } catch (e) {
+        console.warn(`[ExitManager] Unable to fetch solAfter balance for ${mint}:`, e);
+      }
+
+      const verifiedSolDelta = solAfter - solBefore;
+      const actualReceivedSol = (solBefore > 0 && solAfter > 0 && verifiedSolDelta > 0)
+        ? verifiedSolDelta
+        : (result.outputAmount ? ((result.outputAmount / 1e9) - (result.feeSol || 0)) : 0);
+
       pos.state = 'CLOSED';
       this.exitingMints.delete(mint);
       this.positions.delete(mint);
       this.saveProcessedExit(exitKey);
 
-      // Instantly refresh on-chain wallet balance after exit execution
-      walletBalanceService.refreshNow();
-
       if (this.onExitCallback) {
-        const actualReceivedSol = (result.outputAmount / 1e9) - result.feeSol;
-        this.onExitCallback(mint, side, result.signature || 'exit-tx', pnlPct, actualReceivedSol);
+        this.onExitCallback(mint, side, result.signature, pnlPct, actualReceivedSol);
       }
     } catch (err: any) {
       console.error(`[ExitManager] ❌ Exit error for ${mint}:`, err);
