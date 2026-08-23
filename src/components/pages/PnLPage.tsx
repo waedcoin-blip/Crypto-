@@ -3949,6 +3949,7 @@ const checkTokenCriteria = (mint: string): {
           const existingPos = positionExitManagerRef.current.getPosition(mint);
           if (existingPos) {
             positionExitManagerRef.current.updatePositionTpSl(mint, tpValue, slValue);
+            positionExitManagerRef.current.confirmBuy(mint, pos.txid || 'active-pos', pos.buySlot || 0);
           } else {
             positionExitManagerRef.current.addPosition({
               mint,
@@ -3958,9 +3959,7 @@ const checkTokenCriteria = (mint: string): {
               tpPct: tpValue,
               slPct: slValue,
             });
-            if (pos.txid && pos.txid !== 'init-sig') {
-              positionExitManagerRef.current.confirmBuy(mint, pos.txid, pos.buySlot || 0);
-            }
+            positionExitManagerRef.current.confirmBuy(mint, pos.txid || 'active-pos', pos.buySlot || 0);
           }
         }
       }

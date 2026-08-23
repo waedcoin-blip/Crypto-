@@ -130,25 +130,29 @@ export class PositionExitManager {
     const existing = this.positions.get(params.mint);
     if (existing && existing.state !== 'CLOSED') {
       // ONLY update existing position's TP/SL if provided
-      // Do NOT overwrite immutable authoritative entry parameters (amount, buyPrice, solSpent) from React UI state sync
       if (params.tpPct !== undefined) existing.tpPct = params.tpPct;
       if (params.slPct !== undefined) existing.slPct = params.slPct;
+      if (existing.state === 'PENDING_BUY') {
+        existing.state = 'OPEN';
+      }
       return;
     }
+
+    const effectiveBuyPrice = params.buyPrice > 0 ? params.buyPrice : (params.solSpent > 0 && params.amount > 0 ? (params.solSpent / (params.amount / 1e6)) : 0);
 
     const pos: ManagedExitPosition = {
       mint: params.mint,
       amount: params.amount,
-      buyPrice: params.buyPrice,
+      buyPrice: effectiveBuyPrice,
       solSpent: params.solSpent || 0.1,
       tpPct: params.tpPct ?? this.defaultConfig.tpPct,
       slPct: params.slPct ?? this.defaultConfig.slPct,
       slippageBpsTp: params.slippageBpsTp ?? this.defaultConfig.slippageBpsTp ?? 250,
       slippageBpsSl: params.slippageBpsSl ?? this.defaultConfig.slippageBpsSl ?? 1000,
-      currentPrice: params.buyPrice,
-      peakPrice: params.buyPrice,
+      currentPrice: effectiveBuyPrice,
+      peakPrice: effectiveBuyPrice,
       highestPnLPct: 0,
-      state: 'PENDING_BUY',
+      state: 'OPEN', // Mark as OPEN directly so exit triggers evaluate immediately
       createdAt: Date.now(),
     };
 
@@ -160,6 +164,9 @@ export class PositionExitManager {
     if (pos) {
       pos.tpPct = tpPct;
       pos.slPct = slPct;
+      if (pos.state === 'PENDING_BUY') {
+        pos.state = 'OPEN';
+      }
     }
   }
 
@@ -204,8 +211,13 @@ export class PositionExitManager {
       pos.highestPnLPct = pnlPct;
     }
 
-    if (this.isRunning && pos.state === 'OPEN') {
-      this.evaluatePosition(pos);
+    if (this.isRunning) {
+      if (pos.state === 'PENDING_BUY') {
+        pos.state = 'OPEN';
+      }
+      if (pos.state === 'OPEN') {
+        this.evaluatePosition(pos);
+      }
     }
   }
 
@@ -217,6 +229,9 @@ export class PositionExitManager {
   private async evaluateAllPositions(): Promise<void> {
     if (!this.isRunning) return;
     for (const pos of this.positions.values()) {
+      if (pos.state === 'PENDING_BUY') {
+        pos.state = 'OPEN';
+      }
       if (pos.state === 'OPEN') {
         await this.evaluatePosition(pos);
       }
@@ -234,8 +249,10 @@ export class PositionExitManager {
     const slPct = pos.slPct ?? this.defaultConfig.slPct;
 
     if (pnlPct >= tpPct) {
+      console.log(`[ExitManager] 🎯 TAKE PROFIT TRIGGERED for ${mint}: PnL=${pnlPct.toFixed(2)}% >= TP=${tpPct}%`);
       await this.triggerExit(pos, 'tp', pnlPct);
     } else if (pnlPct <= -Math.abs(slPct)) {
+      console.log(`[ExitManager] 🛑 STOP LOSS TRIGGERED for ${mint}: PnL=${pnlPct.toFixed(2)}% <= SL=-${Math.abs(slPct)}%`);
       await this.triggerExit(pos, 'sl', pnlPct);
     }
   }
@@ -258,11 +275,14 @@ export class PositionExitManager {
 
       // Query actual live token balance from executor if available
       if (typeof this.executor.getTokenBalance === 'function') {
-        const liveAmount = await this.executor.getTokenBalance(mint);
-        if (liveAmount <= 0) {
-          throw new Error(`No spendable on-chain balance remains for ${mint}`);
+        try {
+          const liveAmount = await this.executor.getTokenBalance(mint);
+          if (liveAmount > 0) {
+            pos.amount = liveAmount;
+          }
+        } catch (balErr) {
+          console.warn(`[ExitManager] Unable to fetch live token balance for ${mint}, using position amount ${pos.amount}:`, balErr);
         }
-        pos.amount = liveAmount;
       }
 
       // Step 1: Obtain fresh executable Jupiter quote to verify net output SOL

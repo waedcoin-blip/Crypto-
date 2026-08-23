@@ -2053,17 +2053,9 @@ function App() {
       const realNetReturnSol = guaranteedSolOut - networkFeesSol;
       const currentCostBasisSol = position.solSpent || position.entryPriceSol || 0.1;
 
-      // Unify Profit Guard for both LIVE and SIM
-      if (curPnLPercent >= minTakeProfit && realNetReturnSol <= currentCostBasisSol) {
-         console.log(`⚠️ REJECTED (LIVE): Paper profit drops net return into a loss (${realNetReturnSol} SOL vs ${currentCostBasisSol} SOL).`);
-         addNotification(`Profit Guard: Aborted ${symbol} sell. Network slippage overrides return.`);
-         pendingTrades.current.delete(tokenAddress);
-         setTradingStatus('Idle');
-         return;
-      }
-
-      const realNetProfitPct = ((realNetReturnSol - currentCostBasisSol) / currentCostBasisSol) * 100.0;
-      console.log(`✅ APPROVED EXECUTION: Realized returns projected at ${realNetProfitPct.toFixed(2)}%`);
+      // Always allow Take Profit and Stop Loss sells to proceed once triggered
+      const realNetProfitPct = currentCostBasisSol > 0 ? ((realNetReturnSol - currentCostBasisSol) / currentCostBasisSol) * 100.0 : curPnLPercent;
+      console.log(`✅ EXECUTING SELL: Projected realized return ${realNetProfitPct.toFixed(2)}% (PnL: ${curPnLPercent.toFixed(2)}%)`);
 
       
           const priorityTip = curPnLPercent >= minTakeProfit ? 2000000 : 1000000;

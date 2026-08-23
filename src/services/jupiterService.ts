@@ -1180,14 +1180,13 @@ export const processActiveTrackingFrame = async (
     if (!quote) return { shouldExit: false };
 
     const expectedSolOut = Number(quote.outAmount) / 1_000_000_000;
-    const dynamicFeesSol = Number(position.currentTokenBalance) < 50000000000 ? 0.00155 : 0.0035;
     
     if (!position.entryCostSol || position.entryCostSol <= 0) {
       console.warn(`[EVAL]: Invalid entryCostSol for ${tokenAddress}, refusing to evaluate PnL`);
       return { shouldExit: false };
     }
     const realEntryCost = position.entryCostSol;
-    const netPnL = ((expectedSolOut - dynamicFeesSol - realEntryCost) / realEntryCost) * 100;
+    const netPnL = ((expectedSolOut - realEntryCost) / realEntryCost) * 100;
 
     const defaultTP = config?.takeProfit ?? 45.0;
     const rawSL = config?.stopLoss ?? -30.0;
