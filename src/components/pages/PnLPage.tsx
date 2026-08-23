@@ -1122,7 +1122,7 @@ export const PnLPage = ({
   const [showDocsModal, setShowDocsModal] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const isPausedRef = useRef(false);
-  const { manager: tradeManager } = useTradeMode();
+  const { mode: activeTradeMode, manager: tradeManager } = useTradeMode();
   const [isPausedState, setIsPausedState] = useState(false);
   const setPaused = (val: boolean) => {
     isPausedRef.current = val;
@@ -1625,7 +1625,7 @@ export const PnLPage = ({
     tradeHistoryRef.current = tradeHistory;
   }, [tradeHistory]);
 
-  // Auto-update ONLY profitable trade history token addresses to localStorage
+  // Auto-update ONLY profitable trade history token addresses to localStorage (UI display passive)
   useEffect(() => {
     const profitablePnlTokens = [
       ...new Set(
@@ -1649,7 +1649,6 @@ export const PnLPage = ({
     ];
     try {
       localStorage.setItem('pnl_profitable_token_addresses', JSON.stringify(profitablePnlTokens));
-      window.dispatchEvent(new CustomEvent('pnl_trade_history_updated', { detail: profitablePnlTokens }));
     } catch (e) {}
   }, [tradeHistory]);
 
@@ -3758,8 +3757,9 @@ const checkTokenCriteria = (mint: string): {
             }));
             addLog(`✅ Sold ${pos.symbol} on-chain | Received: ${actualSolReceived.toFixed(6)} SOL | P&L: ${(actualPnlPct * 100).toFixed(1)}% | tx: ${result.txid.slice(0, 12)}...`, 'sell');
             
+            const newTradeId = `trade-${Date.now()}`;
             setTradeHistory(th => [{
-              id: `trade-${Date.now()}`,
+              id: newTradeId,
               mint: mint,
               buyTime: pos.entryTime,
               sellTime: Date.now(),
@@ -3767,6 +3767,26 @@ const checkTokenCriteria = (mint: string): {
               sellAmountSol: actualSolReceived,
               pnlPct: Math.max(-100, actualPnlPct * 100)
             }, ...th]);
+
+            try {
+              const processedJson = localStorage.getItem('pnl_processed_trade_ids');
+              const processedIds: string[] = processedJson ? JSON.parse(processedJson) : [];
+              if (!processedIds.includes(newTradeId) && (!result.txid || !processedIds.includes(result.txid))) {
+                const singleEvent = {
+                  tradeId: newTradeId,
+                  mint,
+                  closeSignature: result.txid || 'tx-' + Date.now(),
+                  isProfitable: actualPnlPct > 0,
+                  pnlPct: actualPnlPct * 100,
+                  timestamp: Date.now()
+                };
+                localStorage.setItem('pnl_latest_trade_event', JSON.stringify(singleEvent));
+                window.dispatchEvent(new CustomEvent('pnl_single_trade_closed', { detail: singleEvent }));
+                processedIds.push(newTradeId);
+                if (result.txid) processedIds.push(result.txid);
+                localStorage.setItem('pnl_processed_trade_ids', JSON.stringify(processedIds.slice(-200)));
+              }
+            } catch (e) {}
 
             if (pnlPct < 0) {
               setBlacklistedMints(prev => Array.from(new Set([...prev, mint])));
@@ -3879,8 +3899,9 @@ const checkTokenCriteria = (mint: string): {
           bestTrade: (pnlPct > 0 && (!s.bestTrade || (pnlPct/100) > s.bestTrade)) ? (pnlPct/100) : s.bestTrade
         }));
 
+        const newExitTradeId = `trade-${Date.now()}`;
         setTradeHistory(th => [{
-          id: `trade-${Date.now()}`,
+          id: newExitTradeId,
           mint: mint,
           buyTime: pos.entryTime,
           sellTime: Date.now(),
@@ -3888,6 +3909,26 @@ const checkTokenCriteria = (mint: string): {
           sellAmountSol: actualSolReceived,
           pnlPct: Math.max(-100, pnlPct)
         }, ...th]);
+
+        try {
+          const processedJson = localStorage.getItem('pnl_processed_trade_ids');
+          const processedIds: string[] = processedJson ? JSON.parse(processedJson) : [];
+          if (!processedIds.includes(newExitTradeId) && (!signature || !processedIds.includes(signature))) {
+            const singleEvent = {
+              tradeId: newExitTradeId,
+              mint,
+              closeSignature: signature || 'tx-' + Date.now(),
+              isProfitable: pnlPct > 0,
+              pnlPct,
+              timestamp: Date.now()
+            };
+            localStorage.setItem('pnl_latest_trade_event', JSON.stringify(singleEvent));
+            window.dispatchEvent(new CustomEvent('pnl_single_trade_closed', { detail: singleEvent }));
+            processedIds.push(newExitTradeId);
+            if (signature) processedIds.push(signature);
+            localStorage.setItem('pnl_processed_trade_ids', JSON.stringify(processedIds.slice(-200)));
+          }
+        } catch (e) {}
 
         if (pnlPct < 0) {
           setBlacklistedMints(prev => Array.from(new Set([...prev, mint])));
@@ -3906,7 +3947,7 @@ const checkTokenCriteria = (mint: string): {
       exitMgr.stop();
       masterMon.stopMonitoring();
     };
-  }, [isRunning, monitorStatus.status, monitorStatus.activeUrl]);
+  }, [isRunning, monitorStatus.status, monitorStatus.activeUrl, activeTradeMode]);
 
   // Sync active positions to PositionExitManager & MasterMonitorService
   useEffect(() => {

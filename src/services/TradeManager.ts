@@ -33,6 +33,9 @@ export class TradeManager {
     this.save();
     this._mode = mode;
     this.executor = this.createExecutor();
+    try {
+      window.dispatchEvent(new CustomEvent('trading_network_changed', { detail: { network: mode } }));
+    } catch (e) {}
   }
 
   getExecutor(): ITradeExecutor { return this.executor; }

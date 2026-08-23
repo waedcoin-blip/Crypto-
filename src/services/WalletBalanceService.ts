@@ -126,9 +126,12 @@ export class WalletBalanceService {
       return totalRawAmount;
     } catch (err) {
       console.warn(`Failed to fetch token balance for ${mint}:`, err);
-      return 0;
+      throw new Error(`Unable to verify on-chain token balance for ${mint}`);
     }
   }
 }
 
-export const walletBalanceService = new WalletBalanceService('devnet');
+const initialNetwork: TradingNetwork =
+  localStorage.getItem('app_trading_network') === 'mainnet' ? 'mainnet' : 'devnet';
+
+export const walletBalanceService = new WalletBalanceService(initialNetwork);

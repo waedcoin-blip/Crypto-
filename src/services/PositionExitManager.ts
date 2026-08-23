@@ -40,6 +40,7 @@ export type ExitCallback = (
 export class PositionExitManager {
   private positions: Map<string, ManagedExitPosition> = new Map();
   private exitingMints: Set<string> = new Set();
+  private processedExitsSet: Set<string> = new Set();
   private executor: ITradeExecutor;
   private jupiterRpcUrl: string;
   private dedicatedRpcUrl: string;
@@ -58,6 +59,39 @@ export class PositionExitManager {
     this.jupiterRpcUrl = jupiterRpcUrl;
     this.dedicatedRpcUrl = dedicatedRpcUrl;
     this.defaultConfig = defaultConfig;
+    this.loadProcessedExits();
+  }
+
+  private loadProcessedExits(): void {
+    try {
+      const saved = localStorage.getItem('juipter_auto_processed_exits');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          this.processedExitsSet = new Set(parsed);
+        }
+      }
+    } catch (e) {
+      this.processedExitsSet = new Set();
+    }
+  }
+
+  private saveProcessedExit(exitKey: string): void {
+    this.processedExitsSet.add(exitKey);
+    try {
+      const arr = Array.from(this.processedExitsSet).slice(-200); // retain last 200 exits
+      localStorage.setItem('juipter_auto_processed_exits', JSON.stringify(arr));
+    } catch (e) {}
+  }
+
+  public setExecutor(executor: ITradeExecutor): void {
+    this.executor = executor;
+  }
+
+  public reset(): void {
+    this.stop();
+    this.positions.clear();
+    this.exitingMints.clear();
   }
 
   public setOnExitCallback(cb: ExitCallback): void {
@@ -202,7 +236,12 @@ export class PositionExitManager {
 
   public async triggerExit(pos: ManagedExitPosition, side: 'tp' | 'sl', pnlPct: number): Promise<void> {
     const mint = pos.mint;
-    if (this.exitingMints.has(mint)) return;
+    const exitKey = pos.buySignature ? `${mint}_${pos.buySignature}` : mint;
+
+    if (this.exitingMints.has(mint) || this.processedExitsSet.has(exitKey)) {
+      console.warn(`[ExitManager] ⚠️ Mint ${mint} (key: ${exitKey}) is already exiting or permanently closed. Skipping.`);
+      return;
+    }
 
     this.exitingMints.add(mint);
     pos.state = 'CLOSING';
@@ -213,10 +252,36 @@ export class PositionExitManager {
 
       // Query actual live token balance from executor if available
       if (typeof this.executor.getTokenBalance === 'function') {
-        const liveAmount = await this.executor.getTokenBalance(mint).catch(() => 0);
-        if (liveAmount > 0) {
-          pos.amount = liveAmount;
+        const liveAmount = await this.executor.getTokenBalance(mint);
+        if (liveAmount <= 0) {
+          throw new Error(`No spendable on-chain balance remains for ${mint}`);
         }
+        pos.amount = liveAmount;
+      }
+
+      // Step 1: Obtain fresh executable Jupiter quote to verify net output SOL
+      try {
+        const quote = await this.executor.getQuote({
+          inputMint: mint,
+          outputMint: 'So11111111111111111111111111111111111111112',
+          amount: pos.amount,
+          slippageBps,
+        });
+
+        if (quote && quote.outAmount) {
+          const expectedOutLamports = Number(quote.outAmount);
+          const estimatedFeeSol = 0.0001; // Fee / priority allocation
+          const executableNetOutSol = (expectedOutLamports / 1e9) - estimatedFeeSol;
+          
+          if (side === 'tp' && pos.solSpent > 0 && executableNetOutSol <= pos.solSpent) {
+            console.warn(`[ExitManager] 🛑 TP Aborted for ${mint}: Executable quote net output (${executableNetOutSol.toFixed(4)} SOL) is less than cost basis (${pos.solSpent.toFixed(4)} SOL) due to liquidity or slippage. Re-evaluating on next cycle.`);
+            pos.state = 'OPEN';
+            this.exitingMints.delete(mint);
+            return;
+          }
+        }
+      } catch (quoteErr) {
+        console.warn(`[ExitManager] Unable to pre-verify executable quote for ${mint}, proceeding with execution guard:`, quoteErr);
       }
 
       console.log(`[ExitManager] ⚡ Executing ${side.toUpperCase()} exit for ${mint} at PnL: ${pnlPct.toFixed(2)}% (Amount: ${pos.amount})`);
@@ -232,22 +297,34 @@ export class PositionExitManager {
       pos.state = 'CLOSED';
       this.exitingMints.delete(mint);
       this.positions.delete(mint);
+      this.saveProcessedExit(exitKey);
 
       // Instantly refresh on-chain wallet balance after exit execution
       walletBalanceService.refreshNow();
 
       if (this.onExitCallback) {
-        this.onExitCallback(mint, side, result.signature || 'exit-tx', pnlPct, (result.outputAmount / 1e9) - result.feeSol);
+        const actualReceivedSol = (result.outputAmount / 1e9) - result.feeSol;
+        this.onExitCallback(mint, side, result.signature || 'exit-tx', pnlPct, actualReceivedSol);
       }
     } catch (err: any) {
       console.error(`[ExitManager] ❌ Exit error for ${mint}:`, err);
-      // Verify if token account was actually drained despite error (Bug 9 Fix)
-      const hasTokens = await this.executor.hasTokenAccount(mint).catch(() => true);
+      let hasTokens: boolean;
+      try {
+        hasTokens = await this.executor.hasTokenAccount(mint);
+      } catch (balanceErr) {
+        // Unknown state is NOT success. Keep the position recoverable and
+        // require another verification rather than reopening/closing blindly.
+        console.error(`[ExitManager] Could not verify post-failure token balance for ${mint}:`, balanceErr);
+        pos.state = 'OPEN';
+        this.exitingMints.delete(mint);
+        return;
+      }
       if (!hasTokens) {
         console.log(`[ExitManager] Token balance empty on-chain for ${mint}, marking as CLOSED.`);
         pos.state = 'CLOSED';
         this.exitingMints.delete(mint);
         this.positions.delete(mint);
+        this.saveProcessedExit(exitKey);
 
         walletBalanceService.refreshNow();
 

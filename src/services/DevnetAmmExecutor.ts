@@ -367,12 +367,12 @@ export class DevnetAmmExecutor implements ITradeExecutor {
   }
 
   async getSolBalance(): Promise<number> {
-    if (!this.publicKey) return 0;
+    if (!this.publicKey) throw new Error('No active public key for SOL balance lookup');
     try {
       const lamports = await this.connection.getBalance(new PublicKey(this.publicKey), 'confirmed');
       return lamports / LAMPORTS_PER_SOL;
-    } catch {
-      return 0;
+    } catch (err) {
+      throw new Error(`Unable to verify on-chain SOL balance: ${String(err)}`);
     }
   }
 
