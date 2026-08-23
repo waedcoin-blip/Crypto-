@@ -62,6 +62,8 @@ import { marketDataManager } from './services/marketDataManager';
 import { rpcHealthManager } from './services/rpcHealthManager';
 import { masterMonitorHealthManager } from './services/MasterMonitorHealthManager';
 import { syncManager } from './services/SyncService';
+import { ExitManager } from './services/exit-manager';
+import { ManagedExitPosition } from './services/exit-manager.types';
 
 
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
@@ -1121,6 +1123,118 @@ function App() {
     fns.current = { executeAutoSell, executeAutoTrade, executePartialSell, sendTelegramAlert };
   });
 
+  // ── 1. Consolidated ExitManager (Single Source of Truth) ────────────
+  const exitManagerRef = useRef<ExitManager | null>(null);
+
+  useEffect(() => {
+    if (exitManagerRef.current) return;
+
+    exitManagerRef.current = new ExitManager(
+      // Inject stage detector
+      (mint, pos) =>
+        detectTokenStage({
+          address: mint,
+          dexId: pos.dexId,
+          bondingCurveProgress: pos.bondingCurveProgress,
+          isRaydiumListed: pos.isRaydiumListed,
+        }),
+      // Sell executor
+      async (mint, symbol, reason, pnlPct) => {
+        console.log(`[EXIT BY ENGINE] ${symbol} clearing. Reason: ${reason} | PnL: ${pnlPct.toFixed(2)}%`);
+        if (fns.current.executeAutoSell) {
+          await fns.current.executeAutoSell(mint, symbol);
+        }
+      },
+      // Initial config snapshot
+      {
+        minTakeProfit,
+        maxTakeProfit,
+        bondingCurveTakeProfit,
+        stopLossPct: typeof stopLoss === 'number' ? Math.abs(stopLoss) : 15,
+        bondingCurveStopLossPct: typeof bondingCurveStopLoss === 'number' ? Math.abs(bondingCurveStopLoss) : 10,
+        pumpSwapStopLossPct: typeof pumpSwapStopLoss === 'number' ? Math.abs(pumpSwapStopLoss) : 15,
+        unknownStopLossPct: typeof unknownStopLoss === 'number' ? Math.abs(unknownStopLoss) : 20,
+        moonbagStrategy,
+        moonbagSellPct: 0.5,
+        slippageBps: Math.floor((slippage || 1) * 100),
+      }
+    );
+  }, []);
+
+  // ── 2. Push config changes only ────────────────────────────────────
+  useEffect(() => {
+    if (!exitManagerRef.current) return;
+
+    exitManagerRef.current.updateGlobalConfig({
+      minTakeProfit,
+      maxTakeProfit,
+      bondingCurveTakeProfit,
+      stopLossPct: typeof stopLoss === 'number' ? Math.abs(stopLoss) : 15,
+      bondingCurveStopLossPct: typeof bondingCurveStopLoss === 'number' ? Math.abs(bondingCurveStopLoss) : 10,
+      pumpSwapStopLossPct: typeof pumpSwapStopLoss === 'number' ? Math.abs(pumpSwapStopLoss) : 15,
+      unknownStopLossPct: typeof unknownStopLoss === 'number' ? Math.abs(unknownStopLoss) : 20,
+      moonbagStrategy,
+      slippageBps: Math.floor((slippage || 1) * 100),
+    });
+  }, [
+    minTakeProfit,
+    maxTakeProfit,
+    bondingCurveTakeProfit,
+    stopLoss,
+    bondingCurveStopLoss,
+    pumpSwapStopLoss,
+    unknownStopLoss,
+    moonbagStrategy,
+    slippage,
+  ]);
+
+  // ── 3. Sync positions whenever activePositions / tokenMetrics update ──
+  useEffect(() => {
+    if (!exitManagerRef.current) return;
+
+    const activeMints = new Set<string>();
+
+    for (const [mint, pos] of Object.entries(activePositions)) {
+      if (pos && (pos.amount > 0 || (pos.amountLamports && pos.amountLamports > 0))) {
+        activeMints.add(mint);
+        const metric = tokenMetrics[mint];
+        const livePrice = metric?.priceNative || (metric?.priceUsd ? metric.priceUsd / (getSolPriceUsd() || 150) : 0) || pos.entryPriceSol || 0;
+        exitManagerRef.current.syncPosition({
+          mint,
+          symbol: pos.symbol || metric?.symbol || mint.slice(0, 8),
+          state: 'OPEN',
+          amount: pos.amount || (pos.amountLamports ? pos.amountLamports / 1e6 : 0),
+          realCostBasis: pos.solSpent || pos.entryPriceSol || 0.1,
+          lastPriceSol: livePrice,
+          lastPriceTimestamp: metric?.lastUpdated || Date.now(),
+          highestPnlPct: pos.peakPnLPct || 0,
+          soldPartial: pos.soldPartial || false,
+          recoveryMode: pos.recoveryMode || false,
+          entryTime: pos.boughtAt || Date.now(),
+          dexId: metric?.dexId,
+          bondingCurveProgress: metric?.bondingCurveProgress,
+          isRaydiumListed: metric?.isRaydiumListed,
+        });
+      }
+    }
+
+    // Prune closed/zeroed positions from manager memory
+    for (const mint of exitManagerRef.current.getActiveMints()) {
+      if (!activeMints.has(mint)) {
+        exitManagerRef.current.removePosition(mint);
+      }
+    }
+  }, [activePositions, tokenMetrics]);
+
+  // ── 4. Exit Evaluation loop ─────────────────────────────────────────────
+  useEffect(() => {
+    const interval = setInterval(() => {
+      exitManagerRef.current?.evaluateAll();
+    }, 1000); // 1s tick
+
+    return () => clearInterval(interval);
+  }, []);
+
   // Auto-Sell Monitoring & Momentum Entries
   useEffect(() => {
     let timeoutId: any;
@@ -1130,7 +1244,7 @@ function App() {
       if (!isMounted) return;
       const state = latestState.current;
       
-      // MONITORING LOOP 1: EXITS (Hardened All-or-Nothing Exit)
+      // MONITORING LOOP 1: Balance & Price Fetching
       const activePositionEntries = Object.entries(state.activePositions) as [string, any][];
       for (const [tokenAddress, position] of activePositionEntries) {
         if (position.triggersDisabled) continue;
@@ -1163,11 +1277,6 @@ function App() {
         }
 
         if (token) {
-          const symbol = token.symbol;
-          const holdTimeMs = Date.now() - (position.boughtAt || Date.now());
-          // Set to false to disable minimum hold time delay so stop loss/take profit execute instantly
-          const isHoldProtected = false;
-          
           const walletAddress = (true && activeAddress) 
             ? activeAddress!
             : '11111111111111111111111111111111';
@@ -1184,84 +1293,6 @@ function App() {
                 });
                 continue;
             }
-          } else if (false) {
-            // Simulate amount lamports for accurate Jupiter routing
-            amountLamports = Math.floor(position.amount * 1_000_000);
-          }
-
-          if (!amountLamports || amountLamports === 0) continue;
-
-          const realCostBasis = position.solSpent || position.entryPriceSol || 0.1;
-          const actPos = {
-            tokenAddress: token.address,
-            currentTokenBalance: BigInt(amountLamports),
-            entryCostSol: realCostBasis,
-            initialMoonbagSize: BigInt(position.initialMoonbagSizeStr || '0'),
-            currentStage: position.currentStage || PositionStage.RECOVER_CAPITAL,
-            symbol: token.symbol,
-            isManualSellTriggered: position.isManualSellTriggered
-          };
-
-          // ── TRIPLE STOP LOSS ROUTING ──────────────────────────────────────────
-          const stage = detectTokenStage({
-            address:              tokenAddress,
-            dexId:                token?.dexId,
-            bondingCurveProgress: token?.bondingCurveProgress,
-            isRaydiumListed:      token?.isRaydiumListed
-          });
-
-          let baseSL = typeof state.stopLoss === 'number' ? state.stopLoss : -30;
-          const userGlobalSL = typeof state.stopLoss === 'number' ? state.stopLoss : -15;
-          if (stage.platform === 'PUMP_FUN' || stage.isBonding) {
-            baseSL = typeof state.bondingCurveStopLoss === 'number' ? state.bondingCurveStopLoss : userGlobalSL;
-          } else if (stage.platform === 'PUMPSWAP') {
-            baseSL = typeof state.pumpSwapStopLoss === 'number' ? state.pumpSwapStopLoss : userGlobalSL;
-          } else if (stage.platform === 'UNKNOWN' || stage.stage === 'UNKNOWN') {
-            baseSL = typeof state.unknownStopLoss === 'number' ? state.unknownStopLoss : userGlobalSL;
-          }
-          baseSL = position.slPct !== undefined ? position.slPct : baseSL;
-          baseSL = -Math.abs(baseSL);
-
-          // ── TRAILING STOP LOSS: lock in gains as price rises ────────────────
-          // If price has rallied >20%, trail stop loss to protect profits
-          // e.g. up 50% → stop at 35%; up 100% → stop at 75%
-          const currentPriceSol = (token.priceNative || 0);
-          const posTokensQty = position.amount || 0;
-          const netPnlResult = calcNetPnl(currentPriceSol, posTokensQty, realCostBasis, state.slippage, position.recoveryMode, true);
-          const currentPnLPct = netPnlResult.netPnlPct;
-
-          // Track peak PnL in position metadata
-          if (!position.peakPnLPct || currentPnLPct > position.peakPnLPct) {
-            setActivePositions(prev => ({
-              ...prev,
-              [token.address]: { ...prev[token.address], peakPnLPct: currentPnLPct }
-            }));
-          }
-
-          const peakPnL = position.peakPnLPct || 0;
-          
-          const trailingSL = peakPnL > 20 ? peakPnL - 15 : baseSL;
-          const effectiveSL = Math.max(baseSL, trailingSL); // never looser than base SL
-
-          let activeTakeProfit = position.tpPct ?? (stage.isBonding 
-            ? (typeof state.bondingCurveTakeProfit === 'number' ? state.bondingCurveTakeProfit : 25) 
-            : (state.moonbagStrategy ? (position.soldPartial ? state.maxTakeProfit : state.minTakeProfit) : state.minTakeProfit));
-            
-          const trackingVerdict = { shouldExit: false, reason: '' };
-          if (currentPnLPct >= activeTakeProfit) {
-            trackingVerdict.shouldExit = true;
-            trackingVerdict.reason = 'TAKE PROFIT';
-          } else if (currentPnLPct <= effectiveSL) {
-            trackingVerdict.shouldExit = true;
-            trackingVerdict.reason = effectiveSL !== baseSL ? 'TRAILING SL' : 'STOP LOSS';
-          } else if (position.isManualSellTriggered) {
-            trackingVerdict.shouldExit = true;
-            trackingVerdict.reason = 'MANUAL';
-          }
-
-          if (trackingVerdict.shouldExit) {
-            console.log(`[EXIT BY ENGINE] (LIVE): ${token.symbol} clearing. Reason: ${trackingVerdict.reason}`);
-            fns.current.executeAutoSell(tokenAddress, token.symbol);
           }
         }
       }
@@ -1843,8 +1874,7 @@ function App() {
             tokenQuantityRaw: existing && existing.tokenQuantityRaw ? (BigInt(existing.tokenQuantityRaw) + BigInt(outTokensRaw)).toString() : outTokensRaw, 
             entryPrice: newEntryPriceUsd,
             entryPriceSol: newEntryPriceSol,
-            tpPct: existing?.tpPct ?? ((detectTokenStage({ address: tokenAddress, dexId: tokenMetrics[tokenAddress]?.dexId, bondingCurveProgress: tokenMetrics[tokenAddress]?.bondingCurveProgress }).isBonding || tokenAddress.toLowerCase().endsWith('pump')) ? bondingCurveTakeProfit : minTakeProfit),
-            slPct: existing?.slPct ?? ((detectTokenStage({ address: tokenAddress, dexId: tokenMetrics[tokenAddress]?.dexId, bondingCurveProgress: tokenMetrics[tokenAddress]?.bondingCurveProgress }).isBonding || tokenAddress.toLowerCase().endsWith('pump')) ? bondingCurveStopLoss : stopLoss)
+
           }
         };
       });
@@ -2042,8 +2072,8 @@ function App() {
         'So11111111111111111111111111111111111111112', 
         sellRawAmount, 
         metric?.liquidity || 0,
-        curPnLPercent > (position.tpPct ?? minTakeProfit) ? (position.entryPriceSol || 0.1) : undefined,
-        curPnLPercent > (position.tpPct ?? minTakeProfit) ? (position.tpPct ?? minTakeProfit) : undefined,
+        curPnLPercent > minTakeProfit ? (position.entryPriceSol || 0.1) : undefined,
+        curPnLPercent > minTakeProfit ? minTakeProfit : undefined,
         curPnLPercent
       );
       if (!quote) throw new Error("No route for partial sell execution");
@@ -2267,8 +2297,6 @@ function App() {
             tokenQuantityRaw: existing && existing.tokenQuantityRaw ? (BigInt(existing.tokenQuantityRaw) + BigInt(outTokensRaw)).toString() : outTokensRaw,
             entryPrice: newEntryPriceUsd,
             entryPriceSol: newEntryPriceSol,
-            tpPct: existing?.tpPct ?? ((detectTokenStage({ address: tokenAddress, dexId: tokenMetrics[tokenAddress]?.dexId, bondingCurveProgress: tokenMetrics[tokenAddress]?.bondingCurveProgress }).isBonding || tokenAddress.toLowerCase().endsWith('pump')) ? bondingCurveTakeProfit : minTakeProfit),
-            slPct: existing?.slPct ?? ((detectTokenStage({ address: tokenAddress, dexId: tokenMetrics[tokenAddress]?.dexId, bondingCurveProgress: tokenMetrics[tokenAddress]?.bondingCurveProgress }).isBonding || tokenAddress.toLowerCase().endsWith('pump')) ? bondingCurveStopLoss : stopLoss),
             entryFeesSol: (existing ? (existing.entryFeesSol || 0) + 0.003 : 0.003), // Tip + Tx
             soldPartial: false,
             isScalp: true

@@ -1,6 +1,6 @@
 // src/services/MasterMonitorService.ts
 import { Connection } from '@solana/web3.js';
-import { PositionExitManager } from './PositionExitManager';
+import { ExitManager } from './ExitManager';
 import { masterMonitorHealthManager } from './MasterMonitorHealthManager';
 import { marketDataManager } from './marketDataManager';
 import { recordCandidatePrice } from './priceTracker';
@@ -24,7 +24,7 @@ export interface PriceState {
 
 export class MasterMonitorService {
   private connection: Connection;
-  private exitManager: PositionExitManager;
+  private exitManager: ExitManager;
   private subscribedMints = new Set<string>();
   private batchInterval: ReturnType<typeof setInterval> | null = null;
   private wsSubscriptionIds = new Map<string, number>();
@@ -32,7 +32,7 @@ export class MasterMonitorService {
   private priceEngine = new Map<string, PriceState>();
   private connectionGeneration = 0;
 
-  constructor(rpcEndpoint: string, exitManager: PositionExitManager) {
+  constructor(rpcEndpoint: string, exitManager: ExitManager) {
     if (!rpcEndpoint || !rpcEndpoint.trim()) {
       throw new Error('[MasterMonitorService] Dedicated Master Monitor RPC endpoint is required. Fallback to public beta RPC is disallowed.');
     }

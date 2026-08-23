@@ -24,7 +24,8 @@ import { WalletStatusWidget } from '../WalletStatusWidget';
 import { MasterMonitorPanel } from '../MasterMonitorPanel';
 import { marketDataManager } from '../../services/marketDataManager';
 import { rpcHealthManager } from '../../services/rpcHealthManager';
-import { PositionExitManager } from '../../services/PositionExitManager';
+import { ExitManager } from '../../services/exit-manager';
+import { ManagedExitPosition } from '../../services/exit-manager.types';
 import { MasterMonitorService } from '../../services/MasterMonitorService';
 import { RealTradeExecutor } from '../../services/RealTradeExecutor';
 import { useTradeMode } from '../../context/TradeModeContext';
@@ -138,6 +139,8 @@ interface Position {
   currentPriceUsd?: number;
   liquidityUsd?: number;
   volume24h?: number;
+  peakPnLPct?: number;
+  soldPartial?: boolean;
 }
 
 interface LogEvent {
@@ -3572,8 +3575,7 @@ const checkTokenCriteria = (mint: string): {
                txid: result.txid,
                buySlot: result.slot,
                buyEntries: newBuyEntries,
-               tpPct: existing?.tpPct ?? (configRef.current.minTakeProfit || 25),
-               slPct: existing?.slPct ?? (configRef.current.stopLossPct || 15),
+
                decimals: existing?.decimals ?? tokenDecimals
              }
            };
@@ -3818,7 +3820,7 @@ const checkTokenCriteria = (mint: string): {
       if (!currentPos) return next;
 
       if (isMainSold) {
-        delete next[mint]; positionExitManagerRef.current?.removePosition(mint); masterMonitorRef.current?.stopMonitoring(mint);
+        delete next[mint]; exitManagerRef.current?.removePosition(mint); masterMonitorRef.current?.stopMonitoring(mint);
       }
       return next;
     });
@@ -3838,7 +3840,7 @@ const checkTokenCriteria = (mint: string): {
     return unsub;
   }, []);
 
-  const positionExitManagerRef = useRef<PositionExitManager | null>(null);
+  const exitManagerRef = useRef<ExitManager | null>(null);
   const masterMonitorRef = useRef<MasterMonitorService | null>(null);
 
   useEffect(() => {
@@ -3852,143 +3854,121 @@ const checkTokenCriteria = (mint: string): {
       return;
     }
 
-    const currentJup = jupiterRpcUrl || 'https://api.jup.ag/swap/v1';
-    const executor = tradeManager.getExecutor();
-
-    const exitMgr = new PositionExitManager(
-      executor,
-      currentJup,
-      currentRpc,
+    const exitMgr = new ExitManager(
+      (mint, pos) =>
+        detectTokenStage({
+          address: mint,
+          dexId: pos.dexId,
+          bondingCurveProgress: pos.bondingCurveProgress,
+          isRaydiumListed: pos.isRaydiumListed,
+        }),
+      async (mint, symbol, reason, pnlPct) => {
+        addLog(`⚡ [EXIT ENGINE] ${reason} triggered for ${symbol || mint} at ${pnlPct.toFixed(2)}%`, 'sell');
+        const pos = positionsRef.current[mint];
+        if (pos) {
+          await executeSell(mint, pos.currentPrice || pos.buyPrice, pnlPct, reason);
+        }
+      },
       {
-        tpPct: configRef.current.minTakeProfit || 25,
-        slPct: configRef.current.stopLossPct || 15,
-        slippageBpsTp: Math.floor((configRef.current.slippage || 2.5) * 100),
-        slippageBpsSl: 1000,
+        minTakeProfit: configRef.current.minTakeProfit || minTakeProfit || 25,
+        maxTakeProfit: configRef.current.takeProfitPct || takeProfitPct || 100,
+        bondingCurveTakeProfit: configRef.current.bondingCurveTakeProfit || bondingCurveTakeProfit || 25,
+        stopLossPct: typeof (configRef.current.stopLossPct ?? stopLossPct) === 'number' ? Math.abs(configRef.current.stopLossPct ?? stopLossPct) : 15,
+        bondingCurveStopLossPct: typeof (configRef.current.bondingCurveStopLossPct ?? bondingCurveStopLoss) === 'number' ? Math.abs(configRef.current.bondingCurveStopLossPct ?? bondingCurveStopLoss) : 10,
+        pumpSwapStopLossPct: typeof (configRef.current.pumpSwapStopLossPct ?? pumpSwapStopLoss) === 'number' ? Math.abs(configRef.current.pumpSwapStopLossPct ?? pumpSwapStopLoss) : 15,
+        unknownStopLossPct: typeof (configRef.current.unknownStopLossPct ?? unknownStopLoss) === 'number' ? Math.abs(configRef.current.unknownStopLossPct ?? unknownStopLoss) : 20,
+        moonbagStrategy: false,
+        moonbagSellPct: 0.5,
+        slippageBps: Math.floor((configRef.current.slippage || slippage || 2.5) * 100),
       }
     );
 
-    exitMgr.setOnExitCallback((mint, side, signature, pnlPct, outputAmountSol) => {
-      addLog(`⚡ [FAST EXIT ENGINE] ${side.toUpperCase()} triggered for ${mint} at ${pnlPct.toFixed(2)}% | Tx: ${signature}`, 'sell');
-      const pos = positionsRef.current[mint];
-      if (pos) {
-        // Remove from UI position state
-        setPositions(prev => {
-          const next = { ...prev };
-          delete next[mint]; positionExitManagerRef.current?.removePosition(mint); masterMonitorRef.current?.stopMonitoring(mint);
-          return next;
-        });
-        // Stop price monitoring
-        masterMonitorRef.current?.stopMonitoring(mint);
-
-        // Update trade history and stats
-        const costBasisSol = pos.solSpent || 0;
-        const actualSolReceived = outputAmountSol !== undefined ? outputAmountSol : Math.max(0, costBasisSol + (costBasisSol * pnlPct / 100));
-        const actualPnlSOL = actualSolReceived - costBasisSol;
-        // recalculate pnlPct purely based on actual real return
-        pnlPct = costBasisSol > 0 ? (actualPnlSOL / costBasisSol) * 100 : pnlPct;
-
-        // Refresh wallet balance
-        walletBalanceService.refreshNow();
-
-        setStats((s) => ({
-          ...s,
-          trades: s.trades + 1,
-          wins: s.wins + (pnlPct > 0 ? 1 : 0),
-          losses: s.losses + (pnlPct <= 0 ? 1 : 0),
-          pnl: s.pnl + actualPnlSOL,
-          bestTrade: (pnlPct > 0 && (!s.bestTrade || (pnlPct/100) > s.bestTrade)) ? (pnlPct/100) : s.bestTrade
-        }));
-
-        const newExitTradeId = `trade-${Date.now()}`;
-        setTradeHistory(th => [{
-          id: newExitTradeId,
-          mint: mint,
-          buyTime: pos.entryTime,
-          sellTime: Date.now(),
-          buyAmountSol: costBasisSol,
-          sellAmountSol: actualSolReceived,
-          pnlPct: Math.max(-100, pnlPct)
-        }, ...th]);
-
-        try {
-          const processedJson = localStorage.getItem('pnl_processed_trade_ids');
-          const processedIds: string[] = processedJson ? JSON.parse(processedJson) : [];
-          if (!processedIds.includes(newExitTradeId) && (!signature || !processedIds.includes(signature))) {
-            const singleEvent = {
-              tradeId: newExitTradeId,
-              mint,
-              closeSignature: signature || 'tx-' + Date.now(),
-              isProfitable: pnlPct > 0,
-              pnlPct,
-              timestamp: Date.now()
-            };
-            localStorage.setItem('pnl_latest_trade_event', JSON.stringify(singleEvent));
-            window.dispatchEvent(new CustomEvent('pnl_single_trade_closed', { detail: singleEvent }));
-            processedIds.push(newExitTradeId);
-            if (signature) processedIds.push(signature);
-            localStorage.setItem('pnl_processed_trade_ids', JSON.stringify(processedIds.slice(-200)));
-          }
-        } catch (e) {}
-
-        if (pnlPct < 0) {
-          setBlacklistedMints(prev => Array.from(new Set([...prev, mint])));
-        }
-      }
-    });
-
-    exitMgr.start();
-    positionExitManagerRef.current = exitMgr;
+    exitManagerRef.current = exitMgr;
 
     addLog(`📡 [MASTER MONITOR] Starting monitor services on: ${currentRpc} [Mode: ${status}]`, 'info');
     const masterMon = new MasterMonitorService(currentRpc, exitMgr);
     masterMonitorRef.current = masterMon;
 
     return () => {
-      exitMgr.stop();
       masterMon.stopMonitoring();
     };
   }, [isRunning, monitorStatus.status, monitorStatus.activeUrl, activeTradeMode]);
 
-  // Sync active positions to PositionExitManager & MasterMonitorService
+  // Push config changes to ExitManager
   useEffect(() => {
-    if (!isRunning) return;
+    if (!isRunning || !exitManagerRef.current) return;
 
-    const activeMints = Object.keys(positionsRef.current).filter(k => {
-      const p = positionsRef.current[k];
-      return p && p.amount > 0;
+    exitManagerRef.current.updateGlobalConfig({
+      minTakeProfit: configRef.current.minTakeProfit || minTakeProfit,
+      maxTakeProfit: configRef.current.takeProfitPct || takeProfitPct,
+      bondingCurveTakeProfit: configRef.current.bondingCurveTakeProfit || bondingCurveTakeProfit,
+      stopLossPct: typeof stopLossPct === 'number' ? Math.abs(stopLossPct) : 15,
+      bondingCurveStopLossPct: typeof bondingCurveStopLoss === 'number' ? Math.abs(bondingCurveStopLoss) : 10,
+      pumpSwapStopLossPct: typeof pumpSwapStopLoss === 'number' ? Math.abs(pumpSwapStopLoss) : 15,
+      unknownStopLossPct: typeof unknownStopLoss === 'number' ? Math.abs(unknownStopLoss) : 20,
+      moonbagStrategy: false,
+      slippageBps: Math.floor((slippage || 2.5) * 100),
     });
+  }, [
+    isRunning,
+    minTakeProfit,
+    takeProfitPct,
+    bondingCurveTakeProfit,
+    stopLossPct,
+    bondingCurveStopLoss,
+    pumpSwapStopLoss,
+    unknownStopLoss,
+    slippage,
+  ]);
 
-    if (positionExitManagerRef.current) {
-      for (const mint of activeMints) {
-        const pos = positionsRef.current[mint];
-        if (pos) {
-          const stage = detectTokenStage({ address: mint, dexId: pos.dexId, bondingCurveProgress: pos.bondingCurveProgress });
-          const isPump = stage.isBonding || stage.platform === 'PUMP_FUN' || mint.toLowerCase().endsWith('pump');
-          const tpValue = pos.tpPct ?? (isPump ? (configRef.current.bondingCurveTakeProfit || bondingCurveTakeProfit || 25) : (configRef.current.minTakeProfit || minTakeProfit || 25));
-          const slValue = pos.slPct ?? (isPump ? (configRef.current.bondingCurveStopLossPct || bondingCurveStopLoss || 15) : (configRef.current.stopLossPct || stopLossPct || 15));
-          const existingPos = positionExitManagerRef.current.getPosition(mint);
-          if (existingPos) {
-            positionExitManagerRef.current.updatePositionTpSl(mint, tpValue, slValue);
-            positionExitManagerRef.current.confirmBuy(mint, pos.txid || 'active-pos', pos.buySlot || 0);
-          } else {
-            positionExitManagerRef.current.addPosition({
-              mint,
-              amount: pos.amountLamports || Math.floor((pos.amount || 0) * (pos.decimals ? Math.pow(10, pos.decimals) : 1e6)),
-              buyPrice: pos.buyPrice || 0,
-              solSpent: pos.solSpent || 0.1,
-              tpPct: tpValue,
-              slPct: slValue,
-            });
-            positionExitManagerRef.current.confirmBuy(mint, pos.txid || 'active-pos', pos.buySlot || 0);
-          }
-        }
+  // Sync active positions to ExitManager & MasterMonitorService
+  useEffect(() => {
+    if (!isRunning || !exitManagerRef.current) return;
+
+    const activeMints = new Set<string>();
+
+    for (const [mint, pos] of Object.entries(positionsRef.current)) {
+      if (pos && pos.amount > 0) {
+        activeMints.add(mint);
+        exitManagerRef.current.syncPosition({
+          mint,
+          symbol: pos.symbol,
+          state: 'OPEN',
+          amount: pos.amount,
+          realCostBasis: pos.solSpent || 0.1,
+          lastPriceSol: pos.currentPrice || pos.buyPrice,
+          lastPriceTimestamp: pos.lastPriceTimestamp || Date.now(),
+          highestPnlPct: pos.peakPnLPct || 0,
+          soldPartial: pos.soldPartial || false,
+          recoveryMode: pos.recoveryMode || false,
+          entryTime: pos.entryTime,
+          dexId: pos.dexId,
+          bondingCurveProgress: pos.bondingCurveProgress,
+        });
       }
     }
 
-    if (masterMonitorRef.current && activeMints.length > 0) {
-      masterMonitorRef.current.startMonitoring(activeMints);
+    for (const mint of exitManagerRef.current.getActiveMints()) {
+      if (!activeMints.has(mint)) {
+        exitManagerRef.current.removePosition(mint);
+      }
     }
-  }, [positions, isRunning, minTakeProfit, stopLossPct]);
+
+    if (masterMonitorRef.current && activeMints.size > 0) {
+      masterMonitorRef.current.startMonitoring(Array.from(activeMints));
+    }
+  }, [positions, isRunning]);
+
+  // Exit Evaluation loop
+  useEffect(() => {
+    if (!isRunning) return;
+
+    const interval = setInterval(() => {
+      exitManagerRef.current?.evaluateAll();
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [isRunning]);
 
   const processedAlerts = useRef<Set<string>>(new Set());
   useEffect(() => {
