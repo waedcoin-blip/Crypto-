@@ -3209,8 +3209,8 @@ const checkTokenCriteria = (mint: string): {
       }
 
       // 10. Token Age limits (applies to ALL tokens)
-      const minAg = hardenedMinAge !== undefined ? hardenedMinAge : 0;
-      const maxAg = hardenedMaxAge !== undefined ? hardenedMaxAge : 240;
+      const minAg = hardenedMinAge;
+      const maxAg = hardenedMaxAge;
       const ageRes = validateTokenAge(metric, {
         minAgeMinutes: minAg,
         maxAgeMinutes: maxAg,

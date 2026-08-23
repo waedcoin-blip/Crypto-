@@ -32,7 +32,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { cn, detectTokenStage } from './lib/utils';
 import { setSolPriceUsd, getSolPriceUsd, calcNetPnl, getDynamicOperationalFeeSol } from './utils/pnlCalculator';
-import { validateTokenAge, formatTokenAge } from './utils/tokenAge';
+import { validateTokenAge, getTokenAgeMinutes, formatTokenAge } from './utils/tokenAge';
 import { DEFAULT_HELIUS_RPC, HELIUS_API_KEY } from './constants/solana';
 import { encryptPrivateKey, decryptPrivateKey } from './lib/crypto';
 import { auth, db, signInWithGoogle, signInWithEmailAndPassword, createUserWithEmailAndPassword, authPersistencePromise } from './lib/firebase';
@@ -3256,8 +3256,8 @@ function App() {
                 const isRiskValid = tokenRisk <= maxRisk;
                 const isLiquidityValid = liquidity >= minLiq && liquidityRatio >= minLiqRatio;
 
-                const minAge = latestState.current.hardenedMinAge ?? 0;
-                const maxAge = latestState.current.hardenedMaxAge ?? 240;
+                const minAge = latestState.current.hardenedMinAge;
+                const maxAge = latestState.current.hardenedMaxAge;
                 const ageRes = validateTokenAge(updated, {
                   minAgeMinutes: minAge,
                   maxAgeMinutes: maxAge,

@@ -103,7 +103,12 @@ export class MasterMonitorService {
     recordCandidatePrice(mint, priceNative);
 
     // 🔥 INSTANT APP STORE UPDATE: Immediately update central marketDataManager store & notify UI
-    marketDataManager.updateTokenPrice(mint, priceNative, undefined, source === 'rpc_ws' ? 'jupiter' : source);
+    marketDataManager.updateTokenPrice(
+      mint,
+      priceNative,
+      undefined,
+      source === 'dexscreener' ? 'dexscreener' : 'jupiter'
+    );
 
     // 🔥 INSTANT DIRECT PATH: Price update -> Exit Manager (<1ms evaluation)
     this.exitManager.onPriceUpdate(mint, priceNative, timestamp);

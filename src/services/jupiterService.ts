@@ -2,7 +2,7 @@ import { Connection, PublicKey, Transaction, VersionedTransaction, TransactionMe
 import { createJupiterApiClient, QuoteResponse } from '@jup-ag/api';
 import { useAppStore } from '../store/appStore';
 import { detectTokenStage } from '../lib/utils';
-import { validateTokenAge } from '../utils/tokenAge';
+import { validateTokenAge, TokenAgeInput } from '../utils/tokenAge';
 import { DEFAULT_HELIUS_RPC } from '../constants/solana';
 import { telemetryService } from './telemetryService';
 import { DevnetAmmExecutor } from './DevnetAmmExecutor';
@@ -1041,6 +1041,8 @@ export interface AdvancedTokenMetrics {
   priceChange5m?: number;
   percentageIncrease?: number;
   ageMinutes?: number;
+  pairCreatedAt?: number;
+  discoveredAt?: number;
   volume24h?: number;
   dexId?: string;
 }
@@ -1084,8 +1086,8 @@ export const verifyHardenedScannerCriteria = (
   const maxPriceChange1m = customConfig?.maxPriceChange1m ?? 10.0;
   const minBondingProgress = customConfig?.minBondingProgress ?? 0;
   const maxBondingProgress = customConfig?.maxBondingProgress ?? 100;
-  const minAge = customConfig?.minAge ?? 0;
-  const maxAge = customConfig?.maxAge ?? 240;
+  const minAge = customConfig?.minAge;
+  const maxAge = customConfig?.maxAge;
 
   const stage = detectTokenStage({
     address: metrics.mintAddress,
@@ -1109,7 +1111,14 @@ export const verifyHardenedScannerCriteria = (
   }
 
   // Enforce Token Age limits for ALL tokens (both pre-migration and migrated)
-  const ageRes = validateTokenAge(metrics, {
+  const ageInput: TokenAgeInput | number | null =
+    metrics.pairCreatedAt || metrics.discoveredAt
+      ? { pairCreatedAt: metrics.pairCreatedAt, discoveredAt: metrics.discoveredAt }
+      : metrics.ageMinutes != null
+      ? Date.now() - metrics.ageMinutes * 60000
+      : null;
+
+  const ageRes = validateTokenAge(ageInput, {
     minAgeMinutes: minAge,
     maxAgeMinutes: maxAge,
     allowUnknownAge: false,
