@@ -1247,21 +1247,21 @@ function App() {
             ? (typeof state.bondingCurveTakeProfit === 'number' ? state.bondingCurveTakeProfit : 25) 
             : (state.moonbagStrategy ? (position.soldPartial ? state.maxTakeProfit : state.minTakeProfit) : state.minTakeProfit));
             
-          const trackingVerdict = await processActiveTrackingFrame(
-            connection,
-            actPos,
-            token.liquidity || 0,
-            walletAddress,
-            { 
-              takeProfit: activeTakeProfit, 
-              stopLoss: effectiveSL
-            }
-          );
+          const trackingVerdict = { shouldExit: false, reason: '' };
+          if (currentPnLPct >= activeTakeProfit) {
+            trackingVerdict.shouldExit = true;
+            trackingVerdict.reason = 'TAKE PROFIT';
+          } else if (currentPnLPct <= effectiveSL) {
+            trackingVerdict.shouldExit = true;
+            trackingVerdict.reason = effectiveSL !== baseSL ? 'TRAILING SL' : 'STOP LOSS';
+          } else if (position.isManualSellTriggered) {
+            trackingVerdict.shouldExit = true;
+            trackingVerdict.reason = 'MANUAL';
+          }
 
           if (trackingVerdict.shouldExit) {
-            const slType = effectiveSL !== baseSL ? 'TRAILING SL' : trackingVerdict.reason;
-            console.log(`[EXIT BY ENGINE] (LIVE): ${token.symbol} clearing. Reason: ${slType}`);
-            fns.current.executeAutoSell(tokenAddress, token.symbol, trackingVerdict.quote);
+            console.log(`[EXIT BY ENGINE] (LIVE): ${token.symbol} clearing. Reason: ${trackingVerdict.reason}`);
+            fns.current.executeAutoSell(tokenAddress, token.symbol);
           }
         }
       }

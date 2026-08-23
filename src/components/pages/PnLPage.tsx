@@ -120,6 +120,8 @@ interface Position {
   entryTime: number;
   txid: string; // The primary/most recent transaction
   buySlot?: number;
+  dexId?: string;
+  bondingCurveProgress?: number;
   buyEntries?: { signature: string; solSpent: number; amount: number; buyPrice: number; slot: number }[];
   positionId?: string;
   recoveryMode?: boolean;
@@ -3043,10 +3045,7 @@ export const PnLPage = ({
       throw new Error("Authentication required: Please sign in with Google/Firebase before placing real on-chain orders.");
     }
 
-    const activeWallet = useActiveWalletStore.getState().activeWallet;
-    if (!activeWallet || (!activeWallet.address && !activeWallet.keypair)) {
-      throw new Error("No active wallet connected or configured");
-    }
+    if (!privateKey) throw new Error("Private Key missing");
     
     const slippageToUse = customSlippageBps !== undefined ? customSlippageBps : Math.floor(slippage * 100);
     const intent = inputMint === SOL_MINT ? 'entry' : 'exit_tp';
@@ -3729,7 +3728,7 @@ const checkTokenCriteria = (mint: string): {
             console.warn("Unable to fetch solBefore balance for sell", e);
           }
 
-          const result = await executeJupiterSwap(mint, SOL_MINT, lamportsToSell);
+          const result = await executeJupiterSwap(mint, SOL_MINT, lamportsToSell, reason === 'EMERGENCY FORCE EXIT' ? 1000 : undefined);
           if (result.txid) {
             await walletBalanceService.refreshNow();
             let solAfter = 0;
@@ -3864,7 +3863,7 @@ const checkTokenCriteria = (mint: string): {
         tpPct: configRef.current.minTakeProfit || 25,
         slPct: configRef.current.stopLossPct || 15,
         slippageBpsTp: Math.floor((configRef.current.slippage || 2.5) * 100),
-        slippageBpsSl: Math.floor((configRef.current.slippage || 10.0) * 100),
+        slippageBpsSl: 1000,
       }
     );
 

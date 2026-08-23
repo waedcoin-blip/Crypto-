@@ -98,6 +98,20 @@ export class WalletBalanceService {
    * Fetch raw on-chain SPL token account balance for a specific mint.
    * Returns RAW amount (smallest unit) so it can be compared against Jupiter quote amounts.
    */
+  async getSolBalance(walletAddress?: string): Promise<number> {
+    const activeAddress = walletAddress || localStorage.getItem('wallet_address');
+    if (!activeAddress) return 0;
+    try {
+      const balance = await this.connection.getBalance(new PublicKey(activeAddress));
+      return balance / 1_000_000_000.0;
+    } catch (e) {
+      console.warn('Failed to get SOL balance', e);
+      return 0;
+    }
+  }
+
+
+
   async getTokenBalance(mint: string, walletAddress?: string): Promise<number> {
     const address = walletAddress || useActiveWalletStore.getState().activeWallet?.address;
     if (!address) return 0;

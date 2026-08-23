@@ -1,0 +1,3 @@
+Fixed Fast Exit 10% issue by properly isolating slippage.
+- Enforced 1000 bps (10%) slippage for Fast Exit SL execution.
+- Configured Emergency Force Exit button to apply 10% slippage on Jupiter swap.

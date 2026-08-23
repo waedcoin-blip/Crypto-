@@ -131,7 +131,7 @@ export class MasterMonitorService {
       for (const mint of mints) {
         const cached = marketDataManager.getCachedPrice(mint);
         if (cached && !cached.isStale && cached.priceNative && cached.priceNative > 0 && (now - cached.updatedAt) < 3000) {
-          this.pushPriceUpdate(mint, cached.priceNative, cached.updatedAt, cached.source || 'jupiter');
+          this.pushPriceUpdate(mint, cached.priceNative, cached.updatedAt, (cached.source as any) || 'jupiter');
         } else {
           mintsToFetch.push(mint);
         }
