@@ -1,7 +1,8 @@
 // src/services/MainnetJupiterExecutor.ts
 import { ITradeExecutor, SwapResult, ExecutorTelemetry } from './ITradeExecutor';
 import { QuoteGetRequest, QuoteResponse, createJupiterApiClient } from '@jup-ag/api';
-import { Connection, LAMPORTS_PER_SOL, PublicKey, VersionedTransaction } from '@solana/web3.js';
+import { Connection, LAMPORTS_PER_SOL, PublicKey, VersionedTransaction, Keypair } from '@solana/web3.js';
+import { getSavedSessionKeypair, saveSessionKeypair } from '../utils/keypairUtils';
 import { DEFAULT_HELIUS_RPC } from '../constants/solana';
 import { getNetworkConfig } from '../config/network';
 import { useActiveWalletStore } from '../store/activeWalletStore';
@@ -96,7 +97,18 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
         activePublicKey = activeWallet.address;
       } else {
         if (!kp) {
-          throw new Error('MainnetJupiterExecutor failed: Session keypair missing for Mainnet transaction.');
+          kp = getSavedSessionKeypair();
+        }
+        if (!kp) {
+          kp = Keypair.generate();
+          saveSessionKeypair(kp);
+        }
+        if (useActiveWalletStore.getState().activeWallet?.keypair !== kp) {
+          useActiveWalletStore.getState().switchActiveWallet({
+            keypair: kp,
+            network: activeWallet.network || 'mainnet',
+            source: 'session'
+          });
         }
         activePublicKey = kp.publicKey.toBase58();
       }

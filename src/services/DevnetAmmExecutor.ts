@@ -1,16 +1,8 @@
 // src/services/DevnetAmmExecutor.ts
 import { ITradeExecutor, SwapResult, ExecutorTelemetry } from './ITradeExecutor';
 import { QuoteGetRequest, QuoteResponse } from '@jup-ag/api';
-import {
-  Connection,
-  PublicKey,
-  VersionedTransaction,
-  TransactionMessage,
-  SystemProgram,
-  LAMPORTS_PER_SOL,
-  TransactionInstruction,
-  SendTransactionError,
-} from '@solana/web3.js';
+import { Keypair, Connection, PublicKey, VersionedTransaction, TransactionMessage, SystemProgram, LAMPORTS_PER_SOL, TransactionInstruction, SendTransactionError } from '@solana/web3.js';
+import { getSavedSessionKeypair, saveSessionKeypair } from '../utils/keypairUtils';
 import {
   TOKEN_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
@@ -186,7 +178,18 @@ export class DevnetAmmExecutor implements ITradeExecutor {
         userPk = new PublicKey(activeWallet.address);
       } else {
         if (!kp) {
-          throw new Error('DevnetAmmExecutor failed: Session keypair missing for Devnet transaction.');
+          kp = getSavedSessionKeypair();
+        }
+        if (!kp) {
+          kp = Keypair.generate();
+          saveSessionKeypair(kp);
+        }
+        if (useActiveWalletStore.getState().activeWallet?.keypair !== kp) {
+          useActiveWalletStore.getState().switchActiveWallet({
+            keypair: kp,
+            network: activeWallet.network || 'devnet',
+            source: 'session'
+          });
         }
         userPk = kp.publicKey;
       }

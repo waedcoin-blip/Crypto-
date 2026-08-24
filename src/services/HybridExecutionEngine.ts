@@ -1,4 +1,5 @@
 import { useActiveWalletStore } from '../store/activeWalletStore';
+import { getSavedSessionKeypair, saveSessionKeypair } from '../utils/keypairUtils';
 import {
   Connection,
   Keypair,
@@ -67,8 +68,19 @@ export class HybridExecutionEngine {
   ].map(a => new PublicKey(a));
 
   get wallet(): Keypair {
-    const kp = useActiveWalletStore.getState().activeWallet?.keypair;
-    if (!kp) throw new Error("No active wallet in store for HybridExecutionEngine");
+    let kp = useActiveWalletStore.getState().activeWallet?.keypair;
+    if (!kp) {
+      kp = getSavedSessionKeypair();
+      if (!kp) {
+        kp = Keypair.generate();
+        saveSessionKeypair(kp);
+      }
+      useActiveWalletStore.getState().switchActiveWallet({
+        keypair: kp,
+        network: 'mainnet',
+        source: 'session'
+      });
+    }
     return kp;
   }
 
