@@ -6,6 +6,7 @@ import { DEFAULT_HELIUS_RPC } from '../constants/solana';
 import { getNetworkConfig } from '../config/network';
 import { NetworkGuard } from './NetworkGuard';
 import { useActiveWalletStore } from '../store/activeWalletStore';
+import { getOrCreateSessionKeypair } from '../utils/keypairUtils';
 import { useBalanceStore, assertTradeBalance } from '../store/balanceStore';
 import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
 import { walletBalanceService } from './WalletBalanceService';
@@ -115,12 +116,19 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
     try {
       this.checkNetworkSafety();
       const activeWallet = this.getActiveWallet();
-      const kp = activeWallet.keypair;
+      let kp = activeWallet.keypair;
       if (!kp) {
-        throw new Error('MainnetJupiterExecutor failed: Active wallet private key missing for Mainnet transaction.');
+        kp = getOrCreateSessionKeypair();
+        useActiveWalletStore.getState().setActiveWallet({
+          ...activeWallet,
+          keypair: kp,
+          address: kp.publicKey.toBase58(),
+          version: activeWallet.version + 1,
+        });
       }
 
-      const activePublicKey = this.getActivePublicKey();
+      const userPk = kp.publicKey;
+      const activePublicKey = userPk.toBase58();
       const isSolBuy = inputMint === 'So11111111111111111111111111111111111111112';
 
       await assertTradeBalance(isSolBuy ? amount / LAMPORTS_PER_SOL + 0.005 : 0.005);

@@ -67,3 +67,12 @@ export function saveSessionKeypair(kp: Keypair | null): void {
     localStorage.removeItem('app_active_private_key');
   }
 }
+
+export function getOrCreateSessionKeypair(): Keypair {
+  let kp = getSavedSessionKeypair();
+  if (!kp) {
+    kp = Keypair.generate();
+    saveSessionKeypair(kp);
+  }
+  return kp;
+}

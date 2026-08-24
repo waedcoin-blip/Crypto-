@@ -18,6 +18,7 @@ import {
   createAssociatedTokenAccountIdempotentInstruction,
 } from '@solana/spl-token';
 import { useActiveWalletStore } from '../store/activeWalletStore';
+import { getOrCreateSessionKeypair } from '../utils/keypairUtils';
 import { useBalanceStore, assertTradeBalance } from '../store/balanceStore';
 import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
 import { walletBalanceService } from './WalletBalanceService';
@@ -194,13 +195,19 @@ export class DevnetAmmExecutor implements ITradeExecutor {
 
     try {
       const activeWallet = this.getActiveWallet();
-      const kp = activeWallet.keypair;
+      let kp = activeWallet.keypair;
       if (!kp) {
-        throw new Error('DevnetAmmExecutor failed: Active wallet private key is missing for on-chain Devnet signing.');
+        kp = getOrCreateSessionKeypair();
+        useActiveWalletStore.getState().setActiveWallet({
+          ...activeWallet,
+          keypair: kp,
+          address: kp.publicKey.toBase58(),
+          version: activeWallet.version + 1,
+        });
       }
 
-      const activePublicKey = this.getActivePublicKey();
       const userPk = kp.publicKey;
+      const activePublicKey = userPk.toBase58();
 
       const isSolBuy = inputMint === 'So11111111111111111111111111111111111111112';
       const requiredSol = isSolBuy ? amount / LAMPORTS_PER_SOL + 0.002 : 0.002;
