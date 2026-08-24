@@ -18,7 +18,7 @@ import {
   createAssociatedTokenAccountIdempotentInstruction,
   createBurnInstruction,
 } from '@solana/spl-token';
-import { useActiveWalletStore } from '../store/activeWalletStore';
+import { useActiveWalletStore, DEFAULT_DEVNET_WALLET_ADDRESS } from '../store/activeWalletStore';
 import { useBalanceStore, assertTradeBalance } from '../store/balanceStore';
 import { walletBalanceService } from './WalletBalanceService';
 import { getNetworkConfig } from '../config/network';
@@ -42,11 +42,11 @@ export class DevnetAmmExecutor implements ITradeExecutor {
 
   public get publicKey(): string {
     const wallet = useActiveWalletStore.getState().activeWallet;
-    if (!wallet) return '';
+    if (!wallet) return DEFAULT_DEVNET_WALLET_ADDRESS;
     if (wallet.keypair) {
       return wallet.keypair.publicKey.toBase58();
     }
-    return wallet.address || '';
+    return wallet.address || DEFAULT_DEVNET_WALLET_ADDRESS;
   }
 
   private getActiveWallet() {

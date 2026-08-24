@@ -2,7 +2,7 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import { getNetworkConfig, TradingNetwork } from '../config/network';
 import { useBalanceStore } from '../store/balanceStore';
-import { useActiveWalletStore } from '../store/activeWalletStore';
+import { useActiveWalletStore, DEFAULT_DEVNET_WALLET_ADDRESS } from '../store/activeWalletStore';
 
 const LAMPORTS_PER_SOL = 1_000_000_000;
 const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
@@ -41,7 +41,7 @@ export class WalletBalanceService {
   }
 
   async refresh(overrideAddress?: string): Promise<number> {
-    const address = overrideAddress || useActiveWalletStore.getState().activeWallet?.address;
+    const address = overrideAddress || useActiveWalletStore.getState().activeWallet?.address || (this.network === 'devnet' ? DEFAULT_DEVNET_WALLET_ADDRESS : '');
     if (!address) {
       useBalanceStore.getState().setWalletAddress(null);
       return 0;
@@ -113,7 +113,7 @@ export class WalletBalanceService {
 
 
   async getTokenBalance(mint: string, walletAddress?: string): Promise<number> {
-    const address = walletAddress || useActiveWalletStore.getState().activeWallet?.address;
+    const address = walletAddress || useActiveWalletStore.getState().activeWallet?.address || (this.network === 'devnet' ? DEFAULT_DEVNET_WALLET_ADDRESS : '');
     if (!address) return 0;
 
     try {
