@@ -4,10 +4,15 @@ import { QuoteGetRequest, QuoteResponse, createJupiterApiClient } from '@jup-ag/
 import { Connection, LAMPORTS_PER_SOL, PublicKey, VersionedTransaction } from '@solana/web3.js';
 import { DEFAULT_HELIUS_RPC } from '../constants/solana';
 import { getNetworkConfig } from '../config/network';
+import { NetworkGuard } from './NetworkGuard';
 import { useActiveWalletStore } from '../store/activeWalletStore';
 import { useBalanceStore, assertTradeBalance } from '../store/balanceStore';
+import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
 import { walletBalanceService } from './WalletBalanceService';
 import { useAppStore } from '../store/appStore';
+
+const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
 
 export class MainnetJupiterExecutor implements ITradeExecutor {
   readonly mode = 'mainnet' as const;
@@ -37,7 +42,45 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
     return wallet.address || '';
   }
 
+  private checkNetworkSafety(): void {
+    const envNetwork = useTradingEnvironmentStore.getState().network;
+    if (envNetwork !== 'mainnet') {
+      throw new Error(`NETWORK SAFETY ERROR: Mainnet execution blocked because selected environment network is '${envNetwork}'.`);
+    }
+    const activeWallet = useActiveWalletStore.getState().activeWallet;
+    if (!activeWallet) {
+      throw new Error('NETWORK SAFETY ERROR: Mainnet execution blocked because no active wallet is selected.');
+    }
+    if (activeWallet.network !== 'mainnet') {
+      throw new Error(`NETWORK SAFETY ERROR: Mainnet execution blocked because active wallet network is '${activeWallet.network}' (expected 'mainnet').`);
+    }
+    NetworkGuard.assertNetwork('mainnet', this.connection.rpcEndpoint);
+  }
+
+  private validateQuoteSafety(quote: QuoteResponse, inputAmount: number, slippageBps: number): void {
+    if (inputAmount <= 0 || !isFinite(inputAmount)) {
+      throw new Error(`INVALID_SWAP_AMOUNT: Amount must be positive and finite (got: ${inputAmount}).`);
+    }
+    if (slippageBps > 1000) {
+      throw new Error(`EXCESSIVE_SLIPPAGE: Slippage BPS ${slippageBps} exceeds maximum allowable limit of 1000 (10%).`);
+    }
+    if (!quote) {
+      throw new Error('QUOTE_SAFETY_ERROR: Jupiter returned empty quote.');
+    }
+    if (!quote.outAmount || BigInt(quote.outAmount) <= 0n) {
+      throw new Error('QUOTE_SAFETY_ERROR: Jupiter returned zero or negative output amount.');
+    }
+    if (!quote.routePlan || quote.routePlan.length === 0) {
+      throw new Error('QUOTE_SAFETY_ERROR: Jupiter returned no executable routes.');
+    }
+    const impact = parseFloat(String(quote.priceImpactPct || '0')) * 100;
+    if (impact > 10.0) {
+      throw new Error(`QUOTE_SAFETY_ERROR: Excessive price impact (${impact.toFixed(2)}%) exceeds safety threshold of 10.0%.`);
+    }
+  }
+
   private getActiveWallet() {
+    this.checkNetworkSafety();
     const wallet = useActiveWalletStore.getState().activeWallet;
     if (!wallet) throw new Error('No active wallet selected for Mainnet trading');
     return wallet;
@@ -50,6 +93,7 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
   }
 
   async getQuote(params: QuoteGetRequest): Promise<QuoteResponse> {
+    this.checkNetworkSafety();
     return this.jupiterApi.quoteGet(params);
   }
 
@@ -64,6 +108,7 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
     this.telemetryTotalSwaps++;
 
     try {
+      this.checkNetworkSafety();
       const activeWallet = this.getActiveWallet();
       const kp = activeWallet.keypair;
       if (!kp) {
@@ -82,7 +127,7 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
         }
       }
 
-      // Fetch quote from Mainnet Jupiter API
+      // Fetch fresh quote from Mainnet Jupiter API
       const quote = await this.getQuote({
         inputMint,
         outputMint,
@@ -91,9 +136,7 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
         restrictIntermediateTokens: true,
       });
 
-      if (!quote) {
-        throw new Error('Jupiter Mainnet returned no quote.');
-      }
+      this.validateQuoteSafety(quote, amount, slippageBps);
 
       const outAmountNum = Number(quote.outAmount);
 
@@ -141,14 +184,28 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
       await this.syncStoreBalances(activePublicKey, targetMint);
 
       const landingTimeMs = Date.now() - start;
-      const actualFee = 0.000005;
+
+      // Query actual transaction fee from confirmed transaction metadata
+      let actualFee = 0.000005;
+      try {
+        const txDetails = await this.connection.getTransaction(sig, {
+          commitment: 'confirmed',
+          maxSupportedTransactionVersion: 0,
+        });
+        if (txDetails?.meta?.fee !== undefined) {
+          actualFee = txDetails.meta.fee / LAMPORTS_PER_SOL;
+        }
+      } catch (fErr) {
+        console.warn('[MainnetJupiterExecutor] Could not query confirmed tx fee metadata, falling back to estimate:', fErr);
+      }
+
       this.telemetryTotalFeesPaidSol += actualFee;
       this.telemetryLandingTimeTotalMs += landingTimeMs;
 
       useAppStore.getState().addJupiterLog({
         type: 'INFO',
-        message: `Mainnet Swap Success: ${sig.slice(0, 8)}... (Slot ${slot})`,
-        details: { signature: sig, inputMint, outputMint, inAmount: amount, outAmount: outAmountNum },
+        message: `Mainnet Swap Success: ${sig.slice(0, 8)}... (Slot ${slot}, Fee: ${actualFee.toFixed(6)} SOL)`,
+        details: { signature: sig, inputMint, outputMint, inAmount: amount, outAmount: outAmountNum, feeSol: actualFee },
       });
 
       return {
@@ -172,6 +229,7 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
   async batchSwap(
     swaps: Array<{ inputMint: string; outputMint: string; amount: number; slippageBps: number }>
   ): Promise<SwapResult[]> {
+    this.checkNetworkSafety();
     const results: SwapResult[] = [];
     for (const s of swaps) {
       try {
@@ -200,38 +258,44 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
     try {
       const lamports = await this.connection.getBalance(new PublicKey(this.publicKey), 'confirmed');
       return lamports / LAMPORTS_PER_SOL;
-    } catch {
-      return 0;
+    } catch (err) {
+      throw new Error(`Mainnet getSolBalance RPC failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
   async getTokenBalance(mint: string): Promise<number> {
     if (!this.publicKey) return 0;
-    try {
-      const accounts = await this.connection.getParsedTokenAccountsByOwner(
-        new PublicKey(this.publicKey),
-        { mint: new PublicKey(mint) },
+    const ownerPk = new PublicKey(this.publicKey);
+    const mintPk = new PublicKey(mint);
+
+    const [splAccounts, t22Accounts] = await Promise.all([
+      this.connection.getParsedTokenAccountsByOwner(
+        ownerPk,
+        { mint: mintPk, programId: TOKEN_PROGRAM_ID },
         'confirmed'
-      );
-      if (accounts.value.length === 0) return 0;
-      return Number(accounts.value[0].account.data.parsed.info.tokenAmount.amount);
-    } catch {
-      return 0;
+      ),
+      this.connection.getParsedTokenAccountsByOwner(
+        ownerPk,
+        { mint: mintPk, programId: TOKEN_2022_PROGRAM_ID },
+        'confirmed'
+      ).catch(() => ({ value: [] })),
+    ]);
+
+    const allAccounts = [...splAccounts.value, ...t22Accounts.value];
+    let totalRawAmount = 0;
+    for (const account of allAccounts) {
+      const amountStr = account.account.data.parsed?.info?.tokenAmount?.amount;
+      if (amountStr) {
+        totalRawAmount += Number(amountStr);
+      }
     }
+    return totalRawAmount;
   }
 
   async hasTokenAccount(mint: string): Promise<boolean> {
     if (!this.publicKey) return false;
-    try {
-      const accounts = await this.connection.getParsedTokenAccountsByOwner(
-        new PublicKey(this.publicKey),
-        { mint: new PublicKey(mint) },
-        'confirmed'
-      );
-      return accounts.value.length > 0;
-    } catch {
-      return false;
-    }
+    const balance = await this.getTokenBalance(mint);
+    return balance > 0;
   }
 
   private async syncStoreBalances(activePublicKey: string, targetMint?: string): Promise<void> {
@@ -239,18 +303,27 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
       const solLamports = await this.connection.getBalance(new PublicKey(activePublicKey), 'confirmed');
       const sol = solLamports / LAMPORTS_PER_SOL;
 
-      const tokenAccounts = await this.connection.getParsedTokenAccountsByOwner(
-        new PublicKey(activePublicKey),
-        { programId: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA') },
-        'confirmed'
-      );
+      const [splAccounts, t22Accounts] = await Promise.all([
+        this.connection.getParsedTokenAccountsByOwner(
+          new PublicKey(activePublicKey),
+          { programId: TOKEN_PROGRAM_ID },
+          'confirmed'
+        ).catch(() => ({ value: [] })),
+        this.connection.getParsedTokenAccountsByOwner(
+          new PublicKey(activePublicKey),
+          { programId: TOKEN_2022_PROGRAM_ID },
+          'confirmed'
+        ).catch(() => ({ value: [] })),
+      ]);
 
       const tokenBalances: Record<string, number> = {};
-      for (const { account } of tokenAccounts.value) {
-        const info = account.data.parsed.info;
+      for (const { account } of [...splAccounts.value, ...t22Accounts.value]) {
+        const info = account.data.parsed?.info;
+        if (!info) continue;
         const mint = info.mint;
         const ta = info.tokenAmount;
-        tokenBalances[mint] = ta.uiAmount ?? Number(ta.amount) / Math.pow(10, ta.decimals);
+        const uiAmt = ta.uiAmount ?? Number(ta.amount) / Math.pow(10, ta.decimals);
+        tokenBalances[mint] = (tokenBalances[mint] || 0) + uiAmt;
       }
 
       const bs = useBalanceStore.getState();

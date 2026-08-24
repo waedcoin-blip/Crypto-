@@ -6,6 +6,7 @@ import { useActiveWalletStore } from '../store/activeWalletStore';
 
 const LAMPORTS_PER_SOL = 1_000_000_000;
 const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
 
 export class WalletBalanceService {
   private connection: Connection | null = null;
@@ -58,27 +59,36 @@ export class WalletBalanceService {
       const balance = await this.connection.getBalance(publicKey, 'confirmed');
       const sol = balance / LAMPORTS_PER_SOL;
 
-      // 2. ALL SPL tokens (not just SOL)
-      const tokenAccounts = await this.connection.getParsedTokenAccountsByOwner(
-        publicKey,
-        { programId: TOKEN_PROGRAM_ID },
-        'confirmed'
-      );
+      // 2. ALL SPL tokens (SPL Token + Token-2022)
+      const [tokenAccounts, t22Accounts] = await Promise.all([
+        this.connection.getParsedTokenAccountsByOwner(
+          publicKey,
+          { programId: TOKEN_PROGRAM_ID },
+          'confirmed'
+        ).catch(() => ({ value: [] })),
+        this.connection.getParsedTokenAccountsByOwner(
+          publicKey,
+          { programId: TOKEN_2022_PROGRAM_ID },
+          'confirmed'
+        ).catch(() => ({ value: [] })),
+      ]);
 
+      const allAccounts = [...tokenAccounts.value, ...t22Accounts.value];
       const tokenBalances: Record<string, number> = {};
-      for (const { account } of tokenAccounts.value) {
-        const parsed = account.data.parsed.info;
+
+      for (const { account } of allAccounts) {
+        const parsed = account.data.parsed?.info;
+        if (!parsed) continue;
         const mint: string = parsed.mint;
         const ta = parsed.tokenAmount;
-        // UI amount (decimal-adjusted) so it matches what users see
-        tokenBalances[mint] = ta.uiAmount ?? Number(ta.amount) / Math.pow(10, ta.decimals);
+        const uiAmt = ta.uiAmount ?? Number(ta.amount) / Math.pow(10, ta.decimals);
+        tokenBalances[mint] = (tokenBalances[mint] || 0) + uiAmt;
       }
 
       // 3. Push to store
       const bs = useBalanceStore.getState();
       bs.setOnChainBalance({ solBalance: sol });
 
-      // Adapt to your balanceStore API (see step 3 below)
       if ('setTokenBalances' in bs && typeof (bs as any).setTokenBalances === 'function') {
         (bs as any).setTokenBalances(tokenBalances);
       } else if ('setTokenBalance' in bs && typeof (bs as any).setTokenBalance === 'function') {
@@ -95,39 +105,35 @@ export class WalletBalanceService {
   }
 
   /**
-   * Fetch raw on-chain SPL token account balance for a specific mint.
-   * Returns RAW amount (smallest unit) so it can be compared against Jupiter quote amounts.
+   * Fetch raw on-chain SPL token account balance for a specific mint across all accounts (SPL Token & Token-2022).
+   * Throws on RPC error so callers NEVER interpret RPC failure as zero balance.
    */
   async getTokenBalance(mint: string, walletAddress?: string): Promise<number> {
     const address = walletAddress || useActiveWalletStore.getState().activeWallet?.address;
     if (!address) return 0;
 
-    try {
-      if (!this.connection) {
-        const config = getNetworkConfig(this.network);
-        this.connection = new Connection(config.rpcUrl, 'confirmed');
-      }
-      const owner = new PublicKey(address);
-      const mintPk = new PublicKey(mint);
-
-      const accounts = await this.connection.getParsedTokenAccountsByOwner(
-        owner,
-        { mint: mintPk },
-        'confirmed' // <-- FIX: explicit commitment
-      );
-
-      let totalRawAmount = 0;
-      for (const account of accounts.value) {
-        const amountStr = account.account.data.parsed?.info?.tokenAmount?.amount;
-        if (amountStr) {
-          totalRawAmount += Number(amountStr);
-        }
-      }
-      return totalRawAmount;
-    } catch (err) {
-      console.warn(`Failed to fetch token balance for ${mint}:`, err);
-      return 0;
+    if (!this.connection) {
+      const config = getNetworkConfig(this.network);
+      this.connection = new Connection(config.rpcUrl, 'confirmed');
     }
+    const owner = new PublicKey(address);
+    const mintPk = new PublicKey(mint);
+
+    // Fetch parsed token accounts for target mint (covers both legacy SPL and Token-2022)
+    const accounts = await this.connection.getParsedTokenAccountsByOwner(
+      owner,
+      { mint: mintPk },
+      'confirmed'
+    );
+
+    let totalRawAmount = 0;
+    for (const account of accounts.value) {
+      const amountStr = account.account.data.parsed?.info?.tokenAmount?.amount;
+      if (amountStr) {
+        totalRawAmount += Number(amountStr);
+      }
+    }
+    return totalRawAmount;
   }
 }
 

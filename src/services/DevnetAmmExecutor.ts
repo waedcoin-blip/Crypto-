@@ -19,8 +19,10 @@ import {
 } from '@solana/spl-token';
 import { useActiveWalletStore } from '../store/activeWalletStore';
 import { useBalanceStore, assertTradeBalance } from '../store/balanceStore';
+import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
 import { walletBalanceService } from './WalletBalanceService';
 import { getNetworkConfig } from '../config/network';
+import { NetworkGuard } from './NetworkGuard';
 import { useAppStore } from '../store/appStore';
 
 export class DevnetAmmExecutor implements ITradeExecutor {
@@ -46,7 +48,23 @@ export class DevnetAmmExecutor implements ITradeExecutor {
     return wallet.address || '';
   }
 
+  private checkNetworkSafety(): void {
+    const envNetwork = useTradingEnvironmentStore.getState().network;
+    if (envNetwork !== 'devnet') {
+      throw new Error(`NETWORK SAFETY ERROR: Devnet execution blocked because selected environment network is '${envNetwork}'.`);
+    }
+    const activeWallet = useActiveWalletStore.getState().activeWallet;
+    if (!activeWallet) {
+      throw new Error('NETWORK SAFETY ERROR: Devnet execution blocked because no active wallet is selected.');
+    }
+    if (activeWallet.network !== 'devnet') {
+      throw new Error(`NETWORK SAFETY ERROR: Devnet execution blocked because active wallet network is '${activeWallet.network}' (expected 'devnet').`);
+    }
+    NetworkGuard.assertNetwork('devnet', this.connection.rpcEndpoint);
+  }
+
   private getActiveWallet() {
+    this.checkNetworkSafety();
     const wallet = useActiveWalletStore.getState().activeWallet;
     if (!wallet) throw new Error('No active wallet selected for Devnet trading');
     return wallet;
@@ -156,7 +174,7 @@ export class DevnetAmmExecutor implements ITradeExecutor {
         },
       ],
       contextSlot: Math.floor(Date.now() / 400),
-    } as QuoteResponse;
+    } as unknown as QuoteResponse;
   }
 
   async swap(

@@ -15,7 +15,7 @@ export interface ManagedExitPosition {
   currentPrice: number;
   peakPrice?: number;
   highestPnLPct?: number;
-  state: 'PENDING_BUY' | 'OPEN' | 'CLOSING' | 'CLOSED';
+  state: 'PENDING_BUY' | 'OPEN' | 'CLOSING' | 'CLOSED' | 'RECOVERY_REQUIRED';
   buySignature?: string;
   buySlot?: number;
   createdAt: number;
@@ -40,6 +40,7 @@ export type ExitCallback = (
 export class PositionExitManager {
   private positions: Map<string, ManagedExitPosition> = new Map();
   private exitingMints: Set<string> = new Set();
+  private isEvaluatingLoop: boolean = false;
   private executor: ITradeExecutor;
   private jupiterRpcUrl: string;
   private dedicatedRpcUrl: string;
@@ -69,7 +70,7 @@ export class PositionExitManager {
     if (!this.evaluationInterval) {
       // 200ms high-frequency evaluation loop (5x per second)
       this.evaluationInterval = setInterval(() => {
-        this.evaluateAllPositions();
+        void this.evaluateAllPositions();
       }, 200);
     }
   }
@@ -95,7 +96,6 @@ export class PositionExitManager {
     const existing = this.positions.get(params.mint);
     if (existing && existing.state !== 'CLOSED') {
       // ONLY update existing position's TP/SL if provided
-      // Do NOT overwrite immutable authoritative entry parameters (amount, buyPrice, solSpent) from React UI state sync
       if (params.tpPct !== undefined) existing.tpPct = params.tpPct;
       if (params.slPct !== undefined) existing.slPct = params.slPct;
       return;
@@ -165,7 +165,7 @@ export class PositionExitManager {
     }
 
     if (this.isRunning && pos.state === 'OPEN') {
-      this.evaluatePosition(pos);
+      void this.evaluatePosition(pos);
     }
   }
 
@@ -175,11 +175,16 @@ export class PositionExitManager {
   }
 
   private async evaluateAllPositions(): Promise<void> {
-    if (!this.isRunning) return;
-    for (const pos of this.positions.values()) {
-      if (pos.state === 'OPEN') {
-        await this.evaluatePosition(pos);
+    if (!this.isRunning || this.isEvaluatingLoop) return;
+    this.isEvaluatingLoop = true;
+    try {
+      for (const pos of this.positions.values()) {
+        if (pos.state === 'OPEN') {
+          await this.evaluatePosition(pos);
+        }
       }
+    } finally {
+      this.isEvaluatingLoop = false;
     }
   }
 
@@ -202,7 +207,7 @@ export class PositionExitManager {
 
   public async triggerExit(pos: ManagedExitPosition, side: 'tp' | 'sl', pnlPct: number): Promise<void> {
     const mint = pos.mint;
-    if (this.exitingMints.has(mint)) return;
+    if (this.exitingMints.has(mint) || pos.state !== 'OPEN') return;
 
     this.exitingMints.add(mint);
     pos.state = 'CLOSING';
@@ -211,9 +216,9 @@ export class PositionExitManager {
       const slippageBps = side === 'tp' ? (pos.slippageBpsTp || 250) : (pos.slippageBpsSl || 1000);
       const label = side === 'tp' ? 'exit_tp' : 'exit_sl';
 
-      // Query actual live token balance from executor if available
+      // Query live token balance before exit
       if (typeof this.executor.getTokenBalance === 'function') {
-        const liveAmount = await this.executor.getTokenBalance(mint).catch(() => 0);
+        const liveAmount = await this.executor.getTokenBalance(mint).catch(() => pos.amount);
         if (liveAmount > 0) {
           pos.amount = liveAmount;
         }
@@ -229,21 +234,47 @@ export class PositionExitManager {
         label
       );
 
-      pos.state = 'CLOSED';
-      this.exitingMints.delete(mint);
-      this.positions.delete(mint);
+      // Verify on-chain balance after swap confirmation
+      let liveBalance: number | null = null;
+      try {
+        liveBalance = await this.executor.getTokenBalance(mint);
+      } catch (balErr) {
+        console.warn(`[ExitManager] Post-exit balance query failed for ${mint}:`, balErr);
+        pos.state = 'RECOVERY_REQUIRED';
+        this.exitingMints.delete(mint);
+        return;
+      }
 
-      // Instantly refresh on-chain wallet balance after exit execution
-      walletBalanceService.refreshNow();
+      const DUST_THRESHOLD = 1000;
+      if (liveBalance <= DUST_THRESHOLD) {
+        pos.state = 'CLOSED';
+        this.exitingMints.delete(mint);
+        this.positions.delete(mint);
 
-      if (this.onExitCallback) {
-        this.onExitCallback(mint, side, result.signature || 'exit-tx', pnlPct, (result.outputAmount / 1e9) - result.feeSol);
+        walletBalanceService.refreshNow();
+
+        if (this.onExitCallback) {
+          this.onExitCallback(mint, side, result.signature || 'exit-tx', pnlPct, (result.outputAmount / 1e9) - result.feeSol);
+        }
+      } else {
+        pos.amount = liveBalance;
+        pos.state = 'OPEN';
+        this.exitingMints.delete(mint);
       }
     } catch (err: any) {
       console.error(`[ExitManager] ❌ Exit error for ${mint}:`, err);
-      // Verify if token account was actually drained despite error (Bug 9 Fix)
-      const hasTokens = await this.executor.hasTokenAccount(mint).catch(() => true);
-      if (!hasTokens) {
+      
+      let liveBalance: number | null = null;
+      try {
+        liveBalance = await this.executor.getTokenBalance(mint);
+      } catch (balErr) {
+        console.warn(`[ExitManager] Post-error balance query failed for ${mint}:`, balErr);
+        pos.state = 'RECOVERY_REQUIRED';
+        this.exitingMints.delete(mint);
+        return;
+      }
+
+      if (liveBalance <= 1000) {
         console.log(`[ExitManager] Token balance empty on-chain for ${mint}, marking as CLOSED.`);
         pos.state = 'CLOSED';
         this.exitingMints.delete(mint);
@@ -255,6 +286,7 @@ export class PositionExitManager {
           this.onExitCallback(mint, side, 'recovered-exit-tx', pnlPct);
         }
       } else {
+        pos.amount = liveBalance;
         pos.state = 'OPEN';
         this.exitingMints.delete(mint);
       }

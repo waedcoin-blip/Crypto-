@@ -256,9 +256,7 @@ function Root() {
 
   const tradeManager = useMemo(() => new TradeManager({
     mode: (localStorage.getItem('trade_mode') as TradeMode) || 'devnet',
-    realConfig: {
-      hybridEngine: null as any,
-    },
+    realConfig: {},
   }), []);
 
   useEffect(() => {

@@ -1,10 +1,15 @@
 import { useAppStore } from '../store/appStore';
-import { getJupiterQuote, createJupiterSwapTransaction, executeTxWithRPCFallback } from '../services/jupiterService';
+import { RealTradeExecutor } from '../services/RealTradeExecutor';
 import { Connection, Keypair } from '@solana/web3.js';
 
 export class TradingEngine {
   private static instance: TradingEngine;
+  private executor: RealTradeExecutor;
   
+  private constructor() {
+    this.executor = new RealTradeExecutor();
+  }
+
   public static getInstance(): TradingEngine {
     if (!TradingEngine.instance) {
       TradingEngine.instance = new TradingEngine();
@@ -13,8 +18,8 @@ export class TradingEngine {
   }
 
   public async executeTrade(
-    connection: Connection,
-    wallet: Keypair,
+    _connection: Connection,
+    _wallet: Keypair,
     tokenMint: string,
     amountSol: number,
     side: 'BUY' | 'SELL'
@@ -26,32 +31,17 @@ export class TradingEngine {
       const isBuy = side === 'BUY';
       const inputMint = isBuy ? 'So11111111111111111111111111111111111111112' : tokenMint;
       const outputMint = isBuy ? tokenMint : 'So11111111111111111111111111111111111111112';
+      const slippageBps = Math.round((useAppStore.getState().slippage || 1) * 100);
 
-      // 1. Get Quote
-      const quoteDetails = await getJupiterQuote(
+      const result = await this.executor.swap(
         inputMint,
         outputMint,
         amountSol,
-        useAppStore.getState().slippage * 100 // bps
+        slippageBps,
+        isBuy ? 'entry' : 'exit_tp'
       );
 
-      if (!quoteDetails) throw new Error('No quote found');
-
-      // 2. Build Transaction
-      const base64Tx = await createJupiterSwapTransaction(
-        wallet.publicKey.toBase58(),
-        quoteDetails
-      );
-      
-      if (!base64Tx) throw new Error('Failed to build transaction');
-
-      // 3. Sign Transaction
-      base64Tx.sign([wallet]);
-
-      // 4. Execution
-      const signature = await executeTxWithRPCFallback(base64Tx, connection);
-
-      return { success: true, signature };
+      return { success: true, signature: result.signature };
     } catch (error: any) {
       console.error(`TradingEngine: Execution Failed`, error);
       return { success: false, error: error.message };

@@ -60,6 +60,8 @@ import { marketDataManager } from './services/marketDataManager';
 import { rpcHealthManager } from './services/rpcHealthManager';
 import { masterMonitorHealthManager } from './services/MasterMonitorHealthManager';
 import { syncManager } from './services/SyncService';
+import { RealTradeExecutor } from './services/RealTradeExecutor';
+import { StartupReconciliation } from './services/StartupReconciliation';
 
 
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
@@ -1782,20 +1784,15 @@ function App() {
         if (solBalance < lamports) {
           throw new Error("Insufficient real SOL balance for trade.");
         } else {
-          const priorityTipLamports = 2000000;
-          if (sessionWallet) {
-            const tx = await createJupiterSwapTransaction(sessionWallet.publicKey.toBase58(), quote, priorityTipLamports, connection);
-            if (tx) {
-              tx.sign([sessionWallet]);
-              signature = await executeTxWithRPCFallback(tx, connection);
-            } else throw new Error("Failed to create swap transaction");
-          } else if (publicKey && sendTransaction) {
-            const tx = await createJupiterSwapTransaction(publicKey.toBase58(), quote, priorityTipLamports, connection);
-            if (tx) {
-              signature = await sendTransaction(tx as any, connection);
-              await pollSignatureStatus(connection, signature);
-            } else throw new Error("Failed to create swap transaction");
-          }
+          const executor = new RealTradeExecutor();
+          const swapRes = await executor.swap(
+            'So11111111111111111111111111111111111111112',
+            tokenAddress,
+            buyAmountSol,
+            Math.round((slippage || 1) * 100),
+            'entry'
+          );
+          signature = swapRes.signature;
         }
       }
       const security = await fetchTokenSecurityData(tokenAddress);
@@ -1929,20 +1926,15 @@ function App() {
            const realNetProfitPct = ((realNetReturnSol - entryCostForFraction) / entryCostForFraction) * 100.0;
 
            // Execute
-           const priorityTip = 1000000; // 0.001 SOL for partial
-           if (sessionWallet) {
-             const tx = await createJupiterSwapTransaction(sessionWallet.publicKey.toBase58(), quote, priorityTip);
-             if (tx) {
-               tx.sign([sessionWallet]);
-               signature = await executeTxWithRPCFallback(tx, connection);
-             }
-           } else if (publicKey && sendTransaction) {
-             const tx = await createJupiterSwapTransaction(publicKey.toBase58(), quote, priorityTip);
-             if (tx) {
-               signature = await sendTransaction(tx as any, connection);
-               await pollSignatureStatus(connection, signature);
-             }
-           }
+           const executor = new RealTradeExecutor();
+           const swapRes = await executor.swap(
+             tokenAddress,
+             'So11111111111111111111111111111111111111112',
+             sellAmountRaw,
+             Math.round((slippage || 1) * 100),
+             'exit_tp'
+           );
+           signature = swapRes.signature;
         }
       } else {
         // Simulation Profit Guard for Partial
@@ -2080,20 +2072,15 @@ function App() {
       console.log(`✅ APPROVED EXECUTION: Realized returns projected at ${realNetProfitPct.toFixed(2)}%`);
 
       
-          const priorityTip = curPnLPercent >= minTakeProfit ? 2000000 : 1000000;
-          if (sessionWallet) {
-             const tx = await createJupiterSwapTransaction(sessionWallet.publicKey.toBase58(), quote, priorityTip);
-             if (tx) {
-                tx.sign([sessionWallet]);
-                signature = await executeTxWithRPCFallback(tx, connection);
-             }
-          } else if (publicKey && sendTransaction) {
-             const tx = await createJupiterSwapTransaction(publicKey.toBase58(), quote, priorityTip);
-             if (tx) {
-                signature = await sendTransaction(tx as any, connection);
-                await pollSignatureStatus(connection, signature);
-             }
-          }
+          const executor = new RealTradeExecutor();
+          const swapRes = await executor.swap(
+            tokenAddress,
+            'So11111111111111111111111111111111111111112',
+            position.tokens || position.amount || 0,
+            Math.round((slippage || 1) * 100),
+            curPnLPercent >= minTakeProfit ? 'exit_tp' : 'exit_sl'
+          );
+          signature = swapRes.signature;
       
 
       // Standardize uniform exact final calculation mappings
@@ -2227,22 +2214,16 @@ function App() {
           addNotification("⚠️ Insufficient real SOL balance. Falling back to Simulation mode.");
           
         } else {
-            const priorityTipLamports = 2000000;
-            if (sessionWallet) {
-              const tx = await createJupiterSwapTransaction(sessionWallet.publicKey.toBase58(), quote, priorityTipLamports, connection);
-              if (tx) {
-                tx.sign([sessionWallet]);
-                signature = await executeTxWithRPCFallback(tx, connection);
-                console.log("🚀 Swap Executed! Transaction Signature:", signature);
-              } else throw new Error("Failed to create swap transaction");
-            } else if (publicKey && sendTransaction) {
-              const tx = await createJupiterSwapTransaction(publicKey.toBase58(), quote, priorityTipLamports, connection);
-              if (tx) {
-                signature = await sendTransaction(tx as any, connection);
-                await pollSignatureStatus(connection, signature);
-                console.log("🚀 Swap Executed! Transaction Signature:", signature);
-              } else throw new Error("Failed to create swap transaction");
-            }
+            const executor = new RealTradeExecutor();
+            const swapRes = await executor.swap(
+              'So11111111111111111111111111111111111111112',
+              tokenAddress,
+              buyAmountSol,
+              Math.round((slippage || 1) * 100),
+              'entry'
+            );
+            signature = swapRes.signature;
+            console.log("🚀 Swap Executed! Transaction Signature:", signature);
         }
       }
 
