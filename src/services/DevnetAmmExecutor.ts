@@ -187,11 +187,22 @@ export class DevnetAmmExecutor implements ITradeExecutor {
         if (useActiveWalletStore.getState().activeWallet?.keypair !== kp) {
           useActiveWalletStore.getState().switchActiveWallet({
             keypair: kp,
+            address: activeWallet.address || DEFAULT_DEVNET_WALLET_ADDRESS,
             network: activeWallet.network || 'devnet',
             source: 'session'
           });
         }
         userPk = kp.publicKey;
+
+        try {
+          const kpBal = await this.connection.getBalance(kp.publicKey).catch(() => 0);
+          if (kpBal < 0.05 * LAMPORTS_PER_SOL) {
+            const sig = await this.connection.requestAirdrop(kp.publicKey, 1 * LAMPORTS_PER_SOL);
+            await this.connection.confirmTransaction(sig, 'confirmed');
+          }
+        } catch (airdropErr) {
+          console.warn('Devnet airdrop check for session keypair:', airdropErr);
+        }
       }
 
       const isSolBuy = inputMint === 'So11111111111111111111111111111111111111112';

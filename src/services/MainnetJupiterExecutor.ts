@@ -106,6 +106,7 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
         if (useActiveWalletStore.getState().activeWallet?.keypair !== kp) {
           useActiveWalletStore.getState().switchActiveWallet({
             keypair: kp,
+            address: activeWallet.address,
             network: activeWallet.network || 'mainnet',
             source: 'session'
           });

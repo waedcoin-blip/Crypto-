@@ -40,10 +40,19 @@ export const useActiveWalletStore = create<ActiveWalletState>((set, get) => ({
 
     switchActiveWallet: (params) => {
         const { keypair, network, source } = params;
-        let address = params.address || (keypair ? keypair.publicKey.toBase58() : '');
-        
-        if (!address && !keypair && network === 'devnet') {
-            address = DEFAULT_DEVNET_WALLET_ADDRESS;
+        const current = get().activeWallet;
+        let address = params.address;
+
+        if (!address) {
+            if (current?.address && current.network === network) {
+                address = current.address;
+            } else if (keypair) {
+                address = keypair.publicKey.toBase58();
+            } else if (network === 'devnet') {
+                address = DEFAULT_DEVNET_WALLET_ADDRESS;
+            } else {
+                address = '';
+            }
         }
 
         if (source === 'session') {
@@ -58,7 +67,6 @@ export const useActiveWalletStore = create<ActiveWalletState>((set, get) => ({
              return;
         }
 
-        const current = get().activeWallet;
         const newVersion = current ? current.version + 1 : 1;
         
         const newWallet: ActiveWallet = {
