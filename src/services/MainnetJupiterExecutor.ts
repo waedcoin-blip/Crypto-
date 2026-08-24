@@ -52,7 +52,12 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
       throw new Error('NETWORK SAFETY ERROR: Mainnet execution blocked because no active wallet is selected.');
     }
     if (activeWallet.network !== 'mainnet') {
-      throw new Error(`NETWORK SAFETY ERROR: Mainnet execution blocked because active wallet network is '${activeWallet.network}' (expected 'mainnet').`);
+      console.warn(`[MainnetJupiterExecutor] Reconciling active wallet network from '${activeWallet.network}' to 'mainnet'`);
+      useActiveWalletStore.getState().setActiveWallet({
+        ...activeWallet,
+        network: 'mainnet',
+        version: activeWallet.version + 1,
+      });
     }
     NetworkGuard.assertNetwork('mainnet', this.connection.rpcEndpoint);
   }

@@ -92,27 +92,28 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
 
   // Synchronize phantom connect/disconnect to the ActiveWalletStore
   useEffect(() => {
+    const targetNetwork = isDevnet ? 'devnet' : 'mainnet';
     if (publicKey) {
-      if (activeWallet?.address !== publicKey.toBase58()) {
+      if (activeWallet?.address !== publicKey.toBase58() || activeWallet?.network !== targetNetwork) {
          switchActiveWallet({
            keypair: null,
            address: publicKey.toBase58(),
-           network: isDevnet ? 'devnet' : 'mainnet',
+           network: targetNetwork,
            source: 'connected'
          });
       }
     } else if (sessionWallet) {
-       if (activeWallet?.address !== sessionWallet.publicKey.toBase58()) {
+       if (activeWallet?.address !== sessionWallet.publicKey.toBase58() || activeWallet?.network !== targetNetwork) {
           switchActiveWallet({
             keypair: sessionWallet,
-            network: isDevnet ? 'devnet' : 'mainnet',
+            network: targetNetwork,
             source: 'session'
           });
        }
     } else if (activeWallet) {
-       switchActiveWallet({ keypair: null, address: '', network: 'mainnet', source: 'session' });
+       switchActiveWallet({ keypair: null, address: '', network: targetNetwork, source: 'session' });
     }
-  }, [publicKey, sessionWallet, isDevnet]);
+  }, [publicKey, sessionWallet, isDevnet, activeWallet?.address, activeWallet?.network]);
 
   // WalletBalanceService polling for active address
   useEffect(() => {

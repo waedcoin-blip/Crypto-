@@ -2,6 +2,7 @@
 import { create } from 'zustand';
 import { getNetworkConfig, TradingNetwork } from '../config/network';
 import { useBalanceStore } from './balanceStore';
+import { useActiveWalletStore } from './activeWalletStore';
 
 interface TradingEnvironmentState {
   network: TradingNetwork;
@@ -38,6 +39,15 @@ export const useTradingEnvironmentStore = create<TradingEnvironmentState>((set) 
         localStorage.setItem('is_live_trading', network === 'mainnet' ? 'true' : 'false');
         
         useBalanceStore.getState().setNetwork(network);
+
+        const activeWalletState = useActiveWalletStore.getState();
+        if (activeWalletState.activeWallet) {
+          activeWalletState.setActiveWallet({
+            ...activeWalletState.activeWallet,
+            network: network,
+            version: activeWalletState.activeWallet.version + 1,
+          });
+        }
 
         set({
           network,

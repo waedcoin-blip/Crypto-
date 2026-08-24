@@ -1,4 +1,5 @@
 import { useActiveWalletStore } from "./store/activeWalletStore";
+import { useTradingEnvironmentStore } from "./store/tradingEnvironmentStore";
 import { getKeypairFromPrivateKey, getSavedSessionKeypair, saveSessionKeypair } from './utils/keypairUtils';
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -465,13 +466,14 @@ function App() {
 
   const setPrivateKey = useCallback((newKey: string) => {
     setPrivateKeyState(newKey);
+    const envNet = useTradingEnvironmentStore.getState().network || 'devnet';
     if (newKey && newKey.trim()) {
       try {
         const kp = getKeypairFromPrivateKey(newKey.trim());
-        activeWalletStore.switchActiveWallet({ keypair: kp, network: "mainnet", source: "session" });
+        activeWalletStore.switchActiveWallet({ keypair: kp, network: envNet, source: "session" });
       } catch {}
     } else {
-      activeWalletStore.switchActiveWallet({ keypair: null, network: "mainnet", source: "session" });
+      activeWalletStore.switchActiveWallet({ keypair: null, network: envNet, source: "session" });
     }
   }, [activeWalletStore]);
 
@@ -1069,7 +1071,8 @@ function App() {
 
   const generateSessionWallet = () => {
     const kp = Keypair.generate();
-    activeWalletStore.switchActiveWallet({ keypair: kp, network: "mainnet", source: "session" });
+    const envNet = useTradingEnvironmentStore.getState().network || 'devnet';
+    activeWalletStore.switchActiveWallet({ keypair: kp, network: envNet, source: "session" });
     addNotification('New Session Wallet Generated. Deposit SOL to start auto-trading.');
   };
 

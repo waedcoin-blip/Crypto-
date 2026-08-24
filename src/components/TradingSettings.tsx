@@ -1,5 +1,6 @@
 import { getKeypairFromPrivateKey } from "../utils/keypairUtils";
 import { useActiveWalletStore } from "../store/activeWalletStore";
+import { useTradingEnvironmentStore } from "../store/tradingEnvironmentStore";
 // src/components/TradingSettings.tsx
 import React, { useState, useEffect } from 'react';
 import { SecureInput } from './SecureInput';
@@ -101,7 +102,8 @@ export const TradingSettings: React.FC = () => {
       if (privateKey && privateKey !== '••••••••••••••••••••••••••') {
         try {
           const kp = getKeypairFromPrivateKey(privateKey);
-          useActiveWalletStore.getState().switchActiveWallet({ keypair: kp, network: 'mainnet', source: 'session' });
+          const envNet = useTradingEnvironmentStore.getState().network || 'devnet';
+          useActiveWalletStore.getState().switchActiveWallet({ keypair: kp, network: envNet, source: 'session' });
         } catch (e) {}
 
         localStorage.setItem('enc_private_key', await encryptData(privateKey, password));

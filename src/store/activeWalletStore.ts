@@ -3,6 +3,8 @@ import { Keypair } from '@solana/web3.js';
 import { getSavedSessionKeypair, saveSessionKeypair } from '../utils/keypairUtils';
 import { useBalanceStore } from './balanceStore';
 
+import { useTradingEnvironmentStore } from './tradingEnvironmentStore';
+
 export interface ActiveWallet {
     address: string;
     keypair: Keypair | null;
@@ -11,10 +13,17 @@ export interface ActiveWallet {
     version: number;
 }
 
+export interface SwitchActiveWalletParams {
+    keypair: Keypair | null;
+    address?: string;
+    network?: 'devnet' | 'mainnet';
+    source: 'session' | 'connected';
+}
+
 interface ActiveWalletState {
     activeWallet: ActiveWallet | null;
     setActiveWallet: (wallet: ActiveWallet | null) => void;
-    switchActiveWallet: (params: { keypair: Keypair | null; address?: string; network: 'devnet' | 'mainnet'; source: 'session' | 'connected' }) => void;
+    switchActiveWallet: (params: SwitchActiveWalletParams) => void;
 }
 
 export const useActiveWalletStore = create<ActiveWalletState>((set, get) => ({
@@ -23,7 +32,9 @@ export const useActiveWalletStore = create<ActiveWalletState>((set, get) => ({
     setActiveWallet: (wallet) => set({ activeWallet: wallet }),
 
     switchActiveWallet: (params) => {
-        const { keypair, network, source } = params;
+        const { keypair, source } = params;
+        const envNetwork = useTradingEnvironmentStore.getState().network || 'devnet';
+        const network = params.network || envNetwork;
         const address = params.address || (keypair ? keypair.publicKey.toBase58() : '');
         
         if (source === 'session') {
