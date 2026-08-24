@@ -1080,7 +1080,7 @@ export const PnLPage = ({
     bondingCurveStopLoss = -15, setBondingCurveStopLoss = () => {},
     pumpSwapStopLoss = -15, setPumpSwapStopLoss = () => {},
     unknownStopLoss = -20, setUnknownStopLoss = () => {},
-    maxPositions, setMaxPositions,
+    maxPositions = 5, setMaxPositions = () => {},
     slippage, setSlippage,
     hardenedMinBondingProgress = 0, setHardenedMinBondingProgress = () => {},
     hardenedMaxBondingProgress = 100, setHardenedMaxBondingProgress = () => {},
@@ -2237,10 +2237,29 @@ export const PnLPage = ({
 
   // Synchronized telemetry detector for state changes
   const lastLoggedCriteria = useRef<any>({});
+  
+  // Continuously sync configRef.current on every render so async workers always read valid parameters
+  configRef.current = {
+    ...configRef.current,
+    tradeAmount, minTakeProfit, takeProfitPct, bondingCurveTakeProfit, stopLoss,
+    maxPositions: (typeof maxPositions === 'number' && !isNaN(maxPositions) && maxPositions > 0) ? maxPositions : 5,
+    slippage,
+    hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax,
+    hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore,
+    hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s,
+    hardenedMinBuyCount30s, hardenedMaxBuyCount30s, hardenedMinBuySellRatio,
+    hardenedMaxBuySellRatio, hardenedMaxPriceChange1m,
+    hardenedMinBondingProgress, hardenedMaxBondingProgress, hardenedMinAge, hardenedMaxAge,
+    hardenedMinLatency, hardenedMaxLatency,
+    tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown, hardenedMinProfit5m, enableLatencyGuard, maxRebuyTimes,
+    privateKey,
+    hardenedMatchRequirement
+  };
+
   useEffect(() => {
     // Collect current values
     const currentValues = {
-      tradeAmount, minTakeProfit, takeProfitPct, bondingCurveTakeProfit, stopLoss, maxPositions, slippage,
+      tradeAmount, minTakeProfit, takeProfitPct, bondingCurveTakeProfit, stopLoss, maxPositions: (typeof maxPositions === 'number' && !isNaN(maxPositions) && maxPositions > 0) ? maxPositions : 5, slippage,
       hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax,
       hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore,
       hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s,
@@ -3494,10 +3513,11 @@ const checkTokenCriteria = (mint: string): {
     
     try {
       const {
-        maxPositions, tradeAmount, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct,
+        maxPositions: rawMaxPositions, tradeAmount, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct,
         hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax,
         hardenedLiquidityMin, hardenedMaxRiskScore, hardenedMinProfit5m
       } = configRef.current;
+      const maxPositions = (typeof rawMaxPositions === 'number' && !isNaN(rawMaxPositions) && rawMaxPositions > 0) ? rawMaxPositions : 5;
 
       // Logic for new token acquisition (based on metrics provided via props)
       const currentPositionsState = positionsRef.current;
