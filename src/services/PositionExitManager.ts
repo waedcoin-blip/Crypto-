@@ -113,11 +113,14 @@ export class PositionExitManager {
       currentPrice: params.buyPrice,
       peakPrice: params.buyPrice,
       highestPnLPct: 0,
-      state: 'PENDING_BUY',
+      state: 'OPEN',
       createdAt: Date.now(),
     };
 
     this.positions.set(params.mint, pos);
+    if (this.isRunning) {
+      void this.evaluatePosition(pos);
+    }
   }
 
   public updatePositionTpSl(mint: string, tpPct: number, slPct: number): void {
@@ -125,6 +128,9 @@ export class PositionExitManager {
     if (pos) {
       pos.tpPct = tpPct;
       pos.slPct = slPct;
+      if (this.isRunning && pos.state === 'OPEN') {
+        void this.evaluatePosition(pos);
+      }
     }
   }
 

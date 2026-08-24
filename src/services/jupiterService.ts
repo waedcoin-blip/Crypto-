@@ -1056,7 +1056,7 @@ export const verifyHardenedScannerCriteria = (
 
 export const processActiveTrackingFrame = async (
   connection: Connection,
-  position: ActivePosition & { symbol?: string; isManualSellTriggered?: boolean },
+  position: ActivePosition & { symbol?: string; isManualSellTriggered?: boolean; currentPriceSol?: number; currentPnLPct?: number },
   livePoolLiquidityUsd: number,
   walletPublicKey: string,
   config?: { takeProfit: number; stopLoss: number },
@@ -1081,9 +1081,7 @@ export const processActiveTrackingFrame = async (
       }
     }
 
-    if (!quote) return { shouldExit: false };
-
-    const expectedSolOut = Number(quote.outAmount) / 1_000_000_000;
+    let expectedSolOut = quote ? (Number(quote.outAmount) / 1_000_000_000) : 0;
     const dynamicFeesSol = Number(position.currentTokenBalance) < 50000000000 ? 0.00155 : 0.0035;
     
     if (!position.entryCostSol || position.entryCostSol <= 0) {
@@ -1091,7 +1089,18 @@ export const processActiveTrackingFrame = async (
       return { shouldExit: false };
     }
     const realEntryCost = position.entryCostSol;
-    const netPnL = ((expectedSolOut - dynamicFeesSol - realEntryCost) / realEntryCost) * 100;
+    let netPnL = 0;
+
+    if (quote && expectedSolOut > 0) {
+      netPnL = ((expectedSolOut - dynamicFeesSol - realEntryCost) / realEntryCost) * 100;
+    } else if (position.currentPriceSol && position.currentPriceSol > 0 && position.currentTokenBalance) {
+      const grossSol = Number(position.currentTokenBalance) * position.currentPriceSol / 1e6;
+      netPnL = ((grossSol - dynamicFeesSol - realEntryCost) / realEntryCost) * 100;
+    } else if (position.currentPnLPct !== undefined) {
+      netPnL = position.currentPnLPct;
+    } else {
+      return { shouldExit: false };
+    }
 
     const defaultTP = config?.takeProfit ?? 45.0;
     const rawSL = config?.stopLoss ?? -30.0;
@@ -1103,7 +1112,7 @@ export const processActiveTrackingFrame = async (
     const isTakeProfit = netPnL >= defaultTP;
 
     if (position.isManualSellTriggered || isFlashCrash || isHardStop || isTakeProfit) {
-      if (netPnL <= -95.0 && !isHardStop) {
+      if (netPnL <= -95.0 && !isHardStop && !position.isManualSellTriggered) {
         console.log(`[SLIPPAGE BLOCK]: Execution aborted for ${position.symbol}. Toxic price impact.`);
         return { shouldExit: false };
       }

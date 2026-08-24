@@ -2670,6 +2670,12 @@ export const PnLPage = ({
           const freshPrice = metric.priceNative
             ? (typeof metric.priceNative === 'number' ? metric.priceNative : parseFloat(String(metric.priceNative)))
             : (metric.priceUsd ? parseFloat(String(metric.priceUsd)) / getSolPriceUsd() : 0);
+          if (freshPrice > 0) {
+            positionExitManagerRef.current?.onPriceUpdate(mint, freshPrice, Date.now());
+            if (masterMonitorRef.current) {
+              masterMonitorRef.current.pushPriceUpdate(mint, freshPrice, Date.now(), 'price_tracker');
+            }
+          }
           if (freshPrice > 0 && next[mint].currentPrice !== freshPrice) {
             const currentGrossSol = freshPrice * (next[mint].amount || 0);
             let netSolIfSold = currentGrossSol;
@@ -3912,7 +3918,7 @@ const checkTokenCriteria = (mint: string): {
     };
   }, [isRunning, monitorStatus.status, monitorStatus.activeUrl]);
 
-  // Sync active positions to PositionExitManager & MasterMonitorService
+  // Sync active positions and updated TP/SL to PositionExitManager & MasterMonitorService
   useEffect(() => {
     if (!isRunning) return;
 
@@ -3924,17 +3930,45 @@ const checkTokenCriteria = (mint: string): {
     if (positionExitManagerRef.current) {
       for (const mint of activeMints) {
         const pos = positionsRef.current[mint];
-        if (pos && !positionExitManagerRef.current.getPosition(mint)) {
+        if (!pos) continue;
+
+        const stage = detectTokenStage({
+          address: mint,
+          dexId: (tokenMetricsRef.current[mint]?.dexId) || (mint.toLowerCase().endsWith('pump') ? 'pumpfun' : 'raydium'),
+          bondingCurveProgress: tokenMetricsRef.current[mint]?.bondingCurveProgress,
+          isRaydiumListed: tokenMetricsRef.current[mint]?.isRaydiumListed
+        });
+
+        const targetTp = pos.tpPct ?? (stage.isBonding ? (bondingCurveTakeProfit || 25) : (minTakeProfit || 25));
+        let targetSl = pos.slPct ?? (stage.platform === 'PUMP_FUN' || stage.isBonding 
+          ? (bondingCurveStopLossPct || 20) 
+          : stage.platform === 'PUMPSWAP'
+          ? (pumpSwapStopLossPct || 15)
+          : stage.platform === 'UNKNOWN'
+          ? (unknownStopLossPct || 15)
+          : (stopLossPct || 15));
+        targetSl = Math.abs(targetSl);
+
+        const existingPos = positionExitManagerRef.current.getPosition(mint);
+        if (!existingPos) {
           positionExitManagerRef.current.addPosition({
             mint,
             amount: pos.amountLamports || Math.floor((pos.amount || 0) * (pos.decimals ? Math.pow(10, pos.decimals) : 1e6)),
             buyPrice: pos.buyPrice || 0,
             solSpent: pos.solSpent || 0.1,
-            tpPct: pos.tpPct ?? (configRef.current.minTakeProfit || 25),
-            slPct: pos.slPct ?? (configRef.current.stopLossPct || 15),
+            tpPct: targetTp,
+            slPct: targetSl,
           });
+          if (pos.currentPrice && pos.currentPrice > 0) {
+            positionExitManagerRef.current.onPriceUpdate(mint, pos.currentPrice, Date.now());
+          }
           if (pos.txid && pos.txid !== 'init-sig') {
             positionExitManagerRef.current.confirmBuy(mint, pos.txid, pos.buySlot || 0);
+          }
+        } else {
+          positionExitManagerRef.current.updatePositionTpSl(mint, targetTp, targetSl);
+          if (pos.currentPrice && pos.currentPrice > 0) {
+            positionExitManagerRef.current.onPriceUpdate(mint, pos.currentPrice, Date.now());
           }
         }
       }
@@ -3943,7 +3977,7 @@ const checkTokenCriteria = (mint: string): {
     if (masterMonitorRef.current && activeMints.length > 0) {
       masterMonitorRef.current.startMonitoring(activeMints);
     }
-  }, [positions, isRunning]);
+  }, [positions, isRunning, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct]);
 
   const processedAlerts = useRef<Set<string>>(new Set());
   useEffect(() => {
@@ -4223,7 +4257,7 @@ const checkTokenCriteria = (mint: string): {
          }
       }
 
-      // 2. Fetch prices for active positions for UI display sync (Exits managed unified by PositionExitManager)
+      // 2. Fetch prices for active positions for UI display sync and notify exit managers
       const mintsToFetch = activeMints;
       if (mintsToFetch.length > 0) {
         const batchedPrices = await getTokenPrices(mintsToFetch);
@@ -4231,8 +4265,11 @@ const checkTokenCriteria = (mint: string): {
           const p = item as { price?: number | string };
           if (p && p.price !== undefined) {
             const newPrice = typeof p.price === 'number' ? p.price : parseFloat(p.price);
-            if (newPrice > 0 && masterMonitorRef.current) {
-              masterMonitorRef.current.pushPriceUpdate(m, newPrice, Date.now(), 'price_tracker');
+            if (newPrice > 0) {
+              positionExitManagerRef.current?.onPriceUpdate(m, newPrice, Date.now());
+              if (masterMonitorRef.current) {
+                masterMonitorRef.current.pushPriceUpdate(m, newPrice, Date.now(), 'price_tracker');
+              }
             }
           }
         }
@@ -4251,6 +4288,47 @@ const checkTokenCriteria = (mint: string): {
           }
           return changed ? next : prev;
         });
+
+        // 3. Direct Active Positions TP / Stop Loss Verification & Execution
+        for (const mint of activeMints) {
+          const pos = positionsRef.current[mint];
+          if (!pos || !pos.amount || pos.amount <= 0) continue;
+
+          const currentPrice = pos.currentPrice || pos.buyPrice || 0;
+          const buyPrice = pos.buyPrice || 0;
+          if (currentPrice > 0 && buyPrice > 0) {
+            const pnlPct = ((currentPrice - buyPrice) / buyPrice) * 100;
+            
+            const stage = detectTokenStage({
+              address: mint,
+              dexId: (tokenMetricsRef.current[mint]?.dexId) || (mint.toLowerCase().endsWith('pump') ? 'pumpfun' : 'raydium'),
+              bondingCurveProgress: tokenMetricsRef.current[mint]?.bondingCurveProgress,
+              isRaydiumListed: tokenMetricsRef.current[mint]?.isRaydiumListed
+            });
+
+            const tpTarget = pos.tpPct ?? (stage.isBonding 
+              ? (configRef.current.bondingCurveTakeProfit || 25) 
+              : (configRef.current.minTakeProfit || 25));
+
+            let slTarget = pos.slPct ?? (stage.platform === 'PUMP_FUN' || stage.isBonding 
+              ? (configRef.current.bondingCurveStopLossPct || 20) 
+              : stage.platform === 'PUMPSWAP'
+              ? (configRef.current.pumpSwapStopLossPct || 15)
+              : stage.platform === 'UNKNOWN'
+              ? (configRef.current.unknownStopLossPct || 15)
+              : (configRef.current.stopLossPct || 15));
+            
+            slTarget = Math.abs(slTarget);
+
+            if (pnlPct >= tpTarget) {
+              addLog(`🎯 [TAKE PROFIT TRIGGER] ${pos.symbol || mint.slice(0, 6)} reached +${pnlPct.toFixed(2)}% (Target: +${tpTarget}%)`, 'sell');
+              void executeSell(mint, currentPrice, pnlPct, 'TAKE PROFIT');
+            } else if (pnlPct <= -slTarget) {
+              addLog(`🛑 [STOP LOSS TRIGGER] ${pos.symbol || mint.slice(0, 6)} dropped to ${pnlPct.toFixed(2)}% (Stop: -${slTarget}%)`, 'warn');
+              void executeSell(mint, currentPrice, pnlPct, 'STOP LOSS');
+            }
+          }
+        }
       }
     } finally {
       isCheckingRef.current = false;

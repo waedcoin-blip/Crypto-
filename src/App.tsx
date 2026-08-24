@@ -1209,6 +1209,11 @@ function App() {
           if (!amountLamports || amountLamports === 0) continue;
 
           const realCostBasis = position.solSpent || position.entryPriceSol || 0.1;
+          const currentPriceSol = (token.priceNative || (token.priceUsd ? token.priceUsd / getSolPriceUsd() : 0));
+          const posTokensQty = position.amount || 0;
+          const netPnlResult = calcNetPnl(currentPriceSol, posTokensQty, realCostBasis, state.slippage, position.recoveryMode, true);
+          const currentPnLPct = netPnlResult.netPnlPct;
+
           const actPos = {
             tokenAddress: token.address,
             currentTokenBalance: BigInt(amountLamports),
@@ -1216,7 +1221,9 @@ function App() {
             initialMoonbagSize: BigInt(position.initialMoonbagSizeStr || '0'),
             currentStage: position.currentStage || PositionStage.RECOVER_CAPITAL,
             symbol: token.symbol,
-            isManualSellTriggered: position.isManualSellTriggered
+            isManualSellTriggered: position.isManualSellTriggered,
+            currentPriceSol: currentPriceSol,
+            currentPnLPct: currentPnLPct
           };
 
           // ── TRIPLE STOP LOSS ROUTING ──────────────────────────────────────────
@@ -1242,11 +1249,6 @@ function App() {
           // ── TRAILING STOP LOSS: lock in gains as price rises ────────────────
           // If price has rallied >20%, trail stop loss to protect profits
           // e.g. up 50% → stop at 35%; up 100% → stop at 75%
-          const currentPriceSol = (token.priceNative || 0);
-          const posTokensQty = position.amount || 0;
-          const netPnlResult = calcNetPnl(currentPriceSol, posTokensQty, realCostBasis, state.slippage, position.recoveryMode, true);
-          const currentPnLPct = netPnlResult.netPnlPct;
-
           // Track peak PnL in position metadata
           if (!position.peakPnLPct || currentPnLPct > position.peakPnLPct) {
             setActivePositions(prev => ({
@@ -1275,9 +1277,12 @@ function App() {
             }
           );
 
-          if (trackingVerdict.shouldExit) {
-            const slType = effectiveSL !== baseSL ? 'TRAILING SL' : trackingVerdict.reason;
-            console.log(`[EXIT BY ENGINE] (LIVE): ${token.symbol} clearing. Reason: ${slType}`);
+          const isDirectTp = currentPnLPct >= activeTakeProfit;
+          const isDirectSl = currentPnLPct <= effectiveSL;
+
+          if (trackingVerdict.shouldExit || isDirectTp || isDirectSl || position.isManualSellTriggered) {
+            const exitReason = isDirectTp ? 'TAKE PROFIT' : (isDirectSl ? (effectiveSL !== baseSL ? 'TRAILING SL' : 'STOP LOSS') : (trackingVerdict.reason || 'EXIT'));
+            console.log(`[EXIT BY ENGINE] (LIVE): ${token.symbol} clearing. Reason: ${exitReason} (PnL: ${currentPnLPct.toFixed(2)}%)`);
             fns.current.executeAutoSell(tokenAddress, token.symbol, trackingVerdict.quote);
           }
         }
@@ -2047,44 +2052,65 @@ function App() {
           pendingTrades.current.delete(tokenAddress);
           return;
       }
-      const quote = cachedQuote || await getJupiterQuote(
-        tokenAddress, 
-        'So11111111111111111111111111111111111111112', 
-        sellRawAmount, 
-        metric?.liquidity || 0,
-        curPnLPercent > (position.tpPct ?? minTakeProfit) ? (position.entryPriceSol || 0.1) : undefined,
-        curPnLPercent > (position.tpPct ?? minTakeProfit) ? (position.tpPct ?? minTakeProfit) : undefined,
-        curPnLPercent
-      );
-      if (!quote) throw new Error("No route for partial sell execution");
-      const guaranteedMinLamports = Number(quote.otherAmountThreshold);
-      const guaranteedSolOut = guaranteedMinLamports / 1_000_000_000.0;
-      const networkFeesSol = 0.0035; // Simulated / average Jito fee
-      const realNetReturnSol = guaranteedSolOut - networkFeesSol;
-      const currentCostBasisSol = position.solSpent || position.entryPriceSol || 0.1;
-
-      // Unify Profit Guard for both LIVE and SIM
-      if (curPnLPercent >= minTakeProfit && realNetReturnSol <= currentCostBasisSol) {
-         console.log(`⚠️ REJECTED (LIVE): Paper profit drops net return into a loss (${realNetReturnSol} SOL vs ${currentCostBasisSol} SOL).`);
-         addNotification(`Profit Guard: Aborted ${symbol} sell. Network slippage overrides return.`);
-         pendingTrades.current.delete(tokenAddress);
-         setTradingStatus('Idle');
-         return;
+      let quote = cachedQuote || null;
+      if (!quote) {
+        try {
+          quote = await getJupiterQuote(
+            tokenAddress, 
+            'So11111111111111111111111111111111111111112', 
+            sellRawAmount, 
+            metric?.liquidity || 0,
+            curPnLPercent > (position.tpPct ?? minTakeProfit) ? (position.entryPriceSol || 0.1) : undefined,
+            curPnLPercent > (position.tpPct ?? minTakeProfit) ? (position.tpPct ?? minTakeProfit) : undefined,
+            curPnLPercent
+          );
+        } catch (qErr) {
+          console.warn(`[AutoSell]: Quote attempt bypassed:`, qErr);
+        }
       }
 
-      const realNetProfitPct = ((realNetReturnSol - currentCostBasisSol) / currentCostBasisSol) * 100.0;
+      const currentCostBasisSol = position.solSpent || position.entryPriceSol || 0.1;
+      let realNetReturnSol = currentCostBasisSol * (1 + curPnLPercent / 100);
+      let realNetProfitPct = curPnLPercent;
+
+      if (quote) {
+        const guaranteedMinLamports = Number(quote.otherAmountThreshold || quote.outAmount || 0);
+        if (guaranteedMinLamports > 0) {
+          const guaranteedSolOut = guaranteedMinLamports / 1_000_000_000.0;
+          const networkFeesSol = 0.0035; // Simulated / average Jito fee
+          realNetReturnSol = Math.max(0, guaranteedSolOut - networkFeesSol);
+          if (currentCostBasisSol > 0) {
+            realNetProfitPct = ((realNetReturnSol - currentCostBasisSol) / currentCostBasisSol) * 100.0;
+          }
+
+          // Unify Profit Guard for TAKE PROFIT only (never block stop losses)
+          if (curPnLPercent >= minTakeProfit && realNetReturnSol <= currentCostBasisSol) {
+             console.log(`⚠️ REJECTED (LIVE): Paper profit drops net return into a loss (${realNetReturnSol} SOL vs ${currentCostBasisSol} SOL).`);
+             addNotification(`Profit Guard: Aborted ${symbol} sell. Network slippage overrides return.`);
+             pendingTrades.current.delete(tokenAddress);
+             setTradingStatus('Idle');
+             return;
+          }
+        }
+      }
+
       console.log(`✅ APPROVED EXECUTION: Realized returns projected at ${realNetProfitPct.toFixed(2)}%`);
 
-      
-          const executor = new RealTradeExecutor();
-          const swapRes = await executor.swap(
-            tokenAddress,
-            'So11111111111111111111111111111111111111112',
-            position.tokens || position.amount || 0,
-            Math.round((slippage || 1) * 100),
-            curPnLPercent >= minTakeProfit ? 'exit_tp' : 'exit_sl'
-          );
-          signature = swapRes.signature;
+      const executor = new RealTradeExecutor();
+      const swapRes = await executor.swap(
+        tokenAddress,
+        'So11111111111111111111111111111111111111112',
+        position.amountLamports || sellRawAmount || position.amount || 0,
+        Math.round((slippage || 1) * 100),
+        curPnLPercent >= (position.tpPct ?? minTakeProfit) ? 'exit_tp' : 'exit_sl'
+      );
+      signature = swapRes.signature;
+      if (swapRes.outputAmount && swapRes.outputAmount > 0) {
+        realNetReturnSol = (swapRes.outputAmount / 1e9) - (swapRes.feeSol || 0);
+        if (currentCostBasisSol > 0) {
+          realNetProfitPct = ((realNetReturnSol - currentCostBasisSol) / currentCostBasisSol) * 100.0;
+        }
+      }
       
 
       // Standardize uniform exact final calculation mappings
