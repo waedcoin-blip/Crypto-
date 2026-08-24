@@ -1,5 +1,4 @@
 import { useActiveWalletStore } from "./store/activeWalletStore";
-import { useTradingEnvironmentStore } from "./store/tradingEnvironmentStore";
 import { getKeypairFromPrivateKey, getSavedSessionKeypair, saveSessionKeypair } from './utils/keypairUtils';
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -33,7 +32,6 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { cn, detectTokenStage } from './lib/utils';
 import { setSolPriceUsd, getSolPriceUsd, calcNetPnl, getDynamicOperationalFeeSol } from './utils/pnlCalculator';
-import { validateTokenAge, getTokenAgeMinutes, formatTokenAge } from './utils/tokenAge';
 import { DEFAULT_HELIUS_RPC, HELIUS_API_KEY } from './constants/solana';
 import { encryptPrivateKey, decryptPrivateKey } from './lib/crypto';
 import { auth, db, signInWithGoogle, signInWithEmailAndPassword, createUserWithEmailAndPassword, authPersistencePromise } from './lib/firebase';
@@ -58,13 +56,10 @@ import { SafetyPage } from './components/pages/SafetyPage';
 import { PredictionPage } from './components/pages/PredictionPage';
 import { PnLPage } from './components/pages/PnLPage';
 import { WalletStatusWidget } from './components/WalletStatusWidget';
-import { MintCopyBadge } from './components/MintCopyBadge';
 import { marketDataManager } from './services/marketDataManager';
 import { rpcHealthManager } from './services/rpcHealthManager';
 import { masterMonitorHealthManager } from './services/MasterMonitorHealthManager';
 import { syncManager } from './services/SyncService';
-import { ExitManager } from './services/exit-manager';
-import { ManagedExitPosition } from './services/exit-manager.types';
 
 
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
@@ -259,7 +254,20 @@ const normalizeTimestamp = (ts: number | undefined): number => {
 };
 
 const formatAge = (createdAt: number | undefined, discoveredAt: number | undefined) => {
-  return formatTokenAge({ pairCreatedAt: createdAt, discoveredAt });
+  const timestamp = createdAt ? normalizeTimestamp(createdAt) : (discoveredAt || Date.now());
+  const diff = Date.now() - timestamp;
+  
+  if (diff < 0) return 'Just now';
+  
+  const seconds = Math.floor(diff / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+  
+  if (days > 0) return `${days}d ${hours % 24}h`;
+  if (hours > 0) return `${hours}h ${minutes % 60}m`;
+  if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
+  return `${seconds}s`;
 };
 
 const calculateMinimumSellOutput = (
@@ -455,14 +463,13 @@ function App() {
 
   const setPrivateKey = useCallback((newKey: string) => {
     setPrivateKeyState(newKey);
-    const activeNetwork = useTradingEnvironmentStore.getState().network || 'devnet';
     if (newKey && newKey.trim()) {
       try {
         const kp = getKeypairFromPrivateKey(newKey.trim());
-        activeWalletStore.switchActiveWallet({ keypair: kp, network: activeNetwork, source: "session" });
+        activeWalletStore.switchActiveWallet({ keypair: kp, network: "mainnet", source: "session" });
       } catch {}
     } else {
-      activeWalletStore.switchActiveWallet({ keypair: null, network: activeNetwork, source: "session" });
+      activeWalletStore.switchActiveWallet({ keypair: null, network: "mainnet", source: "session" });
     }
   }, [activeWalletStore]);
 
@@ -1059,8 +1066,7 @@ function App() {
 
   const generateSessionWallet = () => {
     const kp = Keypair.generate();
-    const activeNetwork = useTradingEnvironmentStore.getState().network || 'devnet';
-    activeWalletStore.switchActiveWallet({ keypair: kp, network: activeNetwork, source: "session" });
+    activeWalletStore.switchActiveWallet({ keypair: kp, network: "mainnet", source: "session" });
     addNotification('New Session Wallet Generated. Deposit SOL to start auto-trading.');
   };
 
@@ -1126,118 +1132,6 @@ function App() {
     fns.current = { executeAutoSell, executeAutoTrade, executePartialSell, sendTelegramAlert };
   });
 
-  // ── 1. Consolidated ExitManager (Single Source of Truth) ────────────
-  const exitManagerRef = useRef<ExitManager | null>(null);
-
-  useEffect(() => {
-    if (exitManagerRef.current) return;
-
-    exitManagerRef.current = new ExitManager(
-      // Inject stage detector
-      (mint, pos) =>
-        detectTokenStage({
-          address: mint,
-          dexId: pos.dexId,
-          bondingCurveProgress: pos.bondingCurveProgress,
-          isRaydiumListed: pos.isRaydiumListed,
-        }),
-      // Sell executor
-      async (mint, symbol, reason, pnlPct) => {
-        console.log(`[EXIT BY ENGINE] ${symbol} clearing. Reason: ${reason} | PnL: ${pnlPct.toFixed(2)}%`);
-        if (fns.current.executeAutoSell) {
-          await fns.current.executeAutoSell(mint, symbol);
-        }
-      },
-      // Initial config snapshot
-      {
-        minTakeProfit,
-        maxTakeProfit,
-        bondingCurveTakeProfit,
-        stopLossPct: typeof stopLoss === 'number' ? Math.abs(stopLoss) : 15,
-        bondingCurveStopLossPct: typeof bondingCurveStopLoss === 'number' ? Math.abs(bondingCurveStopLoss) : 10,
-        pumpSwapStopLossPct: typeof pumpSwapStopLoss === 'number' ? Math.abs(pumpSwapStopLoss) : 15,
-        unknownStopLossPct: typeof unknownStopLoss === 'number' ? Math.abs(unknownStopLoss) : 20,
-        moonbagStrategy,
-        moonbagSellPct: 0.5,
-        slippageBps: Math.floor((slippage || 1) * 100),
-      }
-    );
-  }, []);
-
-  // ── 2. Push config changes only ────────────────────────────────────
-  useEffect(() => {
-    if (!exitManagerRef.current) return;
-
-    exitManagerRef.current.updateGlobalConfig({
-      minTakeProfit,
-      maxTakeProfit,
-      bondingCurveTakeProfit,
-      stopLossPct: typeof stopLoss === 'number' ? Math.abs(stopLoss) : 15,
-      bondingCurveStopLossPct: typeof bondingCurveStopLoss === 'number' ? Math.abs(bondingCurveStopLoss) : 10,
-      pumpSwapStopLossPct: typeof pumpSwapStopLoss === 'number' ? Math.abs(pumpSwapStopLoss) : 15,
-      unknownStopLossPct: typeof unknownStopLoss === 'number' ? Math.abs(unknownStopLoss) : 20,
-      moonbagStrategy,
-      slippageBps: Math.floor((slippage || 1) * 100),
-    });
-  }, [
-    minTakeProfit,
-    maxTakeProfit,
-    bondingCurveTakeProfit,
-    stopLoss,
-    bondingCurveStopLoss,
-    pumpSwapStopLoss,
-    unknownStopLoss,
-    moonbagStrategy,
-    slippage,
-  ]);
-
-  // ── 3. Sync positions whenever activePositions / tokenMetrics update ──
-  useEffect(() => {
-    if (!exitManagerRef.current) return;
-
-    const activeMints = new Set<string>();
-
-    for (const [mint, pos] of Object.entries(activePositions)) {
-      if (pos && (pos.amount > 0 || (pos.amountLamports && pos.amountLamports > 0))) {
-        activeMints.add(mint);
-        const metric = tokenMetrics[mint];
-        const livePrice = metric?.priceNative || (metric?.priceUsd ? metric.priceUsd / (getSolPriceUsd() || 150) : 0) || pos.entryPriceSol || 0;
-        exitManagerRef.current.syncPosition({
-          mint,
-          symbol: pos.symbol || metric?.symbol || mint.slice(0, 8),
-          state: 'OPEN',
-          amount: pos.amount || (pos.amountLamports ? pos.amountLamports / 1e6 : 0),
-          realCostBasis: pos.solSpent || pos.entryPriceSol || 0.1,
-          lastPriceSol: livePrice,
-          lastPriceTimestamp: metric?.lastUpdated || Date.now(),
-          highestPnlPct: pos.peakPnLPct || 0,
-          soldPartial: pos.soldPartial || false,
-          recoveryMode: pos.recoveryMode || false,
-          entryTime: pos.boughtAt || Date.now(),
-          dexId: metric?.dexId,
-          bondingCurveProgress: metric?.bondingCurveProgress,
-          isRaydiumListed: metric?.isRaydiumListed,
-        });
-      }
-    }
-
-    // Prune closed/zeroed positions from manager memory
-    for (const mint of exitManagerRef.current.getActiveMints()) {
-      if (!activeMints.has(mint)) {
-        exitManagerRef.current.removePosition(mint);
-      }
-    }
-  }, [activePositions, tokenMetrics]);
-
-  // ── 4. Exit Evaluation loop ─────────────────────────────────────────────
-  useEffect(() => {
-    const interval = setInterval(() => {
-      exitManagerRef.current?.evaluateAll();
-    }, 1000); // 1s tick
-
-    return () => clearInterval(interval);
-  }, []);
-
   // Auto-Sell Monitoring & Momentum Entries
   useEffect(() => {
     let timeoutId: any;
@@ -1247,7 +1141,7 @@ function App() {
       if (!isMounted) return;
       const state = latestState.current;
       
-      // MONITORING LOOP 1: Balance & Price Fetching
+      // MONITORING LOOP 1: EXITS (Hardened All-or-Nothing Exit)
       const activePositionEntries = Object.entries(state.activePositions) as [string, any][];
       for (const [tokenAddress, position] of activePositionEntries) {
         if (position.triggersDisabled) continue;
@@ -1280,6 +1174,11 @@ function App() {
         }
 
         if (token) {
+          const symbol = token.symbol;
+          const holdTimeMs = Date.now() - (position.boughtAt || Date.now());
+          // Set to false to disable minimum hold time delay so stop loss/take profit execute instantly
+          const isHoldProtected = false;
+          
           const walletAddress = (true && activeAddress) 
             ? activeAddress!
             : '11111111111111111111111111111111';
@@ -1296,6 +1195,84 @@ function App() {
                 });
                 continue;
             }
+          } else if (false) {
+            // Simulate amount lamports for accurate Jupiter routing
+            amountLamports = Math.floor(position.amount * 1_000_000);
+          }
+
+          if (!amountLamports || amountLamports === 0) continue;
+
+          const realCostBasis = position.solSpent || position.entryPriceSol || 0.1;
+          const actPos = {
+            tokenAddress: token.address,
+            currentTokenBalance: BigInt(amountLamports),
+            entryCostSol: realCostBasis,
+            initialMoonbagSize: BigInt(position.initialMoonbagSizeStr || '0'),
+            currentStage: position.currentStage || PositionStage.RECOVER_CAPITAL,
+            symbol: token.symbol,
+            isManualSellTriggered: position.isManualSellTriggered
+          };
+
+          // ── TRIPLE STOP LOSS ROUTING ──────────────────────────────────────────
+          const stage = detectTokenStage({
+            address:              tokenAddress,
+            dexId:                token?.dexId,
+            bondingCurveProgress: token?.bondingCurveProgress,
+            isRaydiumListed:      token?.isRaydiumListed
+          });
+
+          let baseSL = typeof state.stopLoss === 'number' ? state.stopLoss : -30;
+          const userGlobalSL = typeof state.stopLoss === 'number' ? state.stopLoss : -15;
+          if (stage.platform === 'PUMP_FUN' || stage.isBonding) {
+            baseSL = typeof state.bondingCurveStopLoss === 'number' ? state.bondingCurveStopLoss : userGlobalSL;
+          } else if (stage.platform === 'PUMPSWAP') {
+            baseSL = typeof state.pumpSwapStopLoss === 'number' ? state.pumpSwapStopLoss : userGlobalSL;
+          } else if (stage.platform === 'UNKNOWN' || stage.stage === 'UNKNOWN') {
+            baseSL = typeof state.unknownStopLoss === 'number' ? state.unknownStopLoss : userGlobalSL;
+          }
+          baseSL = position.slPct !== undefined ? position.slPct : baseSL;
+          baseSL = -Math.abs(baseSL);
+
+          // ── TRAILING STOP LOSS: lock in gains as price rises ────────────────
+          // If price has rallied >20%, trail stop loss to protect profits
+          // e.g. up 50% → stop at 35%; up 100% → stop at 75%
+          const currentPriceSol = (token.priceNative || 0);
+          const posTokensQty = position.amount || 0;
+          const netPnlResult = calcNetPnl(currentPriceSol, posTokensQty, realCostBasis, state.slippage, position.recoveryMode, true);
+          const currentPnLPct = netPnlResult.netPnlPct;
+
+          // Track peak PnL in position metadata
+          if (!position.peakPnLPct || currentPnLPct > position.peakPnLPct) {
+            setActivePositions(prev => ({
+              ...prev,
+              [token.address]: { ...prev[token.address], peakPnLPct: currentPnLPct }
+            }));
+          }
+
+          const peakPnL = position.peakPnLPct || 0;
+          
+          const trailingSL = peakPnL > 20 ? peakPnL - 15 : baseSL;
+          const effectiveSL = Math.max(baseSL, trailingSL); // never looser than base SL
+
+          let activeTakeProfit = position.tpPct ?? (stage.isBonding 
+            ? (typeof state.bondingCurveTakeProfit === 'number' ? state.bondingCurveTakeProfit : 25) 
+            : (state.moonbagStrategy ? (position.soldPartial ? state.maxTakeProfit : state.minTakeProfit) : state.minTakeProfit));
+            
+          const trackingVerdict = await processActiveTrackingFrame(
+            connection,
+            actPos,
+            token.liquidity || 0,
+            walletAddress,
+            { 
+              takeProfit: activeTakeProfit, 
+              stopLoss: effectiveSL
+            }
+          );
+
+          if (trackingVerdict.shouldExit) {
+            const slType = effectiveSL !== baseSL ? 'TRAILING SL' : trackingVerdict.reason;
+            console.log(`[EXIT BY ENGINE] (LIVE): ${token.symbol} clearing. Reason: ${slType}`);
+            fns.current.executeAutoSell(tokenAddress, token.symbol, trackingVerdict.quote);
           }
         }
       }
@@ -1342,7 +1319,10 @@ function App() {
           const now = Date.now();
           const recentBuys = (token.recentBuysTimeline || []).filter((t: any) => t && t.t && (now - t.t < 30000));
           
-          const ageMinutes = getTokenAgeMinutes(token) ?? 0;
+          const tokenTime = token.pairCreatedAt 
+            ? (token.pairCreatedAt < 1000000000000 ? token.pairCreatedAt * 1000 : token.pairCreatedAt) 
+            : (token.discoveredAt || now);
+          const ageMinutes = (now - tokenTime) / 60000;
 
           const metrics: AdvancedTokenMetrics = {
             mintAddress: token.address,
@@ -1877,7 +1857,8 @@ function App() {
             tokenQuantityRaw: existing && existing.tokenQuantityRaw ? (BigInt(existing.tokenQuantityRaw) + BigInt(outTokensRaw)).toString() : outTokensRaw, 
             entryPrice: newEntryPriceUsd,
             entryPriceSol: newEntryPriceSol,
-
+            tpPct: existing?.tpPct ?? minTakeProfit,
+            slPct: existing?.slPct ?? stopLoss
           }
         };
       });
@@ -2075,8 +2056,8 @@ function App() {
         'So11111111111111111111111111111111111111112', 
         sellRawAmount, 
         metric?.liquidity || 0,
-        curPnLPercent > minTakeProfit ? (position.entryPriceSol || 0.1) : undefined,
-        curPnLPercent > minTakeProfit ? minTakeProfit : undefined,
+        curPnLPercent > (position.tpPct ?? minTakeProfit) ? (position.entryPriceSol || 0.1) : undefined,
+        curPnLPercent > (position.tpPct ?? minTakeProfit) ? (position.tpPct ?? minTakeProfit) : undefined,
         curPnLPercent
       );
       if (!quote) throw new Error("No route for partial sell execution");
@@ -2086,9 +2067,17 @@ function App() {
       const realNetReturnSol = guaranteedSolOut - networkFeesSol;
       const currentCostBasisSol = position.solSpent || position.entryPriceSol || 0.1;
 
-      // Always allow Take Profit and Stop Loss sells to proceed once triggered
-      const realNetProfitPct = currentCostBasisSol > 0 ? ((realNetReturnSol - currentCostBasisSol) / currentCostBasisSol) * 100.0 : curPnLPercent;
-      console.log(`✅ EXECUTING SELL: Projected realized return ${realNetProfitPct.toFixed(2)}% (PnL: ${curPnLPercent.toFixed(2)}%)`);
+      // Unify Profit Guard for both LIVE and SIM
+      if (curPnLPercent >= minTakeProfit && realNetReturnSol <= currentCostBasisSol) {
+         console.log(`⚠️ REJECTED (LIVE): Paper profit drops net return into a loss (${realNetReturnSol} SOL vs ${currentCostBasisSol} SOL).`);
+         addNotification(`Profit Guard: Aborted ${symbol} sell. Network slippage overrides return.`);
+         pendingTrades.current.delete(tokenAddress);
+         setTradingStatus('Idle');
+         return;
+      }
+
+      const realNetProfitPct = ((realNetReturnSol - currentCostBasisSol) / currentCostBasisSol) * 100.0;
+      console.log(`✅ APPROVED EXECUTION: Realized returns projected at ${realNetProfitPct.toFixed(2)}%`);
 
       
           const priorityTip = curPnLPercent >= minTakeProfit ? 2000000 : 1000000;
@@ -2300,6 +2289,8 @@ function App() {
             tokenQuantityRaw: existing && existing.tokenQuantityRaw ? (BigInt(existing.tokenQuantityRaw) + BigInt(outTokensRaw)).toString() : outTokensRaw,
             entryPrice: newEntryPriceUsd,
             entryPriceSol: newEntryPriceSol,
+            tpPct: existing?.tpPct ?? minTakeProfit,
+            slPct: existing?.slPct ?? stopLoss,
             entryFeesSol: (existing ? (existing.entryFeesSol || 0) + 0.003 : 0.003), // Tip + Tx
             soldPartial: false,
             isScalp: true
@@ -2502,17 +2493,12 @@ function App() {
           const next = { ...prev };
           prices.forEach((tp, addr) => {
             if (positions[addr]) {
-              const existingMetric = next[addr];
-              const incomingTime = tp.updatedAt || Date.now();
-              if (existingMetric?.lastUpdated && incomingTime < existingMetric.lastUpdated) {
-                return;
-              }
               next[addr] = {
                 ...next[addr],
                 address: addr,
                 priceUsd: tp.priceUsd ?? undefined,
                 priceNative: tp.priceNative || 0,
-                lastUpdated: incomingTime
+                lastUpdated: Date.now()
               };
             }
           });
@@ -2871,8 +2857,7 @@ function App() {
         }
 
         const priceChange = pair.priceChange?.m5 || 0;
-        const normCreatedAt = normalizeTimestamp(pair.pairCreatedAt);
-        const pairCreatedAt = normCreatedAt || 0;
+        const pairCreatedAt = pair.pairCreatedAt || 0;
         const symbol = pair.baseToken?.symbol || "TOKEN";
         const category = categorizeToken(symbol, mint);
         
@@ -3284,14 +3269,13 @@ function App() {
                 const isRiskValid = tokenRisk <= maxRisk;
                 const isLiquidityValid = liquidity >= minLiq && liquidityRatio >= minLiqRatio;
 
-                const minAge = latestState.current.hardenedMinAge;
-                const maxAge = latestState.current.hardenedMaxAge;
-                const ageRes = validateTokenAge(updated, {
-                  minAgeMinutes: minAge,
-                  maxAgeMinutes: maxAge,
-                  allowUnknownAge: false,
-                });
-                const isAgeValid = ageRes.isValid;
+                const createdAtRaw = updated.pairCreatedAt || security.security?.pairCreatedAt;
+                const normCreatedAt = createdAtRaw ? (createdAtRaw < 1000000000000 ? createdAtRaw * 1000 : createdAtRaw) : null;
+                const tokenTime = normCreatedAt || updated.discoveredAt || now;
+                const tokenAgeMin = (now - tokenTime) / 60000;
+                const minAge = latestState.current.hardenedMinAge ?? 0;
+                const maxAge = latestState.current.hardenedMaxAge ?? 120;
+                const isAgeValid = tokenAgeMin >= minAge && tokenAgeMin <= maxAge;
 
                 const isMassiveStrength = hasHighProgress && 
                                           isHealthyPool &&
@@ -4747,9 +4731,24 @@ function App() {
                           <div className="flex items-center gap-2 mt-1">
                             <div className="flex items-center gap-1.5 bg-slate-950/50 px-2 py-0.5 rounded border border-slate-800 group/addr font-mono">
                               <span className="text-[8px] lg:text-[9px] text-indigo-400 font-medium">ADDR:</span>
-                              <div className="flex items-center gap-1.5 mt-0.5">
-                                <MintCopyBadge mint={trade.tokenAddress} size="sm" />
-                              </div>
+                              <p 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  window.open(`https://solscan.io/token/${trade.tokenAddress}`, '_blank');
+                                }}
+                                className="text-[8px] lg:text-[9px] text-slate-400 hover:text-white transition-colors truncate max-w-[120px] lg:max-w-none cursor-pointer"
+                              >
+                                {trade.tokenAddress}
+                              </p>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  copyToClipboard(trade.tokenAddress, `${trade.id}-token`);
+                                }}
+                                className="p-0.5 rounded bg-slate-900 border border-slate-800 hover:bg-slate-800 transition-colors text-slate-500 font-sans"
+                              >
+                                {copiedId === `${trade.id}-token` ? <Check className="w-2.5 h-2.5 text-emerald-400" /> : <Copy className="w-2.5 h-2.5" />}
+                              </button>
                             </div>
                           </div>
                         </div>
@@ -5779,8 +5778,9 @@ function App() {
                      </div>
                    )}
                    {(() => {
-                     const ageMins = getTokenAgeMinutes(metric);
-                     if (ageMins !== null && ageMins < 10) {
+                     const timestamp = metric.pairCreatedAt ? normalizeTimestamp(metric.pairCreatedAt) : (metric.discoveredAt || Date.now());
+                     const age = Date.now() - timestamp;
+                     if (age < 600000) {
                        return (
                          <div className="px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest bg-amber-500/20 text-amber-400 border border-amber-500/30 animate-pulse">
                            JUST LAUNCHED
@@ -5813,8 +5813,11 @@ function App() {
                   </div>
                   <div>
                     <h3 className="text-xl font-black text-white uppercase leading-none mb-1">{metric.symbol || 'Unknown Token'}</h3>
-                    <div className="flex items-center gap-2 mt-1">
-                      <MintCopyBadge mint={metric.address} size="sm" />
+                    <div className="flex items-center gap-2">
+                       <span className="text-[10px] font-mono text-slate-500">{metric.address?.slice(0, 12)}...</span>
+                       <button onClick={() => copyToClipboard(metric.address, metric.address)} className="text-slate-600 hover:text-white transition-colors">
+                         <Copy className="w-3 h-3" />
+                       </button>
                     </div>
                   </div>
                 </div>
@@ -6427,8 +6430,11 @@ function App() {
                                     </div>
                                   )}
                                 </div>
-                                <div className="flex items-center gap-1 mt-0.5">
-                                  <MintCopyBadge mint={metric.address} size="sm" />
+                                <div className="flex items-center gap-1">
+                                  <span className="text-[10px] font-mono text-slate-500">{(metric.address || '').slice(0, 6)}...{(metric.address || '').slice(-4)}</span>
+                                  <button onClick={() => copyToClipboard(metric.address, metric.address)} className="text-slate-600 hover:text-white transition-colors">
+                                    {copiedId === metric.address ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                                  </button>
                                 </div>
                               </div>
                             </div>
@@ -6745,8 +6751,16 @@ function App() {
                       </div>
                       
                       <div className="grid grid-cols-2 gap-3 pt-3 border-t border-slate-800/50">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <MintCopyBadge mint={metric.address} size="sm" />
+                        <div className="flex items-center gap-2 bg-slate-900/50 px-2 py-1.5 rounded-xl border border-slate-700 min-w-0">
+                          <code className="text-[10px] font-mono text-indigo-200 truncate flex-1 leading-relaxed">
+                            {(metric.address || '').slice(0, 6)}...{(metric.address || '').slice(-6)}
+                          </code>
+                          <button 
+                            onClick={() => copyToClipboard(metric.address, metric.address)}
+                            className="p-1 rounded bg-slate-800 text-slate-500 active:text-indigo-400 transition-colors"
+                          >
+                            {copiedId === metric.address ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                          </button>
                         </div>
                         <button 
                           onClick={() => handleManualBuy(metric.address, metric.symbol)}

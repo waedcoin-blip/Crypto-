@@ -2,7 +2,7 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import { getNetworkConfig, TradingNetwork } from '../config/network';
 import { useBalanceStore } from '../store/balanceStore';
-import { useActiveWalletStore, DEFAULT_DEVNET_WALLET_ADDRESS } from '../store/activeWalletStore';
+import { useActiveWalletStore } from '../store/activeWalletStore';
 
 const LAMPORTS_PER_SOL = 1_000_000_000;
 const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
@@ -41,7 +41,7 @@ export class WalletBalanceService {
   }
 
   async refresh(overrideAddress?: string): Promise<number> {
-    const address = overrideAddress || useActiveWalletStore.getState().activeWallet?.address || (this.network === 'devnet' ? DEFAULT_DEVNET_WALLET_ADDRESS : '');
+    const address = overrideAddress || useActiveWalletStore.getState().activeWallet?.address;
     if (!address) {
       useBalanceStore.getState().setWalletAddress(null);
       return 0;
@@ -90,15 +90,7 @@ export class WalletBalanceService {
       return sol;
     } catch (err) {
       console.warn('Wallet balance query error for', address, err);
-      const bs = useBalanceStore.getState();
-      if (bs.solBalance !== null) {
-        bs.setStatus('live');
-      } else if (this.network === 'devnet') {
-        bs.setOnChainBalance({ solBalance: 10.0 });
-      } else {
-        bs.setStatus('error', String(err));
-      }
-      return bs.solBalance || 0;
+      return 0;
     }
   }
 
@@ -106,22 +98,8 @@ export class WalletBalanceService {
    * Fetch raw on-chain SPL token account balance for a specific mint.
    * Returns RAW amount (smallest unit) so it can be compared against Jupiter quote amounts.
    */
-  async getSolBalance(walletAddress?: string): Promise<number> {
-    const activeAddress = walletAddress || localStorage.getItem('wallet_address');
-    if (!activeAddress) return 0;
-    try {
-      const balance = await this.connection.getBalance(new PublicKey(activeAddress));
-      return balance / 1_000_000_000.0;
-    } catch (e) {
-      console.warn('Failed to get SOL balance', e);
-      return 0;
-    }
-  }
-
-
-
   async getTokenBalance(mint: string, walletAddress?: string): Promise<number> {
-    const address = walletAddress || useActiveWalletStore.getState().activeWallet?.address || (this.network === 'devnet' ? DEFAULT_DEVNET_WALLET_ADDRESS : '');
+    const address = walletAddress || useActiveWalletStore.getState().activeWallet?.address;
     if (!address) return 0;
 
     try {
@@ -148,12 +126,9 @@ export class WalletBalanceService {
       return totalRawAmount;
     } catch (err) {
       console.warn(`Failed to fetch token balance for ${mint}:`, err);
-      throw new Error(`Unable to verify on-chain token balance for ${mint}`);
+      return 0;
     }
   }
 }
 
-const initialNetwork: TradingNetwork =
-  localStorage.getItem('app_trading_network') === 'mainnet' ? 'mainnet' : 'devnet';
-
-export const walletBalanceService = new WalletBalanceService(initialNetwork);
+export const walletBalanceService = new WalletBalanceService('devnet');

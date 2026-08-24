@@ -1,5 +1,4 @@
 import { useActiveWalletStore } from '../store/activeWalletStore';
-import { getSavedSessionKeypair, saveSessionKeypair } from '../utils/keypairUtils';
 // src/services/BatchExitEngine.ts
 import {
   Connection,
@@ -58,19 +57,8 @@ export class BatchExitEngine {
   private config: Required<BatchExitConfig>;
 
   private get wallet(): Keypair {
-    let kp = useActiveWalletStore.getState().activeWallet?.keypair;
-    if (!kp) {
-      kp = getSavedSessionKeypair();
-      if (!kp) {
-        kp = Keypair.generate();
-        saveSessionKeypair(kp);
-      }
-      useActiveWalletStore.getState().switchActiveWallet({
-        keypair: kp,
-        network: 'mainnet',
-        source: 'session'
-      });
-    }
+    const kp = useActiveWalletStore.getState().activeWallet?.keypair;
+    if (!kp) throw new Error("No active wallet in store for BatchExitEngine");
     return kp;
   }
 

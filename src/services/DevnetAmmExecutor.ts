@@ -1,22 +1,27 @@
 // src/services/DevnetAmmExecutor.ts
 import { ITradeExecutor, SwapResult, ExecutorTelemetry } from './ITradeExecutor';
 import { QuoteGetRequest, QuoteResponse } from '@jup-ag/api';
-import { Keypair, Connection, PublicKey, VersionedTransaction, TransactionMessage, SystemProgram, LAMPORTS_PER_SOL, TransactionInstruction, SendTransactionError } from '@solana/web3.js';
-import { getSavedSessionKeypair, saveSessionKeypair } from '../utils/keypairUtils';
+import {
+  Connection,
+  PublicKey,
+  VersionedTransaction,
+  TransactionMessage,
+  SystemProgram,
+  LAMPORTS_PER_SOL,
+  TransactionInstruction,
+  SendTransactionError,
+} from '@solana/web3.js';
 import {
   TOKEN_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
   getAssociatedTokenAddressSync,
   createAssociatedTokenAccountIdempotentInstruction,
-  createBurnInstruction,
 } from '@solana/spl-token';
-import { useActiveWalletStore, DEFAULT_DEVNET_WALLET_ADDRESS } from '../store/activeWalletStore';
+import { useActiveWalletStore } from '../store/activeWalletStore';
 import { useBalanceStore, assertTradeBalance } from '../store/balanceStore';
 import { walletBalanceService } from './WalletBalanceService';
 import { getNetworkConfig } from '../config/network';
 import { useAppStore } from '../store/appStore';
-
-import { connectedWalletService } from './connectedWalletService';
 
 export class DevnetAmmExecutor implements ITradeExecutor {
   readonly mode = 'devnet' as const;
@@ -34,11 +39,11 @@ export class DevnetAmmExecutor implements ITradeExecutor {
 
   public get publicKey(): string {
     const wallet = useActiveWalletStore.getState().activeWallet;
-    if (!wallet) return DEFAULT_DEVNET_WALLET_ADDRESS;
+    if (!wallet) return '';
     if (wallet.keypair) {
       return wallet.keypair.publicKey.toBase58();
     }
-    return wallet.address || DEFAULT_DEVNET_WALLET_ADDRESS;
+    return wallet.address || '';
   }
 
   private getActiveWallet() {
@@ -151,7 +156,7 @@ export class DevnetAmmExecutor implements ITradeExecutor {
         },
       ],
       contextSlot: Math.floor(Date.now() / 400),
-    } as unknown as QuoteResponse;
+    } as QuoteResponse;
   }
 
   async swap(
@@ -166,44 +171,13 @@ export class DevnetAmmExecutor implements ITradeExecutor {
 
     try {
       const activeWallet = this.getActiveWallet();
-      const isConnectedWallet = activeWallet.source === 'connected';
-      let userPk: PublicKey;
-      let kp = activeWallet.keypair;
-
-      if (isConnectedWallet) {
-        const verify = connectedWalletService.verifySigner(activeWallet.address);
-        if (!verify.valid) {
-          throw new Error(`DevnetAmmExecutor failed: ${verify.error}`);
-        }
-        userPk = new PublicKey(activeWallet.address);
-      } else {
-        if (!kp) {
-          kp = getSavedSessionKeypair();
-        }
-        if (!kp) {
-          kp = Keypair.generate();
-          saveSessionKeypair(kp);
-        }
-        if (useActiveWalletStore.getState().activeWallet?.keypair !== kp) {
-          useActiveWalletStore.getState().switchActiveWallet({
-            keypair: kp,
-            address: activeWallet.address || DEFAULT_DEVNET_WALLET_ADDRESS,
-            network: activeWallet.network || 'devnet',
-            source: 'session'
-          });
-        }
-        userPk = kp.publicKey;
-
-        try {
-          const kpBal = await this.connection.getBalance(kp.publicKey).catch(() => 0);
-          if (kpBal < 0.05 * LAMPORTS_PER_SOL) {
-            const sig = await this.connection.requestAirdrop(kp.publicKey, 1 * LAMPORTS_PER_SOL);
-            await this.connection.confirmTransaction(sig, 'confirmed');
-          }
-        } catch (airdropErr) {
-          console.warn('Devnet airdrop check for session keypair:', airdropErr);
-        }
+      const kp = activeWallet.keypair;
+      if (!kp) {
+        throw new Error('DevnetAmmExecutor failed: Active wallet private key is missing for on-chain Devnet signing.');
       }
+
+      const activePublicKey = this.getActivePublicKey();
+      const userPk = kp.publicKey;
 
       const isSolBuy = inputMint === 'So11111111111111111111111111111111111111112';
       const requiredSol = isSolBuy ? amount / LAMPORTS_PER_SOL + 0.002 : 0.002;
@@ -212,40 +186,6 @@ export class DevnetAmmExecutor implements ITradeExecutor {
 
       const quote = await this.getQuote({ inputMint, outputMint, amount, slippageBps });
       const outAmountNum = Number(quote.outAmount);
-
-      // Check on-chain balance of fee payer userPk
-      let onChainPayerBal = 0;
-      try {
-        onChainPayerBal = await this.connection.getBalance(userPk);
-      } catch {
-        onChainPayerBal = 0;
-      }
-
-      // If session keypair is unfunded on Devnet due to faucet rate limits / outage, fallback to simulated Devnet swap
-      if (!isConnectedWallet && onChainPayerBal < 5000) {
-        console.warn('[DevnetAmmExecutor] Devnet fee payer unfunded (faucet rate-limited). Executing Devnet swap in simulated mode.');
-        const simSig = 'devnet-sim-' + Math.random().toString(36).substring(2, 10) + Date.now().toString(36);
-        const slot = Math.floor(Date.now() / 400);
-        const landingTimeMs = Date.now() - start;
-
-        useAppStore.getState().addJupiterLog({
-          type: 'INFO',
-          message: `Devnet Swap Success (Simulated): ${simSig.slice(0, 14)}... (Slot ${slot})`,
-          details: { signature: simSig, inputMint, outputMint, inAmount: amount, outAmount: outAmountNum, mode: 'Simulated (Devnet Faucet 429)' },
-        });
-
-        return {
-          signature: simSig,
-          inputMint,
-          outputMint,
-          inputAmount: amount,
-          outputAmount: outAmountNum,
-          feeSol: 0.000005,
-          slot,
-          landingTimeMs,
-          method: 'rpc',
-        };
-      }
 
       const instructions: TransactionInstruction[] = [];
 
@@ -281,26 +221,6 @@ export class DevnetAmmExecutor implements ITradeExecutor {
               mintValidation.tokenProgram
             )
           );
-
-          if (!isSolBuy) {
-            try {
-              const burnAmountBig = BigInt(Math.floor(amount));
-              if (burnAmountBig > 0n) {
-                instructions.push(
-                  createBurnInstruction(
-                    ata,
-                    targetMintPk,
-                    userPk,
-                    burnAmountBig,
-                    [],
-                    mintValidation.tokenProgram
-                  )
-                );
-              }
-            } catch (burnErr) {
-              console.warn('[DevnetAmmExecutor] Unable to create burn instruction:', burnErr);
-            }
-          }
         } else {
           console.log(
             `[DevnetAmmExecutor] Target mint ${targetMintStr} does not exist on Devnet RPC. Skipping ATA instruction.`
@@ -328,29 +248,13 @@ export class DevnetAmmExecutor implements ITradeExecutor {
       }).compileToV0Message();
 
       const tx = new VersionedTransaction(messageV0);
+      tx.sign([kp]);
 
-      let sig: string;
-
-      if (isConnectedWallet) {
-        const connectedSigner = connectedWalletService.getSigner()!;
-        if (connectedSigner.signTransaction) {
-          const signedTx = await connectedSigner.signTransaction(tx);
-          sig = await this.connection.sendRawTransaction(signedTx.serialize(), {
-            skipPreflight: true,
-            maxRetries: 3,
-          });
-        } else if (connectedSigner.sendTransaction) {
-          sig = await connectedSigner.sendTransaction(tx, this.connection);
-        } else {
-          throw new Error('Connected browser wallet does not support transaction signing or sending.');
-        }
-      } else {
-        tx.sign([kp!]);
-        sig = await this.connection.sendRawTransaction(tx.serialize(), {
-          skipPreflight: true,
-          maxRetries: 3,
-        });
-      }
+      // 6. Send raw transaction to Devnet RPC
+      const sig = await this.connection.sendRawTransaction(tx.serialize(), {
+        skipPreflight: false,
+        maxRetries: 3,
+      });
 
       // 7. Confirm transaction on Devnet RPC
       const confirmation = await this.connection.confirmTransaction(
@@ -365,7 +269,7 @@ export class DevnetAmmExecutor implements ITradeExecutor {
       const slot = confirmation.context.slot;
 
       // 8. Authoritative Post-Trade State Refresh against Devnet RPC
-      await this.syncStoreBalances(userPk.toBase58(), targetMintStr);
+      await this.syncStoreBalances(activePublicKey, targetMintStr);
 
       const landingTimeMs = Date.now() - start;
       const actualFee = 0.000005;
@@ -436,12 +340,12 @@ export class DevnetAmmExecutor implements ITradeExecutor {
   }
 
   async getSolBalance(): Promise<number> {
-    if (!this.publicKey) throw new Error('No active public key for SOL balance lookup');
+    if (!this.publicKey) return 0;
     try {
       const lamports = await this.connection.getBalance(new PublicKey(this.publicKey), 'confirmed');
       return lamports / LAMPORTS_PER_SOL;
-    } catch (err) {
-      throw new Error(`Unable to verify on-chain SOL balance: ${String(err)}`);
+    } catch {
+      return 0;
     }
   }
 

@@ -1,4 +1,4 @@
-import { useActiveWalletStore, DEFAULT_DEVNET_WALLET_ADDRESS } from "../store/activeWalletStore";
+import { useActiveWalletStore } from "../store/activeWalletStore";
 import { getKeypairFromPrivateKey, getSavedSessionKeypair, saveSessionKeypair } from '../utils/keypairUtils';
 // src/components/WalletStatusWidget.tsx
 import React, { useState, useEffect } from 'react';
@@ -109,14 +109,9 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
             source: 'session'
           });
        }
-    } else if (isDevnet) {
-       if (activeWallet?.address !== DEFAULT_DEVNET_WALLET_ADDRESS || activeWallet?.network !== 'devnet') {
-          switchActiveWallet({ keypair: null, address: DEFAULT_DEVNET_WALLET_ADDRESS, network: 'devnet', source: 'session' });
-       }
     } else if (activeWallet) {
        switchActiveWallet({ keypair: null, address: '', network: 'mainnet', source: 'session' });
     }
-
   }, [publicKey, sessionWallet, isDevnet]);
 
   // WalletBalanceService polling for active address

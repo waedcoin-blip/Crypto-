@@ -1,28 +1,13 @@
 // src/services/MainnetJupiterExecutor.ts
 import { ITradeExecutor, SwapResult, ExecutorTelemetry } from './ITradeExecutor';
 import { QuoteGetRequest, QuoteResponse, createJupiterApiClient } from '@jup-ag/api';
-import { Connection, LAMPORTS_PER_SOL, PublicKey, VersionedTransaction, Keypair } from '@solana/web3.js';
-import { getSavedSessionKeypair, saveSessionKeypair } from '../utils/keypairUtils';
+import { Connection, LAMPORTS_PER_SOL, PublicKey, VersionedTransaction } from '@solana/web3.js';
 import { DEFAULT_HELIUS_RPC } from '../constants/solana';
 import { getNetworkConfig } from '../config/network';
 import { useActiveWalletStore } from '../store/activeWalletStore';
 import { useBalanceStore, assertTradeBalance } from '../store/balanceStore';
 import { walletBalanceService } from './WalletBalanceService';
 import { useAppStore } from '../store/appStore';
-import { connectedWalletService } from './connectedWalletService';
-
-export function sanitizeJupiterRpcUrl(url?: string | null): string {
-  const defaultUrl = 'https://api.jup.ag/swap/v1';
-  if (!url || typeof url !== 'string' || !url.trim()) return defaultUrl;
-  const trimmed = url.trim();
-  try {
-    const parsed = new URL(trimmed);
-    if (parsed.protocol !== 'https:') return defaultUrl;
-    return trimmed;
-  } catch {
-    return defaultUrl;
-  }
-}
 
 export class MainnetJupiterExecutor implements ITradeExecutor {
   readonly mode = 'mainnet' as const;
@@ -37,12 +22,9 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
   constructor(mainnetRpcUrl?: string) {
     const defaultRpc = getNetworkConfig('mainnet').rpcUrl || DEFAULT_HELIUS_RPC;
     const rpcUrl = mainnetRpcUrl || localStorage.getItem('juipter_auto_rpcUrl') || defaultRpc;
-    if (rpcUrl.includes('devnet')) {
-      throw new Error('Mainnet executor refused a Devnet RPC URL');
-    }
     this.connection = new Connection(rpcUrl, 'confirmed');
     
-    const jupUrl = sanitizeJupiterRpcUrl(localStorage.getItem('juipter_auto_jupiterRpcUrl'));
+    const jupUrl = localStorage.getItem('juipter_auto_jupiterRpcUrl') || 'https://api.jup.ag/swap/v1';
     this.jupiterApi = createJupiterApiClient({ basePath: jupUrl });
   }
 
@@ -57,9 +39,7 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
 
   private getActiveWallet() {
     const wallet = useActiveWalletStore.getState().activeWallet;
-    if (!wallet || (!wallet.address && !wallet.keypair)) {
-      throw new Error('No active wallet selected for Mainnet trading');
-    }
+    if (!wallet) throw new Error('No active wallet selected for Mainnet trading');
     return wallet;
   }
 
@@ -85,35 +65,12 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
 
     try {
       const activeWallet = this.getActiveWallet();
-      const isConnectedWallet = activeWallet.source === 'connected';
-      let activePublicKey = activeWallet.address;
-      let kp = activeWallet.keypair;
-
-      if (isConnectedWallet) {
-        const verify = connectedWalletService.verifySigner(activeWallet.address);
-        if (!verify.valid) {
-          throw new Error(`MainnetJupiterExecutor failed: ${verify.error}`);
-        }
-        activePublicKey = activeWallet.address;
-      } else {
-        if (!kp) {
-          kp = getSavedSessionKeypair();
-        }
-        if (!kp) {
-          kp = Keypair.generate();
-          saveSessionKeypair(kp);
-        }
-        if (useActiveWalletStore.getState().activeWallet?.keypair !== kp) {
-          useActiveWalletStore.getState().switchActiveWallet({
-            keypair: kp,
-            address: activeWallet.address,
-            network: activeWallet.network || 'mainnet',
-            source: 'session'
-          });
-        }
-        activePublicKey = kp.publicKey.toBase58();
+      const kp = activeWallet.keypair;
+      if (!kp) {
+        throw new Error('MainnetJupiterExecutor failed: Active wallet private key missing for Mainnet transaction.');
       }
 
+      const activePublicKey = this.getActivePublicKey();
       const isSolBuy = inputMint === 'So11111111111111111111111111111111111111112';
 
       await assertTradeBalance(isSolBuy ? amount / LAMPORTS_PER_SOL + 0.005 : 0.005);
@@ -158,29 +115,12 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
 
       const txBuf = Buffer.from(swapBuild.swapTransaction, 'base64');
       const tx = VersionedTransaction.deserialize(txBuf);
+      tx.sign([kp]);
 
-      let sig: string;
-
-      if (isConnectedWallet) {
-        const connectedSigner = connectedWalletService.getSigner()!;
-        if (connectedSigner.signTransaction) {
-          const signedTx = await connectedSigner.signTransaction(tx);
-          sig = await this.connection.sendRawTransaction(signedTx.serialize(), {
-            skipPreflight: false,
-            maxRetries: 3,
-          });
-        } else if (connectedSigner.sendTransaction) {
-          sig = await connectedSigner.sendTransaction(tx, this.connection);
-        } else {
-          throw new Error('Connected browser wallet does not support transaction signing or sending.');
-        }
-      } else {
-        tx.sign([kp!]);
-        sig = await this.connection.sendRawTransaction(tx.serialize(), {
-          skipPreflight: false,
-          maxRetries: 3,
-        });
-      }
+      const sig = await this.connection.sendRawTransaction(tx.serialize(), {
+        skipPreflight: false,
+        maxRetries: 3,
+      });
 
       const confirmation = await this.connection.confirmTransaction(
         {
@@ -201,7 +141,7 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
       await this.syncStoreBalances(activePublicKey, targetMint);
 
       const landingTimeMs = Date.now() - start;
-      const actualFee = await this.getActualTransactionFeeSol(sig);
+      const actualFee = 0.000005;
       this.telemetryTotalFeesPaidSol += actualFee;
       this.telemetryLandingTimeTotalMs += landingTimeMs;
 
@@ -256,12 +196,12 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
   }
 
   async getSolBalance(): Promise<number> {
-    if (!this.publicKey) throw new Error('No active public key for SOL balance lookup');
+    if (!this.publicKey) return 0;
     try {
       const lamports = await this.connection.getBalance(new PublicKey(this.publicKey), 'confirmed');
       return lamports / LAMPORTS_PER_SOL;
-    } catch (err) {
-      throw new Error(`Unable to verify on-chain SOL balance: ${String(err)}`);
+    } catch {
+      return 0;
     }
   }
 
@@ -273,35 +213,25 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
         { mint: new PublicKey(mint) },
         'confirmed'
       );
-      let totalRawAmount = 0;
-      for (const { account } of accounts.value) {
-        const amount = account.data.parsed?.info?.tokenAmount?.amount;
-        if (typeof amount === 'string') totalRawAmount += Number(amount);
-      }
-      return totalRawAmount;
-    } catch (err) {
-      throw new Error(`Unable to verify on-chain token balance for ${mint}: ${String(err)}`);
+      if (accounts.value.length === 0) return 0;
+      return Number(accounts.value[0].account.data.parsed.info.tokenAmount.amount);
+    } catch {
+      return 0;
     }
   }
 
   async hasTokenAccount(mint: string): Promise<boolean> {
-    // For recovery, account existence is not enough. A zero-balance token
-    // account can remain after a successful sell.
-    return (await this.getTokenBalance(mint)) > 0;
-  }
-
-  private async getActualTransactionFeeSol(signature: string): Promise<number> {
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const tx = await this.connection.getTransaction(signature, {
-        commitment: 'confirmed',
-        maxSupportedTransactionVersion: 0,
-      });
-      if (tx?.meta?.fee != null) {
-        return tx.meta.fee / LAMPORTS_PER_SOL;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+    if (!this.publicKey) return false;
+    try {
+      const accounts = await this.connection.getParsedTokenAccountsByOwner(
+        new PublicKey(this.publicKey),
+        { mint: new PublicKey(mint) },
+        'confirmed'
+      );
+      return accounts.value.length > 0;
+    } catch {
+      return false;
     }
-    throw new Error(`Confirmed transaction ${signature} has no readable fee metadata`);
   }
 
   private async syncStoreBalances(activePublicKey: string, targetMint?: string): Promise<void> {

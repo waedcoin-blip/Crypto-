@@ -1,5 +1,4 @@
 import { useActiveWalletStore } from '../store/activeWalletStore';
-import { getSavedSessionKeypair, saveSessionKeypair } from '../utils/keypairUtils';
 import {
   Connection,
   Keypair,
@@ -68,19 +67,8 @@ export class HybridExecutionEngine {
   ].map(a => new PublicKey(a));
 
   get wallet(): Keypair {
-    let kp = useActiveWalletStore.getState().activeWallet?.keypair;
-    if (!kp) {
-      kp = getSavedSessionKeypair();
-      if (!kp) {
-        kp = Keypair.generate();
-        saveSessionKeypair(kp);
-      }
-      useActiveWalletStore.getState().switchActiveWallet({
-        keypair: kp,
-        network: 'mainnet',
-        source: 'session'
-      });
-    }
+    const kp = useActiveWalletStore.getState().activeWallet?.keypair;
+    if (!kp) throw new Error("No active wallet in store for HybridExecutionEngine");
     return kp;
   }
 
@@ -133,13 +121,7 @@ export class HybridExecutionEngine {
         quoteResponse: quote,
         userPublicKey: this.publicKey.toBase58(),
         dynamicComputeUnitLimit: true,
-        prioritizationFeeLamports: {
-          priorityLevelWithMaxLamports: {
-            priorityLevel: 'medium',
-            maxLamports: 100000,
-            global: false,
-          },
-        } as any,
+        prioritizationFeeLamports: { jitoTipLamports: 0 } as any,
       },
     });
 
@@ -319,7 +301,7 @@ export class HybridExecutionEngine {
         prioritizationFeeLamports: {
           priorityLevelWithMaxLamports: {
             maxLamports: Math.floor(this.config.heliusMinTipSol * LAMPORTS_PER_SOL),
-            priorityLevel: 'veryHigh',
+            priorityLevel: 'very_high',
           },
         } as any,
       },

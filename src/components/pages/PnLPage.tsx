@@ -1,11 +1,8 @@
-import { getNetworkConfig } from '../../config/network';
-import { useActiveWalletStore
- } from "../../store/activeWalletStore";
+import { useActiveWalletStore } from "../../store/activeWalletStore";
 import { getKeypairFromPrivateKey } from '../../utils/keypairUtils';
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Play, Square, Search, ShieldCheck, ShieldAlert, AlertTriangle, Shield, TrendingUp, ChevronDown, ChevronUp, BookOpen, X, Zap, Activity, ChevronRight, Download, Trash2, Settings, Pause, Database, Copy, Check, Terminal, ArrowUpDown, SlidersHorizontal, Eye, EyeOff, Clock, Info, Bug, Filter, Server, Globe, RefreshCw, Wifi, CloudUpload } from 'lucide-react';
-import { MintCopyBadge } from '../MintCopyBadge';
 import { Connection, Keypair, VersionedTransaction, PublicKey } from '@solana/web3.js';
 import bs58 from 'bs58';
 import { Buffer } from 'buffer';
@@ -26,8 +23,7 @@ import { WalletStatusWidget } from '../WalletStatusWidget';
 import { MasterMonitorPanel } from '../MasterMonitorPanel';
 import { marketDataManager } from '../../services/marketDataManager';
 import { rpcHealthManager } from '../../services/rpcHealthManager';
-import { ExitManager } from '../../services/exit-manager';
-import { ManagedExitPosition } from '../../services/exit-manager.types';
+import { PositionExitManager } from '../../services/PositionExitManager';
 import { MasterMonitorService } from '../../services/MasterMonitorService';
 import { RealTradeExecutor } from '../../services/RealTradeExecutor';
 import { useTradeMode } from '../../context/TradeModeContext';
@@ -38,7 +34,6 @@ import { SyncStatusBadge } from '../SyncStatusBadge';
 import { useBalanceStore } from '../../store/balanceStore';
 import { useTradingEnvironmentStore } from '../../store/tradingEnvironmentStore';
 import { walletBalanceService } from '../../services/WalletBalanceService';
-import { validateTokenAge, getTokenAgeMinutes, formatTokenAge } from '../../utils/tokenAge';
 
 import { DEFAULT_HELIUS_RPC, DEFAULT_HELIUS_WS, HELIUS_API_KEY, SOL_MINT, USDC_MINT } from '../../constants/solana';
 
@@ -116,15 +111,12 @@ interface Position {
   symbol: string;
   buyPrice: number;
   currentPrice: number;
-  lastPriceTimestamp?: number;
   solSpent: number;
   amount: number;
   amountLamports?: number;
   entryTime: number;
   txid: string; // The primary/most recent transaction
   buySlot?: number;
-  dexId?: string;
-  bondingCurveProgress?: number;
   buyEntries?: { signature: string; solSpent: number; amount: number; buyPrice: number; slot: number }[];
   positionId?: string;
   recoveryMode?: boolean;
@@ -141,8 +133,6 @@ interface Position {
   currentPriceUsd?: number;
   liquidityUsd?: number;
   volume24h?: number;
-  peakPnLPct?: number;
-  soldPartial?: boolean;
 }
 
 interface LogEvent {
@@ -865,9 +855,7 @@ const isValidPosition = (pos: any): boolean => {
   );
 };
 
-export const PnLPage = ({
-
- 
+export const PnLPage = ({ 
   tokenMetrics, 
   telemetryAlerts,
   user,
@@ -996,81 +984,6 @@ export const PnLPage = ({
     setCurrentPage?: (page: any) => void;
   }
 }) => {
-
-  const configRef = useRef<any>({});
-  const blacklistedMintsRef = useRef<string[]>([]);
-  const tradeHistoryRef = useRef<any[]>([]);
-  const pipelineCountersRef = useRef<any>({});
-  const lastLoadedSettingsRef = useRef<any>({});
-  const lastLoggedKeyRef = useRef<string>('');
-
-  const [walletTokens, setWalletTokens] = useState<any[]>([]);
-  const [isFetchingTokens, setIsFetchingTokens] = useState(false);
-  const [jupiterAddress, setJupiterAddress] = useState('');
-  const [jupiterBalance, setJupiterBalance] = useState(0);
-  const [jupiterStatus, setJupiterStatus] = useState('Unknown');
-  const [jupApiStatus, setJupApiStatus] = useState('Unknown');
-  const [jupApiPing, setJupApiPing] = useState(0);
-
-  const checkDexPlatformSourcesAllowed = (...args: any[]): any => ({ pass: true, reason: "" });
-
-  const [manualSearchInput, setManualSearchInput] = useState('');
-  const [isSearching, setIsSearching] = useState(false);
-  const [searchError, setSearchError] = useState('');
-  const [scannedResult, setScannedResult] = useState<any>(null);
-  const [discretionaryBuyAmount, setDiscretionaryBuyAmount] = useState<string>('0.1');
-  const [isBuyingDiscretionary, setIsBuyingDiscretionary] = useState(false);
-  
-  const [activeLogTab, setActiveLogTab] = useState<string>('all');
-  const [logs, setLogs] = useState<any[]>(() => {
-    try {
-      const saved = localStorage.getItem('juipter_auto_logs');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
-  const [retentionLimit, setRetentionLimit] = useState<number>(1000);
-  const [blacklistedMints, setBlacklistedMints] = useState<string[]>([]);
-  const [uptime, setUptime] = useState<number>(0);
-  const [tradeHistory, setTradeHistory] = useState<any[]>(() => {
-    try {
-      const saved = localStorage.getItem('juipter_auto_tradeHistory');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
-  
-  const handleManualScan = async () => {
-    if (!manualSearchInput) return;
-    setIsSearching(true);
-    setSearchError('');
-    try {
-      const res = await fetch(`https://api.dexscreener.com/latest/dex/search?q=${manualSearchInput}`);
-      const data = await res.json();
-      if (data.pairs && data.pairs.length > 0) {
-        setScannedResult(data.pairs[0]);
-      } else {
-        setSearchError('No token found');
-      }
-    } catch (e) {
-      setSearchError('Error searching token');
-    } finally {
-      setIsSearching(false);
-    }
-  };
-  
-  const handleDiscretionaryBuyTrigger = async (mint: string) => {
-    setIsBuyingDiscretionary(true);
-    try {
-      console.log('Manual buy triggered for', mint);
-    } finally {
-      setIsBuyingDiscretionary(false);
-    }
-  };
-
-
   const {
     buyAmountSol: tradeAmount, setBuyAmountSol: setTradeAmount,
     maxTakeProfit: takeProfitPct, setMaxTakeProfit: setTakeProfitPct,
@@ -1080,12 +993,12 @@ export const PnLPage = ({
     bondingCurveStopLoss = -15, setBondingCurveStopLoss = () => {},
     pumpSwapStopLoss = -15, setPumpSwapStopLoss = () => {},
     unknownStopLoss = -20, setUnknownStopLoss = () => {},
-    maxPositions = 5, setMaxPositions = () => {},
+    maxPositions, setMaxPositions,
     slippage, setSlippage,
     hardenedMinBondingProgress = 0, setHardenedMinBondingProgress = () => {},
     hardenedMaxBondingProgress = 100, setHardenedMaxBondingProgress = () => {},
     hardenedMinAge = 0, setHardenedMinAge = () => {},
-    hardenedMaxAge = 240, setHardenedMaxAge = () => {},
+    hardenedMaxAge = 120, setHardenedMaxAge = () => {},
     hardenedMinLatency = 0, setHardenedMinLatency = () => {},
     hardenedMaxLatency = 250, setHardenedMaxLatency = () => {},
     hardenedMatchRequirement = 100, setHardenedMatchRequirement = () => {},
@@ -1208,7 +1121,7 @@ export const PnLPage = ({
   const [showDocsModal, setShowDocsModal] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const isPausedRef = useRef(false);
-  const { mode: activeTradeMode, manager: tradeManager } = useTradeMode();
+  const { manager: tradeManager } = useTradeMode();
   const [isPausedState, setIsPausedState] = useState(false);
   const setPaused = (val: boolean) => {
     isPausedRef.current = val;
@@ -1365,7 +1278,767 @@ export const PnLPage = ({
     }
   }, [positions, onPositionsChange]);
 
+  const [stats, setStats] = useState(() => {
+    try {
+      const saved = localStorage.getItem('juipter_auto_stats');
+      const parsed = saved ? JSON.parse(saved) : null;
+      return {
+        trades: parsed?.trades ?? 0,
+        wins: parsed?.wins ?? 0,
+        losses: parsed?.losses ?? 0,
+        pnl: parsed?.pnl ?? 0,
+        bestTrade: parsed?.bestTrade ?? null
+      };
+    } catch { return { trades: 0, wins: 0, losses: 0, pnl: 0, bestTrade: null as number | null }; }
+  });
+  const { solBalance, availableSolBalance } = useBalanceStore();
+      const realSolBalance = solBalance;
+  const [retentionLimit, setRetentionLimit] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('juipter_auto_retentionLimit');
+      return saved ? Number(saved) : 1000;
+    } catch { return 1000; }
+  });
+
+  // --- MANUAL CONTRACT DIRECT SEARCH & TRADING ---
+  const [manualSearchInput, setManualSearchInput] = useState('');
+  const [isSearching, setIsSearching] = useState(false);
+  const [scannedResult, setScannedResult] = useState<any | null>(null);
+  const [searchError, setSearchError] = useState('');
+  const [discretionaryBuyAmount, setDiscretionaryBuyAmount] = useState('0.1');
+  const [isBuyingDiscretionary, setIsBuyingDiscretionary] = useState(false);
+
+  // --- JUPITER WALLET STATUS, BALANCE, & LOGGING MONITOR ---
+  const [jupiterStatus, setJupiterStatus] = useState<'DISCONNECTED' | 'CONNECTING' | 'CONNECTED' | 'ERROR'>('DISCONNECTED');
+  const [jupiterAddress, setJupiterAddress] = useState<string>('');
+  const [jupiterBalance, setJupiterBalance] = useState<number | null>(null);
+  const [jupApiStatus, setJupApiStatus] = useState<'IDLE'|'HEALTHY'|'DEGRADED'|'ERROR'>('IDLE');
+  const [jupApiPing, setJupApiPing] = useState<number>(0);
+  const lastLoggedKeyRef = useRef<string>('');
+
+  useEffect(() => {
+    let isMounted = true;
+    const checkJupApi = async () => {
+      const res = await pingJupiterApi();
+      if (!isMounted) return;
+      setJupApiPing(res.pingMs);
+      if (res.healthy) {
+        if (res.pingMs > 1000) setJupApiStatus('DEGRADED');
+        else setJupApiStatus('HEALTHY');
+      } else {
+        setJupApiStatus('ERROR');
+      }
+    };
+    checkJupApi();
+    const interval = setInterval(checkJupApi, 30000); // Check every 30 seconds
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [apiKey]);
+
+  const handleManualScan = async (overrideAddress?: string) => {
+    let rawInput = (overrideAddress || manualSearchInput).trim();
+    if (!rawInput) {
+      setSearchError('Please enter a contract address or name');
+      return;
+    }
+
+    // Extract Solana address if they pasted a URL
+    const urlAddressMatch = rawInput.match(/\/([1-9A-HJ-NP-Za-km-z]{32,44})/);
+    let rawAddress = urlAddressMatch ? urlAddressMatch[1] : rawInput;
+
+    setSearchError('');
+    setIsSearching(true);
+    setScannedResult(null);
+
+    const isAddress = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(rawAddress);
+    addLog(`🔍 Initiating manual DexScreener scan for SOL ${isAddress ? 'contract' : 'token search'}: ${rawAddress}...`, 'info');
+
+    try {
+      if (!isAddress) {
+        const searchRes = await fetch(`/api/dex/search?q=${encodeURIComponent(rawAddress)}`);
+        if (!searchRes.ok) throw new Error('Search proxy error');
+        const searchData = await searchRes.json();
+        const solPairs = searchData.pairs?.filter((p: any) => p.chainId === 'solana') || [];
+        if (solPairs.length === 0) {
+          addLog(`❌ Manual scan failed: No search results found for ${rawAddress}.`, 'warn');
+          setSearchError('No search results found.');
+          setIsSearching(false);
+          return;
+        }
+        rawAddress = solPairs[0].baseToken?.address;
+        addLog(`✅ Search resolved to address: ${rawAddress}`, 'success');
+      }
+
+      const res = await fetch(`/api/dex/tokens/${rawAddress}`);
+      if (!res.ok) {
+        throw new Error(`Proxy error code: ${res.status}`);
+      }
+      const data = await res.json();
+      if (!data || !data.pairs || data.pairs.length === 0) {
+        addLog(`❌ Manual scan failed: No active trading pairs on DexScreener for ${rawAddress}.`, 'warn');
+        setSearchError('Address not found or no active pairings on DexScreener.');
+        return;
+      }
+
+      // Sort pairs by liquidity to fetch the primary pool
+      const solPairs = data.pairs.filter((p: any) => 
+        (p.quoteToken?.address === SOL_MINT || p.quoteToken?.symbol === 'SOL') &&
+        (p.chainKb === 'solana' || p.chainId === 'solana' || p.dexId)
+      );
+      const targetPairs = solPairs.length > 0 ? solPairs : data.pairs;
+      const sortedPairs = [...targetPairs].sort((a, b) => parseFloat(b.liquidity?.usd || '0') - parseFloat(a.liquidity?.usd || '0'));
+      const bestPair = sortedPairs[0];
+
+      if (!bestPair) {
+        addLog(`❌ Manual scan failed: No valid Solana pairing found for ${rawAddress}.`, 'warn');
+        setSearchError('No active Solana pairing found.');
+        return;
+      }
+
+      const baseToken = bestPair.baseToken || {};
+      const quoteToken = bestPair.quoteToken || {};
+      const symbol = baseToken.symbol || 'UNKNOWN';
+      const name = baseToken.name || 'Unknown Token';
+      const priceUsd = parseFloat(bestPair.priceUsd || '0');
+      const fdv = bestPair.fdv || 0;
+      const liquidityUsd = bestPair.liquidity?.usd || 0;
+      const volume24h = bestPair.volume?.h24 || 0;
+      const dexId = bestPair.dexId || 'unknown';
+
+      // Infer SOL price
+      let priceNative = parseFloat(bestPair.priceNative || '0');
+      const isQuoteSol = quoteToken.address === SOL_MINT || quoteToken.symbol === 'SOL';
+      
+      if (!isQuoteSol && priceUsd > 0) {
+        try {
+          const solRes = await fetch('https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112');
+          if (solRes.ok) {
+            const solData = await solRes.json();
+            const solPrice = parseFloat(solData?.data?.['So11111111111111111111111111111111111111112']?.price || '150');
+            priceNative = priceUsd / solPrice;
+          }
+          } catch (err) {
+          console.warn("Pricing index unreachable", err);
+        }
+      }
+
+      // Setup structured metrics object
+      const formattedMetric: TokenMetric = {
+        address: rawAddress,
+        symbol,
+        priceUsd,
+        priceNative,
+        marketCap: fdv || (priceUsd * 1000000000), // standard fallback if not present
+        liquidity: liquidityUsd,
+        volume24h,
+        discoveredAt: Date.now(),
+        lastUpdated: Date.now(),
+        buyCount: bestPair.txns?.h24?.buys || 0,
+        sellCount: bestPair.txns?.h24?.sells || 0,
+        buyVolume: bestPair.volume?.h24 || 0,
+        sellVolume: 0,
+        priceChange5m: bestPair.priceChange?.m5 !== undefined ? parseFloat(String(bestPair.priceChange.m5)) : (bestPair.priceChange?.h1 !== undefined ? parseFloat(String(bestPair.priceChange.h1)) / 12 : 0),
+        priceChange1m: bestPair.priceChange?.m5 !== undefined ? parseFloat(String(bestPair.priceChange.m5)) * 0.2 : 0,
+        percentageIncrease: bestPair.priceChange?.m5 !== undefined ? parseFloat(String(bestPair.priceChange.m5)) : (bestPair.priceChange?.h1 !== undefined ? parseFloat(String(bestPair.priceChange.h1)) / 12 : 0),
+        recentBuysTimeline: [],
+        category: rawAddress.toLowerCase().endsWith('pump') ? 'PUMP_FUN' : 'RAYDIUM',
+        isRugSafe: false,
+        mintAuthorityRevoked: false,
+        freezeAuthorityRevoked: false,
+        liquidityBurned: false,
+        top10Percentage: 100,
+        requiresManualReview: true
+      };
+
+      // Push into AppStore's tokenMetrics so the entire app can identify and load it!
+      useAppStore.getState().setTokenMetrics(prev => ({
+        ...prev,
+        [rawAddress]: formattedMetric
+      }));
+
+      setScannedResult({
+        address: rawAddress,
+        symbol,
+        name,
+        priceUsd,
+        priceNative,
+        fdv,
+        liquidityUsd,
+        volume24h,
+        dexId,
+        isGraduated: !rawAddress.toLowerCase().endsWith('pump')
+      });
+
+      addLog(`✨ [DEXSCREENER INGESTED] Successfully scanned & tracked ${symbol} (${name})! Price: ${priceNative.toFixed(8)} SOL | Liq: $${liquidityUsd.toLocaleString()}`, 'success');
+
+      // Evaluate active bot criteria on manual scan
+      const criteriaCheck = checkTokenCriteria(rawAddress);
+      if (criteriaCheck.pass) {
+        addLog(`🎯 [CRITERIA MATCH] ${symbol} matches 100% of your configured Hardened Entry Criteria!`, 'success');
+      } else {
+        addLog(`⚠️ [CRITERIA MISMATCH] ${symbol} does NOT match all configured Hardened Entry Criteria:`, 'warn');
+        if (criteriaCheck.reason) {
+          addLog(`  ↳ Reason: ${criteriaCheck.reason}`, 'warn');
+        }
+        if (criteriaCheck.breakdown) {
+          const failing = criteriaCheck.breakdown.filter(c => !c.pass);
+          if (failing.length > 0) {
+            addLog(`  ↳ Failing Criteria: ${failing.map(c => `${c.name}: ${c.actual} (Limit Req: ${c.limit})`).join(' | ')}`, 'warn');
+          }
+        }
+      }
+      
+    } catch (error: any) {
+      addLog(`❌ Manual scan error: ${error.message}`, 'err');
+      setSearchError(`Scanning failed: ${error.message}`);
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const handleDiscretionaryBuyTrigger = async () => {
+    if (!scannedResult) return;
+    const { address, symbol, priceNative } = scannedResult;
+    const amount = parseFloat(discretionaryBuyAmount);
+
+    if (isNaN(amount) || amount <= 0) {
+      addLog(`❌ Trade size must be a positive number of SOL.`, 'err');
+      return;
+    }
+
+    setIsBuyingDiscretionary(true);
+    addLog(`⚡ [MANUAL ORDER REQUEST] Sending discretionary swap for ${symbol} with ${amount} SOL...`, 'buy');
+    
+    try {
+      await executeBuy(address, symbol, priceNative, amount, true);
+    } catch (e: any) {
+      addLog(`❌ Discretionary order failed: ${e.message}`, 'err');
+    } finally {
+      setIsBuyingDiscretionary(false);
+    }
+  };
+
+  useEffect(() => {
+    if (manualGemInput) {
+      const urlAddressMatch = manualGemInput.match(/\/([1-9A-HJ-NP-Za-km-z]{32,44})/);
+      const resolvedInput = urlAddressMatch ? urlAddressMatch[1] : manualGemInput;
+      if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(resolvedInput)) {
+        setManualSearchInput(resolvedInput);
+        handleManualScan(resolvedInput);
+        setManualGemInput('');
+      }
+    }
+  }, [manualGemInput]);
+
+  useEffect(() => {
+    localStorage.setItem('juipter_auto_retentionLimit', retentionLimit.toString());
+  }, [retentionLimit]);
+
+  const pipelineCountersRef = useRef({
+    discovered: 0,
+    solana: 0,
+    validMetrics: 0,
+    criteriaPass: 0,
+    buyCandidates: 0,
+    buyAttempts: 0,
+    buySuccess: 0,
+    buyFailed: 0
+  });
+
+  const [logs, setLogs] = useState<LogEvent[]>(() => {
+    try {
+      const saved = localStorage.getItem('juipter_auto_logs');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return parsed.map((item: any) => ({
+          id: item.id || Date.now().toString() + Math.random().toString(),
+          time: item.time || new Date().toLocaleTimeString(),
+          timestamp: item.timestamp || Date.now(),
+          msg: item.msg || '',
+          type: item.type || 'info',
+          category: item.category || 'system',
+          count: item.count || 1,
+          metadata: item.metadata
+        }));
+      }
+      return [];
+    } catch { return []; }
+  });
+
+  // Safe parent-level logs trimming
+  useEffect(() => {
+    setLogs(prev => {
+      if (prev.length > retentionLimit) {
+        return prev.slice(0, retentionLimit);
+      }
+      return prev;
+    });
+  }, [retentionLimit]);
+
+  const [activeLogTab, setActiveLogTab] = useState<'terminal' | 'diagnostics' | 'leaderboard' | 'telemetry' | 'hosting' | 'advisor'>('terminal');
+  const [tradeHistory, setTradeHistory] = useState<{
+    id: string;
+    mint: string;
+    buyTime: number;
+    sellTime: number;
+    buyAmountSol: number;
+    sellAmountSol: number;
+    pnlPct: number;
+  }[]>(() => {
+    try {
+      const saved = localStorage.getItem('juipter_auto_tradeHistory');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          return parsed.filter(t => t !== null && typeof t === 'object').map(t => {
+            const buySol = t.buyAmountSol !== undefined && t.buyAmountSol !== null ? Number(t.buyAmountSol) : 0;
+            let sellSol = t.sellAmountSol !== undefined && t.sellAmountSol !== null ? Number(t.sellAmountSol) : 0;
+            let pnl = t.pnlPct !== undefined && t.pnlPct !== null ? Number(t.pnlPct) : 0;
+
+            // Sanitize corrupt historical trade where sell SOL stored raw token count
+            if (buySol > 0 && sellSol > buySol * 50 && pnl > 5000) {
+              pnl = Math.min(pnl, 100);
+              sellSol = buySol * (1 + (pnl / 100));
+            }
+
+            return {
+              id: t.id || Math.random().toString(),
+              mint: t.mint || 'Unknown',
+              buyTime: t.buyTime || Date.now(),
+              sellTime: t.sellTime || Date.now(),
+              buyAmountSol: buySol,
+              sellAmountSol: sellSol,
+              pnlPct: pnl
+            };
+          });
+        }
+      }
+      return [];
+    } catch { return []; }
+  });
+
+  const tradeHistoryRef = useRef(tradeHistory);
+  useEffect(() => {
+    tradeHistoryRef.current = tradeHistory;
+  }, [tradeHistory]);
+
+  // Auto-update ONLY profitable trade history token addresses to localStorage
+  useEffect(() => {
+    const profitablePnlTokens = [
+      ...new Set(
+        tradeHistory
+          .filter((trade: any) => {
+            if (!trade) return false;
+            const addr = trade.tokenAddress || trade.mint;
+            if (!addr || typeof addr !== 'string' || addr.trim().length === 0 || addr === 'Unknown') return false;
+            
+            const isProfitable = 
+              (trade.realizedPnL && Number(trade.realizedPnL) > 0) ||
+              ((Number(trade.sellAmountSol) || 0) - (Number(trade.buyAmountSol) || 0) > 0) ||
+              (trade.pnlPct && Number(trade.pnlPct) > 0) ||
+              (trade.pnl && Number(trade.pnl) > 0) ||
+              (trade.netPnl && Number(trade.netPnl) > 0);
+            
+            return isProfitable;
+          })
+          .map((trade: any) => (trade.tokenAddress || trade.mint).trim())
+      )
+    ];
+    try {
+      localStorage.setItem('pnl_profitable_token_addresses', JSON.stringify(profitablePnlTokens));
+      window.dispatchEvent(new CustomEvent('pnl_trade_history_updated', { detail: profitablePnlTokens }));
+    } catch (e) {}
+  }, [tradeHistory]);
+
+  const [uptime, setUptime] = useState(() => Number(localStorage.getItem('juipter_auto_uptime')) || 0);
+  const [blacklistedMints, setBlacklistedMints] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('juipter_auto_blacklistedMints');
+      return saved ? JSON.parse(saved) : [];
+    } catch { return []; }
+  });
   
+  const blacklistedMintsRef = useRef<string[]>(blacklistedMints);
+  useEffect(() => {
+    blacklistedMintsRef.current = blacklistedMints;
+  }, [blacklistedMints]);
+
+  const configRef = useRef({
+    takeProfitPct, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct, slippage, privateKey, tradeAmount, maxPositions,
+    hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax,
+    hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore,
+    hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s,
+    hardenedMinBuyCount30s, hardenedMaxBuyCount30s, hardenedMinBuySellRatio,
+    hardenedMaxBuySellRatio, hardenedMaxPriceChange1m,
+    hardenedMinBondingProgress, hardenedMaxBondingProgress, hardenedMinAge, hardenedMaxAge,
+    hardenedMinLatency, hardenedMaxLatency, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown,
+    hardenedMinProfit5m, enableLatencyGuard, rpcLatency, hardenedMatchRequirement, maxRebuyTimes
+  });
+
+  configRef.current = {
+    takeProfitPct, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct, slippage, privateKey, tradeAmount, maxPositions,
+    hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax,
+    hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore,
+    hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s,
+    hardenedMinBuyCount30s, hardenedMaxBuyCount30s, hardenedMinBuySellRatio,
+    hardenedMaxBuySellRatio, hardenedMaxPriceChange1m,
+    hardenedMinBondingProgress, hardenedMaxBondingProgress, hardenedMinAge, hardenedMaxAge,
+    hardenedMinLatency, hardenedMaxLatency, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown,
+    hardenedMinProfit5m, enableLatencyGuard, rpcLatency, hardenedMatchRequirement, maxRebuyTimes
+  };
+
+  const checkDexPlatformSourcesAllowed = useCallback((mint: string, dexId?: string) => {
+    const metric = tokenMetricsRef.current[mint];
+    const stage = detectTokenStage({
+      address: mint,
+      dexId: dexId || metric?.dexId,
+      bondingCurveProgress: metric?.bondingCurveProgress,
+      isRaydiumListed: metric?.isRaydiumListed
+    });
+
+    const { tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown } = configRef.current;
+
+    if (stage.isBonding && !tradeBonding) {
+      return { pass: false, reason: "Bonding stage tokens are unselected in DEX Platform Sources" };
+    }
+    if (stage.platform === 'PUMP_FUN' && !tradePumpFun) {
+      return { pass: false, reason: "Pump.fun tokens are unselected in DEX Platform Sources" };
+    }
+    if (stage.platform === 'RAYDIUM' && !tradeRaydium) {
+      return { pass: false, reason: "Raydium tokens are unselected in DEX Platform Sources" };
+    }
+    if (stage.platform === 'PUMPSWAP' && !tradeRaydium) {
+      return { pass: false, reason: "PumpSwap tokens are unselected in DEX Platform Sources" };
+    }
+    if (stage.platform === 'UNKNOWN' && !tradeUnknown) {
+      return { pass: false, reason: "Unknown tokens are unselected in DEX Platform Sources" };
+    }
+
+    return { pass: true, reason: "" };
+  }, []);
+
+  const [walletTokens, setWalletTokens] = useState<{mint: string, amount: number, symbol?: string, price?: number, pnl?: number, costBasis?: number}[]>([]);
+  const [isFetchingTokens, setIsFetchingTokens] = useState(false);
+
+  useEffect(() => {
+    localStorage.setItem('juipter_auto_apiKey', apiKey);
+  }, [apiKey]);
+  useEffect(() => {
+    if (!privateKey) {
+      localStorage.removeItem('juipter_auto_privateKey');
+      return;
+    }
+    let active = true;
+    const encryptAndStore = async () => {
+      const uid = user?.uid || 'default_app_offline_salt';
+      const encrypted = await encryptPrivateKey(privateKey, uid);
+      if (active) {
+        localStorage.setItem('juipter_auto_privateKey', encrypted);
+      }
+    };
+    encryptAndStore();
+    return () => { active = false; };
+  }, [privateKey, user?.uid]);
+
+  const isFirestoreLoading = useRef(false);
+  const lastLoadedSettingsRef = useRef<{
+    rpcUrl?: string;
+    rpcUrl2?: string;
+    customWsUrl?: string;
+    apiKey?: string;
+    privateKey?: string;
+    senderEnabled?: boolean;
+    senderApiKey?: string;
+    senderEndpoint?: string;
+    senderSwqos?: boolean;
+    laserstreamEnabled?: boolean;
+    laserstreamApiKey?: string;
+    laserstreamEndpoint?: string;
+    dexScreenerEnabled?: boolean;
+    forceUsdcRouting?: boolean;
+    ftpHost?: string;
+    ftpUser?: string;
+    ftpPass?: string;
+    ftpDir?: string;
+    ftpWebUrl?: string;
+    ftpSecure?: boolean;
+        blacklistedMints?: string;
+    positions?: string;
+    tokenMetrics?: string;
+    stats?: string;
+    tradeHistory?: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!user) return;
+    
+    const loadSettings = async () => {
+      try {
+        isFirestoreLoading.current = true;
+        const docRef = doc(db, 'settings', user.uid);
+        const docSnap = await getDoc(docRef);
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          if (data.rpcUrl) {
+            const sanitized = data.rpcUrl.includes('winter-methodical-river') ? DEFAULT_HELIUS_RPC : data.rpcUrl;
+            setRpcUrl(sanitized);
+          }
+          if (data.rpcUrl2) {
+            const sanitized = data.rpcUrl2.includes('winter-methodical-river') ? DEFAULT_HELIUS_RPC : data.rpcUrl2;
+            setRpcUrl2(sanitized);
+          }
+          if (data.customWsUrl) setCustomWsUrl(data.customWsUrl);
+          if (data.apiKey) setApiKey(data.apiKey);
+          if (data.privateKey) {
+            const decrypted = await decryptPrivateKey(data.privateKey, user.uid);
+            setPrivateKey(decrypted);
+          }
+          if (data.senderEnabled !== undefined) setSenderEnabled(data.senderEnabled === true);
+          if (data.senderApiKey !== undefined) setSenderApiKey(String(data.senderApiKey));
+          if (data.senderEndpoint !== undefined) setSenderEndpoint(String(data.senderEndpoint));
+          if (data.senderSwqos !== undefined) setSenderSwqos(data.senderSwqos === true);
+          if (data.laserstreamEnabled !== undefined) setLaserstreamEnabled(data.laserstreamEnabled === true);
+          if (data.laserstreamApiKey !== undefined) setLaserstreamApiKey(String(data.laserstreamApiKey));
+          if (data.laserstreamEndpoint !== undefined) setLaserstreamEndpoint(String(data.laserstreamEndpoint));
+          if (data.dexScreenerEnabled !== undefined) setDexScreenerEnabled(data.dexScreenerEnabled === true);
+          if (data.forceUsdcRouting !== undefined) setForceUsdcRouting(data.forceUsdcRouting === true);
+          if (data.ftpHost !== undefined) setFtpHost(String(data.ftpHost));
+          if (data.ftpUser !== undefined) setFtpUser(String(data.ftpUser));
+          if (data.ftpPass !== undefined) setFtpPass(String(data.ftpPass));
+          if (data.ftpDir !== undefined) setFtpDir(String(data.ftpDir));
+          if (data.ftpWebUrl !== undefined) setFtpWebUrl(String(data.ftpWebUrl));
+          if (data.ftpSecure !== undefined) setFtpSecure(data.ftpSecure === true);
+          
+          if (data.blacklistedMints !== undefined) {
+            try {
+              setBlacklistedMints(JSON.parse(data.blacklistedMints));
+            } catch (e) {
+              console.error('Error parsing blacklistedMints from firestore:', e);
+            }
+          }
+          if (data.positions !== undefined) {
+            try {
+              const loadedPos = JSON.parse(data.positions);
+              setPositions(loadedPos);
+              positionsRef.current = loadedPos;
+              useAppStore.getState().updateActivePositions(() => loadedPos);
+            } catch (e) {
+              console.error('Error parsing positions from firestore:', e);
+            }
+          }
+          if (data.stats !== undefined) {
+            try {
+              setStats(JSON.parse(data.stats));
+            } catch (e) {
+              console.error('Error parsing stats from firestore:', e);
+            }
+          }
+          if (data.tradeHistory !== undefined) {
+            try {
+              const fsHistory = JSON.parse(data.tradeHistory);
+              if (Array.isArray(fsHistory)) {
+                setTradeHistory(prev => {
+                  const map = new Map<string, any>();
+                  prev.forEach(t => {
+                    if (t && (t.id || t.mint)) {
+                      map.set(t.id || `${t.mint}-${t.buyTime}`, t);
+                    }
+                  });
+                  fsHistory.forEach((t: any) => {
+                    if (t && (t.id || t.mint)) {
+                      map.set(t.id || `${t.mint}-${t.buyTime}`, t);
+                    }
+                  });
+                  const merged = Array.from(map.values());
+                  merged.sort((a, b) => (b.sellTime || b.buyTime || 0) - (a.sellTime || a.buyTime || 0));
+                  return merged;
+                });
+              }
+            } catch (e) {
+              console.error('Error parsing tradeHistory from firestore:', e);
+            }
+          }
+          
+          const sanitizedRpcUrl = data.rpcUrl && data.rpcUrl.includes('winter-methodical-river') 
+            ? DEFAULT_HELIUS_RPC 
+            : (data.rpcUrl || rpcUrl);
+          const sanitizedRpcUrl2 = data.rpcUrl2 && data.rpcUrl2.includes('winter-methodical-river') 
+            ? DEFAULT_HELIUS_RPC 
+            : (data.rpcUrl2 || rpcUrl2);
+
+          const decryptedKey = data.privateKey ? await decryptPrivateKey(data.privateKey, user.uid) : privateKey;
+
+          lastLoadedSettingsRef.current = {
+            rpcUrl: sanitizedRpcUrl,
+            rpcUrl2: sanitizedRpcUrl2,
+            customWsUrl: data.customWsUrl || customWsUrl,
+            apiKey: data.apiKey || apiKey,
+            privateKey: decryptedKey,
+            senderEnabled: data.senderEnabled !== undefined ? data.senderEnabled : senderEnabled,
+            senderApiKey: data.senderApiKey !== undefined ? data.senderApiKey : senderApiKey,
+            senderEndpoint: data.senderEndpoint !== undefined ? data.senderEndpoint : senderEndpoint,
+            senderSwqos: data.senderSwqos !== undefined ? data.senderSwqos : senderSwqos,
+            laserstreamEnabled: data.laserstreamEnabled !== undefined ? data.laserstreamEnabled : laserstreamEnabled,
+            laserstreamApiKey: data.laserstreamApiKey !== undefined ? data.laserstreamApiKey : laserstreamApiKey,
+            laserstreamEndpoint: data.laserstreamEndpoint !== undefined ? data.laserstreamEndpoint : laserstreamEndpoint,
+            dexScreenerEnabled: data.dexScreenerEnabled !== undefined ? data.dexScreenerEnabled : dexScreenerEnabled,
+            forceUsdcRouting: data.forceUsdcRouting !== undefined ? data.forceUsdcRouting : forceUsdcRouting,
+            ftpHost: data.ftpHost !== undefined ? data.ftpHost : ftpHost,
+            ftpUser: data.ftpUser !== undefined ? data.ftpUser : ftpUser,
+            ftpPass: data.ftpPass !== undefined ? data.ftpPass : ftpPass,
+            ftpDir: data.ftpDir !== undefined ? data.ftpDir : ftpDir,
+            ftpWebUrl: data.ftpWebUrl !== undefined ? data.ftpWebUrl : ftpWebUrl,
+            ftpSecure: data.ftpSecure !== undefined ? data.ftpSecure : ftpSecure,
+                        blacklistedMints: data.blacklistedMints || JSON.stringify(blacklistedMints),
+            positions: data.positions || JSON.stringify(positions),
+            stats: data.stats || JSON.stringify(stats),
+            tradeHistory: data.tradeHistory || JSON.stringify(tradeHistory)
+          };
+
+          addLog({
+            id: 'settings-loaded-' + Date.now(),
+            time: new Date().toLocaleTimeString(),
+            timestamp: Date.now(),
+            msg: '📡 All system settings and configurations successfully loaded from Firestore Cloud.',
+            type: 'info'
+          });
+        } else {
+          lastLoadedSettingsRef.current = {
+            rpcUrl, rpcUrl2, customWsUrl, apiKey, privateKey,
+            senderEnabled, senderApiKey, senderEndpoint, senderSwqos,
+            laserstreamEnabled, laserstreamApiKey, laserstreamEndpoint,
+            dexScreenerEnabled, forceUsdcRouting,
+            ftpHost, ftpUser, ftpPass, ftpDir, ftpWebUrl, ftpSecure,
+                        blacklistedMints: JSON.stringify(blacklistedMints),
+            positions: JSON.stringify(positions),
+            stats: JSON.stringify(stats),
+            tradeHistory: JSON.stringify(tradeHistory)
+          };
+        }
+        } catch (err) {
+        console.error('Error loading settings from Firestore:', err);
+      } finally {
+        isFirestoreLoading.current = false;
+      }
+    };
+    
+    loadSettings();
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+    
+    const last = lastLoadedSettingsRef.current;
+    if (last && 
+        last.rpcUrl === rpcUrl && 
+        last.rpcUrl2 === rpcUrl2 && 
+        last.customWsUrl === customWsUrl && 
+        last.apiKey === apiKey && 
+        last.privateKey === privateKey &&
+        last.senderEnabled === senderEnabled &&
+        last.senderApiKey === senderApiKey &&
+        last.senderEndpoint === senderEndpoint &&
+        last.senderSwqos === senderSwqos &&
+        last.laserstreamEnabled === laserstreamEnabled &&
+        last.laserstreamApiKey === laserstreamApiKey &&
+        last.laserstreamEndpoint === laserstreamEndpoint &&
+        last.dexScreenerEnabled === dexScreenerEnabled &&
+        last.forceUsdcRouting === forceUsdcRouting &&
+        last.ftpHost === ftpHost &&
+        last.ftpUser === ftpUser &&
+        last.ftpPass === ftpPass &&
+        last.ftpDir === ftpDir &&
+        last.ftpWebUrl === ftpWebUrl &&
+        last.ftpSecure === ftpSecure &&
+                last.blacklistedMints === JSON.stringify(blacklistedMints) &&
+        last.positions === JSON.stringify(positions) &&
+        last.stats === JSON.stringify(stats) &&
+        last.tradeHistory === JSON.stringify(tradeHistory)) {
+      return; // No actual change, skip saving
+    }
+
+    if (isFirestoreLoading.current) {
+      return;
+    }
+    
+    const saveSettings = async () => {
+      try {
+        const encryptedKey = await encryptPrivateKey(privateKey, user.uid);
+        const docRef = doc(db, 'settings', user.uid);
+        await setDoc(docRef, {
+          userId: user.uid,
+          rpcUrl,
+          rpcUrl2,
+          customWsUrl,
+          apiKey,
+          privateKey: encryptedKey,
+          senderEnabled,
+          senderApiKey,
+          senderEndpoint,
+          senderSwqos,
+          laserstreamEnabled,
+          laserstreamApiKey,
+          laserstreamEndpoint,
+          dexScreenerEnabled,
+          forceUsdcRouting,
+          ftpHost,
+          ftpUser,
+          ftpPass,
+          ftpDir,
+          ftpWebUrl,
+          ftpSecure,
+                    blacklistedMints: JSON.stringify(blacklistedMints),
+          positions: JSON.stringify(positions),
+          stats: JSON.stringify(stats),
+          tradeHistory: JSON.stringify(tradeHistory),
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+        
+        lastLoadedSettingsRef.current = {
+          rpcUrl, rpcUrl2, customWsUrl, apiKey, privateKey,
+          senderEnabled, senderApiKey, senderEndpoint, senderSwqos,
+          laserstreamEnabled, laserstreamApiKey, laserstreamEndpoint,
+          dexScreenerEnabled, forceUsdcRouting,
+          ftpHost, ftpUser, ftpPass, ftpDir, ftpWebUrl, ftpSecure,
+                    blacklistedMints: JSON.stringify(blacklistedMints),
+          positions: JSON.stringify(positions),
+          stats: JSON.stringify(stats),
+          tradeHistory: JSON.stringify(tradeHistory)
+        };
+        
+        addLog({
+          id: 'settings-saved-' + Date.now(),
+          time: new Date().toLocaleTimeString(),
+          timestamp: Date.now(),
+          msg: '💾 App configurations and logs securely saved to Firestore Cloud.',
+          type: 'success'
+        });
+      } catch (err: any) {
+        console.error('Error saving settings to Firestore:', err);
+      }
+    };
+
+    const timer = setTimeout(saveSettings, 1000);
+    return () => clearTimeout(timer);
+  }, [
+    user, rpcUrl, rpcUrl2, customWsUrl, apiKey, privateKey,
+    senderEnabled, senderApiKey, senderEndpoint, senderSwqos,
+    laserstreamEnabled, laserstreamApiKey, laserstreamEndpoint,
+    dexScreenerEnabled, forceUsdcRouting,
+    ftpHost, ftpUser, ftpPass, ftpDir, ftpWebUrl, ftpSecure,
+    blacklistedMints, positions, stats, tradeHistory
+  ]);
+  useEffect(() => {
+    localStorage.setItem('juipter_auto_isRunning', isRunning.toString());
+  }, [isRunning]);
+  useEffect(() => {
+    localStorage.setItem('juipter_auto_positions', JSON.stringify(positions));
+  }, [positions]);
+  useEffect(() => {
+    localStorage.setItem('juipter_auto_stats', JSON.stringify(stats));
+  }, [stats]);
   useEffect(() => {
     localStorage.setItem('juipter_auto_logs', JSON.stringify(logs.slice(0, retentionLimit))); // Keep last logs matching chosen limit
   }, [logs, retentionLimit]);
@@ -1801,7 +2474,33 @@ export const PnLPage = ({
         if (mint === 'So11111111111111111111111111111111111111112') continue;
 
         let finalPriceInSol = tp.priceNative || (tp.priceUsd ? tp.priceUsd / solPriceInUsd : 0);
-        const isStale = tp.isStale || false;
+        let isStale = false;
+
+        // Liquidity-aware sanity check comparing against a fresh Jupiter quote, not a hardcoded multiplier
+        const activePos = positionsRef.current[mint];
+        if (activePos && activePos.buyPrice > 0) {
+          try {
+            const rawAmount = activePos.amountLamports || Math.floor((activePos.amount || 1) * Math.pow(10, activePos.decimals || 6));
+            const validationQuote = await getJupiterQuote(
+              mint,
+              'So11111111111111111111111111111111111111112',
+              rawAmount,
+              activePos.liquidityUsd || 0
+            );
+            if (validationQuote && validationQuote.outAmount && activePos.amount > 0) {
+              const quotedPrice = Number(validationQuote.outAmount) / activePos.amount / 1e9;
+              if (quotedPrice > 0) {
+                // If our price source diverges >10× from Jupiter, use Jupiter's price
+                if (finalPriceInSol > quotedPrice * 10 || finalPriceInSol < quotedPrice / 10) {
+                  finalPriceInSol = quotedPrice;
+                }
+              }
+            }
+          } catch {
+            // If Jupiter fails, keep the price but mark as STALE
+            isStale = true;
+          }
+        }
 
         if (finalPriceInSol > 0) {
           prices[mint] = {
@@ -1896,16 +2595,16 @@ export const PnLPage = ({
   }, [getTokenPrices]);
 
   const fetchWalletTokens = useCallback(async () => {
-    const activeWallet = useActiveWalletStore.getState().activeWallet;
-    const activeAddress = activeWallet?.address;
-    if (!activeAddress || !rpcUrl) return;
+    if (!privateKey || !rpcUrl) return;
     setIsFetchingTokens(true);
     try {
+      const keypair = useActiveWalletStore.getState().activeWallet?.keypair;
       const activeWsUrl = (customWsUrl && customWsUrl.trim() !== "") ? customWsUrl.trim() : rpcUrl.replace('https', 'wss').replace('http', 'ws');
       const conn = new Connection(rpcUrl, { commitment: 'confirmed', wsEndpoint: activeWsUrl });
       
+      // Parallelize fetching if we had multiple wallets, but for one we use the fastest method
       const accounts = await conn.getParsedTokenAccountsByOwner(
-        new PublicKey(activeAddress),
+        keypair.publicKey,
         { programId: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA') },
         'confirmed'
       );
@@ -1920,6 +2619,7 @@ export const PnLPage = ({
       
       const enrichedTokens = await Promise.all(tokens.map(async t => {
         const metric = tokenMetricsRef.current[t.mint];
+        // Fetch cached cost basis if needed, mock for now
         const costBasis = (metric?.priceNative || metric?.priceUsd) ? (metric.priceNative || metric.priceUsd || 0) * 0.8 : 0; 
         return { 
           ...t, 
@@ -1929,13 +2629,15 @@ export const PnLPage = ({
       }));
       
       setWalletTokens(enrichedTokens);
+
+      // Kick off initial price fetch in parallel
       updateWalletTokenPrices(enrichedTokens.map(t => t.mint));
     } catch (e) {
       console.warn("Failed to fetch wallet tokens", e);
     } finally {
       setIsFetchingTokens(false);
     }
-  }, [rpcUrl, customWsUrl]);
+  }, [privateKey, rpcUrl, customWsUrl]);
 
   // Live Price Polling for Wallet Tokens
   // Depend on the actual mint set, not just walletTokens.length - if the wallet's
@@ -1968,14 +2670,7 @@ export const PnLPage = ({
           const freshPrice = metric.priceNative
             ? (typeof metric.priceNative === 'number' ? metric.priceNative : parseFloat(String(metric.priceNative)))
             : (metric.priceUsd ? parseFloat(String(metric.priceUsd)) / getSolPriceUsd() : 0);
-          const freshTimestamp = metric.lastUpdated || 0;
-          const currentTimestamp = next[mint].lastPriceTimestamp || 0;
-
-          if (freshTimestamp < currentTimestamp) {
-            return;
-          }
-
-          if (freshPrice > 0 && (next[mint].currentPrice !== freshPrice || freshTimestamp > currentTimestamp)) {
+          if (freshPrice > 0 && next[mint].currentPrice !== freshPrice) {
             const currentGrossSol = freshPrice * (next[mint].amount || 0);
             let netSolIfSold = currentGrossSol;
             if (!privateKey) {
@@ -1989,7 +2684,6 @@ export const PnLPage = ({
             next[mint] = {
               ...next[mint],
               currentPrice: freshPrice,
-              lastPriceTimestamp: freshTimestamp || Date.now(),
               isStale: false,
               realNetPnl: calcNetPnlPct,
               realNetSol: calcNetSol
@@ -2150,12 +2844,9 @@ export const PnLPage = ({
   }, [retentionLimit]);
 
   useEffect(() => {
-    const activeWallet = useActiveWalletStore.getState().activeWallet;
-    const activeAddress = activeWallet?.address;
-
-    if (!activeAddress) {
+    if (!privateKey) {
       if (lastLoggedKeyRef.current) {
-        addLog(`[JUPITER WALLET] Status: Disconnected (No wallet connected or keypair configured)`, 'warn');
+        addLog(`[JUPITER WALLET] Status: Disconnected (No private key provided)`, 'warn');
         lastLoggedKeyRef.current = '';
       }
       setJupiterStatus('DISCONNECTED');
@@ -2168,10 +2859,22 @@ export const PnLPage = ({
     const checkWallet = async () => {
       try {
         setJupiterStatus('CONNECTING');
-        const currentActiveWallet = useActiveWalletStore.getState().activeWallet;
-        const currentAddress = currentActiveWallet?.address || activeAddress;
+        let keypair;
+        try {
+          keypair = useActiveWalletStore.getState().activeWallet?.keypair;
+        } catch (e: any) {
+          setJupiterStatus('ERROR');
+          setJupiterAddress('');
+          setJupiterBalance(null);
+          if (lastLoggedKeyRef.current !== privateKey) {
+            addLog(`[JUPITER WALLET] Status: Error | Invalid private key format: ${e.message}`, 'err');
+            lastLoggedKeyRef.current = privateKey;
+          }
+          return;
+        }
 
-        setJupiterAddress(currentAddress);
+        const pubKeyStr = keypair.publicKey.toBase58();
+        setJupiterAddress(pubKeyStr);
 
         if (!rpcUrl) {
           setJupiterStatus('ERROR');
@@ -2181,7 +2884,7 @@ export const PnLPage = ({
         const activeWsUrl = (customWsUrl && customWsUrl.trim() !== "") ? customWsUrl.trim() : rpcUrl.replace('https', 'wss').replace('http', 'ws');
         const conn = new Connection(rpcUrl, { commitment: 'confirmed', wsEndpoint: activeWsUrl });
 
-        const lamports = await conn.getBalance(new PublicKey(currentAddress), 'confirmed');
+        const lamports = await conn.getBalance(keypair.publicKey, 'confirmed');
         const solBal = lamports / 1_000_000_000;
 
         if (isMounted) {
@@ -2191,21 +2894,21 @@ export const PnLPage = ({
           let effectiveBal = solBal;
           const isZeroBal = solBal === 0;
 
-          if (lastLoggedKeyRef.current !== currentAddress) {
+          if (lastLoggedKeyRef.current !== privateKey) {
             if (isZeroBal) {
-              addLog(`⚠️ [JUPITER WALLET] Connected (${currentActiveWallet?.source === 'connected' ? 'Browser Wallet' : 'Session Keypair'}) | Balance is 0.0000 SOL.`, 'warn');
+              addLog(`⚠️ [JUPITER WALLET] Connected | Balance is 0.0000 SOL. RESUMING TRADING WITH SIMULATION (Virtual funds: ${effectiveBal.toFixed(4)} SOL).`, 'warn');
             } else {
-              addLog(`[JUPITER WALLET] Status: Connected (${currentActiveWallet?.source === 'connected' ? 'Browser Wallet' : 'Session Keypair'}) | Address: ${currentAddress.slice(0, 8)}...${currentAddress.slice(-8)} | Balance: ${solBal.toFixed(4)} SOL`, 'info');
+              addLog(`[JUPITER WALLET] Status: Connected | Address: ${pubKeyStr.slice(0, 8)}...${pubKeyStr.slice(-8)} | Balance: ${solBal.toFixed(4)} SOL`, 'info');
             }
-            lastLoggedKeyRef.current = currentAddress;
+            lastLoggedKeyRef.current = privateKey;
           }
         }
       } catch (err: any) {
         if (isMounted) {
           setJupiterStatus('ERROR');
-          if (lastLoggedKeyRef.current !== activeAddress) {
+          if (lastLoggedKeyRef.current !== privateKey) {
             addLog(`[JUPITER WALLET] Status: Connection Error | ${err.message}`, 'err');
-            lastLoggedKeyRef.current = activeAddress;
+            lastLoggedKeyRef.current = privateKey;
           }
         }
       }
@@ -2218,7 +2921,7 @@ export const PnLPage = ({
       isMounted = false;
       clearInterval(interval);
     };
-  }, [rpcUrl, customWsUrl, addLog]);
+  }, [privateKey, rpcUrl, customWsUrl, addLog]);
 
   const updateUptime = useCallback(() => {
     if (!startTimeRef.current) {
@@ -2237,29 +2940,10 @@ export const PnLPage = ({
 
   // Synchronized telemetry detector for state changes
   const lastLoggedCriteria = useRef<any>({});
-  
-  // Continuously sync configRef.current on every render so async workers always read valid parameters
-  configRef.current = {
-    ...configRef.current,
-    tradeAmount, minTakeProfit, takeProfitPct, bondingCurveTakeProfit, stopLoss,
-    maxPositions: (typeof maxPositions === 'number' && !isNaN(maxPositions) && maxPositions > 0) ? maxPositions : 5,
-    slippage,
-    hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax,
-    hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore,
-    hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s,
-    hardenedMinBuyCount30s, hardenedMaxBuyCount30s, hardenedMinBuySellRatio,
-    hardenedMaxBuySellRatio, hardenedMaxPriceChange1m,
-    hardenedMinBondingProgress, hardenedMaxBondingProgress, hardenedMinAge, hardenedMaxAge,
-    hardenedMinLatency, hardenedMaxLatency,
-    tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown, hardenedMinProfit5m, enableLatencyGuard, maxRebuyTimes,
-    privateKey,
-    hardenedMatchRequirement
-  };
-
   useEffect(() => {
     // Collect current values
     const currentValues = {
-      tradeAmount, minTakeProfit, takeProfitPct, bondingCurveTakeProfit, stopLoss, maxPositions: (typeof maxPositions === 'number' && !isNaN(maxPositions) && maxPositions > 0) ? maxPositions : 5, slippage,
+      tradeAmount, minTakeProfit, takeProfitPct, bondingCurveTakeProfit, stopLoss, maxPositions, slippage,
       hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax,
       hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore,
       hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s,
@@ -2399,29 +3083,7 @@ export const PnLPage = ({
     };
   };
 
-    const [stats, setStats] = useState(() => {
-    try {
-      const saved = localStorage.getItem('juipter_auto_stats');
-      const parsed = saved ? JSON.parse(saved) : null;
-      return {
-        trades: parsed?.trades ?? 0,
-        wins: parsed?.wins ?? 0,
-        losses: parsed?.losses ?? 0,
-        pnl: parsed?.pnl ?? 0,
-        bestTrade: parsed?.bestTrade ?? null
-      };
-    } catch {
-      return { trades: 0, wins: 0, losses: 0, pnl: 0, bestTrade: null };
-    }
-  });
-
-  useEffect(() => {
-    localStorage.setItem('juipter_auto_stats', JSON.stringify(stats));
-  }, [stats]);
-
-  
-  
-const pendingBuysRef = useRef(0);
+  const pendingBuysRef = useRef(0);
   const pendingBuyMintsRef = useRef<Set<string>>(new Set());
   const pendingSellMintsRef = useRef<Set<string>>(new Set());
 
@@ -2581,20 +3243,22 @@ const checkTokenCriteria = (mint: string): {
       }
 
       // 10. Token Age limits (applies to ALL tokens)
-      const minAg = hardenedMinAge;
-      const maxAg = hardenedMaxAge;
-      const ageRes = validateTokenAge(metric, {
-        minAgeMinutes: minAg,
-        maxAgeMinutes: maxAg,
-        allowUnknownAge: false,
-      });
-      const isAgeValid = ageRes.isValid;
-      const tokenAgeMin = ageRes.ageMinutes;
+      const now = Date.now();
+      const createdAtRaw = metric.pairCreatedAt;
+      const discoveredAtRaw = metric.discoveredAt;
+      const normCreatedAt = createdAtRaw ? (createdAtRaw < 1000000000000 ? createdAtRaw * 1000 : createdAtRaw) : null;
+      const normDiscoveredAt = discoveredAtRaw ? (discoveredAtRaw < 1000000000000 ? discoveredAtRaw * 1000 : discoveredAtRaw) : null;
+      const tokenTime = normCreatedAt || normDiscoveredAt || now;
+      const tokenAgeMin = (now - tokenTime) / 60000;
+
+      const minAg = hardenedMinAge !== undefined ? hardenedMinAge : 0;
+      const maxAg = hardenedMaxAge !== undefined ? hardenedMaxAge : 120;
+      const isAgeValid = tokenAgeMin >= minAg && tokenAgeMin <= maxAg;
 
       addCheckResult(
         "Token Age (Minutes)",
         isAgeValid,
-        tokenAgeMin !== null ? `${tokenAgeMin.toFixed(1)}m` : 'Unknown',
+        `${tokenAgeMin.toFixed(1)}m`,
         `${minAg}m - ${maxAg}m`
       );
 
@@ -2876,9 +3540,8 @@ const checkTokenCriteria = (mint: string): {
       return;
     }
     
-    const activeWallet = useActiveWalletStore.getState().activeWallet;
-    if (!activeWallet || (!activeWallet.address && !activeWallet.keypair)) {
-      addLog(`❌ [BUY ABORTED] No active wallet connected or configured. A wallet is required for both Devnet and Mainnet trading.`, 'err');
+    if (!privateKey) {
+      addLog(`❌ [BUY ABORTED] No Private Key configured in settings. A wallet is required for both Devnet and Mainnet trading.`, 'err');
       pendingBuyMintsRef.current.delete(mint);
       return;
     }
@@ -2936,7 +3599,8 @@ const checkTokenCriteria = (mint: string): {
                txid: result.txid,
                buySlot: result.slot,
                buyEntries: newBuyEntries,
-
+               tpPct: existing?.tpPct ?? (configRef.current.minTakeProfit || 25),
+               slPct: existing?.slPct ?? (configRef.current.stopLossPct || 15),
                decimals: existing?.decimals ?? tokenDecimals
              }
            };
@@ -3049,9 +3713,8 @@ const checkTokenCriteria = (mint: string): {
 
     // --- EXECUTE MAIN POSITION SELL ---
     if (shouldSellMain && !isMainSold) {
-      const activeWallet = useActiveWalletStore.getState().activeWallet;
-      if (!activeWallet || (!activeWallet.address && !activeWallet.keypair)) {
-        addLog('❌ [SELL ABORTED] No active wallet connected or configured. A wallet is required for both Devnet and Mainnet trading.', 'err');
+      if (!privateKey) {
+        addLog('❌ [SELL ABORTED] No Private Key configured. A wallet is required for both Devnet and Mainnet trading.', 'err');
         return;
       }
 
@@ -3062,17 +3725,15 @@ const checkTokenCriteria = (mint: string): {
         let lamportsToSell = lamportsToSellRaw;
         if (!lamportsToSell || lamportsToSell <= 0) {
           try {
-            const activeAddress = activeWallet.address || tradeManager.getExecutor().publicKey;
-            if (activeAddress) {
-              const activeWsUrl = (customWsUrl && customWsUrl.trim() !== "") ? customWsUrl.trim() : rpcUrl.replace('https', 'wss').replace('http', 'ws');
-              const conn = new Connection(rpcUrl, { commitment: 'confirmed', wsEndpoint: activeWsUrl });
-              const accounts = await conn.getParsedTokenAccountsByOwner(
-                new PublicKey(activeAddress),
-                { mint: new PublicKey(mint) }
-              );
-              if (accounts.value.length > 0) {
-                  lamportsToSell = parseInt(accounts.value[0].account.data.parsed.info.tokenAmount.amount, 10);
-              }
+            const keypair = useActiveWalletStore.getState().activeWallet?.keypair;
+            const activeWsUrl = (customWsUrl && customWsUrl.trim() !== "") ? customWsUrl.trim() : rpcUrl.replace('https', 'wss').replace('http', 'ws');
+            const conn = new Connection(rpcUrl, { commitment: 'confirmed', wsEndpoint: activeWsUrl });
+            const accounts = await conn.getParsedTokenAccountsByOwner(
+              keypair.publicKey,
+              { mint: new PublicKey(mint) }
+            );
+            if (accounts.value.length > 0) {
+                lamportsToSell = parseInt(accounts.value[0].account.data.parsed.info.tokenAmount.amount, 10);
             }
           } catch (e) {
             console.warn("Failed to fetch balance for dynamic sell", e);
@@ -3084,98 +3745,32 @@ const checkTokenCriteria = (mint: string): {
           isMainSold = true;
         } else {
           addLog(`Ordering ${pos.symbol} → SOL...`, 'sell');
-          let solBefore = 0;
-          try {
-            solBefore = await walletBalanceService.getSolBalance();
-          } catch (e) {
-            console.warn("Unable to fetch solBefore balance for sell", e);
-          }
-
-          const result = await executeJupiterSwap(mint, SOL_MINT, lamportsToSell, reason === 'EMERGENCY FORCE EXIT' ? 1000 : undefined);
+          const result = await executeJupiterSwap(mint, SOL_MINT, lamportsToSell);
           if (result.txid) {
-            let actualSolReceived = 0;
-            try {
-              const conn = new Connection(getNetworkConfig('mainnet').rpcUrl, 'confirmed');
-              const tx = await conn.getTransaction(result.txid, {
-                commitment: 'confirmed',
-                maxSupportedTransactionVersion: 0,
-              });
-              if (tx && tx.meta) {
-                const activeAddress = useActiveWalletStore.getState().activeWallet?.address || tradeManager.getExecutor().publicKey;
-                let ownerIndex = 0;
-                
-                let accountKeys: string[] = [];
-                if (tx.transaction.message && typeof tx.transaction.message.getAccountKeys === 'function') {
-                  const keys = tx.transaction.message.getAccountKeys({ accountKeysFromLookups: tx.meta.loadedAddresses });
-                  for (let i = 0; i < keys.length; i++) {
-                     accountKeys.push(keys.get(i)?.toBase58() || '');
-                  }
-                } else if (tx.transaction.message.staticAccountKeys) {
-                  accountKeys = tx.transaction.message.staticAccountKeys.map(k => k.toBase58());
-                } else if ((tx.transaction.message as any).accountKeys) {
-                  accountKeys = (tx.transaction.message as any).accountKeys.map((k: any) => k.toBase58());
-                }
-
-                for (let i = 0; i < accountKeys.length; i++) {
-                  if (accountKeys[i] === activeAddress) {
-                    ownerIndex = i;
-                    break;
-                  }
-                }
-
-                if (tx.meta.preBalances && tx.meta.postBalances && tx.meta.preBalances.length > ownerIndex && tx.meta.postBalances.length > ownerIndex) {
-                  const pre = tx.meta.preBalances[ownerIndex];
-                  const post = tx.meta.postBalances[ownerIndex];
-                  actualSolReceived = (post - pre) / 1_000_000_000;
-                }
-              }
-            } catch (e) {
-              console.warn("Unable to reconcile SOL delta from transaction", e);
-            }
-
-            // Fire and forget balance refresh, don't await
-            walletBalanceService.refreshNow();
-
-            if (actualSolReceived <= 0) {
-              addLog(`❌ P&L UNVERIFIED: Cannot reconcile realized SOL from transaction ${result.txid}`, 'err');
-              isMainSold = true;
-            } else {
-              const costBasisSol = pos.solSpent || 0;
-              const actualPnlSOL = costBasisSol > 0 ? actualSolReceived - costBasisSol : 0;
-              const actualPnlPct = costBasisSol > 0 ? actualPnlSOL / costBasisSol : 0;
-              
-              addLog(`✅ Sold ${pos.symbol} on-chain | Received: ${actualSolReceived.toFixed(6)} SOL | P&L: ${(actualPnlPct * 100).toFixed(1)}% | tx: ${result.txid.slice(0, 12)}...`, 'sell');
-              
-              const newTradeId = `trade-${Date.now()}`;
-              setTradeHistory(th => [{
-                id: newTradeId,
-                mint: mint,
-                buyTime: pos.entryTime,
-                sellTime: Date.now(),
-                buyAmountSol: costBasisSol,
-                sellAmountSol: actualSolReceived,
-                pnlPct: Math.max(-100, actualPnlPct * 100)
-              }, ...th]);
-
-            try {
-              const processedJson = localStorage.getItem('pnl_processed_trade_ids');
-              const processedIds: string[] = processedJson ? JSON.parse(processedJson) : [];
-              if (!processedIds.includes(newTradeId) && (!result.txid || !processedIds.includes(result.txid))) {
-                const singleEvent = {
-                  tradeId: newTradeId,
-                  mint,
-                  closeSignature: result.txid || 'tx-' + Date.now(),
-                  isProfitable: actualPnlPct > 0,
-                  pnlPct: actualPnlPct * 100,
-                  timestamp: Date.now()
-                };
-                localStorage.setItem('pnl_latest_trade_event', JSON.stringify(singleEvent));
-                window.dispatchEvent(new CustomEvent('pnl_single_trade_closed', { detail: singleEvent }));
-                processedIds.push(newTradeId);
-                if (result.txid) processedIds.push(result.txid);
-                localStorage.setItem('pnl_processed_trade_ids', JSON.stringify(processedIds.slice(-200)));
-              }
-            } catch (e) {}
+            const actualSolReceived = result.outputAmount || 0;
+            const costBasisSol = pos.solSpent || 0;
+            const actualPnlSOL = costBasisSol > 0 ? actualSolReceived - costBasisSol : 0;
+            const actualPnlPct = costBasisSol > 0 ? actualPnlSOL / costBasisSol : 0;
+            
+            setStats((s) => ({
+              ...s,
+              trades: s.trades + 1,
+              wins: s.wins + (actualPnlPct > 0 ? 1 : 0),
+              losses: s.losses + (actualPnlPct <= 0 ? 1 : 0),
+              pnl: s.pnl + actualPnlSOL,
+              bestTrade: (actualPnlPct > 0 && (!s.bestTrade || actualPnlPct > s.bestTrade)) ? actualPnlPct : s.bestTrade
+            }));
+            addLog(`✅ Sold ${pos.symbol} on-chain | Received: ${actualSolReceived.toFixed(6)} SOL | P&L: ${(actualPnlPct * 100).toFixed(1)}% | tx: ${result.txid.slice(0, 12)}...`, 'sell');
+            
+            setTradeHistory(th => [{
+              id: `trade-${Date.now()}`,
+              mint: mint,
+              buyTime: pos.entryTime,
+              sellTime: Date.now(),
+              buyAmountSol: costBasisSol,
+              sellAmountSol: actualSolReceived,
+              pnlPct: Math.max(-100, actualPnlPct * 100)
+            }, ...th]);
 
             if (pnlPct < 0) {
               setBlacklistedMints(prev => Array.from(new Set([...prev, mint])));
@@ -3183,7 +3778,6 @@ const checkTokenCriteria = (mint: string): {
             }
             isMainSold = true;
             walletBalanceService.refreshNow();
-            }
           } else {
             throw new Error("Jupiter swap transaction ID missing.");
           }
@@ -3208,7 +3802,7 @@ const checkTokenCriteria = (mint: string): {
       if (!currentPos) return next;
 
       if (isMainSold) {
-        delete next[mint]; exitManagerRef.current?.removePosition(mint); masterMonitorRef.current?.stopMonitoring(mint);
+        delete next[mint]; positionExitManagerRef.current?.removePosition(mint); masterMonitorRef.current?.stopMonitoring(mint);
       }
       return next;
     });
@@ -3228,7 +3822,7 @@ const checkTokenCriteria = (mint: string): {
     return unsub;
   }, []);
 
-  const exitManagerRef = useRef<ExitManager | null>(null);
+  const positionExitManagerRef = useRef<PositionExitManager | null>(null);
   const masterMonitorRef = useRef<MasterMonitorService | null>(null);
 
   useEffect(() => {
@@ -3242,121 +3836,114 @@ const checkTokenCriteria = (mint: string): {
       return;
     }
 
-    const exitMgr = new ExitManager(
-      (mint, pos) =>
-        detectTokenStage({
-          address: mint,
-          dexId: pos.dexId,
-          bondingCurveProgress: pos.bondingCurveProgress,
-          isRaydiumListed: pos.isRaydiumListed,
-        }),
-      async (mint, symbol, reason, pnlPct) => {
-        addLog(`⚡ [EXIT ENGINE] ${reason} triggered for ${symbol || mint} at ${pnlPct.toFixed(2)}%`, 'sell');
-        const pos = positionsRef.current[mint];
-        if (pos) {
-          await executeSell(mint, pos.currentPrice || pos.buyPrice, pnlPct, reason);
-        }
-      },
+    const currentJup = jupiterRpcUrl || 'https://api.jup.ag/swap/v1';
+    const executor = tradeManager.getExecutor();
+
+    const exitMgr = new PositionExitManager(
+      executor,
+      currentJup,
+      currentRpc,
       {
-        minTakeProfit: configRef.current.minTakeProfit || minTakeProfit || 25,
-        maxTakeProfit: configRef.current.takeProfitPct || takeProfitPct || 100,
-        bondingCurveTakeProfit: configRef.current.bondingCurveTakeProfit || bondingCurveTakeProfit || 25,
-        stopLossPct: typeof (configRef.current.stopLossPct ?? stopLossPct) === 'number' ? Math.abs(configRef.current.stopLossPct ?? stopLossPct) : 15,
-        bondingCurveStopLossPct: typeof (configRef.current.bondingCurveStopLossPct ?? bondingCurveStopLoss) === 'number' ? Math.abs(configRef.current.bondingCurveStopLossPct ?? bondingCurveStopLoss) : 10,
-        pumpSwapStopLossPct: typeof (configRef.current.pumpSwapStopLossPct ?? pumpSwapStopLoss) === 'number' ? Math.abs(configRef.current.pumpSwapStopLossPct ?? pumpSwapStopLoss) : 15,
-        unknownStopLossPct: typeof (configRef.current.unknownStopLossPct ?? unknownStopLoss) === 'number' ? Math.abs(configRef.current.unknownStopLossPct ?? unknownStopLoss) : 20,
-        moonbagStrategy: false,
-        moonbagSellPct: 0.5,
-        slippageBps: Math.floor((configRef.current.slippage || slippage || 2.5) * 100),
+        tpPct: configRef.current.minTakeProfit || 25,
+        slPct: configRef.current.stopLossPct || 15,
+        slippageBpsTp: Math.floor((configRef.current.slippage || 2.5) * 100),
+        slippageBpsSl: Math.floor((configRef.current.slippage || 10.0) * 100),
       }
     );
 
-    exitManagerRef.current = exitMgr;
+    exitMgr.setOnExitCallback((mint, side, signature, pnlPct, outputAmountSol) => {
+      addLog(`⚡ [FAST EXIT ENGINE] ${side.toUpperCase()} triggered for ${mint} at ${pnlPct.toFixed(2)}% | Tx: ${signature}`, 'sell');
+      const pos = positionsRef.current[mint];
+      if (pos) {
+        // Remove from UI position state
+        setPositions(prev => {
+          const next = { ...prev };
+          delete next[mint]; positionExitManagerRef.current?.removePosition(mint); masterMonitorRef.current?.stopMonitoring(mint);
+          return next;
+        });
+        // Stop price monitoring
+        masterMonitorRef.current?.stopMonitoring(mint);
+
+        // Update trade history and stats
+        const costBasisSol = pos.solSpent || 0;
+        const actualSolReceived = outputAmountSol !== undefined ? outputAmountSol : Math.max(0, costBasisSol + (costBasisSol * pnlPct / 100));
+        const actualPnlSOL = actualSolReceived - costBasisSol;
+        // recalculate pnlPct purely based on actual real return
+        pnlPct = costBasisSol > 0 ? (actualPnlSOL / costBasisSol) * 100 : pnlPct;
+
+        // Refresh wallet balance
+        walletBalanceService.refreshNow();
+
+        setStats((s) => ({
+          ...s,
+          trades: s.trades + 1,
+          wins: s.wins + (pnlPct > 0 ? 1 : 0),
+          losses: s.losses + (pnlPct <= 0 ? 1 : 0),
+          pnl: s.pnl + actualPnlSOL,
+          bestTrade: (pnlPct > 0 && (!s.bestTrade || (pnlPct/100) > s.bestTrade)) ? (pnlPct/100) : s.bestTrade
+        }));
+
+        setTradeHistory(th => [{
+          id: `trade-${Date.now()}`,
+          mint: mint,
+          buyTime: pos.entryTime,
+          sellTime: Date.now(),
+          buyAmountSol: costBasisSol,
+          sellAmountSol: actualSolReceived,
+          pnlPct: Math.max(-100, pnlPct)
+        }, ...th]);
+
+        if (pnlPct < 0) {
+          setBlacklistedMints(prev => Array.from(new Set([...prev, mint])));
+        }
+      }
+    });
+
+    exitMgr.start();
+    positionExitManagerRef.current = exitMgr;
 
     addLog(`📡 [MASTER MONITOR] Starting monitor services on: ${currentRpc} [Mode: ${status}]`, 'info');
     const masterMon = new MasterMonitorService(currentRpc, exitMgr);
     masterMonitorRef.current = masterMon;
 
     return () => {
+      exitMgr.stop();
       masterMon.stopMonitoring();
     };
-  }, [isRunning, monitorStatus.status, monitorStatus.activeUrl, activeTradeMode]);
+  }, [isRunning, monitorStatus.status, monitorStatus.activeUrl]);
 
-  // Push config changes to ExitManager
-  useEffect(() => {
-    if (!isRunning || !exitManagerRef.current) return;
-
-    exitManagerRef.current.updateGlobalConfig({
-      minTakeProfit: configRef.current.minTakeProfit || minTakeProfit,
-      maxTakeProfit: configRef.current.takeProfitPct || takeProfitPct,
-      bondingCurveTakeProfit: configRef.current.bondingCurveTakeProfit || bondingCurveTakeProfit,
-      stopLossPct: typeof stopLossPct === 'number' ? Math.abs(stopLossPct) : 15,
-      bondingCurveStopLossPct: typeof bondingCurveStopLoss === 'number' ? Math.abs(bondingCurveStopLoss) : 10,
-      pumpSwapStopLossPct: typeof pumpSwapStopLoss === 'number' ? Math.abs(pumpSwapStopLoss) : 15,
-      unknownStopLossPct: typeof unknownStopLoss === 'number' ? Math.abs(unknownStopLoss) : 20,
-      moonbagStrategy: false,
-      slippageBps: Math.floor((slippage || 2.5) * 100),
-    });
-  }, [
-    isRunning,
-    minTakeProfit,
-    takeProfitPct,
-    bondingCurveTakeProfit,
-    stopLossPct,
-    bondingCurveStopLoss,
-    pumpSwapStopLoss,
-    unknownStopLoss,
-    slippage,
-  ]);
-
-  // Sync active positions to ExitManager & MasterMonitorService
-  useEffect(() => {
-    if (!isRunning || !exitManagerRef.current) return;
-
-    const activeMints = new Set<string>();
-
-    for (const [mint, pos] of Object.entries(positionsRef.current)) {
-      if (pos && pos.amount > 0) {
-        activeMints.add(mint);
-        exitManagerRef.current.syncPosition({
-          mint,
-          symbol: pos.symbol,
-          state: 'OPEN',
-          amount: pos.amount,
-          realCostBasis: pos.solSpent || 0.1,
-          lastPriceSol: pos.currentPrice || pos.buyPrice,
-          lastPriceTimestamp: pos.lastPriceTimestamp || Date.now(),
-          highestPnlPct: pos.peakPnLPct || 0,
-          soldPartial: pos.soldPartial || false,
-          recoveryMode: pos.recoveryMode || false,
-          entryTime: pos.entryTime,
-          dexId: pos.dexId,
-          bondingCurveProgress: pos.bondingCurveProgress,
-        });
-      }
-    }
-
-    for (const mint of exitManagerRef.current.getActiveMints()) {
-      if (!activeMints.has(mint)) {
-        exitManagerRef.current.removePosition(mint);
-      }
-    }
-
-    if (masterMonitorRef.current && activeMints.size > 0) {
-      masterMonitorRef.current.startMonitoring(Array.from(activeMints));
-    }
-  }, [positions, isRunning]);
-
-  // Exit Evaluation loop
+  // Sync active positions to PositionExitManager & MasterMonitorService
   useEffect(() => {
     if (!isRunning) return;
 
-    const interval = setInterval(() => {
-      exitManagerRef.current?.evaluateAll();
-    }, 1000);
+    const activeMints = Object.keys(positionsRef.current).filter(k => {
+      const p = positionsRef.current[k];
+      return p && p.amount > 0;
+    });
 
-    return () => clearInterval(interval);
-  }, [isRunning]);
+    if (positionExitManagerRef.current) {
+      for (const mint of activeMints) {
+        const pos = positionsRef.current[mint];
+        if (pos && !positionExitManagerRef.current.getPosition(mint)) {
+          positionExitManagerRef.current.addPosition({
+            mint,
+            amount: pos.amountLamports || Math.floor((pos.amount || 0) * (pos.decimals ? Math.pow(10, pos.decimals) : 1e6)),
+            buyPrice: pos.buyPrice || 0,
+            solSpent: pos.solSpent || 0.1,
+            tpPct: pos.tpPct ?? (configRef.current.minTakeProfit || 25),
+            slPct: pos.slPct ?? (configRef.current.stopLossPct || 15),
+          });
+          if (pos.txid && pos.txid !== 'init-sig') {
+            positionExitManagerRef.current.confirmBuy(mint, pos.txid, pos.buySlot || 0);
+          }
+        }
+      }
+    }
+
+    if (masterMonitorRef.current && activeMints.length > 0) {
+      masterMonitorRef.current.startMonitoring(activeMints);
+    }
+  }, [positions, isRunning]);
 
   const processedAlerts = useRef<Set<string>>(new Set());
   useEffect(() => {
@@ -3466,13 +4053,16 @@ const checkTokenCriteria = (mint: string): {
         const progress = metric.bondingCurveProgress || 0;
         const isProgressValid = isGraduated || (progress >= hardenedMinBondingProgress && progress <= hardenedMaxBondingProgress);
 
-        const ageRes = validateTokenAge(metric, {
-          minAgeMinutes: hardenedMinAge,
-          maxAgeMinutes: hardenedMaxAge,
-          allowUnknownAge: false,
-        });
-        if (!ageRes.isValid) {
-          addLog(`❌ [ALERT FILTERED] ${alert.token} age check failed: ${ageRes.reason || 'Invalid age'}`, 'warn');
+        const createdAtRaw = metric.pairCreatedAt;
+        const discoveredAtRaw = metric.discoveredAt;
+        const normCreatedAt = createdAtRaw ? (createdAtRaw < 1000000000000 ? createdAtRaw * 1000 : createdAtRaw) : null;
+        const normDiscoveredAt = discoveredAtRaw ? (discoveredAtRaw < 1000000000000 ? discoveredAtRaw * 1000 : discoveredAtRaw) : null;
+        const tokenTime = normCreatedAt || normDiscoveredAt || now;
+        const tokenAgeMin = (now - tokenTime) / 60000;
+
+        const isAgeValid = tokenAgeMin >= hardenedMinAge && tokenAgeMin <= hardenedMaxAge;
+        if (!isAgeValid) {
+          addLog(`❌ [ALERT FILTERED] ${alert.token} age (${tokenAgeMin.toFixed(1)}m) exceeds Max Age limit (${hardenedMaxAge}m)`, 'warn');
           return;
         }
 
@@ -3513,11 +4103,10 @@ const checkTokenCriteria = (mint: string): {
     
     try {
       const {
-        maxPositions: rawMaxPositions, tradeAmount, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct,
+        maxPositions, tradeAmount, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct,
         hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax,
         hardenedLiquidityMin, hardenedMaxRiskScore, hardenedMinProfit5m
       } = configRef.current;
-      const maxPositions = (typeof rawMaxPositions === 'number' && !isNaN(rawMaxPositions) && rawMaxPositions > 0) ? rawMaxPositions : 5;
 
       // Logic for new token acquisition (based on metrics provided via props)
       const currentPositionsState = positionsRef.current;
@@ -3632,6 +4221,36 @@ const checkTokenCriteria = (mint: string): {
             lastDiagnosticsRef.current = now;
             addLog(`🛑 [MAX POSITIONS LIMIT] Active slots filled (${activeMints.length}/${maxPositions}). Stopped searching new tokens.`, 'warn');
          }
+      }
+
+      // 2. Fetch prices for active positions for UI display sync (Exits managed unified by PositionExitManager)
+      const mintsToFetch = activeMints;
+      if (mintsToFetch.length > 0) {
+        const batchedPrices = await getTokenPrices(mintsToFetch);
+        for (const [m, item] of Object.entries(batchedPrices)) {
+          const p = item as { price?: number | string };
+          if (p && p.price !== undefined) {
+            const newPrice = typeof p.price === 'number' ? p.price : parseFloat(p.price);
+            if (newPrice > 0 && masterMonitorRef.current) {
+              masterMonitorRef.current.pushPriceUpdate(m, newPrice, Date.now(), 'price_tracker');
+            }
+          }
+        }
+        useAppStore.getState().setTokenMetrics(prev => {
+          let changed = false;
+          const next = { ...prev };
+          for (const [m, item] of Object.entries(batchedPrices)) {
+            const p = item as { price?: number | string };
+            if (p && p.price !== undefined) {
+              const newPrice = typeof p.price === 'number' ? p.price : parseFloat(p.price);
+              if (next[m] && next[m].priceNative !== newPrice) {
+                next[m] = { ...next[m], priceNative: newPrice, lastUpdated: Date.now() };
+                changed = true;
+              }
+            }
+          }
+          return changed ? next : prev;
+        });
       }
     } finally {
       isCheckingRef.current = false;
@@ -4126,7 +4745,7 @@ const checkTokenCriteria = (mint: string): {
   const resetSession = async () => {
     setLogs([]);
     setTradeHistory([]);
-    
+    setStats({ trades: 0, wins: 0, losses: 0, pnl: 0, bestTrade: null });
     setPositions({});
     positionsRef.current = {};
     setBlacklistedMints([]);
@@ -4287,7 +4906,7 @@ const checkTokenCriteria = (mint: string): {
               {/* Scanned Result Card */}
               {scannedResult && (
                 <div className="bg-[#050509] border border-[#2d2e3d] rounded-xl p-3 space-y-2.5">
-                  <div className="flex items-center justify-between flex-wrap gap-1.5">
+                  <div className="flex items-center justify-between">
                     <div>
                       <div className="text-[13px] font-bold text-white flex items-center gap-1">
                         {scannedResult.symbol}{' '}
@@ -4299,12 +4918,9 @@ const checkTokenCriteria = (mint: string): {
                         {scannedResult.name}
                       </div>
                     </div>
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <MintCopyBadge mint={scannedResult.address} size="sm" />
-                      <span className="text-[9px] bg-emerald-500/10 text-[#c7f284] border border-[#c7f284]/30 rounded px-1.5 py-0.5 font-bold uppercase">
-                        {scannedResult.isGraduated ? 'Raydium' : 'Pump.fun'}
-                      </span>
-                    </div>
+                    <span className="text-[9px] bg-emerald-500/10 text-[#c7f284] border border-[#c7f284]/30 rounded px-1.5 py-0.5 font-bold uppercase">
+                      {scannedResult.isGraduated ? 'Raydium' : 'Pump.fun'}
+                    </span>
                   </div>
 
                   <div className="grid grid-cols-2 gap-x-2 gap-y-1.5 border-t border-[#1f212e] pt-2 text-[10px] font-mono">
@@ -4342,7 +4958,7 @@ const checkTokenCriteria = (mint: string): {
                       />
                     </div>
                     <button
-                      onClick={() => handleDiscretionaryBuyTrigger(scannedResult?.baseToken?.address || "")}
+                      onClick={handleDiscretionaryBuyTrigger}
                       disabled={isBuyingDiscretionary}
                       className="w-full bg-[#c7f284] hover:bg-[#b0dc68] text-black font-extrabold uppercase rounded-lg text-[10px] py-1.5 transition-all text-center flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 shadow-[0_0_15px_rgba(199,242,132,0.15)]"
                     >
@@ -5255,8 +5871,8 @@ const checkTokenCriteria = (mint: string): {
                           {scannedResult.symbol}
                         </span>
                       </div>
-                      <div className="mt-1">
-                        <MintCopyBadge mint={scannedResult.address} label="Mint:" size="sm" />
+                      <div className="text-[10px] text-[#64748b] font-mono select-all select-none hover:text-slate-400 mt-0.5">
+                        Mint: {scannedResult.address}
                       </div>
                     </div>
                     <div className="flex gap-1.5">
@@ -5305,7 +5921,7 @@ const checkTokenCriteria = (mint: string): {
                     </div>
                     <button
                       type="button"
-                      onClick={() => handleDiscretionaryBuyTrigger(scannedResult?.baseToken?.address || "")}
+                      onClick={handleDiscretionaryBuyTrigger}
                       disabled={isBuyingDiscretionary}
                       className="w-full sm:w-auto px-8 py-2 bg-[#c7f284] hover:bg-[#b0dc68] text-[#050509] font-black uppercase rounded-lg text-xs transition-all text-center flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 min-h-[36px] shadow-[0_0_20px_rgba(199,242,132,0.2)]"
                     >
@@ -5383,7 +5999,7 @@ const checkTokenCriteria = (mint: string): {
                     }
 
                     const token = tokenMetrics[mint];
-                    const displayPrice = pos.currentPrice || (token?.priceNative ? parseFloat(String(token.priceNative)) : 0) || pos.buyPrice || 0;
+                    const displayPrice = (token?.priceNative ? parseFloat(String(token.priceNative)) : 0) || pos.currentPrice || pos.buyPrice || 0;
                     const netCalc = calcNetPnl(displayPrice, pos.amount || 0, pos.solSpent || 0, slippage, pos.recoveryMode, !!privateKey);
                     let netSolIfSold = netCalc.netSol;
                     let pnlPct = netCalc.netPnlPct / 100;
@@ -5396,7 +6012,7 @@ const checkTokenCriteria = (mint: string): {
                     return !isNaN(pnlPct) && isFinite(pnlPct);
                   }).map(([mint, pos]: [string, Position]) => {
                     const token = tokenMetrics[mint];
-                    const displayPrice = pos.currentPrice || (token?.priceNative ? parseFloat(String(token.priceNative)) : 0) || pos.buyPrice || 0;
+                    const displayPrice = (token?.priceNative ? parseFloat(String(token.priceNative)) : 0) || pos.currentPrice || pos.buyPrice || 0;
                     const netCalc = calcNetPnl(displayPrice, pos.amount || 0, pos.solSpent || 0, slippage, pos.recoveryMode, !!privateKey);
                     let netSolIfSold = netCalc.netSol;
                     let pnlPct = netCalc.netPnlPct / 100;
@@ -5428,37 +6044,33 @@ const checkTokenCriteria = (mint: string): {
 
                     return (
                       <div key={mint} className="bg-[#0a0b14] border border-[#1f212e] rounded-xl p-4 grid grid-cols-2 gap-x-2 gap-y-3">
-                        <div className="col-span-2 flex items-center gap-2 mb-1 flex-wrap justify-between">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <div className="w-6 h-6 rounded-full bg-indigo-500 shrink-0"></div>
-                            <div className="font-bold text-[14px] text-white flex items-center gap-1.5 flex-wrap">
-                              {pos.symbol} <span className="text-[#64748b] text-[12px] font-normal hidden sm:inline">/ SOL</span>
-                              
-                              <MintCopyBadge mint={mint} size="sm" />
-
-                              {/* Stage badge */}
-                              {stage.isBonding ? (
-                                <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-orange-500/20 text-orange-400 border border-orange-500/30 whitespace-nowrap">
-                                  BONDING {stage.bondingProgress.toFixed(0)}%
-                                </span>
-                              ) : (
-                                <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-blue-500/20 text-blue-400 border border-blue-500/30 whitespace-nowrap">
-                                  {stage.platform}
-                                </span>
-                              )}
-
-                              {/* Which stop loss is active */}
-                              <span className="text-rose-400 text-[9px] whitespace-nowrap bg-rose-500/10 px-1.5 py-0.5 rounded border border-rose-500/20">
-                                SL: {activeSL}%
+                        <div className="col-span-2 flex items-center gap-2 mb-1 flex-wrap">
+                          <div className="w-6 h-6 rounded-full bg-indigo-500 shrink-0"></div>
+                          <div className="font-bold text-[14px] text-white flex items-center gap-1.5 flex-wrap">
+                            {pos.symbol} <span className="text-[#64748b] text-[12px] font-normal hidden sm:inline">/ SOL</span>
+                            
+                            {/* Stage badge */}
+                            {stage.isBonding ? (
+                              <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-orange-500/20 text-orange-400 border border-orange-500/30 whitespace-nowrap">
+                                BONDING {stage.bondingProgress.toFixed(0)}%
                               </span>
+                            ) : (
+                              <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-blue-500/20 text-blue-400 border border-blue-500/30 whitespace-nowrap">
+                                {stage.platform}
+                              </span>
+                            )}
 
-                              {/* Near migration warning */}
-                              {stage.isNearMigration && (
-                                <span className="text-yellow-400 text-[9px] animate-pulse whitespace-nowrap border border-yellow-400/30 bg-yellow-400/10 px-1.5 py-0.5 rounded">
-                                  ⚡ MIGRATING SOON
-                                </span>
-                              )}
-                            </div>
+                            {/* Which stop loss is active */}
+                            <span className="text-rose-400 text-[9px] whitespace-nowrap bg-rose-500/10 px-1.5 py-0.5 rounded border border-rose-500/20">
+                              SL: {activeSL}%
+                            </span>
+
+                            {/* Near migration warning */}
+                            {stage.isNearMigration && (
+                              <span className="text-yellow-400 text-[9px] animate-pulse whitespace-nowrap border border-yellow-400/30 bg-yellow-400/10 px-1.5 py-0.5 rounded">
+                                ⚡ MIGRATING SOON
+                              </span>
+                            )}
                           </div>
                           <div className="ml-auto text-right font-mono">
                             {isStalePos ? (
@@ -5868,9 +6480,7 @@ const checkTokenCriteria = (mint: string): {
                                     {isRaydium ? 'Raydium' : 'Pump.fun'}
                                   </span>
                                 </div>
-                                <div className="mt-1">
-                                  <MintCopyBadge mint={mint} size="sm" />
-                                </div>
+                                <div className="text-[9px] text-[#64748b] truncate max-w-[170px] mt-0.5">{mint}</div>
                               </div>
                               <div className="text-right">
                                 <span className="text-[11px] font-bold text-[#c7f284]">
@@ -6385,8 +6995,14 @@ const checkTokenCriteria = (mint: string): {
               <tbody>
                 {tradeHistory.map(trade => {
                   const buySol = trade.buyAmountSol || 0;
-                  const sellSol = trade.sellAmountSol || 0;
-                  const pnl = buySol > 0 ? ((sellSol - buySol) / buySol) * 100 : 0;
+                  let sellSol = trade.sellAmountSol || 0;
+                  let pnl = trade.pnlPct || 0;
+
+                  if (buySol > 0 && sellSol > buySol * 50 && pnl > 5000) {
+                    pnl = Math.min(pnl, 100);
+                    sellSol = buySol * (1 + (pnl / 100));
+                  }
+
                   const profitSol = sellSol - buySol;
                   const buyTime = trade.buyTime || Date.now();
                   const sellTime = trade.sellTime || Date.now();
@@ -6397,9 +7013,7 @@ const checkTokenCriteria = (mint: string): {
                   const mintDisplay = mintStr.length > 12 ? `${mintStr.slice(0, 6)}...${mintStr.slice(-6)}` : mintStr || 'Unknown';
                   return (
                   <tr key={trade.id} className="border-b border-[#1f212e]/50 last:border-0 hover:bg-[#1f212e]/30 transition-colors">
-                    <td className="py-2 pr-4">
-                      <MintCopyBadge mint={mintStr} size="sm" />
-                    </td>
+                    <td className="py-2 text-[#e2e8f0] pr-4">{mintDisplay}</td>
                     <td className="py-2 text-[#e2e8f0] pr-4">{new Date(buyTime).toLocaleTimeString()}</td>
                     <td className="py-2 text-[#64748b] pr-4">{durationStr}</td>
                     <td className="py-2 text-[#e2e8f0] text-right pr-4">{buySol.toFixed(4)} SOL</td>

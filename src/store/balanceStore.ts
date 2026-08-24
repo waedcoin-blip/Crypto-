@@ -199,8 +199,11 @@ export function getTradingBalance(): number {
 
   const avail = state.onChainAvailableSol ?? state.availableSolBalance;
   if (avail === null) {
-    if (state.network === 'devnet') return 10.0;
     throw new Error('On-chain wallet balance is not available');
+  }
+
+  if (state.onChainStatus !== 'live' && state.status !== 'live') {
+    throw new Error('On-chain wallet balance is stale or unavailable');
   }
 
   return avail;
@@ -210,29 +213,13 @@ export function getTradingBalance(): number {
  * Asserts sufficient live balance prior to trade execution
  */
 export async function assertTradeBalance(requiredSol: number): Promise<void> {
-  let state = useBalanceStore.getState();
+  const state = useBalanceStore.getState();
 
-  if (state.onChainStatus !== 'live' && state.status !== 'live' || (state.onChainAvailableSol ?? state.availableSolBalance) === null) {
-    try {
-      const { walletBalanceService } = await import('../services/WalletBalanceService');
-      await walletBalanceService.refresh();
-      state = useBalanceStore.getState();
-    } catch (e) {
-      console.warn('assertTradeBalance: balance refresh failed', e);
-    }
+  if (state.onChainStatus !== 'live' && state.status !== 'live') {
+    throw new Error('Trading blocked: on-chain wallet balance is not live');
   }
 
-  let avail = state.onChainAvailableSol ?? state.availableSolBalance;
-
-  // Fallback if balance is still null or status is not live
-  if (avail === null || (state.onChainStatus !== 'live' && state.status !== 'live')) {
-    if (state.network === 'devnet') {
-      useBalanceStore.getState().setOnChainBalance({ solBalance: 10.0 });
-      state = useBalanceStore.getState();
-      avail = state.onChainAvailableSol ?? state.availableSolBalance;
-    }
-  }
-
+  const avail = state.onChainAvailableSol ?? state.availableSolBalance;
   if (avail === null) {
     throw new Error('Trading blocked: on-chain wallet balance unavailable');
   }

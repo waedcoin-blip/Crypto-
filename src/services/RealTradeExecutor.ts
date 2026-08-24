@@ -8,7 +8,6 @@ import { TradingNetwork } from '../config/network';
 export interface RealTradeConfig {
   network?: TradingNetwork;
   verbose?: boolean;
-  hybridEngine?: any;
 }
 
 export class RealTradeExecutor implements ITradeExecutor {
@@ -31,9 +30,6 @@ export class RealTradeExecutor implements ITradeExecutor {
   }
 
   async getQuote(params: QuoteGetRequest): Promise<QuoteResponse> {
-    if (this.mode === 'devnet') {
-      throw new Error("Jupiter API is not available on Solana Devnet. Cannot fetch quotes for Devnet execution.");
-    }
     return this.delegate.getQuote(params);
   }
 

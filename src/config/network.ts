@@ -18,7 +18,7 @@ const DEVNET_RPC =
 
 const MAINNET_RPC =
   import.meta.env.VITE_MAINNET_RPC_URL ||
-  'https://api.mainnet-beta.solana.com';
+  'https://api.mainnet.solana.com';
 
 function toWsUrl(rpcUrl: string): string {
   if (rpcUrl.startsWith('https://')) {

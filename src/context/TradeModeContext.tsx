@@ -5,7 +5,6 @@ import { useAppStore } from '../store/appStore';
 import { useBalanceStore } from '../store/balanceStore';
 import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
 import { TradingNetwork } from '../config/network';
-import { walletBalanceService } from '../services/WalletBalanceService';
 
 const Context = createContext<{
   mode: TradeMode;
@@ -30,7 +29,6 @@ export const TradeModeProvider: React.FC<{
     localStorage.setItem('is_live_trading', String(network === 'mainnet'));
     useAppStore.getState().setIsLiveTrading(network === 'mainnet');
     useBalanceStore.getState().setNetwork(network);
-    walletBalanceService.updateNetwork(network);
     void useTradingEnvironmentStore.getState().setNetwork(network);
   }, [manager]);
 
@@ -62,7 +60,6 @@ export const useTradeMode = () => {
         localStorage.setItem('is_live_trading', String(network === 'mainnet'));
         useAppStore.getState().setIsLiveTrading(network === 'mainnet');
         useBalanceStore.getState().setNetwork(network);
-        walletBalanceService.updateNetwork(network);
         void useTradingEnvironmentStore.getState().setNetwork(network);
       },
       manager: null as unknown as TradeManager,

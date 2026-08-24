@@ -2,7 +2,6 @@ import { Connection, PublicKey, Transaction, VersionedTransaction, TransactionMe
 import { createJupiterApiClient, QuoteResponse } from '@jup-ag/api';
 import { useAppStore } from '../store/appStore';
 import { detectTokenStage } from '../lib/utils';
-import { validateTokenAge, TokenAgeInput } from '../utils/tokenAge';
 import { DEFAULT_HELIUS_RPC } from '../constants/solana';
 import { telemetryService } from './telemetryService';
 import { DevnetAmmExecutor } from './DevnetAmmExecutor';
@@ -938,23 +937,13 @@ export const createJupiterSwapTransaction = async (
   }
 
   try {
-    const formattedFee = typeof prioritizationFeeLamports === 'object' && prioritizationFeeLamports !== null
-      ? prioritizationFeeLamports
-      : {
-          priorityLevelWithMaxLamports: {
-            priorityLevel: 'medium',
-            maxLamports: typeof prioritizationFeeLamports === 'number' ? prioritizationFeeLamports : 100000,
-            global: false,
-          },
-        };
-
     const swapRequest: any = {
       quoteResponse,
       userPublicKey,
       wrapAndUnwrapSol: true,
       dynamicComputeUnitLimit: true,
       trackingAccount: "FE2vyoM5CbGcTXSHUsPj79eKAd8fvMzuy3jgr9pYBCLv",
-      prioritizationFeeLamports: formattedFee as any,
+      prioritizationFeeLamports: { priorityLevelWithMaxLamports: { priorityLevel: 'medium', maxLamports: typeof prioritizationFeeLamports === 'number' ? prioritizationFeeLamports : 100000, global: false } } as any,
     };
 
     if (useDynamicSlippage) {
@@ -1041,8 +1030,6 @@ export interface AdvancedTokenMetrics {
   priceChange5m?: number;
   percentageIncrease?: number;
   ageMinutes?: number;
-  pairCreatedAt?: number;
-  discoveredAt?: number;
   volume24h?: number;
   dexId?: string;
 }
@@ -1086,8 +1073,8 @@ export const verifyHardenedScannerCriteria = (
   const maxPriceChange1m = customConfig?.maxPriceChange1m ?? 10.0;
   const minBondingProgress = customConfig?.minBondingProgress ?? 0;
   const maxBondingProgress = customConfig?.maxBondingProgress ?? 100;
-  const minAge = customConfig?.minAge;
-  const maxAge = customConfig?.maxAge;
+  const minAge = customConfig?.minAge ?? 0;
+  const maxAge = customConfig?.maxAge ?? 120;
 
   const stage = detectTokenStage({
     address: metrics.mintAddress,
@@ -1111,19 +1098,8 @@ export const verifyHardenedScannerCriteria = (
   }
 
   // Enforce Token Age limits for ALL tokens (both pre-migration and migrated)
-  const ageInput: TokenAgeInput | number | null =
-    metrics.pairCreatedAt || metrics.discoveredAt
-      ? { pairCreatedAt: metrics.pairCreatedAt, discoveredAt: metrics.discoveredAt }
-      : metrics.ageMinutes != null
-      ? Date.now() - metrics.ageMinutes * 60000
-      : null;
-
-  const ageRes = validateTokenAge(ageInput, {
-    minAgeMinutes: minAge,
-    maxAgeMinutes: maxAge,
-    allowUnknownAge: false,
-  });
-  if (!ageRes.isValid) {
+  const ageMinutes = metrics.ageMinutes ?? 0;
+  if (ageMinutes > 0 && (ageMinutes < minAge || ageMinutes > maxAge)) {
     return false;
   }
 
@@ -1180,13 +1156,14 @@ export const processActiveTrackingFrame = async (
     if (!quote) return { shouldExit: false };
 
     const expectedSolOut = Number(quote.outAmount) / 1_000_000_000;
+    const dynamicFeesSol = Number(position.currentTokenBalance) < 50000000000 ? 0.00155 : 0.0035;
     
     if (!position.entryCostSol || position.entryCostSol <= 0) {
       console.warn(`[EVAL]: Invalid entryCostSol for ${tokenAddress}, refusing to evaluate PnL`);
       return { shouldExit: false };
     }
     const realEntryCost = position.entryCostSol;
-    const netPnL = ((expectedSolOut - realEntryCost) / realEntryCost) * 100;
+    const netPnL = ((expectedSolOut - dynamicFeesSol - realEntryCost) / realEntryCost) * 100;
 
     const defaultTP = config?.takeProfit ?? 45.0;
     const rawSL = config?.stopLoss ?? -30.0;

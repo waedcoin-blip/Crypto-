@@ -1,3 +1,0 @@
-Fixed Take Profit and Stop Loss ignoring user UI entries.
-- Removed hard-caching of `tpPct` and `slPct` fields on position creation.
-- Rewrote the tracking engine and exit handlers to dynamically fetch the latest global TP/SL configs from the UI.
