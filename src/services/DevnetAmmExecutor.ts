@@ -290,7 +290,21 @@ export class DevnetAmmExecutor implements ITradeExecutor {
       await this.syncStoreBalances(activePublicKey, targetMintStr);
 
       const landingTimeMs = Date.now() - start;
-      const actualFee = 0.000005;
+      let actualFee = 0.000005;
+      for (let attempt = 0; attempt < 4; attempt++) {
+        try {
+          const txDetails = await this.connection.getParsedTransaction(sig, {
+            commitment: 'confirmed',
+            maxSupportedTransactionVersion: 0,
+          });
+          if (txDetails?.meta?.fee !== undefined) {
+            actualFee = txDetails.meta.fee / LAMPORTS_PER_SOL;
+            break;
+          }
+        } catch {
+          await new Promise((r) => setTimeout(r, 500));
+        }
+      }
       this.telemetryTotalFeesPaidSol += actualFee;
       this.telemetryLandingTimeTotalMs += landingTimeMs;
 
@@ -359,41 +373,43 @@ export class DevnetAmmExecutor implements ITradeExecutor {
 
   async getSolBalance(): Promise<number> {
     if (!this.publicKey) return 0;
-    try {
-      const lamports = await this.connection.getBalance(new PublicKey(this.publicKey), 'confirmed');
-      return lamports / LAMPORTS_PER_SOL;
-    } catch {
-      return 0;
-    }
+    const lamports = await this.connection.getBalance(new PublicKey(this.publicKey), 'confirmed');
+    return lamports / LAMPORTS_PER_SOL;
   }
 
   async getTokenBalance(mint: string): Promise<number> {
     if (!this.publicKey) return 0;
-    try {
-      const accounts = await this.connection.getParsedTokenAccountsByOwner(
-        new PublicKey(this.publicKey),
-        { mint: new PublicKey(mint) },
+    const ownerPk = new PublicKey(this.publicKey);
+    const mintPk = new PublicKey(mint);
+
+    const [splAccounts, t22Accounts] = await Promise.all([
+      this.connection.getParsedTokenAccountsByOwner(
+        ownerPk,
+        { mint: mintPk, programId: TOKEN_PROGRAM_ID },
         'confirmed'
-      );
-      if (accounts.value.length === 0) return 0;
-      return Number(accounts.value[0].account.data.parsed.info.tokenAmount.amount);
-    } catch {
-      return 0;
+      ),
+      this.connection.getParsedTokenAccountsByOwner(
+        ownerPk,
+        { mint: mintPk, programId: TOKEN_2022_PROGRAM_ID },
+        'confirmed'
+      ).catch(() => ({ value: [] })),
+    ]);
+
+    const allAccounts = [...splAccounts.value, ...t22Accounts.value];
+    let totalRawAmount = 0;
+    for (const account of allAccounts) {
+      const amountStr = account.account.data.parsed?.info?.tokenAmount?.amount;
+      if (amountStr) {
+        totalRawAmount += Number(amountStr);
+      }
     }
+    return totalRawAmount;
   }
 
   async hasTokenAccount(mint: string): Promise<boolean> {
     if (!this.publicKey) return false;
-    try {
-      const accounts = await this.connection.getParsedTokenAccountsByOwner(
-        new PublicKey(this.publicKey),
-        { mint: new PublicKey(mint) },
-        'confirmed'
-      );
-      return accounts.value.length > 0;
-    } catch {
-      return false;
-    }
+    const balance = await this.getTokenBalance(mint);
+    return balance > 0;
   }
 
   private async syncStoreBalances(activePublicKey: string, targetMint?: string): Promise<void> {

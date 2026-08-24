@@ -665,6 +665,7 @@ function App() {
 
   useEffect(() => {
     masterMonitorHealthManager.setEndpoints(masterMonitorRpc, masterMonitorRpc2, masterMonitorWs);
+    void StartupReconciliation.runReconciliation();
   }, [masterMonitorRpc, masterMonitorRpc2, masterMonitorWs, rpcUrl]);
   const [isHardenedCriteriaExpanded, setIsHardenedCriteriaExpanded] = useState(false);
   const [activePreset, setActivePreset] = useState<string>(() => localStorage.getItem('app_active_preset') || 'custom');

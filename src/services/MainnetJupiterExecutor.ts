@@ -185,18 +185,21 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
 
       const landingTimeMs = Date.now() - start;
 
-      // Query actual transaction fee from confirmed transaction metadata
+      // Query actual transaction fee from confirmed transaction metadata with retries
       let actualFee = 0.000005;
-      try {
-        const txDetails = await this.connection.getTransaction(sig, {
-          commitment: 'confirmed',
-          maxSupportedTransactionVersion: 0,
-        });
-        if (txDetails?.meta?.fee !== undefined) {
-          actualFee = txDetails.meta.fee / LAMPORTS_PER_SOL;
+      for (let attempt = 0; attempt < 4; attempt++) {
+        try {
+          const txDetails = await this.connection.getParsedTransaction(sig, {
+            commitment: 'confirmed',
+            maxSupportedTransactionVersion: 0,
+          });
+          if (txDetails?.meta?.fee !== undefined) {
+            actualFee = txDetails.meta.fee / LAMPORTS_PER_SOL;
+            break;
+          }
+        } catch (fErr) {
+          await new Promise((r) => setTimeout(r, 500));
         }
-      } catch (fErr) {
-        console.warn('[MainnetJupiterExecutor] Could not query confirmed tx fee metadata, falling back to estimate:', fErr);
       }
 
       this.telemetryTotalFeesPaidSol += actualFee;

@@ -352,117 +352,45 @@ export const executeTxWithRPCFallback = async (
   }
 
   const signature = bs58.encode(tx.signatures[0]);
-  const serializedTx = Buffer.from(tx.serialize()).toString('base64');
 
-  const jitoEndpoints = [
-    "https://mainnet.block-engine.jito.wtf/api/v1/transactions",
-    "https://amsterdam.mainnet.block-engine.jito.wtf/api/v1/transactions",
-    "https://frankfurt.mainnet.block-engine.jito.wtf/api/v1/transactions",
-    "https://tokyo.mainnet.block-engine.jito.wtf/api/v1/transactions",
-    "https://ny.mainnet.block-engine.jito.wtf/api/v1/transactions"
-  ];
-
-  const rpcsToTry = [
-    connection.rpcEndpoint,
-    localStorage.getItem('juipter_auto_rpcUrl') || '',
-    localStorage.getItem('juipter_auto_rpcUrl2') || '',
-    ...FALLBACK_RPCS
-  ].filter((url, index, self) => url && url.trim() !== "" && self.indexOf(url) === index);
-
-  // Robust parallel broadcaster: broadcasts to all RPCs + Jito endpoints immediately
-  const broadcastTransaction = async () => {
-
-    // Broadcast via Jito in parallel using valid JSON-RPC 2.0 format
-    try {
-      Promise.any(
-        jitoEndpoints.map(endpoint =>
-          fetch(endpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              jsonrpc: '2.0',
-              id: 1,
-              method: 'sendTransaction',
-              params: [serializedTx]
-            })
-          }).then(res => { if (res.ok) return endpoint; throw new Error("Jito failed"); })
-        )
-      ).catch(() => {});
-    } catch (e) {}
-
-    // Broadcast via standard RPCs
-    try {
-      rpcsToTry.forEach(async rpc => {
-        try {
-          const conn = new Connection(rpc, 'confirmed');
-          await conn.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 0 });
-        } catch (err) {}
-      });
-    } catch (err) {}
-  };
-
-  // Initial broadcast
+  // Submit transaction once safely without skipPreflight
   useAppStore.getState().addJupiterLog({
     type: 'INFO',
-    message: `Broadcasting transaction: ${signature.slice(0, 8)}... (re-sending every 400ms)`,
+    message: `Submitting transaction: ${signature.slice(0, 8)}...`,
   });
-  await broadcastTransaction();
 
-  // Set up periodic re-broadcasting every 400ms to ensure dropped transactions are replaced (faster momentum)
-  const broadcastInterval = setInterval(() => {
-    console.log(`[TX] Re-broadcasting transaction: ${signature}`);
-    broadcastTransaction();
-  }, 400);
+  const sendRes = await connection.sendRawTransaction(tx.serialize(), {
+    skipPreflight: false,
+    maxRetries: 3,
+  });
 
-  try {
-    const finalSignature = await Promise.any(rpcsToTry.map(async rpc => {
-      const conn = new Connection(rpc, 'confirmed');
-      
-      // Fast Signature Status Polling Loop
-      const deadline = Date.now() + 45000; // 45s max wait for final confirmation in momentum
-      while (Date.now() < deadline) {
-        try {
-          const value = await getSignatureStatusRobust(conn, signature);
-          if (value) {
-            if (value.err) {
-              throw new Error(`Transaction failed: ${JSON.stringify(value.err)}`);
-            }
-            if (value.confirmationStatus === 'confirmed' || value.confirmationStatus === 'finalized') {
-              return signature;
-            }
-          }
-        } catch (pollingErr: any) {
-          if (pollingErr.message?.includes('Transaction failed')) {
-            throw pollingErr;
-          }
-          console.warn(`RPC ${rpc} status check glitch:`, pollingErr.message || pollingErr);
-        }
-        await new Promise(resolve => setTimeout(resolve, 300)); // Polling status every 300ms
+  // Track signature status until confirmed or finalized
+  const deadline = Date.now() + 45000;
+  while (Date.now() < deadline) {
+    const status = await getSignatureStatusRobust(connection, sendRes);
+    if (status) {
+      if (status.err) {
+        throw new Error(`Transaction failed: ${JSON.stringify(status.err)}`);
       }
-
-      throw new Error(`RPC ${rpc} timed out waiting for confirmation (45s). Signature: ${signature}.`);
-    }));
-
-    useAppStore.getState().addJupiterLog({
-      type: 'SWAP',
-      message: `Swap Confirmed: ${finalSignature.slice(0,8)}...`,
-      details: { signature: finalSignature }
-    });
-
-    return finalSignature;
-  } catch (err: any) {
-    let errorMsg = err?.message || '';
-    if (err instanceof AggregateError) {
-      errorMsg = err.errors.map(e => e.message || String(e)).join(' | ');
+      if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized') {
+        useAppStore.getState().addJupiterLog({
+          type: 'SWAP',
+          message: `Swap Confirmed: ${sendRes.slice(0, 8)}...`,
+          details: { signature: sendRes },
+        });
+        return sendRes;
+      }
     }
-    useAppStore.getState().addJupiterLog({
-      type: 'ERROR',
-      message: `Swap Failed: ${errorMsg || 'All RPC endpoints failed to confirm'}`,
-    });
-    throw new Error(`Failed to confirm transaction: ${errorMsg || 'All RPC endpoints failed to confirm'}`);
-  } finally {
-    clearInterval(broadcastInterval);
+    await new Promise((r) => setTimeout(r, 1000));
   }
+
+  // Verification fallback: Check status one last time before throwing timeout
+  const finalCheck = await getSignatureStatusRobust(connection, sendRes);
+  if (finalCheck && !finalCheck.err && (finalCheck.confirmationStatus === 'confirmed' || finalCheck.confirmationStatus === 'finalized')) {
+    return sendRes;
+  }
+
+  throw new Error(`Transaction submission timed out after 45s: ${sendRes}`);
 };
 
 // --- MOMENTUM SELLING & JITO TIP FLOORS ---
