@@ -11,7 +11,7 @@ import { useAppStore } from '../../store/appStore';
 import { TokenScanner, ScannedToken } from '../../services/tokenScanner';
 import { DEFAULT_CRITERIA } from '../../config/tokenCriteria';
 import { getTradeCount } from '../../config/rebuyGuard';
-import { getJupiterQuote, executeTxWithRPCFallback, getTokenBalanceRaw, getLatestBlockhashWithFallback, pingJupiterApi } from '../../services/jupiterService';
+import { getJupiterQuote, getTokenBalanceRaw, getLatestBlockhashWithFallback, pingJupiterApi } from '../../services/jupiterService';
 import { db } from '../../lib/firebase';
 import { detectTokenStage } from '../../lib/utils';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
@@ -1597,8 +1597,11 @@ export const PnLPage = ({
             let sellSol = t.sellAmountSol !== undefined && t.sellAmountSol !== null ? Number(t.sellAmountSol) : 0;
             let pnl = t.pnlPct !== undefined && t.pnlPct !== null ? Number(t.pnlPct) : 0;
 
-            // Sanitize corrupt historical trade where sell SOL stored raw token count
-            if (buySol > 0 && sellSol > buySol * 50 && pnl > 5000) {
+            // Sanitize corrupt historical trade where sell SOL stored raw lamports (e.g. 12977573) or inflated units
+            if (sellSol >= 1000) {
+              sellSol = sellSol / 1_000_000_000;
+              pnl = buySol > 0 ? ((sellSol - buySol) / buySol) * 100 : pnl;
+            } else if (buySol > 0 && sellSol > buySol * 50 && pnl > 5000) {
               pnl = Math.min(pnl, 100);
               sellSol = buySol * (1 + (pnl / 100));
             }
@@ -1848,7 +1851,27 @@ export const PnLPage = ({
                   });
                   fsHistory.forEach((t: any) => {
                     if (t && (t.id || t.mint)) {
-                      map.set(t.id || `${t.mint}-${t.buyTime}`, t);
+                      const buySol = t.buyAmountSol !== undefined && t.buyAmountSol !== null ? Number(t.buyAmountSol) : 0;
+                      let sellSol = t.sellAmountSol !== undefined && t.sellAmountSol !== null ? Number(t.sellAmountSol) : 0;
+                      let pnl = t.pnlPct !== undefined && t.pnlPct !== null ? Number(t.pnlPct) : 0;
+
+                      if (sellSol >= 1000) {
+                        sellSol = sellSol / 1_000_000_000;
+                        pnl = buySol > 0 ? ((sellSol - buySol) / buySol) * 100 : pnl;
+                      } else if (buySol > 0 && sellSol > buySol * 50 && pnl > 5000) {
+                        pnl = Math.min(pnl, 100);
+                        sellSol = buySol * (1 + (pnl / 100));
+                      }
+
+                      map.set(t.id || `${t.mint}-${t.buyTime}`, {
+                        id: t.id || Math.random().toString(),
+                        mint: t.mint || 'Unknown',
+                        buyTime: t.buyTime || Date.now(),
+                        sellTime: t.sellTime || Date.now(),
+                        buyAmountSol: buySol,
+                        sellAmountSol: sellSol,
+                        pnlPct: pnl
+                      });
                     }
                   });
                   const merged = Array.from(map.values());
@@ -3083,9 +3106,14 @@ export const PnLPage = ({
     const intent = inputMint === SOL_MINT ? 'entry' : 'exit_tp';
     
     const res = await tradeManager.swap(inputMint, outputMint, amount, slippageToUse, intent);
+    const isOutputSol = outputMint === SOL_MINT || outputMint === 'So11111111111111111111111111111111111111112';
     return {
       txid: res.signature,
       outputAmount: res.outputAmount || 0,
+      outputAmountRaw: res.outputAmount || 0,
+      outputAmountSol: isOutputSol ? ((res.outputAmount || 0) / 1_000_000_000) : 0,
+      feeSol: res.feeSol || 0,
+      slot: res.slot || 0,
     };
   };
 
@@ -3696,122 +3724,13 @@ const checkTokenCriteria = (mint: string): {
     await executeBuy(mint, symbol, priceNative, tradeSol, true);
   }, [executeBuy, addLog, tradeAmount]);
 
-  const executeSell = async (mint: string, currentPrice: number, pnlPct: number, reason: string = '') => {
-    const { privateKey, slippage } = configRef.current;
-    let pos = positionsRef.current[mint];
-    if (!pos) return;
-
-    if (privateKey && (mint.toLowerCase().startsWith('sim') || (pos.symbol && pos.symbol.toLowerCase().startsWith('sim')))) {
-      addLog(`❌ [SIM BLOCK] Trading for tokens starting with 'sim' is strictly blocked: ${pos.symbol} (${mint})`, 'warn');
-      return;
+  const executeSell = async (mint: string, _currentPrice?: number, _pnlPct?: number, reason: string = 'MANUAL_FORCE_EXIT') => {
+    if (positionExitManagerRef.current) {
+      addLog(`🚨 Delegating exit request for ${mint.slice(0, 6)} to PositionExitManager (${reason})...`, 'info');
+      await positionExitManagerRef.current.requestExit(mint, reason);
+    } else {
+      addLog(`❌ [EXIT ERROR] PositionExitManager is not active.`, 'err');
     }
-
-    const shouldSellMain = !!pos.amount && pos.amount > 0;
-    
-    if (!shouldSellMain) {
-      return;
-    }
-
-    // Log the initiation of the sell
-    addLog(`🚨 [SELL PROCESS] Initiating sell for ${pos.symbol}. Reason: ${reason}`, 'info');
-
-    let isMainSold = false;
-
-    // --- EXECUTE MAIN POSITION SELL ---
-    if (shouldSellMain && !isMainSold) {
-      if (!privateKey) {
-        addLog('❌ [SELL ABORTED] No Private Key configured. A wallet is required for both Devnet and Mainnet trading.', 'err');
-        return;
-      }
-
-      // Real on-chain swap sell for main
-      addLog(`🚨 [REAL SWAP SELL] Initiating real on-chain sell for main position of ${pos.symbol} via Jupiter...`, 'warn');
-      try {
-        const lamportsToSellRaw = pos.amountLamports;
-        let lamportsToSell = lamportsToSellRaw;
-        if (!lamportsToSell || lamportsToSell <= 0) {
-          try {
-            const keypair = useActiveWalletStore.getState().activeWallet?.keypair;
-            const activeWsUrl = (customWsUrl && customWsUrl.trim() !== "") ? customWsUrl.trim() : rpcUrl.replace('https', 'wss').replace('http', 'ws');
-            const conn = new Connection(rpcUrl, { commitment: 'confirmed', wsEndpoint: activeWsUrl });
-            const accounts = await conn.getParsedTokenAccountsByOwner(
-              keypair.publicKey,
-              { mint: new PublicKey(mint) }
-            );
-            if (accounts.value.length > 0) {
-                lamportsToSell = parseInt(accounts.value[0].account.data.parsed.info.tokenAmount.amount, 10);
-            }
-          } catch (e) {
-            console.warn("Failed to fetch balance for dynamic sell", e);
-          }
-        }
-
-        if (!pos || !lamportsToSell || lamportsToSell <= 0) {
-          addLog(`No original token lamports for ${pos?.symbol || mint}, using fallback or removing position`, 'warn');
-          isMainSold = true;
-        } else {
-          addLog(`Ordering ${pos.symbol} → SOL...`, 'sell');
-          const result = await executeJupiterSwap(mint, SOL_MINT, lamportsToSell);
-          if (result.txid) {
-            const actualSolReceived = result.outputAmount || 0;
-            const costBasisSol = pos.solSpent || 0;
-            const actualPnlSOL = costBasisSol > 0 ? actualSolReceived - costBasisSol : 0;
-            const actualPnlPct = costBasisSol > 0 ? actualPnlSOL / costBasisSol : 0;
-            
-            setStats((s) => ({
-              ...s,
-              trades: s.trades + 1,
-              wins: s.wins + (actualPnlPct > 0 ? 1 : 0),
-              losses: s.losses + (actualPnlPct <= 0 ? 1 : 0),
-              pnl: s.pnl + actualPnlSOL,
-              bestTrade: (actualPnlPct > 0 && (!s.bestTrade || actualPnlPct > s.bestTrade)) ? actualPnlPct : s.bestTrade
-            }));
-            addLog(`✅ Sold ${pos.symbol} on-chain | Received: ${actualSolReceived.toFixed(6)} SOL | P&L: ${(actualPnlPct * 100).toFixed(1)}% | tx: ${result.txid.slice(0, 12)}...`, 'sell');
-            
-            setTradeHistory(th => [{
-              id: `trade-${Date.now()}`,
-              mint: mint,
-              buyTime: pos.entryTime,
-              sellTime: Date.now(),
-              buyAmountSol: costBasisSol,
-              sellAmountSol: actualSolReceived,
-              pnlPct: Math.max(-100, actualPnlPct * 100)
-            }, ...th]);
-
-            if (pnlPct < 0) {
-              setBlacklistedMints(prev => Array.from(new Set([...prev, mint])));
-              addLog(`Blacklisted ${pos.symbol} due to negative PnL.`, 'warn');
-            }
-            isMainSold = true;
-            walletBalanceService.refreshNow();
-          } else {
-            throw new Error("Jupiter swap transaction ID missing.");
-          }
-        }
-      } catch (e: any) {
-        addLog(`Real main sell error: ${e.message}`, 'err');
-        walletBalanceService.refreshNow();
-      }
-    }
-    
-    // Fallback for actualPnlPct < 0 block that comes after
-    const actualPnlPct = pnlPct;
-    if (actualPnlPct < 0) {
-      setBlacklistedMints(prev => Array.from(new Set([...prev, mint])));
-      addLog(`Blacklisted ${pos.symbol} due to negative PnL.`, 'warn');
-    }
-
-    // 3. Update Positions state based on what was sold
-    setPositions((currPositions) => {
-      const next = { ...currPositions };
-      const currentPos = next[mint];
-      if (!currentPos) return next;
-
-      if (isMainSold) {
-        delete next[mint]; positionExitManagerRef.current?.removePosition(mint); masterMonitorRef.current?.stopMonitoring(mint);
-      }
-      return next;
-    });
   };
 
   const positionsRef = useRef(positions);
@@ -3858,13 +3777,12 @@ const checkTokenCriteria = (mint: string): {
     );
 
     exitMgr.setOnExitCallback((mint, side, signature, pnlPct, outputAmountSol) => {
-      addLog(`⚡ [FAST EXIT ENGINE] ${side.toUpperCase()} triggered for ${mint} at ${pnlPct.toFixed(2)}% | Tx: ${signature}`, 'sell');
       const pos = positionsRef.current[mint];
       if (pos) {
         // Remove from UI position state
         setPositions(prev => {
           const next = { ...prev };
-          delete next[mint]; positionExitManagerRef.current?.removePosition(mint); masterMonitorRef.current?.stopMonitoring(mint);
+          delete next[mint];
           return next;
         });
         // Stop price monitoring
@@ -3872,10 +3790,12 @@ const checkTokenCriteria = (mint: string): {
 
         // Update trade history and stats
         const costBasisSol = pos.solSpent || 0;
-        const actualSolReceived = outputAmountSol !== undefined ? outputAmountSol : Math.max(0, costBasisSol + (costBasisSol * pnlPct / 100));
-        const actualPnlSOL = actualSolReceived - costBasisSol;
-        // recalculate pnlPct purely based on actual real return
-        pnlPct = costBasisSol > 0 ? (actualPnlSOL / costBasisSol) * 100 : pnlPct;
+        const actualNetSolReceived = outputAmountSol !== undefined ? outputAmountSol : Math.max(0, costBasisSol + (costBasisSol * pnlPct / 100));
+        const actualPnlSOL = costBasisSol > 0 ? actualNetSolReceived - costBasisSol : 0;
+        // recalculate pnlPct purely based on actual real net SOL return
+        const realPnlPct = costBasisSol > 0 ? (actualPnlSOL / costBasisSol) * 100 : pnlPct;
+
+        addLog(`⚡ [FAST EXIT ENGINE] ${side.toUpperCase()} triggered for ${pos.symbol || mint.slice(0, 6)} | Received: ${actualNetSolReceived.toFixed(6)} SOL | PnL: ${realPnlPct.toFixed(2)}% | Tx: ${signature.slice(0, 12)}...`, 'sell');
 
         // Refresh wallet balance
         walletBalanceService.refreshNow();
@@ -3883,23 +3803,23 @@ const checkTokenCriteria = (mint: string): {
         setStats((s) => ({
           ...s,
           trades: s.trades + 1,
-          wins: s.wins + (pnlPct > 0 ? 1 : 0),
-          losses: s.losses + (pnlPct <= 0 ? 1 : 0),
+          wins: s.wins + (realPnlPct > 0 ? 1 : 0),
+          losses: s.losses + (realPnlPct <= 0 ? 1 : 0),
           pnl: s.pnl + actualPnlSOL,
-          bestTrade: (pnlPct > 0 && (!s.bestTrade || (pnlPct/100) > s.bestTrade)) ? (pnlPct/100) : s.bestTrade
+          bestTrade: (realPnlPct > 0 && (!s.bestTrade || (realPnlPct / 100) > s.bestTrade)) ? (realPnlPct / 100) : s.bestTrade
         }));
 
         setTradeHistory(th => [{
-          id: `trade-${Date.now()}`,
+          id: `trade-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           mint: mint,
           buyTime: pos.entryTime,
           sellTime: Date.now(),
           buyAmountSol: costBasisSol,
-          sellAmountSol: actualSolReceived,
-          pnlPct: Math.max(-100, pnlPct)
+          sellAmountSol: actualNetSolReceived,
+          pnlPct: Math.max(-100, realPnlPct)
         }, ...th]);
 
-        if (pnlPct < 0) {
+        if (realPnlPct < 0) {
           setBlacklistedMints(prev => Array.from(new Set([...prev, mint])));
         }
       }
@@ -4288,47 +4208,6 @@ const checkTokenCriteria = (mint: string): {
           }
           return changed ? next : prev;
         });
-
-        // 3. Direct Active Positions TP / Stop Loss Verification & Execution
-        for (const mint of activeMints) {
-          const pos = positionsRef.current[mint];
-          if (!pos || !pos.amount || pos.amount <= 0) continue;
-
-          const currentPrice = pos.currentPrice || pos.buyPrice || 0;
-          const buyPrice = pos.buyPrice || 0;
-          if (currentPrice > 0 && buyPrice > 0) {
-            const pnlPct = ((currentPrice - buyPrice) / buyPrice) * 100;
-            
-            const stage = detectTokenStage({
-              address: mint,
-              dexId: (tokenMetricsRef.current[mint]?.dexId) || (mint.toLowerCase().endsWith('pump') ? 'pumpfun' : 'raydium'),
-              bondingCurveProgress: tokenMetricsRef.current[mint]?.bondingCurveProgress,
-              isRaydiumListed: tokenMetricsRef.current[mint]?.isRaydiumListed
-            });
-
-            const tpTarget = pos.tpPct ?? (stage.isBonding 
-              ? (configRef.current.bondingCurveTakeProfit || 25) 
-              : (configRef.current.minTakeProfit || 25));
-
-            let slTarget = pos.slPct ?? (stage.platform === 'PUMP_FUN' || stage.isBonding 
-              ? (configRef.current.bondingCurveStopLossPct || 20) 
-              : stage.platform === 'PUMPSWAP'
-              ? (configRef.current.pumpSwapStopLossPct || 15)
-              : stage.platform === 'UNKNOWN'
-              ? (configRef.current.unknownStopLossPct || 15)
-              : (configRef.current.stopLossPct || 15));
-            
-            slTarget = Math.abs(slTarget);
-
-            if (pnlPct >= tpTarget) {
-              addLog(`🎯 [TAKE PROFIT TRIGGER] ${pos.symbol || mint.slice(0, 6)} reached +${pnlPct.toFixed(2)}% (Target: +${tpTarget}%)`, 'sell');
-              void executeSell(mint, currentPrice, pnlPct, 'TAKE PROFIT');
-            } else if (pnlPct <= -slTarget) {
-              addLog(`🛑 [STOP LOSS TRIGGER] ${pos.symbol || mint.slice(0, 6)} dropped to ${pnlPct.toFixed(2)}% (Stop: -${slTarget}%)`, 'warn');
-              void executeSell(mint, currentPrice, pnlPct, 'STOP LOSS');
-            }
-          }
-        }
       }
     } finally {
       isCheckingRef.current = false;
@@ -7073,14 +6952,8 @@ const checkTokenCriteria = (mint: string): {
               <tbody>
                 {tradeHistory.map(trade => {
                   const buySol = trade.buyAmountSol || 0;
-                  let sellSol = trade.sellAmountSol || 0;
-                  let pnl = trade.pnlPct || 0;
-
-                  if (buySol > 0 && sellSol > buySol * 50 && pnl > 5000) {
-                    pnl = Math.min(pnl, 100);
-                    sellSol = buySol * (1 + (pnl / 100));
-                  }
-
+                  const sellSol = trade.sellAmountSol || 0;
+                  const pnl = trade.pnlPct || 0;
                   const profitSol = sellSol - buySol;
                   const buyTime = trade.buyTime || Date.now();
                   const sellTime = trade.sellTime || Date.now();

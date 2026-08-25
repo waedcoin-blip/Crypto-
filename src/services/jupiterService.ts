@@ -274,123 +274,16 @@ export const getLatestBlockhashWithFallback = async (
 
 export const executeTxWithRPCFallback = async (
   tx: VersionedTransaction,
-  connection: Connection
+  _connection: Connection
 ): Promise<string> => {
-  const isSenderEnabled = localStorage.getItem('hd_sender_enabled') === 'true';
-
+  const signature = bs58.encode(tx.signatures[0] || new Uint8Array(64));
+  console.warn(`[DEPRECATED EXECUTION PATH] executeTxWithRPCFallback is disabled from authoritative trading. Submissions must go through MainnetJupiterExecutor.`);
   useAppStore.getState().addJupiterLog({
-    type: 'INFO',
-    message: `Executing Swap Transaction...`,
-    details: { isSenderEnabled }
+    type: 'ERROR',
+    message: `[DEPRECATED] executeTxWithRPCFallback disabled. Please route swaps through MainnetJupiterExecutor.`,
+    details: { signature }
   });
-
-  if (isSenderEnabled) {
-    const senderEndpoint = localStorage.getItem('hd_sender_endpoint') || 'https://sender.helius-rpc.com/fast';
-    const isSwqos = localStorage.getItem('hd_sender_swqos') === 'true';
-    const senderApiKey = localStorage.getItem('hd_sender_apiKey') || '';
-
-    let url = senderEndpoint;
-    const params = new URLSearchParams();
-    if (isSwqos) params.append("swqos_only", "true");
-    if (senderApiKey) params.append("api-key", senderApiKey);
-    const paramStr = params.toString();
-    if (paramStr) url += (url.includes("?") ? "&" : "?") + paramStr;
-
-    try {
-      const serializedTx = Buffer.from(tx.serialize()).toString('base64');
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0', id: Date.now().toString(), method: 'sendTransaction',
-          params: [serializedTx, { encoding: 'base64', skipPreflight: true, maxRetries: 0 }]
-        })
-      });
-      const json = await response.json();
-      if (json.error) throw new Error(`Helius Sender Error: ${json.error.message}`);
-      const signatureResult = json.result;
-
-      if (!signatureResult || typeof signatureResult !== 'string') {
-        throw new Error(`Invalid signature returned from Helius Sender: ${JSON.stringify(json)}`);
-      }
-
-      // Fast Signature Status Polling Loop
-      const deadline = Date.now() + 45000; // 45 seconds polling
-      while (Date.now() < deadline) {
-        try {
-          const value = await getSignatureStatusRobust(connection, signatureResult);
-          if (value) {
-            if (value.err) {
-              throw new Error(`Sender transaction failed: ${JSON.stringify(value.err)}`);
-            }
-            if (value.confirmationStatus === 'confirmed' || value.confirmationStatus === 'finalized') {
-              useAppStore.getState().addJupiterLog({
-                type: 'SWAP',
-                message: `Swap Confirmed via Sender: ${signatureResult.slice(0,8)}...`,
-                details: { signature: signatureResult, sender: 'Helius Sender' }
-              });
-              return signatureResult;
-            }
-          }
-        } catch (pollingErr: any) {
-          if (pollingErr.message?.includes('Sender transaction failed')) {
-            throw pollingErr;
-          }
-          console.warn(`Helius Sender connection status check glitch:`, pollingErr.message || pollingErr);
-        }
-        await new Promise(resolve => setTimeout(resolve, 300)); // Fast status polling
-      }
-
-      throw new Error("Sender transaction confirmation timeout (45s).");
-    } catch (e: any) {
-      console.error('Helius Sender failed, falling back:', e.message);
-      useAppStore.getState().addJupiterLog({
-        type: 'INFO',
-        message: `Sender failed, falling back to RPCs: ${e.message}`
-      });
-    }
-  }
-
-  const signature = bs58.encode(tx.signatures[0]);
-
-  // Submit transaction once safely without skipPreflight
-  useAppStore.getState().addJupiterLog({
-    type: 'INFO',
-    message: `Submitting transaction: ${signature.slice(0, 8)}...`,
-  });
-
-  const sendRes = await connection.sendRawTransaction(tx.serialize(), {
-    skipPreflight: false,
-    maxRetries: 3,
-  });
-
-  // Track signature status until confirmed or finalized
-  const deadline = Date.now() + 45000;
-  while (Date.now() < deadline) {
-    const status = await getSignatureStatusRobust(connection, sendRes);
-    if (status) {
-      if (status.err) {
-        throw new Error(`Transaction failed: ${JSON.stringify(status.err)}`);
-      }
-      if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized') {
-        useAppStore.getState().addJupiterLog({
-          type: 'SWAP',
-          message: `Swap Confirmed: ${sendRes.slice(0, 8)}...`,
-          details: { signature: sendRes },
-        });
-        return sendRes;
-      }
-    }
-    await new Promise((r) => setTimeout(r, 1000));
-  }
-
-  // Verification fallback: Check status one last time before throwing timeout
-  const finalCheck = await getSignatureStatusRobust(connection, sendRes);
-  if (finalCheck && !finalCheck.err && (finalCheck.confirmationStatus === 'confirmed' || finalCheck.confirmationStatus === 'finalized')) {
-    return sendRes;
-  }
-
-  throw new Error(`Transaction submission timed out after 45s: ${sendRes}`);
+  throw new Error(`executeTxWithRPCFallback is deprecated and disabled. All swaps must be processed by MainnetJupiterExecutor.`);
 };
 
 // --- MOMENTUM SELLING & JITO TIP FLOORS ---

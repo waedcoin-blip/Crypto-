@@ -211,6 +211,38 @@ export class PositionExitManager {
     }
   }
 
+  public async requestExit(mint: string, reason: string = 'MANUAL_FORCE_EXIT'): Promise<void> {
+    let pos = this.positions.get(mint);
+    if (!pos) {
+      // Create a temporary managed position if it doesn't exist yet in the manager
+      let liveAmount = 0;
+      if (typeof this.executor.getTokenBalance === 'function') {
+        try {
+          liveAmount = await this.executor.getTokenBalance(mint);
+        } catch {}
+      }
+      if (liveAmount <= 0) {
+        console.warn(`[ExitManager] No balance or position found for manual exit request on ${mint}`);
+        return;
+      }
+      this.addPosition({
+        mint,
+        amount: liveAmount,
+        buyPrice: 0,
+        solSpent: 0,
+      });
+      pos = this.positions.get(mint);
+    }
+    if (!pos || pos.state === 'CLOSING' || pos.state === 'CLOSED') {
+      return;
+    }
+
+    const pnlPct = this.calculatePnLPct(pos);
+    const side: 'tp' | 'sl' = pnlPct >= 0 ? 'tp' : 'sl';
+    console.log(`[ExitManager] 🚨 Explicit exit requested for ${mint} (${reason})`);
+    await this.triggerExit(pos, side, pnlPct);
+  }
+
   public async triggerExit(pos: ManagedExitPosition, side: 'tp' | 'sl', pnlPct: number): Promise<void> {
     const mint = pos.mint;
     if (this.exitingMints.has(mint) || pos.state !== 'OPEN') return;
@@ -259,8 +291,9 @@ export class PositionExitManager {
 
         walletBalanceService.refreshNow();
 
+        const netSolReceived = Math.max(0, (result.outputAmount / 1e9) - (result.feeSol || 0));
         if (this.onExitCallback) {
-          this.onExitCallback(mint, side, result.signature || 'exit-tx', pnlPct, (result.outputAmount / 1e9) - result.feeSol);
+          this.onExitCallback(mint, side, result.signature || 'exit-tx', pnlPct, netSolReceived);
         }
       } else {
         pos.amount = liveBalance;

@@ -303,14 +303,33 @@ export class DevnetAmmExecutor implements ITradeExecutor {
 
       const landingTimeMs = Date.now() - start;
       let actualFee = 0.000005;
+      let actualOutputAmountLamports = outAmountNum;
       for (let attempt = 0; attempt < 4; attempt++) {
         try {
           const txDetails = await this.connection.getParsedTransaction(sig, {
             commitment: 'confirmed',
             maxSupportedTransactionVersion: 0,
           });
-          if (txDetails?.meta?.fee !== undefined) {
-            actualFee = txDetails.meta.fee / LAMPORTS_PER_SOL;
+          if (txDetails?.meta) {
+            if (txDetails.meta.fee !== undefined) {
+              actualFee = txDetails.meta.fee / LAMPORTS_PER_SOL;
+            }
+            if (!isSolBuy && txDetails.meta.preBalances && txDetails.meta.postBalances && txDetails.transaction?.message?.accountKeys) {
+              const keys = txDetails.transaction.message.accountKeys;
+              const userIdx = keys.findIndex((k: any) => {
+                const pk = typeof k === 'string' ? k : (k?.pubkey?.toBase58 ? k.pubkey.toBase58() : String(k?.pubkey || ''));
+                return pk === activePublicKey;
+              });
+              if (userIdx !== -1 && txDetails.meta.preBalances[userIdx] !== undefined && txDetails.meta.postBalances[userIdx] !== undefined) {
+                const preBal = txDetails.meta.preBalances[userIdx];
+                const postBal = txDetails.meta.postBalances[userIdx];
+                const feeLamports = (userIdx === 0 && txDetails.meta.fee) ? txDetails.meta.fee : 0;
+                const grossLamports = postBal - preBal + feeLamports;
+                if (grossLamports > 0) {
+                  actualOutputAmountLamports = grossLamports;
+                }
+              }
+            }
             break;
           }
         } catch {
@@ -322,8 +341,8 @@ export class DevnetAmmExecutor implements ITradeExecutor {
 
       useAppStore.getState().addJupiterLog({
         type: 'INFO',
-        message: `Devnet Swap Success: ${sig.slice(0, 8)}... (Slot ${slot})`,
-        details: { signature: sig, inputMint, outputMint, inAmount: amount, outAmount: outAmountNum },
+        message: `Devnet Swap Success: ${sig.slice(0, 8)}... (Slot ${slot}, Fee: ${actualFee.toFixed(6)} SOL)`,
+        details: { signature: sig, inputMint, outputMint, inAmount: amount, outAmount: actualOutputAmountLamports, feeSol: actualFee },
       });
 
       return {
@@ -331,7 +350,7 @@ export class DevnetAmmExecutor implements ITradeExecutor {
         inputMint,
         outputMint,
         inputAmount: amount,
-        outputAmount: outAmountNum,
+        outputAmount: actualOutputAmountLamports,
         feeSol: actualFee,
         slot,
         landingTimeMs,

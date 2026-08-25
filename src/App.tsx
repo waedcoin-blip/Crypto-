@@ -70,7 +70,7 @@ import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
 import { 
   getJupiterQuote, 
   createJupiterSwapTransaction, 
-  executeTxWithRPCFallback, getLatestBlockhashWithFallback, pollSignatureStatus,
+  getLatestBlockhashWithFallback, pollSignatureStatus,
   getTokenBalanceRaw, 
   processActiveTrackingFrame, 
   verifyHardenedScannerCriteria,
