@@ -2,6 +2,7 @@
 
 import { ITradeExecutor } from './ITradeExecutor';
 import { walletBalanceService } from './WalletBalanceService';
+import { useBalanceStore } from '../store/balanceStore';
 
 export interface ManagedExitPosition {
   mint: string;
@@ -377,7 +378,9 @@ export class PositionExitManager {
       this.exitingMints.delete(mint);
       this.positions.delete(mint);
 
-      walletBalanceService.refreshNow();
+      // Explicitly zero sold token and await full on-chain RPC settling
+      useBalanceStore.getState().setTokenBalance(mint, 0);
+      await walletBalanceService.refreshWithRetry(undefined, 3, 400);
 
       const netSolReceived = Math.max(0, (result.outputAmount / 1e9) - (result.feeSol || 0));
       if (this.onExitCallback) {
@@ -395,7 +398,8 @@ export class PositionExitManager {
           if (liveBalance <= 1000) {
             pos.state = 'CLOSED';
             this.positions.delete(mint);
-            walletBalanceService.refreshNow();
+            useBalanceStore.getState().setTokenBalance(mint, 0);
+            await walletBalanceService.refreshWithRetry(undefined, 3, 400);
             if (this.onExitCallback) {
               this.onExitCallback(mint, side, 'recovered-exit-tx', pnlPct);
             }

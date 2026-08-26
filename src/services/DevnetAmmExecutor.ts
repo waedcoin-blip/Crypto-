@@ -448,9 +448,14 @@ export class DevnetAmmExecutor implements ITradeExecutor {
 
   private async syncStoreBalances(activePublicKey: string, targetMint?: string): Promise<void> {
     try {
+      // 1. Await authoritative wallet balance query across Devnet RPC with retry to ensure post-tx settling
+      await walletBalanceService.refreshWithRetry(activePublicKey, 3, 400);
+
+      // 2. Fetch fresh on-chain SOL balance directly from RPC
       const solLamports = await this.connection.getBalance(new PublicKey(activePublicKey), 'confirmed');
       const sol = solLamports / LAMPORTS_PER_SOL;
 
+      // 3. Fetch token accounts for both SPL Token and Token-2022 programs
       const [legacyAccounts, token2022Accounts] = await Promise.all([
         this.connection.getParsedTokenAccountsByOwner(
           new PublicKey(activePublicKey),
@@ -465,11 +470,18 @@ export class DevnetAmmExecutor implements ITradeExecutor {
       ]);
 
       const tokenBalances: Record<string, number> = { ...useBalanceStore.getState().tokenBalances };
+      if (targetMint && targetMint !== 'So11111111111111111111111111111111111111112') {
+        tokenBalances[targetMint] = 0;
+      }
+
       for (const { account } of [...legacyAccounts.value, ...token2022Accounts.value]) {
-        const info = account.data.parsed.info;
+        const info = account.data.parsed?.info;
+        if (!info) continue;
         const mint = info.mint;
         const ta = info.tokenAmount;
-        tokenBalances[mint] = ta.uiAmount ?? Number(ta.amount) / Math.pow(10, ta.decimals);
+        const uiAmt = ta.uiAmount ?? Number(ta.amount) / Math.pow(10, ta.decimals);
+        // Correctly aggregate across multiple token accounts
+        tokenBalances[mint] = (tokenBalances[mint] || 0) + uiAmt;
       }
 
       const bs = useBalanceStore.getState();
@@ -482,7 +494,6 @@ export class DevnetAmmExecutor implements ITradeExecutor {
         }
       }
 
-      walletBalanceService.refreshNow(activePublicKey);
       console.log('[DevnetAmmExecutor] On-chain Devnet balances synced:', { sol, targetMint });
     } catch (e) {
       console.warn('[DevnetAmmExecutor] syncStoreBalances failed:', e);

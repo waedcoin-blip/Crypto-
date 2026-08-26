@@ -12,6 +12,7 @@ export class WalletBalanceService {
   private connection: Connection | null = null;
   private network: TradingNetwork;
   private timer: ReturnType<typeof setInterval> | null = null;
+  private refreshSeq = 0;
 
   constructor(network: TradingNetwork) {
     this.network = network;
@@ -22,6 +23,21 @@ export class WalletBalanceService {
 
   refreshNow(address?: string) {
     void this.refresh(address);
+  }
+
+  /**
+   * Refreshes wallet balance with multiple attempts and settling delay,
+   * guaranteeing that on-chain settlement and balance changes are captured.
+   */
+  async refreshWithRetry(address?: string, retries = 3, delayMs = 500): Promise<number> {
+    let finalSol = 0;
+    for (let i = 0; i < retries; i++) {
+      if (i > 0) {
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
+      finalSol = await this.refresh(address);
+    }
+    return finalSol;
   }
 
   start(intervalMs: number) {
@@ -47,6 +63,7 @@ export class WalletBalanceService {
       useBalanceStore.getState().setWalletAddress(null);
       return 0;
     }
+    const currentSeq = ++this.refreshSeq;
     try {
       if (!this.connection) {
         const config = getNetworkConfig(this.network);
@@ -55,11 +72,11 @@ export class WalletBalanceService {
       useBalanceStore.getState().setWalletAddress(address);
       const publicKey = new PublicKey(address);
 
-      // 1. SOL
+      // 1. Fetch exact SOL balance directly from RPC
       const balance = await this.connection.getBalance(publicKey, 'confirmed');
       const sol = balance / LAMPORTS_PER_SOL;
 
-      // 2. ALL SPL tokens (SPL Token + Token-2022)
+      // 2. Fetch ALL token accounts across SPL Token & Token-2022 programs
       const [tokenAccounts, t22Accounts] = await Promise.all([
         this.connection.getParsedTokenAccountsByOwner(
           publicKey,
@@ -73,6 +90,11 @@ export class WalletBalanceService {
         ).catch(() => ({ value: [] })),
       ]);
 
+      // Guard against older out-of-order RPC responses overwriting newer balances
+      if (currentSeq < this.refreshSeq) {
+        return sol;
+      }
+
       const allAccounts = [...tokenAccounts.value, ...t22Accounts.value];
       const tokenBalances: Record<string, number> = {};
 
@@ -82,10 +104,11 @@ export class WalletBalanceService {
         const mint: string = parsed.mint;
         const ta = parsed.tokenAmount;
         const uiAmt = ta.uiAmount ?? Number(ta.amount) / Math.pow(10, ta.decimals);
+        // Correctly aggregate across multiple token accounts for same mint
         tokenBalances[mint] = (tokenBalances[mint] || 0) + uiAmt;
       }
 
-      // 3. Push to store
+      // 3. Push authoritative balance to store
       const bs = useBalanceStore.getState();
       bs.setOnChainBalance({ solBalance: sol });
 

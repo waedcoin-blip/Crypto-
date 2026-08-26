@@ -3900,7 +3900,8 @@ const checkTokenCriteria = (mint: string): {
         const actualPnl = costBasisSol > 0 ? actualNetSol - costBasisSol : 0;
         const finalPnlPct = costBasisSol > 0 ? (actualPnl / costBasisSol) * 100 : (pnlPct || 0);
         addLog(`✅ [EXIT COMPLETE] Sold ${symbol} | Received: ${actualNetSol.toFixed(6)} SOL | PnL: ${finalPnlPct.toFixed(2)}% | Tx: ${res.signature?.slice(0, 12)}...`, 'sell');
-        walletBalanceService.refreshNow();
+        useBalanceStore.getState().setTokenBalance(mint, 0);
+        await walletBalanceService.refreshWithRetry(undefined, 3, 400);
       } catch (err: any) {
         addLog(`❌ [EXIT FAILED] Direct sell failed for ${symbol}: ${err.message}`, 'err');
       }
@@ -3967,7 +3968,8 @@ const checkTokenCriteria = (mint: string): {
         addLog(`⚡ [FAST EXIT ENGINE] ${side.toUpperCase()} triggered for ${pos.symbol || mint.slice(0, 6)} | Received: ${actualNetSolReceived.toFixed(6)} SOL | PnL: ${realPnlPct.toFixed(2)}% | Tx: ${signature.slice(0, 12)}...`, 'sell');
 
         // Refresh wallet balance
-        walletBalanceService.refreshNow();
+        useBalanceStore.getState().setTokenBalance(mint, 0);
+        void walletBalanceService.refreshWithRetry(undefined, 3, 400);
 
         setStats((s) => ({
           ...s,
