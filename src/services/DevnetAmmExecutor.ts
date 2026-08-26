@@ -233,7 +233,7 @@ export class DevnetAmmExecutor implements ITradeExecutor {
       const quote = await this.getQuote({ inputMint, outputMint, amount, slippageBps });
 
       // 0. Check server build ID via diagnostic endpoint before building swap
-      const EXPECTED_BUILD_ID = 'devnet-swap-v6-shadow-mint-2026-08-26';
+      const EXPECTED_BUILD_ID = 'devnet-swap-v7-atomic-shadow-mint-2026-08-26';
       const diagRes = await fetch('/api/devnet-swap/diagnostic').catch(() => null);
       if (diagRes && diagRes.ok) {
         const diagData = await diagRes.json().catch(() => ({}));

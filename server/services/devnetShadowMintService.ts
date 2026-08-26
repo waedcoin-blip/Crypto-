@@ -1,4 +1,4 @@
-import { Connection, PublicKey, Keypair, SystemProgram, TransactionMessage, VersionedTransaction } from '@solana/web3.js';
+import { Connection, PublicKey, Keypair, SystemProgram, TransactionMessage, VersionedTransaction, TransactionInstruction } from '@solana/web3.js';
 import {
   TOKEN_PROGRAM_ID,
   MintLayout,
@@ -132,49 +132,83 @@ async function fetchMainnetDecimals(originalMintStr: string): Promise<number> {
   return 6;
 }
 
-export async function getOrCreateShadowMint(
+export interface ShadowMintInitInfo {
+  record: ShadowMintRecord;
+  shadowMintKp?: Keypair;
+  initInstructions: TransactionInstruction[];
+}
+
+export async function getOrCreateShadowMintInfo(
   connection: Connection,
-  originalMintStr: string
-): Promise<ShadowMintRecord> {
-  // Check if mapping exists
-  const existing = await getShadowMintMapping(originalMintStr);
-  if (existing) {
-    // Best-effort inventory top-up
-    void topUpShadowMintIfNeeded(connection, existing);
-    return existing;
+  originalMintStr: string,
+  payerPk: PublicKey,
+  settlementPk: PublicKey
+): Promise<ShadowMintInitInfo> {
+  let record = await getShadowMintMapping(originalMintStr);
+  let shadowMintKp: Keypair | undefined;
+  let devnetMintPk: PublicKey;
+
+  if (record) {
+    devnetMintPk = new PublicKey(record.devnetMint);
+  } else {
+    shadowMintKp = Keypair.generate();
+    devnetMintPk = shadowMintKp.publicKey;
+    const decimals = await fetchMainnetDecimals(originalMintStr);
+
+    record = {
+      originalMint: originalMintStr,
+      devnetMint: devnetMintPk.toBase58(),
+      decimals,
+      createdAt: new Date().toISOString(),
+    };
+
+    memoryShadowMap.set(originalMintStr, record);
+    saveToDiskCache();
+
+    if (adminDb) {
+      adminDb.collection('devnetShadowMints').doc(originalMintStr).set(record).catch(() => {});
+    }
   }
 
-  const { keypair: settlementKp } = getSettlementKeypair();
-  if (!settlementKp) {
-    throw new Error('Settlement keypair unavailable to create Devnet shadow mint');
+  // Check if shadow mint account actually exists on-chain on Devnet
+  const mintAccount = await connection.getAccountInfo(devnetMintPk, 'confirmed').catch(() => null);
+
+  if (mintAccount) {
+    // Already created on-chain!
+    return { record, initInstructions: [] };
   }
 
-  const decimals = await fetchMainnetDecimals(originalMintStr);
-  const shadowMintKp = Keypair.generate();
-  const devnetMintPk = shadowMintKp.publicKey;
-  const settlementPk = settlementKp.publicKey;
+  // Mint account does NOT exist on Devnet yet — generate creation instructions in atomic tx
+  if (!shadowMintKp) {
+    // Re-generate a new keypair if previous creation failed before landing on-chain
+    shadowMintKp = Keypair.generate();
+    devnetMintPk = shadowMintKp.publicKey;
+    record.devnetMint = devnetMintPk.toBase58();
+    memoryShadowMap.set(originalMintStr, record);
+    saveToDiskCache();
+  }
 
   console.log(
-    `[DevnetShadowMint] Creating new Devnet Shadow Mint for ${originalMintStr} -> ${devnetMintPk.toBase58()} (Decimals: ${decimals})`
+    `[DevnetShadowMint] Preparing atomic creation instructions for Devnet Shadow Mint ${originalMintStr} -> ${devnetMintPk.toBase58()} (Decimals: ${record.decimals})`
   );
 
   const settlementAta = getAssociatedTokenAddressSync(devnetMintPk, settlementPk, true, TOKEN_PROGRAM_ID);
   const rentLamports = await connection.getMinimumBalanceForRentExemption(MintLayout.span);
 
-  const instructions = [
-    // 1. Create account for shadow mint
+  const initInstructions: TransactionInstruction[] = [
+    // 1. Create account for shadow mint (funded by payerPk)
     SystemProgram.createAccount({
-      fromPubkey: settlementPk,
+      fromPubkey: payerPk,
       newAccountPubkey: devnetMintPk,
       lamports: rentLamports,
       space: MintLayout.span,
       programId: TOKEN_PROGRAM_ID,
     }),
     // 2. Initialize mint
-    createInitializeMintInstruction(devnetMintPk, decimals, settlementPk, settlementPk, TOKEN_PROGRAM_ID),
-    // 3. Ensure settlement ATA exists
+    createInitializeMintInstruction(devnetMintPk, record.decimals, settlementPk, settlementPk, TOKEN_PROGRAM_ID),
+    // 3. Ensure settlement ATA exists (funded by payerPk)
     createAssociatedTokenAccountIdempotentInstruction(
-      settlementPk,
+      payerPk,
       settlementAta,
       settlementPk,
       devnetMintPk,
@@ -185,50 +219,34 @@ export async function getOrCreateShadowMint(
       devnetMintPk,
       settlementAta,
       settlementPk,
-      BigInt(1_000_000_000) * BigInt(Math.pow(10, decimals)),
+      BigInt(1_000_000_000) * BigInt(Math.pow(10, record.decimals)),
       [],
       TOKEN_PROGRAM_ID
     ),
   ];
 
-  const latestBlockhash = await connection.getLatestBlockhash('confirmed');
-  const messageV0 = new TransactionMessage({
-    payerKey: settlementPk,
-    recentBlockhash: latestBlockhash.blockhash,
-    instructions,
-  }).compileToV0Message();
+  return { record, shadowMintKp, initInstructions };
+}
 
-  const tx = new VersionedTransaction(messageV0);
-  tx.sign([settlementKp, shadowMintKp]);
-
-  const rawTx = tx.serialize();
-  const sig = await connection.sendRawTransaction(rawTx, { skipPreflight: false, maxRetries: 3 });
-  await connection.confirmTransaction({ signature: sig, ...latestBlockhash }, 'confirmed');
-
-  console.log(`[DevnetShadowMint] Devnet Shadow Mint created successfully! Signature: ${sig}`);
-
-  const record: ShadowMintRecord = {
-    originalMint: originalMintStr,
-    devnetMint: devnetMintPk.toBase58(),
-    decimals,
-    createdAt: new Date().toISOString(),
-  };
-
-  memoryShadowMap.set(originalMintStr, record);
-  saveToDiskCache();
-
-  if (adminDb) {
-    try {
-      await adminDb.collection('devnetShadowMints').doc(originalMintStr).set(record);
-      console.log(`[DevnetShadowMint] Saved shadow mint mapping to Firestore for ${originalMintStr}`);
-    } catch (err: any) {
-      if (err?.code !== 7 && !err?.message?.includes('PERMISSION_DENIED')) {
-        console.warn('[DevnetShadowMint] Failed to save shadow mint mapping to Firestore:', err.message || err);
-      }
-    }
+export async function getOrCreateShadowMint(
+  connection: Connection,
+  originalMintStr: string
+): Promise<ShadowMintRecord> {
+  const existing = await getShadowMintMapping(originalMintStr);
+  if (existing) {
+    return existing;
   }
-
-  return record;
+  const { keypair: settlementKp } = getSettlementKeypair();
+  if (!settlementKp) {
+    throw new Error('Settlement keypair unavailable to create Devnet shadow mint');
+  }
+  const info = await getOrCreateShadowMintInfo(
+    connection,
+    originalMintStr,
+    settlementKp.publicKey,
+    settlementKp.publicKey
+  );
+  return info.record;
 }
 
 async function topUpShadowMintIfNeeded(connection: Connection, record: ShadowMintRecord): Promise<void> {

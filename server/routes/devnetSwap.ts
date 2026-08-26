@@ -19,6 +19,7 @@ import {
 } from '@solana/spl-token';
 import bs58 from 'bs58';
 import {
+  getOrCreateShadowMintInfo,
   getOrCreateShadowMint,
   getAllShadowMints,
   ShadowMintRecord,
@@ -26,7 +27,7 @@ import {
 
 const router = Router();
 
-export const BUILD_ID = 'devnet-swap-v6-shadow-mint-2026-08-26';
+export const BUILD_ID = 'devnet-swap-v7-atomic-shadow-mint-2026-08-26';
 export const TOKEN_PROGRAM_ID_STR = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 export const TOKEN_2022_PROGRAM_ID_STR = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
 export const ASSOCIATED_TOKEN_PROGRAM_ID_STR = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
@@ -275,10 +276,15 @@ router.post('/build', async (req, res) => {
     // Read real on-chain token decimals and token program ID from the mint owner.toBase58()
     let mintInfo = await validateMint(connection, tokenMintPk);
     let shadowRecord: ShadowMintRecord | null = null;
+    let shadowMintKp: Keypair | undefined;
+
+    const instructions: TransactionInstruction[] = [];
 
     if (!mintInfo.exists) {
       console.log(`[DevnetSwap] Token mint ${tokenMintStr} not found on Devnet. Creating/retrieving Shadow Mint...`);
-      shadowRecord = await getOrCreateShadowMint(connection, tokenMintStr);
+      const shadowInfo = await getOrCreateShadowMintInfo(connection, tokenMintStr, userPk, settlementPk);
+      shadowRecord = shadowInfo.record;
+      shadowMintKp = shadowInfo.shadowMintKp;
       tokenMintPk = new PublicKey(shadowRecord.devnetMint);
       mintInfo = {
         exists: true,
@@ -286,12 +292,14 @@ router.post('/build', async (req, res) => {
         tokenProgramStr: TOKEN_PROGRAM_ID_STR,
         decimals: shadowRecord.decimals,
       };
+
+      if (shadowInfo.initInstructions && shadowInfo.initInstructions.length > 0) {
+        instructions.push(...shadowInfo.initInstructions);
+      }
     }
 
     const tokenDecimals = mintInfo.decimals;
     const tokenProgramId = mintInfo.tokenProgram;
-
-    const instructions: TransactionInstruction[] = [];
 
     // Derive and ensure user & settlement ATAs exist (adds creation instruction if ATA does NOT exist on-chain)
     const userTokenAta = await ensureAta(
@@ -397,8 +405,12 @@ router.post('/build', async (req, res) => {
     }).compileToV0Message();
 
     const versionedTx = new VersionedTransaction(messageV0);
-    // Sign with server settlement keypair:
-    versionedTx.sign([settlementKp]);
+    // Sign with server settlement keypair (and shadowMintKp if initializing a new shadow mint):
+    const signers = [settlementKp];
+    if (shadowMintKp) {
+      signers.push(shadowMintKp);
+    }
+    versionedTx.sign(signers);
 
     const serializedBase64 = Buffer.from(versionedTx.serialize()).toString('base64');
 
