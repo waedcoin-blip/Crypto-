@@ -37,6 +37,7 @@ dotenv.config();
 import { securityHeaders, corsMiddleware, apiRateLimiter, requestLogger } from "./server/middleware/security.js";
 import { globalErrorHandler } from "./server/middleware/errorHandler.js";
 import { runLaserstreamWorker } from "./server/engines/LaserstreamIngestion.js";
+import { config } from "./server/config/index.js";
 
 // Import Route Handlers
 import healthRouter from "./server/routes/health.js";
@@ -142,9 +143,9 @@ if (!process.env.VERCEL && process.env.NODE_ENV !== "test") {
   appPromise
     .then((app) => {
       if (app && typeof app.listen === "function") {
-        const PORT = 3000;
+        const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : (config.PORT || 3000);
         app.listen(PORT, "0.0.0.0", () => {
-          console.log(`Server running on http://localhost:${PORT}`);
+          console.log(`Server running on http://0.0.0.0:${PORT}`);
         });
       } else {
         console.log("Server instance is running as worker.");

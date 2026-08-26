@@ -45,7 +45,10 @@ export function isAllowedOrigin(origin: string | undefined): boolean {
       host.endsWith('.ai.studio') ||
       host.endsWith('.web.app') ||
       host.endsWith('.firebaseapp.com') ||
-      host.endsWith('.vercel.app')
+      host.endsWith('.vercel.app') ||
+      host.endsWith('.onrender.com') ||
+      host.endsWith('.render.com') ||
+      host.endsWith('.netlify.app')
     ) {
       return true;
     }

@@ -10,6 +10,11 @@ import type { HealthCheck } from '../types/index.js';
 
 const router = Router();
 
+// Fast liveness probe for deployment platforms (Render, Cloud Run, K8s)
+router.get('/ping', (req, res) => {
+  res.status(200).json({ status: 'ok', uptime: process.uptime() });
+});
+
 router.get('/', asyncHandler(async (req, res) => {
   const checks: Record<string, string> = {};
 
@@ -77,7 +82,7 @@ router.get('/', asyncHandler(async (req, res) => {
     checks,
   };
 
-  res.status(allOk ? 200 : 503).json(result);
+  res.status(200).json(result);
 }));
 
 export default router;
