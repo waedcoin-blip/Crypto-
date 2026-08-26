@@ -12,8 +12,9 @@ import {
 import {
   TOKEN_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
   getAssociatedTokenAddressSync,
-  createAssociatedTokenAccountIdempotentInstruction,
+  createAssociatedTokenAccountInstruction,
   createTransferInstruction,
 } from '@solana/spl-token';
 import bs58 from 'bs58';
@@ -67,18 +68,69 @@ async function validateMint(
   mintPk: PublicKey
 ): Promise<{ exists: boolean; tokenProgram: PublicKey; decimals: number }> {
   try {
-    const accountInfo = await connection.getParsedAccountInfo(mintPk);
-    if (!accountInfo.value) {
+    const accountInfo = await connection.getAccountInfo(mintPk, 'confirmed');
+    if (!accountInfo) {
       return { exists: false, tokenProgram: TOKEN_PROGRAM_ID, decimals: 6 };
     }
-    const isToken2022 = accountInfo.value.owner.equals(TOKEN_2022_PROGRAM_ID);
+    const isToken2022 = accountInfo.owner.equals(TOKEN_2022_PROGRAM_ID);
     const tokenProgram = isToken2022 ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
-    const parsedData = (accountInfo.value.data as any)?.parsed?.info;
-    const decimals = typeof parsedData?.decimals === 'number' ? parsedData.decimals : 6;
+
+    let decimals = 6;
+    try {
+      const parsedInfo = await connection.getParsedAccountInfo(mintPk, 'confirmed');
+      const parsedData = (parsedInfo.value?.data as any)?.parsed?.info;
+      if (typeof parsedData?.decimals === 'number') {
+        decimals = parsedData.decimals;
+      }
+    } catch {}
+
     return { exists: true, tokenProgram, decimals };
   } catch {
     return { exists: false, tokenProgram: TOKEN_PROGRAM_ID, decimals: 6 };
   }
+}
+
+async function ensureAta(
+  connection: Connection,
+  payerPk: PublicKey,
+  ownerPk: PublicKey,
+  mintPk: PublicKey,
+  tokenProgramId: PublicKey,
+  instructions: TransactionInstruction[],
+  allowOwnerOffCurve = true
+): Promise<PublicKey> {
+  const ata = getAssociatedTokenAddressSync(
+    mintPk,
+    ownerPk,
+    allowOwnerOffCurve,
+    tokenProgramId,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+
+  const accountInfo = await connection.getAccountInfo(ata, 'confirmed');
+
+  if (!accountInfo) {
+    // ATA does not exist: create it with standard ATA instruction
+    instructions.push(
+      createAssociatedTokenAccountInstruction(
+        payerPk,
+        ata,
+        ownerPk,
+        mintPk,
+        tokenProgramId,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      )
+    );
+  } else {
+    // Verify an existing ATA belongs to the correct token program owner
+    if (!accountInfo.owner.equals(tokenProgramId)) {
+      console.warn(
+        `[DevnetSwap] Existing ATA ${ata.toBase58()} owner ${accountInfo.owner.toBase58()} does not match expected token program ${tokenProgramId.toBase58()}`
+      );
+    }
+  }
+
+  return ata;
 }
 
 // GET /api/devnet-swap/status
@@ -166,18 +218,25 @@ router.post('/build', async (req, res) => {
 
     const instructions: TransactionInstruction[] = [];
 
-    // Derive ATAs
-    const userTokenAta = getAssociatedTokenAddressSync(
-      tokenMintPk,
+    // Derive and ensure ATAs exist (only adds creation instruction if ATA does NOT exist on-chain)
+    const userTokenAta = await ensureAta(
+      connection,
       userPk,
-      false,
-      tokenProgramId
-    );
-    const settlementTokenAta = getAssociatedTokenAddressSync(
+      userPk,
       tokenMintPk,
+      tokenProgramId,
+      instructions,
+      false
+    );
+
+    const settlementTokenAta = await ensureAta(
+      connection,
+      userPk,
       settlementPk,
-      true,
-      tokenProgramId
+      tokenMintPk,
+      tokenProgramId,
+      instructions,
+      true
     );
 
     let expectedSolLamports = 0;
@@ -194,29 +253,7 @@ router.post('/build', async (req, res) => {
         expectedTokenRawAmount = BigInt(Math.floor(tokensCalculated * Math.pow(10, tokenDecimals)));
       }
 
-      // 1. Ensure User ATA exists
-      instructions.push(
-        createAssociatedTokenAccountIdempotentInstruction(
-          userPk,
-          userTokenAta,
-          userPk,
-          tokenMintPk,
-          tokenProgramId
-        )
-      );
-
-      // 2. Ensure Settlement ATA exists
-      instructions.push(
-        createAssociatedTokenAccountIdempotentInstruction(
-          userPk,
-          settlementTokenAta,
-          settlementPk,
-          tokenMintPk,
-          tokenProgramId
-        )
-      );
-
-      // 3. SOL Transfer: User -> Settlement
+      // 1. SOL Transfer: User -> Settlement
       instructions.push(
         SystemProgram.transfer({
           fromPubkey: userPk,
@@ -225,7 +262,7 @@ router.post('/build', async (req, res) => {
         })
       );
 
-      // 4. Token Transfer: Settlement -> User
+      // 2. Token Transfer: Settlement -> User
       instructions.push(
         createTransferInstruction(
           settlementTokenAta,
@@ -255,29 +292,7 @@ router.post('/build', async (req, res) => {
         );
       }
 
-      // 1. Ensure User ATA exists
-      instructions.push(
-        createAssociatedTokenAccountIdempotentInstruction(
-          userPk,
-          userTokenAta,
-          userPk,
-          tokenMintPk,
-          tokenProgramId
-        )
-      );
-
-      // 2. Ensure Settlement ATA exists
-      instructions.push(
-        createAssociatedTokenAccountIdempotentInstruction(
-          userPk,
-          settlementTokenAta,
-          settlementPk,
-          tokenMintPk,
-          tokenProgramId
-        )
-      );
-
-      // 3. Token Transfer: User -> Settlement
+      // 1. Token Transfer: User -> Settlement
       instructions.push(
         createTransferInstruction(
           userTokenAta,
@@ -289,7 +304,7 @@ router.post('/build', async (req, res) => {
         )
       );
 
-      // 4. SOL Transfer: Settlement -> User
+      // 2. SOL Transfer: Settlement -> User
       instructions.push(
         SystemProgram.transfer({
           fromPubkey: settlementPk,
