@@ -16,6 +16,7 @@ import {
   TOKEN_2022_PROGRAM_ID,
   getAssociatedTokenAddressSync,
   createAssociatedTokenAccountIdempotentInstruction,
+  createTransferInstruction,
 } from '@solana/spl-token';
 import { useActiveWalletStore } from '../store/activeWalletStore';
 import { getOrCreateSessionKeypair } from '../utils/keypairUtils';
@@ -224,10 +225,12 @@ export class DevnetAmmExecutor implements ITradeExecutor {
         })
       );
 
-      // 2. Dynamic ATA preparation using on-chain mint token program validation
+      // 2. Dynamic ATA preparation and Sell token transfer instruction using on-chain mint token program validation
       const targetMintStr = isSolBuy ? outputMint : inputMint;
+      let targetMintPk: PublicKey | null = null;
+      let targetMintValidation: { exists: boolean; tokenProgram?: PublicKey; isToken2022?: boolean } = { exists: false };
+
       if (targetMintStr !== 'So11111111111111111111111111111111111111112') {
-        let targetMintPk: PublicKey | null = null;
         try {
           targetMintPk = new PublicKey(targetMintStr);
         } catch {
@@ -235,13 +238,13 @@ export class DevnetAmmExecutor implements ITradeExecutor {
         }
 
         if (targetMintPk) {
-          const mintValidation = await this.validateDevnetMint(targetMintPk);
-          if (mintValidation.exists && mintValidation.tokenProgram) {
+          targetMintValidation = await this.validateDevnetMint(targetMintPk);
+          if (targetMintValidation.exists && targetMintValidation.tokenProgram) {
             const ata = getAssociatedTokenAddressSync(
               targetMintPk,
               userPk,
               false,
-              mintValidation.tokenProgram
+              targetMintValidation.tokenProgram
             );
             instructions.push(
               createAssociatedTokenAccountIdempotentInstruction(
@@ -249,14 +252,14 @@ export class DevnetAmmExecutor implements ITradeExecutor {
                 ata,
                 userPk,
                 targetMintPk,
-                mintValidation.tokenProgram
+                targetMintValidation.tokenProgram
               )
             );
           }
         }
       }
 
-      // 3. Real On-Chain Sol Transfer to Devnet AMM Liquidity Pool
+      // 3. Real On-Chain Swap Execution: SOL Deposit (Buy) or Real Token Transfer (Sell)
       if (isSolBuy) {
         // Genuine SOL deduction from user wallet to Devnet AMM Liquidity Pool
         instructions.push(
@@ -267,14 +270,53 @@ export class DevnetAmmExecutor implements ITradeExecutor {
           })
         );
       } else {
-        // Exit trade fee / network registration
-        instructions.push(
-          SystemProgram.transfer({
-            fromPubkey: userPk,
-            toPubkey: DEVNET_AMM_VAULT,
-            lamports: 5000,
-          })
-        );
+        // Real SPL/Token-2022 Token Transfer to AMM Liquidity Vault
+        if (targetMintPk && targetMintValidation.exists && targetMintValidation.tokenProgram) {
+          const userAta = getAssociatedTokenAddressSync(
+            targetMintPk,
+            userPk,
+            false,
+            targetMintValidation.tokenProgram
+          );
+          const vaultAta = getAssociatedTokenAddressSync(
+            targetMintPk,
+            DEVNET_AMM_VAULT,
+            true,
+            targetMintValidation.tokenProgram
+          );
+
+          // Ensure vault ATA exists idempotently
+          instructions.push(
+            createAssociatedTokenAccountIdempotentInstruction(
+              userPk,
+              vaultAta,
+              DEVNET_AMM_VAULT,
+              targetMintPk,
+              targetMintValidation.tokenProgram
+            )
+          );
+
+          // Real on-chain Token Transfer to AMM Vault
+          instructions.push(
+            createTransferInstruction(
+              userAta,
+              vaultAta,
+              userPk,
+              BigInt(amount),
+              [],
+              targetMintValidation.tokenProgram
+            )
+          );
+        } else {
+          // Fallback exit trade registration
+          instructions.push(
+            SystemProgram.transfer({
+              fromPubkey: userPk,
+              toPubkey: DEVNET_AMM_VAULT,
+              lamports: 5000,
+            })
+          );
+        }
       }
 
       // 4. Get fresh Devnet blockhash
@@ -308,12 +350,21 @@ export class DevnetAmmExecutor implements ITradeExecutor {
 
       const slot = confirmation.context.slot;
 
-      // 8. Update client token store balance
-      const tokenDecimals = 6;
-      if (isSolBuy) {
-        useBalanceStore.getState().setTokenBalance(targetMintStr, outAmountNum / Math.pow(10, tokenDecimals));
-      } else {
-        useBalanceStore.getState().setTokenBalance(targetMintStr, 0);
+      // 8. Poll up to 12 seconds for real token account clearance on a Sell
+      if (!isSolBuy && targetMintStr !== 'So11111111111111111111111111111111111111112') {
+        const pollStart = Date.now();
+        let cleared = false;
+        while (Date.now() - pollStart < 12000) {
+          try {
+            const rawBal = await this.getTokenBalance(targetMintStr);
+            if (rawBal === 0) {
+              cleared = true;
+              break;
+            }
+          } catch {}
+          await new Promise((r) => setTimeout(r, 600));
+        }
+        console.log(`[DevnetAmmExecutor] Token clearance poll result for ${targetMintStr}: ${cleared ? 'CLEARED' : 'PENDING'}`);
       }
 
       // 9. Authoritative Post-Trade State Refresh against Devnet RPC
@@ -402,8 +453,7 @@ export class DevnetAmmExecutor implements ITradeExecutor {
       try {
         mintPk = new PublicKey(mint);
       } catch {
-        const storeBal = useBalanceStore.getState().tokenBalances[mint];
-        return storeBal ? Math.floor(storeBal * 1e6) : 0;
+        return 0;
       }
 
       const [splAccounts, t22Accounts] = await Promise.all([
@@ -427,16 +477,9 @@ export class DevnetAmmExecutor implements ITradeExecutor {
           totalRawAmount += Number(amountStr);
         }
       }
-      if (totalRawAmount === 0) {
-        const storeBal = useBalanceStore.getState().tokenBalances[mint];
-        if (storeBal && storeBal > 0) {
-          totalRawAmount = Math.floor(storeBal * 1e6);
-        }
-      }
       return totalRawAmount;
     } catch {
-      const storeBal = useBalanceStore.getState().tokenBalances[mint];
-      return storeBal ? Math.floor(storeBal * 1e6) : 0;
+      return 0;
     }
   }
 

@@ -156,12 +156,6 @@ export class WalletBalanceService {
         totalRawAmount += Number(amountStr);
       }
     }
-    if (totalRawAmount === 0 && this.network === 'devnet') {
-      const storeBal = useBalanceStore.getState().tokenBalances[mint];
-      if (storeBal && storeBal > 0) {
-        totalRawAmount = Math.floor(storeBal * 1e6);
-      }
-    }
     return totalRawAmount;
   }
 }
