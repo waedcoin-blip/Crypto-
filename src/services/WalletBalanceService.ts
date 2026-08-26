@@ -3,6 +3,7 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import { getNetworkConfig, TradingNetwork } from '../config/network';
 import { useBalanceStore } from '../store/balanceStore';
 import { useActiveWalletStore } from '../store/activeWalletStore';
+import { devnetShadowMintCache } from './devnetShadowMintCache';
 
 const LAMPORTS_PER_SOL = 1_000_000_000;
 const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
@@ -139,21 +140,24 @@ export class WalletBalanceService {
         return sol;
       }
 
+      await devnetShadowMintCache.ensureInitialized();
+
       const allAccounts = [...tokenAccounts.value, ...t22Accounts.value];
       const tokenBalances: Record<string, number> = {};
 
       for (const { account } of allAccounts) {
         const parsed = account.data.parsed?.info;
         if (!parsed) continue;
-        const mint: string = parsed.mint;
-        if (this.pendingClearedMints.has(mint)) {
-          tokenBalances[mint] = 0;
+        const rawMint: string = parsed.mint;
+        const mappedMint = devnetShadowMintCache.resolveMainnetMint(rawMint);
+        if (this.pendingClearedMints.has(mappedMint) || this.pendingClearedMints.has(rawMint)) {
+          tokenBalances[mappedMint] = 0;
           continue;
         }
         const ta = parsed.tokenAmount;
         const uiAmt = ta.uiAmount ?? Number(ta.amount) / Math.pow(10, ta.decimals);
         // Correctly aggregate across multiple token accounts for same mint
-        tokenBalances[mint] = (tokenBalances[mint] || 0) + uiAmt;
+        tokenBalances[mappedMint] = (tokenBalances[mappedMint] || 0) + uiAmt;
       }
 
       // 3. Push authoritative balance to store
@@ -188,7 +192,8 @@ export class WalletBalanceService {
       this.connection = new Connection(config.rpcUrl, 'confirmed');
     }
     const owner = new PublicKey(address);
-    const mintPk = new PublicKey(mint);
+    const resolvedMint = devnetShadowMintCache.resolveDevnetMint(mint);
+    const mintPk = new PublicKey(resolvedMint);
 
     // Fetch parsed token accounts for target mint (covers both legacy SPL and Token-2022)
     const accounts = await this.connection.getParsedTokenAccountsByOwner(

@@ -17,6 +17,7 @@ import { getOrCreateSessionKeypair } from '../utils/keypairUtils';
 import { useBalanceStore, assertTradeBalance } from '../store/balanceStore';
 import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
 import { walletBalanceService } from './WalletBalanceService';
+import { devnetShadowMintCache } from './devnetShadowMintCache';
 import { getNetworkConfig } from '../config/network';
 import { NetworkGuard } from './NetworkGuard';
 import { useAppStore } from '../store/appStore';
@@ -222,21 +223,8 @@ export class DevnetAmmExecutor implements ITradeExecutor {
 
       await assertTradeBalance(requiredSol);
 
-      // Pre-flight check: Verify target mint exists on Devnet
-      if (targetMintStr !== 'So11111111111111111111111111111111111111112') {
-        let targetMintPk: PublicKey;
-        try {
-          targetMintPk = new PublicKey(targetMintStr);
-        } catch {
-          throw new Error(`Invalid token mint address: ${targetMintStr}`);
-        }
-        const devnetMintCheck = await this.validateDevnetMint(targetMintPk);
-        if (!devnetMintCheck.exists) {
-          throw new Error(
-            `Mint ${targetMintStr} does not exist on Solana Devnet. Non-Devnet-native tokens from mainnet scanner feeds cannot be traded on Devnet.`
-          );
-        }
-      }
+      // Pre-flight check: Ensure shadow mint cache initialized
+      await devnetShadowMintCache.ensureInitialized();
 
       // Pre-trade on-chain balance snapshots for verification
       const initialSolLamports = await this.connection.getBalance(userPk, 'confirmed').catch(() => 0);
@@ -245,7 +233,7 @@ export class DevnetAmmExecutor implements ITradeExecutor {
       const quote = await this.getQuote({ inputMint, outputMint, amount, slippageBps });
 
       // 0. Check server build ID via diagnostic endpoint before building swap
-      const EXPECTED_BUILD_ID = 'devnet-swap-v5-ata-fix-2026-08-26';
+      const EXPECTED_BUILD_ID = 'devnet-swap-v6-shadow-mint-2026-08-26';
       const diagRes = await fetch('/api/devnet-swap/diagnostic').catch(() => null);
       if (diagRes && diagRes.ok) {
         const diagData = await diagRes.json().catch(() => ({}));
@@ -297,6 +285,9 @@ export class DevnetAmmExecutor implements ITradeExecutor {
       }
 
       const buildData = await buildRes.json();
+      if (buildData.shadowMint) {
+        devnetShadowMintCache.register(buildData.shadowMint);
+      }
       const {
         swapTransaction,
         lastValidBlockHeight,
@@ -452,9 +443,10 @@ export class DevnetAmmExecutor implements ITradeExecutor {
     if (!this.publicKey) return 0;
     try {
       const ownerPk = new PublicKey(this.publicKey);
+      const devnetMintStr = devnetShadowMintCache.resolveDevnetMint(mint);
       let mintPk: PublicKey;
       try {
-        mintPk = new PublicKey(mint);
+        mintPk = new PublicKey(devnetMintStr);
       } catch {
         return 0;
       }
@@ -523,11 +515,12 @@ export class DevnetAmmExecutor implements ITradeExecutor {
       for (const { account } of [...legacyAccounts.value, ...token2022Accounts.value]) {
         const info = account.data.parsed?.info;
         if (!info) continue;
-        const mint = info.mint;
+        const rawMint = info.mint;
+        const mappedMint = devnetShadowMintCache.resolveMainnetMint(rawMint);
         const ta = info.tokenAmount;
         const uiAmt = ta.uiAmount ?? Number(ta.amount) / Math.pow(10, ta.decimals);
         // Correctly aggregate across multiple token accounts
-        tokenBalances[mint] = (tokenBalances[mint] || 0) + uiAmt;
+        tokenBalances[mappedMint] = (tokenBalances[mappedMint] || 0) + uiAmt;
       }
 
       const bs = useBalanceStore.getState();

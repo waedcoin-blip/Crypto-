@@ -18,10 +18,15 @@ import {
   createTransferInstruction,
 } from '@solana/spl-token';
 import bs58 from 'bs58';
+import {
+  getOrCreateShadowMint,
+  getAllShadowMints,
+  ShadowMintRecord,
+} from '../services/devnetShadowMintService';
 
 const router = Router();
 
-export const BUILD_ID = 'devnet-swap-v5-ata-fix-2026-08-26';
+export const BUILD_ID = 'devnet-swap-v6-shadow-mint-2026-08-26';
 export const TOKEN_PROGRAM_ID_STR = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 export const TOKEN_2022_PROGRAM_ID_STR = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
 export const ASSOCIATED_TOKEN_PROGRAM_ID_STR = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
@@ -188,6 +193,16 @@ router.get('/status', async (req, res) => {
   }
 });
 
+// GET /api/devnet-swap/shadow-mints
+router.get('/shadow-mints', async (req, res) => {
+  try {
+    const shadowMints = await getAllShadowMints();
+    return res.json({ shadowMints, buildId: BUILD_ID });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message, buildId: BUILD_ID });
+  }
+});
+
 // GET /api/devnet-swap/diagnostic
 router.get('/diagnostic', async (req, res) => {
   try {
@@ -258,13 +273,19 @@ router.post('/build', async (req, res) => {
     }
 
     // Read real on-chain token decimals and token program ID from the mint owner.toBase58()
-    const mintInfo = await validateMint(connection, tokenMintPk);
+    let mintInfo = await validateMint(connection, tokenMintPk);
+    let shadowRecord: ShadowMintRecord | null = null;
+
     if (!mintInfo.exists) {
-      return res.status(400).json({
-        error: 'MINT_NOT_FOUND_ON_DEVNET',
-        message: `Mint ${tokenMintStr} does not exist on Solana Devnet. Non-Devnet-native tokens from mainnet feeds cannot be paper-traded on the Devnet settlement exchange.`,
-        buildId: BUILD_ID,
-      });
+      console.log(`[DevnetSwap] Token mint ${tokenMintStr} not found on Devnet. Creating/retrieving Shadow Mint...`);
+      shadowRecord = await getOrCreateShadowMint(connection, tokenMintStr);
+      tokenMintPk = new PublicKey(shadowRecord.devnetMint);
+      mintInfo = {
+        exists: true,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        tokenProgramStr: TOKEN_PROGRAM_ID_STR,
+        decimals: shadowRecord.decimals,
+      };
     }
 
     const tokenDecimals = mintInfo.decimals;
@@ -391,6 +412,13 @@ router.post('/build', async (req, res) => {
       tokenDecimals,
       expectedSolLamports,
       expectedTokenAmount: expectedTokenRawAmount.toString(),
+      shadowMint: shadowRecord
+        ? {
+            originalMint: shadowRecord.originalMint,
+            devnetMint: shadowRecord.devnetMint,
+            decimals: shadowRecord.decimals,
+          }
+        : null,
     });
   } catch (error: any) {
     console.error('[DevnetSwap] Build error:', error);
