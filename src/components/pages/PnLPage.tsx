@@ -21,7 +21,7 @@ import { getSolPriceUsd, setSolPriceUsd, calcNetPnl, getDynamicOperationalFeeSol
 import { TradingSettings } from '../TradingSettings';
 import { WalletStatusWidget } from '../WalletStatusWidget';
 import { MasterMonitorPanel } from '../MasterMonitorPanel';
-import { marketDataManager } from '../../services/marketDataManager';
+import { marketDataManager, TokenPrice } from '../../services/marketDataManager';
 import { rpcHealthManager } from '../../services/rpcHealthManager';
 import { PositionExitManager } from '../../services/PositionExitManager';
 import { MasterMonitorService } from '../../services/MasterMonitorService';
@@ -2686,6 +2686,113 @@ export const PnLPage = ({
     }, 'wallet');
     return () => unsubscribe();
   }, [walletTokenMintsKey, isRunning, updateWalletTokenPrices]);
+
+  // Dedicated active-position price subscription with high-frequency 'activePosition' priority (750ms cache)
+  const activePositionMintsKey = Object.keys(positions)
+    .filter(k => {
+      const p = positions[k];
+      return p && typeof p === 'object' && p.symbol && typeof p.amount === 'number' && p.amount > 0;
+    })
+    .sort()
+    .join(',');
+
+  useEffect(() => {
+    if (!activePositionMintsKey || !isRunning) return;
+    const activeMints = activePositionMintsKey.split(',').filter(Boolean);
+    if (activeMints.length === 0) return;
+
+    const handlePriceUpdate = (priceMap: Map<string, TokenPrice>) => {
+      const now = Date.now();
+      const updatedMetrics: Record<string, Partial<TokenMetric>> = {};
+      let hasMetricUpdates = false;
+
+      priceMap.forEach((tokenPrice, mint) => {
+        if (!tokenPrice) return;
+        const freshPrice = tokenPrice.priceNative || (tokenPrice.priceUsd ? tokenPrice.priceUsd / getSolPriceUsd() : 0);
+        if (freshPrice <= 0) return;
+
+        // 1. Central token metrics update
+        updatedMetrics[mint] = {
+          priceNative: freshPrice,
+          priceUsd: tokenPrice.priceUsd ?? freshPrice * getSolPriceUsd(),
+          priceChange5m: tokenPrice.priceChange5m ?? 0,
+          lastUpdated: now,
+        };
+        hasMetricUpdates = true;
+
+        // 2. PositionExitManager direct update
+        positionExitManagerRef.current?.onPriceUpdate(mint, freshPrice, now);
+
+        // 3. MasterMonitor direct update
+        masterMonitorRef.current?.pushPriceUpdate(mint, freshPrice, now, 'price_tracker');
+      });
+
+      if (hasMetricUpdates) {
+        useAppStore.getState().setTokenMetrics(prev => {
+          const next = { ...prev };
+          Object.entries(updatedMetrics).forEach(([m, met]) => {
+            next[m] = { ...(next[m] || {}), ...met } as TokenMetric;
+          });
+          tokenMetricsRef.current = next;
+          return next;
+        });
+      }
+
+      // 4. Update Active-position PnL and evaluate TP/SL immediately
+      setPositions(prev => {
+        let changed = false;
+        const next = { ...prev };
+
+        priceMap.forEach((tokenPrice, mint) => {
+          const pos = next[mint];
+          if (!pos || !(pos.amount > 0)) return;
+
+          const freshPrice = tokenPrice.priceNative || (tokenPrice.priceUsd ? tokenPrice.priceUsd / getSolPriceUsd() : 0);
+          if (freshPrice <= 0) return;
+
+          const currentGrossSol = freshPrice * (pos.amount || 0);
+          let netSolIfSold = currentGrossSol;
+          if (!privateKey) {
+            const slippageFee = currentGrossSol * (slippage / 100);
+            const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent);
+            netSolIfSold = Math.max(0, currentGrossSol - slippageFee - opFees);
+          }
+          const calcNetPnlPct = (pos.solSpent && pos.solSpent > 0) ? (netSolIfSold - pos.solSpent) / pos.solSpent : 0;
+          const calcNetSol = netSolIfSold - (pos.solSpent || 0);
+
+          next[mint] = {
+            ...pos,
+            currentPrice: freshPrice,
+            isStale: false,
+            realNetPnl: calcNetPnlPct,
+            realNetSol: calcNetSol,
+          };
+          changed = true;
+
+          // Direct redundant TP/SL evaluation on immediate price arrival
+          if (isRunning) {
+            const pnlPct100 = calcNetPnlPct * 100;
+            const tpTarget = pos.tpPct ?? (configRef.current.minTakeProfit || 25);
+            const slTarget = Math.abs(pos.slPct ?? (configRef.current.stopLossPct || 15));
+            if (pnlPct100 >= tpTarget) {
+              void executeSell(mint, freshPrice, pnlPct100, 'TAKE_PROFIT_TRIGGERED');
+            } else if (pnlPct100 <= -slTarget) {
+              void executeSell(mint, freshPrice, pnlPct100, 'STOP_LOSS_TRIGGERED');
+            }
+          }
+        });
+
+        if (changed) {
+          positionsRef.current = next;
+          useAppStore.getState().updateActivePositions(() => next);
+        }
+        return changed ? next : prev;
+      });
+    };
+
+    const unsubscribe = marketDataManager.subscribe(activeMints, handlePriceUpdate, 'activePosition');
+    return () => unsubscribe();
+  }, [activePositionMintsKey, isRunning, privateKey, slippage]);
 
   // Sync tokenMetrics prices into active positions in real time
   useEffect(() => {

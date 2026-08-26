@@ -178,8 +178,8 @@ export class MasterMonitorService {
     // Initial poll
     pollBatch();
 
-    // Single relaxed unified ticker for ALL active tokens (4000ms)
-    this.batchInterval = setInterval(pollBatch, 4000);
+    // Single fast unified ticker for ALL active tokens (1000ms)
+    this.batchInterval = setInterval(pollBatch, 1000);
   }
 
   private setupWsSubscriptions(): void {
@@ -210,8 +210,8 @@ export class MasterMonitorService {
   private async triggerInstantPriceCheck(mint: string, slot?: number): Promise<void> {
     const now = Date.now();
     const lastTime = this.lastCheckTime.get(mint) || 0;
-    if (now - lastTime < 1500) {
-      // Throttle instant checks to max once every 1.5 seconds per mint to prevent rate limits
+    if (now - lastTime < 750) {
+      // Throttle instant checks to max once every 750ms per mint to prevent rate limits
       return;
     }
     this.lastCheckTime.set(mint, now);

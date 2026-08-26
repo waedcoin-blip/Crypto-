@@ -49,7 +49,7 @@ export type PriorityTier = 'trading' | 'activePosition' | 'wallet' | 'discovery'
 
 export const MARKET_DATA_POLICY: Record<PriorityTier, { ttlMs: number; maxAgeMs: number }> = {
   trading: { ttlMs: 1000, maxAgeMs: 3000 },
-  activePosition: { ttlMs: 2000, maxAgeMs: 5000 },
+  activePosition: { ttlMs: 750, maxAgeMs: 2000 },
   wallet: { ttlMs: 5000, maxAgeMs: 15000 },
   discovery: { ttlMs: 15000, maxAgeMs: 60000 },
   ui: { ttlMs: 5000, maxAgeMs: 30000 },
@@ -609,7 +609,7 @@ export class MarketDataManager {
           this.getPrices(Array.from(mintSet), tier).catch(() => {});
         }
       }
-    }, 1000); // Check every second for expired subscribed tokens
+    }, 500); // Check every 500ms for expired subscribed tokens
   }
 }
 
