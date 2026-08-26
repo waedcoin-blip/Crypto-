@@ -132,12 +132,32 @@ export class DevnetAmmExecutor implements ITradeExecutor {
     const isBuy = inputMint === 'So11111111111111111111111111111111111111112';
     const targetMint = isBuy ? outputMint : inputMint;
 
-    let tokenPriceNative = 0.001; // SOL per token default
+    let tokenPriceNative = 0;
     const metrics = useAppStore.getState().tokenMetrics?.[targetMint];
     if (metrics?.priceNative && metrics.priceNative > 0) {
       tokenPriceNative = metrics.priceNative;
     } else if (metrics?.priceUsd && metrics.priceUsd > 0) {
       tokenPriceNative = metrics.priceUsd / 150;
+    }
+
+    // Dynamic price lookup fallback if tokenMetrics not loaded yet
+    if (tokenPriceNative <= 0) {
+      try {
+        const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${targetMint}`);
+        if (res.ok) {
+          const data = await res.json();
+          const pair = data.pairs?.[0];
+          if (pair?.priceNative) {
+            tokenPriceNative = parseFloat(pair.priceNative);
+          } else if (pair?.priceUsd) {
+            tokenPriceNative = parseFloat(pair.priceUsd) / 150;
+          }
+        }
+      } catch {}
+    }
+
+    if (tokenPriceNative <= 0) {
+      tokenPriceNative = 0.001; // SOL per token default fallback
     }
 
     let tokenDecimals = 6;
@@ -162,6 +182,16 @@ export class DevnetAmmExecutor implements ITradeExecutor {
     const slippageFactor = 1 - slippageBps / 10000;
     const otherThreshold = BigInt(Math.floor(Number(outAmountLamports) * slippageFactor));
 
+    // Dynamic realistic price impact calculation based on trade volume vs liquidity
+    const solVol = isBuy ? amount / 1_000_000_000 : Number(outAmountLamports) / 1_000_000_000;
+    const tradeUsd = solVol * 150;
+    const liquidityUsd = metrics?.liquidity || 50000;
+    const calcImpact = Math.max(0.01, Math.min(15.0, (tradeUsd / Math.max(liquidityUsd, 1000)) * 100));
+    const priceImpactPct = calcImpact.toFixed(2);
+
+    const isPump = targetMint.toLowerCase().endsWith('pump');
+    const routeLabel = isPump ? 'Pump.fun Devnet AMM Pool' : 'Raydium Devnet Settlement Pool';
+
     return {
       inputMint,
       inAmount: String(amount),
@@ -171,12 +201,12 @@ export class DevnetAmmExecutor implements ITradeExecutor {
       swapMode: 'ExactIn',
       slippageBps,
       platformFee: null,
-      priceImpactPct: '0.01',
+      priceImpactPct,
       routePlan: [
         {
           swapInfo: {
             ammKey: 'DevnetSettlementExchange',
-            label: 'Devnet Atomic Settlement Exchange',
+            label: routeLabel,
             inputMint,
             outputMint,
             inAmount: String(amount),
@@ -302,8 +332,12 @@ export class DevnetAmmExecutor implements ITradeExecutor {
       const rawTxBuf = Buffer.from(swapTransaction, 'base64');
       const tx = VersionedTransaction.deserialize(rawTxBuf);
 
-      // 3. User keypair signs the transaction
-      tx.sign([kp]);
+      // 3. User keypair signs the transaction if listed as a required signer in the message header
+      const requiredSigners = tx.message.staticAccountKeys.slice(0, tx.message.header.numRequiredSignatures);
+      const isUserSignerRequired = requiredSigners.some((k) => k.equals(kp.publicKey));
+      if (isUserSignerRequired) {
+        tx.sign([kp]);
+      }
 
       // 4. Send atomic raw transaction to Devnet RPC
       const sig = await this.connection.sendRawTransaction(tx.serialize(), {
@@ -361,6 +395,15 @@ export class DevnetAmmExecutor implements ITradeExecutor {
       const landingTimeMs = Date.now() - start;
       const actualFee = 0.000005;
       const outAmountNum = isSolBuy ? Number(expectedTokenAmount) : expectedSolLamports;
+
+      // 8. Adjust persistent paper SOL balance for seamless trading accounting
+      if (isSolBuy) {
+        const solSpent = (amount / LAMPORTS_PER_SOL) + actualFee;
+        useBalanceStore.getState().adjustPaperSol(-solSpent);
+      } else {
+        const solGained = (outAmountNum / LAMPORTS_PER_SOL) - actualFee;
+        useBalanceStore.getState().adjustPaperSol(solGained);
+      }
 
       this.telemetryTotalFeesPaidSol += actualFee;
       this.telemetryLandingTimeTotalMs += landingTimeMs;

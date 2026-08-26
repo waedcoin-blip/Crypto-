@@ -23,6 +23,11 @@ export interface BalanceState {
   status: 'idle' | 'loading' | 'live' | 'stale' | 'error';
   error: string | null;
 
+  // Persistent Devnet paper trading SOL balance (default 10.0 SOL)
+  paperSolBalance: number;
+  adjustPaperSol: (deltaSol: number) => void;
+  setPaperSol: (solAmount: number) => void;
+
   setNetwork: (network: BalanceNetwork) => void;
   setWalletAddress: (address: string | null) => void;
 
@@ -67,11 +72,50 @@ const initialState = {
   lastUpdated: null,
   status: 'idle' as const,
   error: null,
+  paperSolBalance: 10.0,
   tokenBalances: {},
 };
 
 export const useBalanceStore = create<BalanceState>((set) => ({
   ...initialState,
+
+  adjustPaperSol: (deltaSol) =>
+    set((state) => {
+      const nextPaper = Math.max(0, state.paperSolBalance + deltaSol);
+      const isDevnet = state.network === 'devnet';
+      const effectiveSol = isDevnet && (state.onChainSolBalance === null || state.onChainSolBalance < 0.05)
+        ? nextPaper
+        : (state.onChainSolBalance ?? nextPaper);
+      const effectiveAvail = Math.max(0, effectiveSol - state.reservedSol);
+
+      return {
+        paperSolBalance: nextPaper,
+        solBalance: effectiveSol,
+        availableSolBalance: effectiveAvail,
+        onChainSolBalance: isDevnet && (state.onChainSolBalance === null || state.onChainSolBalance < 0.05) ? nextPaper : state.onChainSolBalance,
+        onChainAvailableSol: isDevnet && (state.onChainSolBalance === null || state.onChainSolBalance < 0.05) ? effectiveAvail : state.onChainAvailableSol,
+        lastUpdated: Date.now(),
+      };
+    }),
+
+  setPaperSol: (solAmount) =>
+    set((state) => {
+      const nextPaper = Math.max(0, solAmount);
+      const isDevnet = state.network === 'devnet';
+      const effectiveSol = isDevnet && (state.onChainSolBalance === null || state.onChainSolBalance < 0.05)
+        ? nextPaper
+        : (state.onChainSolBalance ?? nextPaper);
+      const effectiveAvail = Math.max(0, effectiveSol - state.reservedSol);
+
+      return {
+        paperSolBalance: nextPaper,
+        solBalance: effectiveSol,
+        availableSolBalance: effectiveAvail,
+        onChainSolBalance: isDevnet && (state.onChainSolBalance === null || state.onChainSolBalance < 0.05) ? nextPaper : state.onChainSolBalance,
+        onChainAvailableSol: isDevnet && (state.onChainSolBalance === null || state.onChainSolBalance < 0.05) ? effectiveAvail : state.onChainAvailableSol,
+        lastUpdated: Date.now(),
+      };
+    }),
 
   setNetwork: (network) =>
     set({
@@ -112,24 +156,20 @@ export const useBalanceStore = create<BalanceState>((set) => ({
     reservedSol = 0.005,
   }) =>
     set((state) => {
-      const newAvail = availableSolBalance ?? Math.max(0, solBalance - reservedSol);
-      if (
-        state.onChainSolBalance === solBalance &&
-        state.onChainAvailableSol === newAvail &&
-        state.onChainReservedSol === reservedSol &&
-        state.onChainStatus === 'live'
-      ) {
-        return state;
-      }
+      const isDevnet = state.network === 'devnet';
+      const effectiveSol = isDevnet && solBalance < 0.05
+        ? state.paperSolBalance
+        : solBalance;
+      const newAvail = availableSolBalance ?? Math.max(0, effectiveSol - reservedSol);
+
       return {
-        onChainSolBalance: solBalance,
+        onChainSolBalance: effectiveSol,
         onChainReservedSol: reservedSol,
         onChainAvailableSol: newAvail,
         onChainLastUpdated: Date.now(),
         onChainStatus: 'live',
         onChainError: null,
-        // Also update standard solBalance for on-chain listeners
-        solBalance,
+        solBalance: effectiveSol,
         reservedSol,
         availableSolBalance: newAvail,
         lastUpdated: Date.now(),
