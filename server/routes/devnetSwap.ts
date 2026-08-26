@@ -12,14 +12,16 @@ import {
 import {
   TOKEN_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
   getAssociatedTokenAddressSync,
+  createAssociatedTokenAccountIdempotentInstruction,
   createTransferInstruction,
 } from '@solana/spl-token';
 import bs58 from 'bs58';
 
 const router = Router();
 
-export const BUILD_ID = 'devnet-swap-v4-no-ata-2026-08-26';
+export const BUILD_ID = 'devnet-swap-v5-ata-fix-2026-08-26';
 export const TOKEN_PROGRAM_ID_STR = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 export const TOKEN_2022_PROGRAM_ID_STR = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
 export const ASSOCIATED_TOKEN_PROGRAM_ID_STR = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
@@ -105,14 +107,40 @@ async function validateMint(
   }
 }
 
-function assertNoAssociatedTokenProgram(instructions: TransactionInstruction[]) {
-  for (const ix of instructions) {
-    if (ix.programId.toBase58() === ASSOCIATED_TOKEN_PROGRAM_ID_STR) {
-      throw new Error(
-        'DEVNET_SWAP_BUILD_INVARIANT_VIOLATION: Associated Token Program instruction is strictly prohibited on Devnet swap route'
-      );
-    }
+async function ensureAta(
+  connection: Connection,
+  payerPk: PublicKey,
+  ownerPk: PublicKey,
+  mintPk: PublicKey,
+  tokenProgramId: PublicKey,
+  instructions: TransactionInstruction[],
+  allowOwnerOffCurve = true
+): Promise<PublicKey> {
+  const ata = getAssociatedTokenAddressSync(
+    mintPk,
+    ownerPk,
+    allowOwnerOffCurve,
+    tokenProgramId,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+
+  const accountInfo = await connection.getAccountInfo(ata, 'confirmed');
+
+  if (!accountInfo) {
+    // ATA does not exist on-chain: add idempotent creation instruction using detected tokenProgramId
+    instructions.push(
+      createAssociatedTokenAccountIdempotentInstruction(
+        payerPk,
+        ata,
+        ownerPk,
+        mintPk,
+        tokenProgramId,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      )
+    );
   }
+
+  return ata;
 }
 
 // GET /api/devnet-swap/status
@@ -183,8 +211,8 @@ router.get('/diagnostic', async (req, res) => {
       buildId: BUILD_ID,
       status,
       settlementAddress: keypair ? keypair.publicKey.toBase58() : null,
-      associatedTokenProgramAllowed: false,
-      tokenAccountCreationMethod: 'system-program-account-init-or-direct-transfer',
+      associatedTokenProgramAllowed: true,
+      tokenAccountCreationMethod: 'associated-token-account-idempotent-instruction',
       tokenTransferMethod: 'spl-token-transfer-instruction',
       isConfigured,
       solBalance,
@@ -236,19 +264,25 @@ router.post('/build', async (req, res) => {
 
     const instructions: TransactionInstruction[] = [];
 
-    // Derive PDA Token Account addresses off-chain without creating Associated Token Program instructions
-    const userTokenAta = getAssociatedTokenAddressSync(
-      tokenMintPk,
+    // Derive and ensure user & settlement ATAs exist (adds creation instruction if ATA does NOT exist on-chain)
+    const userTokenAta = await ensureAta(
+      connection,
       userPk,
-      false,
-      tokenProgramId
+      userPk,
+      tokenMintPk,
+      tokenProgramId,
+      instructions,
+      false
     );
 
-    const settlementTokenAta = getAssociatedTokenAddressSync(
-      tokenMintPk,
+    const settlementTokenAta = await ensureAta(
+      connection,
+      userPk,
       settlementPk,
-      true,
-      tokenProgramId
+      tokenMintPk,
+      tokenProgramId,
+      instructions,
+      true
     );
 
     let expectedSolLamports = 0;
@@ -326,23 +360,12 @@ router.post('/build', async (req, res) => {
       );
     }
 
-    // Hard Invariant Check 1: Ensure no Associated Token Program instructions are present
-    assertNoAssociatedTokenProgram(instructions);
-
     const latestBlockhash = await connection.getLatestBlockhash('confirmed');
     const messageV0 = new TransactionMessage({
       payerKey: userPk,
       recentBlockhash: latestBlockhash.blockhash,
       instructions,
     }).compileToV0Message();
-
-    // Hard Invariant Check 2: Ensure compiled message account keys do not reference Associated Token Program
-    const staticAccountKeys = messageV0.staticAccountKeys.map((k) => k.toBase58());
-    if (staticAccountKeys.includes(ASSOCIATED_TOKEN_PROGRAM_ID_STR)) {
-      throw new Error(
-        'DEVNET_SWAP_BUILD_INVARIANT_VIOLATION: Associated Token Program instruction is strictly prohibited on Devnet swap route'
-      );
-    }
 
     const versionedTx = new VersionedTransaction(messageV0);
     // Sign with server settlement keypair:
