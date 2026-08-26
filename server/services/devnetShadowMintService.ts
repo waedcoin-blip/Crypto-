@@ -7,6 +7,8 @@ import {
   createMintToInstruction,
   getAssociatedTokenAddressSync,
 } from '@solana/spl-token';
+import fs from 'fs';
+import path from 'path';
 import { adminDb } from '../utils/firebaseAdmin';
 import { getSettlementKeypair } from '../routes/devnetSwap';
 
@@ -20,6 +22,43 @@ export interface ShadowMintRecord {
 const memoryShadowMap = new Map<string, ShadowMintRecord>();
 let loadedFromDb = false;
 
+const DISK_CACHE_PATH = path.join(process.cwd(), 'data', 'devnetShadowMints.json');
+
+function loadFromDiskCache(): void {
+  try {
+    if (fs.existsSync(DISK_CACHE_PATH)) {
+      const raw = fs.readFileSync(DISK_CACHE_PATH, 'utf8');
+      const data: Record<string, ShadowMintRecord> = JSON.parse(raw);
+      Object.entries(data).forEach(([key, record]) => {
+        if (record.originalMint && record.devnetMint) {
+          memoryShadowMap.set(key, record);
+        }
+      });
+    }
+  } catch (err: any) {
+    console.warn('[DevnetShadowMint] Could not load shadow mints from disk cache:', err.message);
+  }
+}
+
+function saveToDiskCache(): void {
+  try {
+    const dir = path.dirname(DISK_CACHE_PATH);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    const data: Record<string, ShadowMintRecord> = {};
+    memoryShadowMap.forEach((val, key) => {
+      data[key] = val;
+    });
+    fs.writeFileSync(DISK_CACHE_PATH, JSON.stringify(data, null, 2), 'utf8');
+  } catch (err: any) {
+    console.warn('[DevnetShadowMint] Could not save shadow mints to disk cache:', err.message);
+  }
+}
+
+// Initial load from disk cache on startup
+loadFromDiskCache();
+
 export async function getAllShadowMints(): Promise<Record<string, ShadowMintRecord>> {
   if (!loadedFromDb && adminDb) {
     try {
@@ -31,8 +70,15 @@ export async function getAllShadowMints(): Promise<Record<string, ShadowMintReco
         }
       });
       loadedFromDb = true;
-    } catch (err) {
-      console.warn('[DevnetShadowMint] Could not load shadow mints from Firestore:', err);
+      saveToDiskCache();
+    } catch (err: any) {
+      // Gracefully handle PERMISSION_DENIED or uninitialized adminDb
+      if (err?.code === 7 || err?.message?.includes('PERMISSION_DENIED')) {
+        console.info('[DevnetShadowMint] Firestore permissions restricted. Relying on local storage for shadow mints.');
+      } else {
+        console.warn('[DevnetShadowMint] Could not load shadow mints from Firestore:', err.message || err);
+      }
+      loadedFromDb = true; // Mark loaded to prevent repeated error logs
     }
   }
 
@@ -54,10 +100,13 @@ export async function getShadowMintMapping(originalMintStr: string): Promise<Sha
       if (doc.exists) {
         const record = doc.data() as ShadowMintRecord;
         memoryShadowMap.set(originalMintStr, record);
+        saveToDiskCache();
         return record;
       }
-    } catch (err) {
-      console.warn(`[DevnetShadowMint] Error checking Firestore for ${originalMintStr}:`, err);
+    } catch (err: any) {
+      if (err?.code !== 7 && !err?.message?.includes('PERMISSION_DENIED')) {
+        console.warn(`[DevnetShadowMint] Error checking Firestore for ${originalMintStr}:`, err.message || err);
+      }
     }
   }
 
@@ -166,13 +215,16 @@ export async function getOrCreateShadowMint(
   };
 
   memoryShadowMap.set(originalMintStr, record);
+  saveToDiskCache();
 
   if (adminDb) {
     try {
       await adminDb.collection('devnetShadowMints').doc(originalMintStr).set(record);
       console.log(`[DevnetShadowMint] Saved shadow mint mapping to Firestore for ${originalMintStr}`);
-    } catch (err) {
-      console.warn('[DevnetShadowMint] Failed to save shadow mint mapping to Firestore:', err);
+    } catch (err: any) {
+      if (err?.code !== 7 && !err?.message?.includes('PERMISSION_DENIED')) {
+        console.warn('[DevnetShadowMint] Failed to save shadow mint mapping to Firestore:', err.message || err);
+      }
     }
   }
 

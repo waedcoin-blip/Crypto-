@@ -281,6 +281,31 @@
         }
       },
       "required": ["userId"]
+    },
+    "DevnetShadowMint": {
+      "title": "DevnetShadowMint",
+      "description": "Devnet SPL Token shadow mint mappings for mainnet scanner tokens.",
+      "type": "object",
+      "properties": {
+        "originalMint": {
+          "type": "string",
+          "description": "Mainnet SPL token mint address."
+        },
+        "devnetMint": {
+          "type": "string",
+          "description": "Devnet shadow SPL token mint address."
+        },
+        "decimals": {
+          "type": "number",
+          "description": "Token decimals."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp."
+        }
+      },
+      "required": ["originalMint", "devnetMint", "decimals"]
     }
   },
   "firestore": {
@@ -291,6 +316,10 @@
     "settings/{userId}": {
       "schema": "Settings",
       "description": "User connection settings, API keys, and configurations."
+    },
+    "devnetShadowMints/{mintId}": {
+      "schema": "DevnetShadowMint",
+      "description": "Devnet shadow mint mappings."
     }
   }
 }
