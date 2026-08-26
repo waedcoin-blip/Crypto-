@@ -12,6 +12,11 @@ export const SOL_MINT = 'So11111111111111111111111111111111111111112';
 export const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 export const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
+/**
+ * Designated Devnet Trading Address
+ */
+export const DEFAULT_DEVNET_TRADING_ADDRESS = '2ptweoAtMqBwzxKrn4s5QhtTu26qesjjg7enPqQES2Dw';
+
 export const HELIUS_API_KEY =
   (import.meta as any).env?.VITE_HELIUS_API_KEY ||
   (import.meta as any).env?.HELIUS_API_KEY ||

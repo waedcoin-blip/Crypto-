@@ -318,12 +318,8 @@ router.post('/build', async (req, res) => {
     }
     const connection = getDevnetConnection();
 
-    const settlementBal = await connection.getBalance(settlementPk, 'confirmed');
-    if (settlementBal < 0.005 * LAMPORTS_PER_SOL) {
-      return res.status(400).json({
-        error: `Devnet settlement wallet (${settlementPk.toBase58()}) has insufficient Devnet SOL (${(settlementBal / LAMPORTS_PER_SOL).toFixed(4)} SOL). Fund it manually before trading.`,
-      });
-    }
+    const settlementBal = await connection.getBalance(settlementPk, 'confirmed').catch(() => 0);
+    // User wallet funds rent and fees directly in the transaction
 
     const isBuy = inputMint === SOL_MINT;
     const tokenMintStr = isBuy ? outputMint : inputMint;
@@ -366,9 +362,9 @@ router.post('/build', async (req, res) => {
     }
     const userToken = existingUserToken
       ? { address: existingUserToken }
-      : await ensureTokenAccount(connection, settlementPk, userPk, tokenMintPk, tokenProgramId, instructions);
+      : await ensureTokenAccount(connection, userPk, userPk, tokenMintPk, tokenProgramId, instructions);
     const settlementToken = await ensureTokenAccount(
-      connection, settlementPk, settlementPk, tokenMintPk, tokenProgramId, instructions
+      connection, userPk, settlementPk, tokenMintPk, tokenProgramId, instructions
     );
 
     // A newly-created shadow mint gets server-controlled inventory. Existing shadow

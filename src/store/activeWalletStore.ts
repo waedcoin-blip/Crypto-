@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { Keypair } from '@solana/web3.js';
 import { getSavedSessionKeypair, saveSessionKeypair } from '../utils/keypairUtils';
 import { useBalanceStore } from './balanceStore';
+import { DEFAULT_DEVNET_TRADING_ADDRESS } from '../constants/solana';
 
 import { useTradingEnvironmentStore } from './tradingEnvironmentStore';
 
@@ -45,6 +46,21 @@ const getInitialActiveWallet = (): ActiveWallet | null => {
                 keypair: restoredKp,
                 network: initialNetwork,
                 source: 'session',
+                version: 1
+            };
+        } else if (initialNetwork === 'devnet') {
+            const address = DEFAULT_DEVNET_TRADING_ADDRESS;
+            useBalanceStore.getState().setWalletAddress(address);
+            setTimeout(() => {
+              import('../services/WalletBalanceService').then(m => {
+                m.walletBalanceService.refreshNow(address);
+              });
+            }, 0);
+            return {
+                address,
+                keypair: null,
+                network: 'devnet',
+                source: 'connected',
                 version: 1
             };
         }
