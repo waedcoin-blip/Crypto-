@@ -224,7 +224,10 @@ export class DevnetAmmExecutor implements ITradeExecutor {
         if (diagData.associatedTokenProgramAllowed !== false || diagData.tokenAccountCreationMethod !== 'system-create-account-plus-spl-initialize-account') {
           throw new Error('Devnet safety check failed: server does not guarantee ATA-free token account creation.');
         }
-        if (!diagData.settlementAddress || diagData.settlementAddress === activePublicKey) {
+        if (!diagData.settlementAddress) {
+          throw new Error('Devnet safety check failed: settlement wallet is not initialized on server.');
+        }
+        if (diagData.settlementAddress === activePublicKey) {
           throw new Error('Devnet safety check failed: settlement wallet must be different from the active user wallet.');
         }
       }

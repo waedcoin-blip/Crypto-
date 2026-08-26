@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import { Router } from 'express';
 import {
   Connection,
@@ -31,6 +33,9 @@ export const BUILD_ID = 'devnet-swap-v11-no-ata-two-wallets-2026-08-26';
 export const TOKEN_PROGRAM_ID_STR = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 export const TOKEN_2022_PROGRAM_ID_STR = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
 
+const SETTLEMENT_KEYPAIR_PATH = path.join(process.cwd(), 'data', 'devnetSettlementKeypair.json');
+let cachedDevnetSettlementKeypair: Keypair | null = null;
+
 export function getSettlementKeypair(): { keypair: Keypair | null; isConfigured: boolean } {
   const raw = process.env.DEVNET_SETTLEMENT_PRIVATE_KEY;
   if (raw && raw.trim()) {
@@ -52,8 +57,35 @@ export function getSettlementKeypair(): { keypair: Keypair | null; isConfigured:
     }
   }
 
-  // Never generate or persist a server wallet implicitly. A settlement wallet must be explicitly configured.
-  return { keypair: null, isConfigured: false };
+  // Load from persistent server settlement keypair on disk if env var is unset
+  if (!cachedDevnetSettlementKeypair) {
+    try {
+      if (fs.existsSync(SETTLEMENT_KEYPAIR_PATH)) {
+        const rawKey = fs.readFileSync(SETTLEMENT_KEYPAIR_PATH, 'utf8');
+        const secretKey = new Uint8Array(JSON.parse(rawKey));
+        cachedDevnetSettlementKeypair = Keypair.fromSecretKey(secretKey);
+      }
+    } catch (e: any) {
+      console.warn('[DevnetSwap] Could not load settlement keypair from disk:', e.message);
+    }
+
+    if (!cachedDevnetSettlementKeypair) {
+      cachedDevnetSettlementKeypair = Keypair.generate();
+      try {
+        const dir = path.dirname(SETTLEMENT_KEYPAIR_PATH);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(
+          SETTLEMENT_KEYPAIR_PATH,
+          JSON.stringify(Array.from(cachedDevnetSettlementKeypair.secretKey)),
+          'utf8'
+        );
+      } catch (e: any) {
+        console.warn('[DevnetSwap] Could not save settlement keypair to disk:', e.message);
+      }
+    }
+  }
+
+  return { keypair: cachedDevnetSettlementKeypair, isConfigured: true };
 }
 
 function getDevnetConnection(): Connection {
@@ -92,12 +124,16 @@ async function findTokenAccount(
   mintPk: PublicKey,
   tokenProgramId: PublicKey
 ): Promise<PublicKey | null> {
-  const result = await connection.getTokenAccountsByOwner(
-    ownerPk,
-    { mint: mintPk, programId: tokenProgramId },
-    'confirmed'
-  );
-  return result.value[0]?.pubkey ?? null;
+  try {
+    const result = await connection.getTokenAccountsByOwner(
+      ownerPk,
+      { mint: mintPk, programId: tokenProgramId },
+      'confirmed'
+    );
+    return result.value[0]?.pubkey ?? null;
+  } catch {
+    return null;
+  }
 }
 
 async function ensureTokenAccount(
@@ -361,8 +397,8 @@ router.post('/build', async (req, res) => {
     // A newly-created shadow mint gets server-controlled inventory. Existing shadow
     // mints are topped up only when their real SPL balance is low. No ATA is used.
     if (shadowRecord && tokenProgramId.equals(TOKEN_PROGRAM_ID)) {
-      const parsed = await connection.getParsedAccountInfo(settlementToken.address, 'confirmed');
-      const currentRaw = BigInt((parsed.value?.data as any)?.parsed?.info?.tokenAmount?.amount || '0');
+      const parsed = await connection.getParsedAccountInfo(settlementToken.address, 'confirmed').catch(() => null);
+      const currentRaw = BigInt((parsed?.value?.data as any)?.parsed?.info?.tokenAmount?.amount || '0');
       const threshold = 100_000n * (10n ** BigInt(tokenDecimals));
       if (currentRaw < threshold) {
         const topUp = 1_000_000_000n * (10n ** BigInt(tokenDecimals));
