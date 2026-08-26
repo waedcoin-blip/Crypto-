@@ -13,12 +13,56 @@ export class WalletBalanceService {
   private network: TradingNetwork;
   private timer: ReturnType<typeof setInterval> | null = null;
   private refreshSeq = 0;
+  private pendingClearedMints: Set<string> = new Set();
 
   constructor(network: TradingNetwork) {
     this.network = network;
     const config = getNetworkConfig(network);
     this.connection = new Connection(config.rpcUrl, 'confirmed');
     useBalanceStore.getState().setNetwork(network);
+  }
+
+  /**
+   * Registers a token mint as pending cleared (sold), setting its local balance to 0
+   * and protecting it from being overwritten by stale RPC balance responses.
+   */
+  public markTokenCleared(mint: string): void {
+    this.pendingClearedMints.add(mint);
+    useBalanceStore.getState().setTokenBalance(mint, 0);
+  }
+
+  /**
+   * Polls the on-chain balance for a sold token until it is verified cleared (0)
+   * or max attempts are reached, preserving the optimistic zero in local state.
+   */
+  async verifyTokenBalanceCleared(
+    mint: string,
+    walletAddress?: string,
+    maxAttempts = 10,
+    intervalMs = 400
+  ): Promise<boolean> {
+    this.markTokenCleared(mint);
+
+    let isCleared = false;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        const rawBalance = await this.getTokenBalance(mint, walletAddress);
+        if (rawBalance === 0) {
+          isCleared = true;
+          break;
+        }
+      } catch {}
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+
+    // Keep in pendingClearedMints briefly to ensure subsequent full refreshes capture 0
+    setTimeout(() => {
+      this.pendingClearedMints.delete(mint);
+    }, 2500);
+
+    // Run a final refresh now that on-chain state is confirmed cleared
+    void this.refresh(walletAddress);
+    return isCleared;
   }
 
   refreshNow(address?: string) {
@@ -102,6 +146,10 @@ export class WalletBalanceService {
         const parsed = account.data.parsed?.info;
         if (!parsed) continue;
         const mint: string = parsed.mint;
+        if (this.pendingClearedMints.has(mint)) {
+          tokenBalances[mint] = 0;
+          continue;
+        }
         const ta = parsed.tokenAmount;
         const uiAmt = ta.uiAmount ?? Number(ta.amount) / Math.pow(10, ta.decimals);
         // Correctly aggregate across multiple token accounts for same mint

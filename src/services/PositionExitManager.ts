@@ -378,9 +378,8 @@ export class PositionExitManager {
       this.exitingMints.delete(mint);
       this.positions.delete(mint);
 
-      // Explicitly zero sold token and await full on-chain RPC settling
-      useBalanceStore.getState().setTokenBalance(mint, 0);
-      await walletBalanceService.refreshWithRetry(undefined, 3, 400);
+      // Explicitly zero sold token and verify on-chain clearing
+      await walletBalanceService.verifyTokenBalanceCleared(mint);
 
       const netSolReceived = Math.max(0, (result.outputAmount / 1e9) - (result.feeSol || 0));
       if (this.onExitCallback) {

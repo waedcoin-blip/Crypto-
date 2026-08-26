@@ -222,6 +222,22 @@ export class DevnetAmmExecutor implements ITradeExecutor {
 
       await assertTradeBalance(requiredSol);
 
+      // Pre-flight check: Verify target mint exists on Devnet
+      if (targetMintStr !== 'So11111111111111111111111111111111111111112') {
+        let targetMintPk: PublicKey;
+        try {
+          targetMintPk = new PublicKey(targetMintStr);
+        } catch {
+          throw new Error(`Invalid token mint address: ${targetMintStr}`);
+        }
+        const devnetMintCheck = await this.validateDevnetMint(targetMintPk);
+        if (!devnetMintCheck.exists) {
+          throw new Error(
+            `Mint ${targetMintStr} does not exist on Solana Devnet. Non-Devnet-native tokens from mainnet scanner feeds cannot be traded on Devnet.`
+          );
+        }
+      }
+
       // Pre-trade on-chain balance snapshots for verification
       const initialSolLamports = await this.connection.getBalance(userPk, 'confirmed').catch(() => 0);
       const initialTokenRawAmount = await this.getTokenBalance(targetMintStr);
@@ -240,23 +256,44 @@ export class DevnetAmmExecutor implements ITradeExecutor {
         }
       }
 
-      // 1. Build Atomic VersionedTransaction on Server Settlement Route
-      const buildRes = await fetch('/api/devnet-swap/build', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userPublicKey: activePublicKey,
-          inputMint,
-          outputMint,
-          amount,
-          quoteResponse: quote,
-          slippageBps,
-        }),
-      });
+      // 1. Build Atomic VersionedTransaction on Server Settlement Route with retry logic
+      let buildRes: Response | null = null;
+      let lastFetchErr: any = null;
+
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          buildRes = await fetch('/api/devnet-swap/build', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              userPublicKey: activePublicKey,
+              inputMint,
+              outputMint,
+              amount,
+              quoteResponse: quote,
+              slippageBps,
+            }),
+          });
+          if (buildRes && (buildRes.ok || buildRes.status === 400)) {
+            break;
+          }
+        } catch (fetchErr) {
+          lastFetchErr = fetchErr;
+          if (attempt < 3) {
+            await new Promise((r) => setTimeout(r, attempt * 400));
+          }
+        }
+      }
+
+      if (!buildRes) {
+        throw new Error(
+          `Server swap build request failed (network error): ${lastFetchErr?.message || 'Failed to fetch'}`
+        );
+      }
 
       if (!buildRes.ok) {
         const errJson = await buildRes.json().catch(() => ({ error: buildRes.statusText }));
-        throw new Error(errJson.error || `Server swap build failed with HTTP ${buildRes.status}`);
+        throw new Error(errJson.message || errJson.error || `Server swap build failed with HTTP ${buildRes.status}`);
       }
 
       const buildData = await buildRes.json();
@@ -298,6 +335,9 @@ export class DevnetAmmExecutor implements ITradeExecutor {
         const verifyStart = Date.now();
         let solIncreased = false;
         let tokenDecreased = false;
+
+        // Mark token cleared optimistically and verify
+        void walletBalanceService.verifyTokenBalanceCleared(targetMintStr, activePublicKey);
 
         while (Date.now() - verifyStart < 12000) {
           try {

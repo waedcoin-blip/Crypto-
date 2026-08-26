@@ -259,6 +259,14 @@ router.post('/build', async (req, res) => {
 
     // Read real on-chain token decimals and token program ID from the mint owner.toBase58()
     const mintInfo = await validateMint(connection, tokenMintPk);
+    if (!mintInfo.exists) {
+      return res.status(400).json({
+        error: 'MINT_NOT_FOUND_ON_DEVNET',
+        message: `Mint ${tokenMintStr} does not exist on Solana Devnet. Non-Devnet-native tokens from mainnet feeds cannot be paper-traded on the Devnet settlement exchange.`,
+        buildId: BUILD_ID,
+      });
+    }
+
     const tokenDecimals = mintInfo.decimals;
     const tokenProgramId = mintInfo.tokenProgram;
 
