@@ -3946,6 +3946,12 @@ const checkTokenCriteria = (mint: string): {
       }
     );
 
+    exitMgr.setOnExitErrorCallback((mint, side, errorMessage) => {
+      const pos = positionsRef.current[mint];
+      const symbol = pos?.symbol || mint.slice(0, 6);
+      addLog(`⚠️ ${side.toUpperCase()} EXIT FAILED for ${symbol}: ${errorMessage} — will keep retrying automatically`, 'warning');
+    });
+
     exitMgr.setOnExitCallback((mint, side, signature, pnlPct, outputAmountSol) => {
       const pos = positionsRef.current[mint];
       if (pos) {

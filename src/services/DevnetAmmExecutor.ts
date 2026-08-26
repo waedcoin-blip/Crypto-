@@ -249,7 +249,7 @@ export class DevnetAmmExecutor implements ITradeExecutor {
 
       const isSolBuy = inputMint === 'So11111111111111111111111111111111111111112';
       const targetMintStr = isSolBuy ? outputMint : inputMint;
-      const requiredSol = isSolBuy ? (amount / LAMPORTS_PER_SOL) + 0.002 : 0.002;
+      const requiredSol = isSolBuy ? (amount / LAMPORTS_PER_SOL) + 0.002 : 0.0003;
 
       await assertTradeBalance(requiredSol);
 

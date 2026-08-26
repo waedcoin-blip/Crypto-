@@ -39,6 +39,12 @@ export type ExitCallback = (
   outputAmountSol?: number
 ) => void;
 
+export type ExitErrorCallback = (
+  mint: string,
+  side: 'tp' | 'sl',
+  errorMessage: string
+) => void;
+
 export class PositionExitManager {
   private positions: Map<string, ManagedExitPosition> = new Map();
   private exitingMints: Set<string> = new Set();
@@ -48,6 +54,8 @@ export class PositionExitManager {
   private dedicatedRpcUrl: string;
   private defaultConfig: DefaultExitConfig;
   private onExitCallback?: ExitCallback;
+  private onExitErrorCallback?: ExitErrorCallback;
+  private lastExitErrorTimes: Map<string, number> = new Map();
   private isRunning: boolean = false;
   private evaluationInterval: any = null;
 
@@ -73,6 +81,10 @@ export class PositionExitManager {
 
   public setOnExitCallback(cb: ExitCallback): void {
     this.onExitCallback = cb;
+  }
+
+  public setOnExitErrorCallback(cb: ExitErrorCallback): void {
+    this.onExitErrorCallback = cb;
   }
 
   public start(): void {
@@ -377,9 +389,19 @@ export class PositionExitManager {
         this.onExitCallback(mint, side, result.signature || 'exit-tx', pnlPct, netSolReceived);
       }
     } catch (err: any) {
+      const errMsg = err?.message || String(err);
       console.error(`[ExitManager] ❌ Exit error for ${mint}:`, err);
       this.exitingMints.delete(mint);
       pos.state = 'OPEN'; // reset so that subsequent ticks can retry the exit
+
+      const now = Date.now();
+      const lastLogged = this.lastExitErrorTimes.get(mint) || 0;
+      if (now - lastLogged >= 15000) {
+        this.lastExitErrorTimes.set(mint, now);
+        if (this.onExitErrorCallback) {
+          this.onExitErrorCallback(mint, side, errMsg);
+        }
+      }
 
       // Background check if swap actually landed
       if (typeof this.executor.getTokenBalance === 'function') {
