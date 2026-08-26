@@ -169,15 +169,17 @@ export class RiskManager {
     let calculatedBuyPrice = params.buyPrice || 0;
     const decimals = params.tokenDecimals !== undefined ? params.tokenDecimals : 6;
     if (calculatedBuyPrice <= 0 && params.solSpent > 0 && params.amount > 0) {
-      const rawUnits = params.amount / (10 ** decimals);
-      calculatedBuyPrice = rawUnits > 0 ? params.solSpent / rawUnits : 0;
+      const humanAmount = params.amount > 1e6 ? params.amount / (10 ** decimals) : params.amount;
+      calculatedBuyPrice = humanAmount > 0 ? params.solSpent / humanAmount : 0;
     }
+
+    const fallbackPrice = calculatedBuyPrice > 0 ? calculatedBuyPrice : 0.0000003;
 
     const pos: ManagedPosition = {
       mint: params.mint,
       amount: params.amount > 0 ? params.amount : 0,
       tokenDecimals: decimals,
-      buyPrice: calculatedBuyPrice > 0 ? calculatedBuyPrice : 0.0001,
+      buyPrice: fallbackPrice,
       solSpent: params.solSpent || 0.1,
       tpPct: params.tpPct ?? this.config.tpPct,
       slPct: Math.abs(params.slPct ?? this.config.slPct),
@@ -185,8 +187,8 @@ export class RiskManager {
       maxHoldTimeMs: params.maxHoldTimeMs ?? this.config.maxHoldTimeMs,
       slippageBpsTp: params.slippageBpsTp ?? this.config.slippageBpsTp ?? 250,
       slippageBpsSl: params.slippageBpsSl ?? this.config.slippageBpsSl ?? 1000,
-      currentPrice: calculatedBuyPrice > 0 ? calculatedBuyPrice : 0.0001,
-      peakPrice: calculatedBuyPrice > 0 ? calculatedBuyPrice : 0.0001,
+      currentPrice: fallbackPrice,
+      peakPrice: fallbackPrice,
       highestPnLPct: 0,
       state: 'OPEN',
       createdAt: Date.now(),

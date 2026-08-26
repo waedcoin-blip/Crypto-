@@ -4,6 +4,52 @@ import { QuoteGetRequest, QuoteResponse } from '@jup-ag/api';
 import { SOL_MINT, DEFAULT_PAPER_TRADING_ADDRESS } from '../constants/solana';
 import { usePaperWalletStore } from '../store/paperWalletStore';
 import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
+import { useAppStore } from '../store/appStore';
+import { getSolPriceUsd } from '../utils/pnlCalculator';
+
+async function resolveTokenPriceInSol(tokenMint: string): Promise<number> {
+  // 1. Check AppStore state for tokenMetrics
+  try {
+    const store = useAppStore.getState();
+    const metric = store?.tokenMetrics?.[tokenMint];
+    if (metric) {
+      if (typeof metric.priceNative === 'number' && metric.priceNative > 0) {
+        return metric.priceNative;
+      }
+      if (typeof metric.priceNative === 'string' && parseFloat(metric.priceNative) > 0) {
+        return parseFloat(metric.priceNative);
+      }
+      if (typeof metric.priceUsd === 'number' && metric.priceUsd > 0) {
+        const solUsd = getSolPriceUsd() || 150;
+        return metric.priceUsd / solUsd;
+      }
+    }
+  } catch (e) {
+    // Ignore store access error
+  }
+
+  // 2. Fetch directly from DexScreener API
+  try {
+    const resp = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${tokenMint}`);
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data && data.pairs && data.pairs.length > 0) {
+        const bestPair = data.pairs[0];
+        if (bestPair.priceNative && parseFloat(bestPair.priceNative) > 0) {
+          return parseFloat(bestPair.priceNative);
+        }
+        if (bestPair.priceUsd && parseFloat(bestPair.priceUsd) > 0) {
+          return parseFloat(bestPair.priceUsd) / 150;
+        }
+      }
+    }
+  } catch (e) {
+    // Ignore fetch error
+  }
+
+  // 3. Fallback for brand new tokens with no dex data yet (~0.0000003 SOL)
+  return 0.0000003;
+}
 
 export class PaperTradeExecutor implements ITradeExecutor {
   readonly mode = 'paper' as const;
@@ -42,16 +88,16 @@ export class PaperTradeExecutor implements ITradeExecutor {
       console.warn('[PaperTradeExecutor] Jupiter quote fetch failed, using fallback calculation:', e);
     }
 
-    // Fallback simulated quote calculation
-    // Assume simulated unit price = 0.0001 SOL per token (1 SOL = 10,000 tokens)
+    // Fallback simulated quote calculation using real token price in SOL
     const isBuy = params.inputMint === SOL_MINT;
-    const simulatedPriceInSol = 0.0001; 
+    const targetTokenMint = isBuy ? params.outputMint : params.inputMint;
+    const simulatedPriceInSol = await resolveTokenPriceInSol(targetTokenMint); 
     let outAmountRaw = 0;
 
     if (isBuy) {
       // inputAmount is SOL lamports (1e9 per SOL).
       const solAmount = inputAmount / 1e9;
-      const tokensCount = solAmount / simulatedPriceInSol;
+      const tokensCount = solAmount / (simulatedPriceInSol > 0 ? simulatedPriceInSol : 0.0000003);
       outAmountRaw = Math.floor(tokensCount * 1e6); // 6 decimals for token
     } else {
       // inputAmount is token raw units (1e6 per token).
@@ -127,8 +173,8 @@ export class PaperTradeExecutor implements ITradeExecutor {
       }
 
       if (rawTokenOut <= 0) {
-        // Fallback: 1 SOL = 10,000 tokens (simulated unit price 0.0001 SOL)
-        rawTokenOut = Math.floor((solRequired / 0.0001) * 1e6);
+        const simPrice = await resolveTokenPriceInSol(outputMint);
+        rawTokenOut = Math.floor((solRequired / (simPrice > 0 ? simPrice : 0.0000003)) * 1e6);
       }
 
       const tokenOutAmount = rawTokenOut / 1e6; // Human-readable token amount for paper store
@@ -197,7 +243,8 @@ export class PaperTradeExecutor implements ITradeExecutor {
       }
 
       if (rawSolOutLamports <= 0) {
-        rawSolOutLamports = Math.floor((tokenAmount * 0.0001) * 1e9);
+        const simPrice = await resolveTokenPriceInSol(inputMint);
+        rawSolOutLamports = Math.floor((tokenAmount * simPrice) * 1e9);
       }
 
       const solOut = rawSolOutLamports / 1e9;
