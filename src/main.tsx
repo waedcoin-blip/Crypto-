@@ -36,7 +36,8 @@ console.error = function (...args) {
     'NO_ROUTES_FOUND', 'No liquidity', 'User rejected', 'WalletNotConnected',
     'Transaction not confirmed', 'SIMULATION_ERROR', 'AbortError', 'Unexpected server response', 
     '429', 'ws error', 'WebSocket', 'websocket', 'failed: WebSocket is closed',
-    'connection to', 'failed', 'Unexpected server response: 429', 'Unexpected server response'
+    'connection to', 'failed', 'Unexpected server response: 429', 'Unexpected server response',
+    'bigint: Failed to load bindings', 'Failed to load bindings'
   ];
 
   if (benign.some(s => msg.includes(s) || msg.toLowerCase().includes(s.toLowerCase()))) {
@@ -51,7 +52,8 @@ const originalConsoleWarn = console.warn;
 console.warn = function (...args) {
   const msg = args.map(arg => String(arg)).join(' ');
   const benign = [
-    'NO_ROUTES_FOUND', 'No liquidity', 'Unexpected server response', '429', 'ws error', 'WebSocket', 'websocket'
+    'NO_ROUTES_FOUND', 'No liquidity', 'Unexpected server response', '429', 'ws error', 'WebSocket', 'websocket',
+    'bigint: Failed to load bindings', 'Failed to load bindings'
   ];
   if (benign.some(s => msg.includes(s) || msg.toLowerCase().includes(s.toLowerCase()))) {
     return;

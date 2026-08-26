@@ -74,6 +74,9 @@ const BENIGN_PATTERNS = [
   'UNAUTHORIZED',
   'NOT_FOUND',
   'DISCOVERY_UNAVAILABLE',
+  'bigint: Failed to load bindings',
+  'Failed to load bindings',
+  'pure JS will be used',
 ];
 
 export function isBenignError(error: unknown): boolean {

@@ -16,6 +16,7 @@ export default defineConfig(({mode}) => {
       alias: {
         '@': path.resolve(__dirname, '.'),
         'buffer': 'buffer',
+        'bigint-buffer': 'bigint-buffer/dist/browser.js',
         'cross-fetch': 'cross-fetch/dist/browser-ponyfill.js'
       },
     },

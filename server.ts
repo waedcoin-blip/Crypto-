@@ -1,3 +1,28 @@
+// Suppress benign warnings from native addon fallbacks like bigint-buffer
+const _origWarn = console.warn;
+console.warn = function (...args: any[]) {
+  const msg = args.map(a => (a instanceof Error ? a.message : String(a))).join(' ');
+  if (
+    msg.includes('bigint: Failed to load bindings') ||
+    msg.includes('Failed to load bindings, pure JS will be used')
+  ) {
+    return;
+  }
+  _origWarn.apply(console, args);
+};
+
+const _origError = console.error;
+console.error = function (...args: any[]) {
+  const msg = args.map(a => (a instanceof Error ? a.message : String(a))).join(' ');
+  if (
+    msg.includes('bigint: Failed to load bindings') ||
+    msg.includes('Failed to load bindings, pure JS will be used')
+  ) {
+    return;
+  }
+  _origError.apply(console, args);
+};
+
 import { isBenignError } from './server/utils/errors.js';
 import express from "express";
 import path from "path";
