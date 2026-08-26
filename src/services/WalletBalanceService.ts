@@ -96,6 +96,13 @@ export class WalletBalanceService {
 
   public updateNetwork(network: TradingNetwork): void {
     this.network = network;
+    if (network === 'paper') {
+      useBalanceStore.getState().setNetwork('paper');
+      import('../store/paperWalletStore').then(m => {
+        m.usePaperWalletStore.getState().syncToBalanceStore();
+      });
+      return;
+    }
     const config = getNetworkConfig(network);
     this.connection = new Connection(config.rpcUrl, 'confirmed');
     useBalanceStore.getState().setNetwork(network);
@@ -103,6 +110,13 @@ export class WalletBalanceService {
   }
 
   async refresh(overrideAddress?: string): Promise<number> {
+    if (this.network === 'paper') {
+      const { usePaperWalletStore } = await import('../store/paperWalletStore');
+      const store = usePaperWalletStore.getState();
+      store.syncToBalanceStore();
+      return store.solBalance;
+    }
+
     const address = overrideAddress || useActiveWalletStore.getState().activeWallet?.address;
     if (!address) {
       useBalanceStore.getState().setWalletAddress(null);
@@ -184,6 +198,11 @@ export class WalletBalanceService {
    * Throws on RPC error so callers NEVER interpret RPC failure as zero balance.
    */
   async getTokenBalance(mint: string, walletAddress?: string): Promise<number> {
+    if (this.network === 'paper') {
+      const { usePaperWalletStore } = await import('../store/paperWalletStore');
+      return usePaperWalletStore.getState().tokenBalances[mint] || 0;
+    }
+
     const address = walletAddress || useActiveWalletStore.getState().activeWallet?.address;
     if (!address) return 0;
 

@@ -5,6 +5,7 @@ import { getNetworkConfig, TradingNetwork } from '../config/network';
 export const GENESIS_HASHES: Record<TradingNetwork, string> = {
   mainnet: '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d',
   devnet: 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG',
+  paper: '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d',
 };
 
 const genesisHashCache: Map<string, string> = new Map();

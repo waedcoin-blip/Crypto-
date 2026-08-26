@@ -3,7 +3,8 @@ import { create } from 'zustand';
 import { getNetworkConfig, TradingNetwork } from '../config/network';
 import { useBalanceStore } from './balanceStore';
 import { useActiveWalletStore } from './activeWalletStore';
-import { DEFAULT_DEVNET_TRADING_ADDRESS } from '../constants/solana';
+import { DEFAULT_DEVNET_TRADING_ADDRESS, DEFAULT_PAPER_TRADING_ADDRESS } from '../constants/solana';
+import { usePaperWalletStore } from './paperWalletStore';
 
 interface TradingEnvironmentState {
   network: TradingNetwork;
@@ -17,7 +18,7 @@ interface TradingEnvironmentState {
 
 export const useTradingEnvironmentStore = create<TradingEnvironmentState>((set) => {
   const initialNetwork: TradingNetwork = 
-    (localStorage.getItem('app_trading_network') as TradingNetwork) === 'mainnet' ? 'mainnet' : 'devnet';
+    (localStorage.getItem('app_trading_network') as TradingNetwork) || 'paper';
   const initial = getNetworkConfig(initialNetwork);
 
   return {
@@ -42,7 +43,16 @@ export const useTradingEnvironmentStore = create<TradingEnvironmentState>((set) 
         useBalanceStore.getState().setNetwork(network);
 
         const activeWalletState = useActiveWalletStore.getState();
-        if (activeWalletState.activeWallet) {
+        if (network === 'paper') {
+          const newAddress = DEFAULT_PAPER_TRADING_ADDRESS;
+          activeWalletState.switchActiveWallet({
+            keypair: null,
+            address: newAddress,
+            network: 'paper',
+            source: 'connected',
+          });
+          usePaperWalletStore.getState().syncToBalanceStore();
+        } else if (activeWalletState.activeWallet) {
           const newAddress = network === 'devnet' && !activeWalletState.activeWallet.keypair
             ? DEFAULT_DEVNET_TRADING_ADDRESS
             : activeWalletState.activeWallet.address;
@@ -57,6 +67,7 @@ export const useTradingEnvironmentStore = create<TradingEnvironmentState>((set) 
           useBalanceStore.getState().setWalletAddress(newAddress);
           setTimeout(() => {
             import('../services/WalletBalanceService').then(m => {
+              m.walletBalanceService.updateNetwork(network);
               m.walletBalanceService.refreshNow(newAddress);
             });
           }, 0);

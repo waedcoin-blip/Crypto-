@@ -6540,11 +6540,11 @@ function App() {
                           <td className="p-6 text-right">
                             <div className={cn(
                               "inline-flex items-center gap-2 px-3 py-1.5 rounded-xl font-black text-xs shadow-inner",
-                              metric.percentageIncrease >= 0 
+                              (metric.percentageIncrease || 0) >= 0 
                                 ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" 
                                 : "bg-rose-500/10 text-rose-400 border border-rose-500/20"
                             )}>
-                              {metric.percentageIncrease.toFixed(2)}%
+                              {(metric.percentageIncrease ?? 0).toFixed(2)}%
                             </div>
                           </td>
                           <td className="p-6 text-right">
@@ -6856,7 +6856,7 @@ function App() {
                   Buy Now!
                 </h2>
                 <div className="text-2xl lg:text-3xl font-black text-emerald-400 mb-2">
-                  +{highProfitAlert.profit.toFixed(2)}% POTENTIAL PROFIT
+                  +{(highProfitAlert.profit ?? 0).toFixed(2)}% POTENTIAL PROFIT
                 </div>
                 <p className="text-lg text-indigo-300 font-bold uppercase mb-4">
                   {highProfitAlert.symbol} is showing massive strength

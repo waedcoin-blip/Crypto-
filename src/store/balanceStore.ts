@@ -1,7 +1,7 @@
 // src/store/balanceStore.ts
 import { create } from 'zustand';
 
-export type BalanceNetwork = 'devnet' | 'mainnet';
+export type BalanceNetwork = 'paper' | 'devnet' | 'mainnet';
 
 export interface BalanceState {
   network: BalanceNetwork;

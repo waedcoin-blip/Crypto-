@@ -2,6 +2,7 @@
 import { ITradeExecutor, SwapResult, ExecutorTelemetry } from './ITradeExecutor';
 import { DevnetAmmExecutor } from './DevnetAmmExecutor';
 import { MainnetJupiterExecutor } from './MainnetJupiterExecutor';
+import { PaperTradeExecutor } from './PaperTradeExecutor';
 import { QuoteGetRequest, QuoteResponse } from '@jup-ag/api';
 import { TradingNetwork } from '../config/network';
 import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
@@ -22,6 +23,7 @@ export interface ExecutionEngineConfig {
 export class ExecutionEngine implements ITradeExecutor {
   private static instance: ExecutionEngine;
   public mode: TradingNetwork;
+  private paperExecutor: PaperTradeExecutor | null = null;
   private devnetExecutor: DevnetAmmExecutor | null = null;
   private mainnetExecutor: MainnetJupiterExecutor | null = null;
 
@@ -45,11 +47,16 @@ export class ExecutionEngine implements ITradeExecutor {
     const currentNetwork =
       useTradingEnvironmentStore.getState().network ||
       (typeof window !== 'undefined' ? (localStorage.getItem('app_trading_network') as TradingNetwork) : null) ||
-      'devnet';
+      'paper';
 
     this.mode = currentNetwork;
 
-    if (currentNetwork === 'devnet') {
+    if (currentNetwork === 'paper') {
+      if (!this.paperExecutor) {
+        this.paperExecutor = new PaperTradeExecutor();
+      }
+      return this.paperExecutor;
+    } else if (currentNetwork === 'devnet') {
       if (!this.devnetExecutor) {
         this.devnetExecutor = new DevnetAmmExecutor();
       }

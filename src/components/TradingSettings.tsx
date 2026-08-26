@@ -154,13 +154,23 @@ export const TradingSettings: React.FC = () => {
         <span className="text-[13px] font-medium text-gray-200">
           Trading Mode
         </span>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => setMode('paper')}
+            className={`px-3 py-1.5 rounded-md text-[12px] font-semibold transition-all cursor-pointer ${
+              mode === 'paper'
+                ? 'bg-purple-600 text-white shadow'
+                : 'text-gray-400 hover:text-purple-300'
+            }`}
+          >
+            Paper
+          </button>
           <button
             onClick={() => setMode('devnet')}
             className={`px-3 py-1.5 rounded-md text-[12px] font-semibold transition-all cursor-pointer ${
               mode === 'devnet'
-                ? 'bg-white text-black shadow'
-                : 'text-gray-400 hover:text-white'
+                ? 'bg-cyan-600 text-white shadow'
+                : 'text-gray-400 hover:text-cyan-300'
             }`}
           >
             Devnet
@@ -204,7 +214,7 @@ export const TradingSettings: React.FC = () => {
           <div className="flex items-center justify-between text-[11px] text-gray-300 pt-1">
             <span>Exchange SOL Balance:</span>
             <span className="font-mono font-semibold text-white">
-              {settlementStatus.solBalance.toFixed(4)} SOL
+              {(settlementStatus.solBalance ?? 0).toFixed(4)} SOL
             </span>
           </div>
           {!settlementStatus.isConfigured && (

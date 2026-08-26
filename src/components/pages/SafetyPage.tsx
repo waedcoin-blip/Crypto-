@@ -56,9 +56,9 @@ export const SafetyPage = ({ tokenMetrics }: { tokenMetrics: Record<string, Toke
                     <div className={cn("px-2 py-1 rounded text-xs font-bold", token.isRugSafe ? "bg-emerald-500/10 text-emerald-500" : "bg-red-500/10 text-red-500")}>
                       {token.isRugSafe ? "SAFE" : "RISKY"}
                     </div>
-                    {token.percentageIncrease !== undefined && (
-                      <div className={cn("text-xs font-medium", token.percentageIncrease >= 0 ? "text-emerald-400" : "text-red-400")}>
-                        {token.percentageIncrease > 0 ? '+' : ''}{token.percentageIncrease.toFixed(2)}%
+                    {token.percentageIncrease !== undefined && token.percentageIncrease !== null && (
+                      <div className={cn("text-xs font-medium", (token.percentageIncrease ?? 0) >= 0 ? "text-emerald-400" : "text-red-400")}>
+                        {(token.percentageIncrease ?? 0) > 0 ? '+' : ''}{(token.percentageIncrease ?? 0).toFixed(2)}%
                       </div>
                     )}
                   </div>

@@ -2,7 +2,7 @@
 
 /// <reference types="vite/client" />
 
-export type TradingNetwork = 'devnet' | 'mainnet';
+export type TradingNetwork = 'paper' | 'devnet' | 'mainnet';
 
 export interface NetworkConfig {
   network: TradingNetwork;
@@ -35,6 +35,16 @@ function toWsUrl(rpcUrl: string): string {
 export function getNetworkConfig(
   network: TradingNetwork
 ): NetworkConfig {
+  if (network === 'paper') {
+    return {
+      network: 'paper',
+      rpcUrl: MAINNET_RPC,
+      wsUrl: toWsUrl(MAINNET_RPC),
+      explorerCluster: 'mainnet-beta',
+      isProduction: false,
+    };
+  }
+
   if (network === 'devnet') {
     return {
       network: 'devnet',

@@ -2,14 +2,15 @@ import { create } from 'zustand';
 import { Keypair } from '@solana/web3.js';
 import { getSavedSessionKeypair, saveSessionKeypair } from '../utils/keypairUtils';
 import { useBalanceStore } from './balanceStore';
-import { DEFAULT_DEVNET_TRADING_ADDRESS } from '../constants/solana';
+import { DEFAULT_DEVNET_TRADING_ADDRESS, DEFAULT_PAPER_TRADING_ADDRESS } from '../constants/solana';
+import { usePaperWalletStore } from './paperWalletStore';
 
 import { useTradingEnvironmentStore } from './tradingEnvironmentStore';
 
 export interface ActiveWallet {
     address: string;
     keypair: Keypair | null;
-    network: 'devnet' | 'mainnet';
+    network: 'paper' | 'devnet' | 'mainnet';
     source: 'session' | 'connected';
     version: number;
 }
@@ -17,7 +18,7 @@ export interface ActiveWallet {
 export interface SwitchActiveWalletParams {
     keypair: Keypair | null;
     address?: string;
-    network?: 'devnet' | 'mainnet';
+    network?: 'paper' | 'devnet' | 'mainnet';
     source: 'session' | 'connected';
     clearStorage?: boolean;
 }
@@ -31,10 +32,9 @@ interface ActiveWalletState {
 const getInitialActiveWallet = (): ActiveWallet | null => {
     try {
         const restoredKp = getSavedSessionKeypair();
-        const initialNetwork = (typeof window !== 'undefined' && (localStorage.getItem('app_trading_network') as 'devnet' | 'mainnet')) || 'devnet';
+        const initialNetwork = (typeof window !== 'undefined' && (localStorage.getItem('app_trading_network') as 'paper' | 'devnet' | 'mainnet')) || 'paper';
         if (restoredKp) {
             const address = restoredKp.publicKey.toBase58();
-            // Ensure balance store address is synced immediately
             useBalanceStore.getState().setWalletAddress(address);
             setTimeout(() => {
               import('../services/WalletBalanceService').then(m => {
@@ -46,6 +46,18 @@ const getInitialActiveWallet = (): ActiveWallet | null => {
                 keypair: restoredKp,
                 network: initialNetwork,
                 source: 'session',
+                version: 1
+            };
+        } else if (initialNetwork === 'paper') {
+            const address = DEFAULT_PAPER_TRADING_ADDRESS;
+            setTimeout(() => {
+              usePaperWalletStore.getState().syncToBalanceStore();
+            }, 0);
+            return {
+                address,
+                keypair: null,
+                network: 'paper',
+                source: 'connected',
                 version: 1
             };
         } else if (initialNetwork === 'devnet') {

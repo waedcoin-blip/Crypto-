@@ -23,7 +23,7 @@ export const TradeModeProvider: React.FC<{
       manager.switchMode(m);
     }
     setModeState(m);
-    const network: TradingNetwork = m === 'mainnet' ? 'mainnet' : 'devnet';
+    const network: TradingNetwork = m === 'paper' ? 'paper' : m === 'mainnet' ? 'mainnet' : 'devnet';
     localStorage.setItem('trade_mode', m);
     localStorage.setItem('app_trading_network', network);
     localStorage.setItem('is_live_trading', String(network === 'mainnet'));
@@ -34,7 +34,7 @@ export const TradeModeProvider: React.FC<{
 
   useEffect(() => {
     // Sync initial state on mount
-    const savedMode = (localStorage.getItem('trade_mode') as TradeMode) || 'devnet';
+    const savedMode = (localStorage.getItem('trade_mode') as TradeMode) || 'paper';
     if (savedMode !== mode) {
       setMode(savedMode);
     }
@@ -50,11 +50,11 @@ export const TradeModeProvider: React.FC<{
 export const useTradeMode = () => {
   const ctx = useContext(Context);
   if (!ctx) {
-    const savedMode = (localStorage.getItem('trade_mode') as TradeMode) || 'devnet';
+    const savedMode = (localStorage.getItem('trade_mode') as TradeMode) || 'paper';
     return {
       mode: savedMode,
       setMode: (m: TradeMode) => {
-        const network: TradingNetwork = m === 'mainnet' ? 'mainnet' : 'devnet';
+        const network: TradingNetwork = m === 'paper' ? 'paper' : m === 'mainnet' ? 'mainnet' : 'devnet';
         localStorage.setItem('trade_mode', m);
         localStorage.setItem('app_trading_network', network);
         localStorage.setItem('is_live_trading', String(network === 'mainnet'));

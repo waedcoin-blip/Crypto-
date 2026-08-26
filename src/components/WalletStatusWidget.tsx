@@ -24,6 +24,7 @@ import {
 import { useAppStore } from '../store/appStore';
 import { useBalanceStore } from '../store/balanceStore';
 import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
+import { usePaperWalletStore } from '../store/paperWalletStore';
 import { WalletBalanceService } from '../services/WalletBalanceService';
 import { cn } from '../lib/utils';
 
@@ -32,7 +33,9 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
   const { connection } = useConnection();
   const { sessionWallet, setSessionWallet } = useAppStore();
   const { network, setNetwork, switching } = useTradingEnvironmentStore();
+  const isPaper = network === 'paper';
   const isDevnet = network === 'devnet';
+  const isMainnet = network === 'mainnet';
 
   const {
     onChainSolBalance,
@@ -177,7 +180,7 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
     useBalanceStore.getState().reset();
   };
 
-  const handleNetworkSwitch = async (target: 'devnet' | 'mainnet') => {
+  const handleNetworkSwitch = async (target: 'paper' | 'devnet' | 'mainnet') => {
     if (target === network) return;
     if (target === 'mainnet') {
       const confirmed = window.confirm(
@@ -192,8 +195,24 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
 
   return (
     <div className={cn("flex flex-wrap items-center gap-2", className)}>
-      {/* Network Selector Pill (Devnet vs Mainnet) */}
-      <div className="flex items-center bg-slate-950/90 border border-slate-800/90 rounded-xl p-1 shadow-md">
+      {/* Network Selector Pill (Paper vs Devnet vs Mainnet) */}
+      <div className="flex items-center bg-slate-950/90 border border-slate-800/90 rounded-xl p-1 shadow-md gap-0.5">
+        <button
+          id="toggle-network-paper"
+          type="button"
+          disabled={switching}
+          onClick={() => handleNetworkSwitch('paper')}
+          className={cn(
+            "flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-black tracking-wider uppercase transition-all cursor-pointer",
+            isPaper
+              ? "bg-purple-500/20 text-purple-300 border border-purple-500/40 shadow-sm"
+              : "text-slate-400 hover:text-purple-300"
+          )}
+          title="Paper Trading Mode (Simulated Funds)"
+        >
+          <Sparkles className="w-3 h-3 text-purple-400" />
+          <span>Paper</span>
+        </button>
         <button
           id="toggle-network-devnet"
           type="button"
@@ -205,7 +224,7 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
               ? "bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow-sm"
               : "text-slate-400 hover:text-white"
           )}
-          title="Devnet Cluster (Test Tokens)"
+          title="Devnet Cluster (Testnet Tokens)"
         >
           <Globe className="w-3 h-3" />
           <span>Devnet</span>
@@ -217,11 +236,11 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
           onClick={() => handleNetworkSwitch('mainnet')}
           className={cn(
             "flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-black tracking-wider uppercase transition-all cursor-pointer",
-            !isDevnet
+            isMainnet
               ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-sm"
               : "text-slate-400 hover:text-emerald-400"
           )}
-          title="Solana Mainnet-Beta"
+          title="Solana Mainnet-Beta (Real Funds)"
         >
           <Flame className="w-3 h-3 fill-current" />
           <span>Mainnet</span>
@@ -302,52 +321,84 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
                 </button>
               </div>
 
-              {/* On-Chain Balance Card */}
+              {/* Balance Card */}
               <div className="my-3 space-y-2">
                 <div className={cn(
                   "p-3 rounded-xl border transition-all",
-                  isDevnet 
-                    ? "bg-cyan-950/20 border-cyan-500/40" 
-                    : "bg-emerald-950/20 border-emerald-500/40"
+                  isPaper
+                    ? "bg-purple-950/20 border-purple-500/40"
+                    : isDevnet 
+                      ? "bg-cyan-950/20 border-cyan-500/40" 
+                      : "bg-emerald-950/20 border-emerald-500/40"
                 )}>
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-1.5">
                       <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
-                        {isDevnet ? 'Devnet On-Chain Balance' : 'Mainnet On-Chain Balance'}
+                        {isPaper ? 'Paper Trading Simulated Balance' : isDevnet ? 'Devnet On-Chain Balance' : 'Mainnet On-Chain Balance'}
                       </span>
                       <span className={cn(
                         "text-[8px] font-black px-1.5 py-0.5 rounded uppercase",
-                        isDevnet ? "bg-cyan-500/20 text-cyan-300" : "bg-emerald-500/20 text-emerald-300"
+                        isPaper ? "bg-purple-500/20 text-purple-300" : isDevnet ? "bg-cyan-500/20 text-cyan-300" : "bg-emerald-500/20 text-emerald-300"
                       )}>
                         {network}
                       </span>
                     </div>
-                    <button
-                      type="button"
-                      onClick={handleManualRefresh}
-                      disabled={isRefreshing || currentStatus === 'loading'}
-                      className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition-all cursor-pointer"
-                      title="Fetch on-chain balance"
-                    >
-                      <RefreshCw className={cn("w-3 h-3", (isRefreshing || currentStatus === 'loading') && "animate-spin text-cyan-400")} />
-                    </button>
+                    {!isPaper && (
+                      <button
+                        type="button"
+                        onClick={handleManualRefresh}
+                        disabled={isRefreshing || currentStatus === 'loading'}
+                        className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition-all cursor-pointer"
+                        title="Fetch on-chain balance"
+                      >
+                        <RefreshCw className={cn("w-3 h-3", (isRefreshing || currentStatus === 'loading') && "animate-spin text-cyan-400")} />
+                      </button>
+                    )}
                   </div>
                   <div className="flex items-baseline justify-between mt-1">
                     <span className={cn(
                       "text-base font-black font-mono",
-                      isDevnet ? "text-cyan-300" : "text-emerald-400"
+                      isPaper ? "text-purple-300" : isDevnet ? "text-cyan-300" : "text-emerald-400"
                     )}>
                       {typeof currentSolBalance === 'number' ? `${currentSolBalance.toFixed(4)} SOL` : '0.0000 SOL'}
                     </span>
                     <span className="text-[10px] text-slate-400 font-mono">
-                      {currentStatus === 'live' ? 'Synced RPC' : currentStatus === 'loading' ? 'Fetching...' : currentStatus === 'stale' ? 'Stale' : 'Idle'}
+                      {isPaper ? 'Simulated' : currentStatus === 'live' ? 'Synced RPC' : currentStatus === 'loading' ? 'Fetching...' : currentStatus === 'stale' ? 'Stale' : 'Idle'}
                     </span>
                   </div>
-                  <div className="mt-1.5 pt-1.5 border-t border-slate-800/60 flex items-center justify-between text-[10px] text-slate-400 font-mono">
-                    <span>Reserved Gas Buffer:</span>
-                    <span className="text-slate-300">{typeof reservedSol === 'number' ? reservedSol.toFixed(4) : '0.0000'} SOL</span>
-                  </div>
+                  {!isPaper && (
+                    <div className="mt-1.5 pt-1.5 border-t border-slate-800/60 flex items-center justify-between text-[10px] text-slate-400 font-mono">
+                      <span>Reserved Gas Buffer:</span>
+                      <span className="text-slate-300">{typeof reservedSol === 'number' ? reservedSol.toFixed(4) : '0.0000'} SOL</span>
+                    </div>
+                  )}
                 </div>
+
+                {isPaper && (
+                  <div className="p-2 rounded-lg bg-purple-950/30 border border-purple-500/20 space-y-1.5">
+                    <div className="flex items-center justify-between text-[10px] text-purple-300">
+                      <span className="flex items-center gap-1 font-bold">
+                        <Sparkles className="w-3 h-3 text-purple-400" /> Paper Simulator Actions
+                      </span>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => usePaperWalletStore.getState().addPaperSol(10)}
+                        className="flex-1 py-1 px-2 rounded bg-purple-500/20 hover:bg-purple-500/30 text-purple-200 border border-purple-500/30 text-[10px] font-bold transition-all cursor-pointer"
+                      >
+                        + 10 Paper SOL
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => usePaperWalletStore.getState().resetPaperWallet(10)}
+                        className="py-1 px-2 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[10px] font-medium transition-all cursor-pointer"
+                      >
+                        Reset (10 SOL)
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 {/* Trading Available Summary */}
                 <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-between">

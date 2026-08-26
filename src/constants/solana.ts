@@ -17,6 +17,11 @@ export const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
  */
 export const DEFAULT_DEVNET_TRADING_ADDRESS = '2ptweoAtMqBwzxKrn4s5QhtTu26qesjjg7enPqQES2Dw';
 
+/**
+ * Designated Paper Trading Simulation Address
+ */
+export const DEFAULT_PAPER_TRADING_ADDRESS = 'PaperSim1111111111111111111111111111111111';
+
 export const HELIUS_API_KEY =
   (import.meta as any).env?.VITE_HELIUS_API_KEY ||
   (import.meta as any).env?.HELIUS_API_KEY ||
