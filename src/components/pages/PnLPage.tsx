@@ -2729,6 +2729,18 @@ export const PnLPage = ({
               realNetSol: calcNetSol
             };
             changed = true;
+
+            // Direct redundant TP/SL evaluation on incoming price tick
+            if (isRunning) {
+              const pnlPct100 = calcNetPnlPct * 100;
+              const tpTarget = next[mint].tpPct ?? (configRef.current.minTakeProfit || 25);
+              const slTarget = Math.abs(next[mint].slPct ?? (configRef.current.stopLossPct || 15));
+              if (pnlPct100 >= tpTarget) {
+                void executeSell(mint, freshPrice, pnlPct100, 'TAKE_PROFIT_TRIGGERED');
+              } else if (pnlPct100 <= -slTarget) {
+                void executeSell(mint, freshPrice, pnlPct100, 'STOP_LOSS_TRIGGERED');
+              }
+            }
           }
         }
       });
@@ -3650,6 +3662,22 @@ const checkTokenCriteria = (mint: string): {
              }
            };
            positionsRef.current = next;
+
+           if (positionExitManagerRef.current) {
+             const lamportsTotal = passedOutputAmount || (newAmount > 0 ? Math.floor(newAmount * Math.pow(10, tokenDecimals || 6)) : 1000000);
+             positionExitManagerRef.current.addPosition({
+               mint,
+               amount: lamportsTotal,
+               buyPrice: parsedPrice,
+               solSpent: newSolSpent,
+               tpPct: existing?.tpPct ?? (configRef.current.minTakeProfit || 25),
+               slPct: Math.abs(existing?.slPct ?? (configRef.current.stopLossPct || 15)),
+             });
+             if (result.txid && result.txid !== 'init-sig') {
+               positionExitManagerRef.current.confirmBuy(mint, result.txid, result.slot || 0);
+             }
+           }
+
            return next;
         });
         addLog(`✅ Bought ${symbol} @ ${parsedPrice.toFixed(6)} SOL | tx: ${result.txid.slice(0, 12)}...`, 'buy');
@@ -3735,12 +3763,40 @@ const checkTokenCriteria = (mint: string): {
     await executeBuy(mint, symbol, priceNative, tradeSol, true);
   }, [executeBuy, addLog, tradeAmount]);
 
-  const executeSell = async (mint: string, _currentPrice?: number, _pnlPct?: number, reason: string = 'MANUAL_FORCE_EXIT') => {
+  const executeSell = async (mint: string, currentPrice?: number, pnlPct?: number, reason: string = 'MANUAL_FORCE_EXIT') => {
+    const pos = positionsRef.current[mint];
+    const symbol = pos?.symbol || mint.slice(0, 6);
     if (positionExitManagerRef.current) {
-      addLog(`🚨 Delegating exit request for ${mint.slice(0, 6)} to PositionExitManager (${reason})...`, 'info');
-      await positionExitManagerRef.current.requestExit(mint, reason);
+      addLog(`🚨 Delegating exit request for ${symbol} to PositionExitManager (${reason})...`, 'info');
+      const amountLamports = pos?.amountLamports || (pos?.amount ? Math.floor(pos.amount * (pos.decimals ? Math.pow(10, pos.decimals) : 1e6)) : undefined);
+      await positionExitManagerRef.current.requestExit(mint, reason, amountLamports, pos?.solSpent);
     } else {
-      addLog(`❌ [EXIT ERROR] PositionExitManager is not active.`, 'err');
+      addLog(`⚡ [DIRECT EXIT] Executing immediate sell for ${symbol} (${reason})...`, 'sell');
+      try {
+        const executor = tradeManager.getExecutor();
+        const amountLamports = pos?.amountLamports || (pos?.amount ? Math.floor(pos.amount * (pos.decimals ? Math.pow(10, pos.decimals) : 1e6)) : 1000000);
+        const res = await executor.swap(
+          mint,
+          'So11111111111111111111111111111111111111112',
+          amountLamports,
+          Math.floor((configRef.current.slippage || 10.0) * 100),
+          reason.includes('TP') || reason.includes('TAKE_PROFIT') ? 'exit_tp' : 'exit_sl'
+        );
+        // Remove position
+        setPositions(prev => {
+          const next = { ...prev };
+          delete next[mint];
+          return next;
+        });
+        const costBasisSol = pos?.solSpent || 0;
+        const actualNetSol = res.outputAmount > 0 ? (res.outputAmount / 1e9) - (res.feeSol || 0) : 0;
+        const actualPnl = costBasisSol > 0 ? actualNetSol - costBasisSol : 0;
+        const finalPnlPct = costBasisSol > 0 ? (actualPnl / costBasisSol) * 100 : (pnlPct || 0);
+        addLog(`✅ [EXIT COMPLETE] Sold ${symbol} | Received: ${actualNetSol.toFixed(6)} SOL | PnL: ${finalPnlPct.toFixed(2)}% | Tx: ${res.signature?.slice(0, 12)}...`, 'sell');
+        walletBalanceService.refreshNow();
+      } catch (err: any) {
+        addLog(`❌ [EXIT FAILED] Direct sell failed for ${symbol}: ${err.message}`, 'err');
+      }
     }
   };
 
@@ -3831,6 +3887,44 @@ const checkTokenCriteria = (mint: string): {
       }
     });
 
+    // Populate all existing active positions into the newly started manager immediately
+    const currentPositions = positionsRef.current;
+    for (const [mint, pos] of Object.entries(currentPositions)) {
+      if (pos && (pos.amount > 0 || (pos.amountLamports && pos.amountLamports > 0))) {
+        const stage = detectTokenStage({
+          address: mint,
+          dexId: (tokenMetricsRef.current[mint]?.dexId) || (mint.toLowerCase().endsWith('pump') ? 'pumpfun' : 'raydium'),
+          bondingCurveProgress: tokenMetricsRef.current[mint]?.bondingCurveProgress,
+          isRaydiumListed: tokenMetricsRef.current[mint]?.isRaydiumListed
+        });
+        const targetTp = pos.tpPct ?? (stage.isBonding ? (configRef.current.bondingCurveTakeProfit || 25) : (configRef.current.minTakeProfit || 25));
+        let targetSl = pos.slPct ?? (stage.platform === 'PUMP_FUN' || stage.isBonding 
+          ? (configRef.current.bondingCurveStopLossPct || 20) 
+          : stage.platform === 'PUMPSWAP'
+          ? (configRef.current.pumpSwapStopLossPct || 15)
+          : stage.platform === 'UNKNOWN'
+          ? (configRef.current.unknownStopLossPct || 15)
+          : (configRef.current.stopLossPct || 15));
+        targetSl = Math.abs(targetSl);
+
+        const lamportsTotal = pos.amountLamports || (pos.amount > 0 ? Math.floor(pos.amount * Math.pow(10, pos.decimals || 6)) : 1000000);
+        exitMgr.addPosition({
+          mint,
+          amount: lamportsTotal,
+          buyPrice: pos.buyPrice || 0,
+          solSpent: pos.solSpent || 0.1,
+          tpPct: targetTp,
+          slPct: targetSl,
+        });
+        if (pos.currentPrice && pos.currentPrice > 0) {
+          exitMgr.onPriceUpdate(mint, pos.currentPrice, Date.now());
+        }
+        if (pos.txid && pos.txid !== 'init-sig') {
+          exitMgr.confirmBuy(mint, pos.txid, pos.buySlot || 0);
+        }
+      }
+    }
+
     exitMgr.start();
     positionExitManagerRef.current = exitMgr;
 
@@ -3851,8 +3945,10 @@ const checkTokenCriteria = (mint: string): {
     return () => {
       exitMgr.stop();
       masterMon?.stopMonitoring();
+      positionExitManagerRef.current = null;
+      masterMonitorRef.current = null;
     };
-  }, [isRunning, monitorStatus.status, monitorStatus.activeUrl]);
+  }, [isRunning]);
 
   // Sync active positions and updated TP/SL to PositionExitManager & MasterMonitorService
   useEffect(() => {
@@ -3887,9 +3983,10 @@ const checkTokenCriteria = (mint: string): {
 
         const existingPos = positionExitManagerRef.current.getPosition(mint);
         if (!existingPos) {
+          const lamportsTotal = pos.amountLamports || Math.floor((pos.amount || 0) * (pos.decimals ? Math.pow(10, pos.decimals) : 1e6));
           positionExitManagerRef.current.addPosition({
             mint,
-            amount: pos.amountLamports || Math.floor((pos.amount || 0) * (pos.decimals ? Math.pow(10, pos.decimals) : 1e6)),
+            amount: lamportsTotal > 0 ? lamportsTotal : 1000000,
             buyPrice: pos.buyPrice || 0,
             solSpent: pos.solSpent || 0.1,
             tpPct: targetTp,

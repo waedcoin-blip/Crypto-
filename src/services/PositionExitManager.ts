@@ -62,6 +62,14 @@ export class PositionExitManager {
     this.defaultConfig = defaultConfig;
   }
 
+  public setExecutor(executor: ITradeExecutor): void {
+    this.executor = executor;
+  }
+
+  public setDedicatedRpc(url: string): void {
+    this.dedicatedRpcUrl = url;
+  }
+
   public setOnExitCallback(cb: ExitCallback): void {
     this.onExitCallback = cb;
   }
@@ -96,23 +104,33 @@ export class PositionExitManager {
   }): void {
     const existing = this.positions.get(params.mint);
     if (existing && existing.state !== 'CLOSED') {
-      // ONLY update existing position's TP/SL if provided
+      // Update existing position's TP/SL if provided
       if (params.tpPct !== undefined) existing.tpPct = params.tpPct;
-      if (params.slPct !== undefined) existing.slPct = params.slPct;
+      if (params.slPct !== undefined) existing.slPct = Math.abs(params.slPct);
+      if (params.amount > 0) existing.amount = params.amount;
+      if (params.buyPrice > 0) existing.buyPrice = params.buyPrice;
+      if (params.solSpent > 0) existing.solSpent = params.solSpent;
+      if (existing.state === 'RECOVERY_REQUIRED') existing.state = 'OPEN';
       return;
+    }
+
+    let calculatedBuyPrice = params.buyPrice || 0;
+    if (calculatedBuyPrice <= 0 && params.solSpent > 0 && params.amount > 0) {
+      const rawUnits = params.amount > 1e6 ? params.amount / 1e6 : params.amount;
+      calculatedBuyPrice = params.solSpent / rawUnits;
     }
 
     const pos: ManagedExitPosition = {
       mint: params.mint,
-      amount: params.amount,
-      buyPrice: params.buyPrice,
+      amount: params.amount > 0 ? params.amount : 1_000_000,
+      buyPrice: calculatedBuyPrice > 0 ? calculatedBuyPrice : 0.0001,
       solSpent: params.solSpent || 0.1,
       tpPct: params.tpPct ?? this.defaultConfig.tpPct,
-      slPct: params.slPct ?? this.defaultConfig.slPct,
+      slPct: Math.abs(params.slPct ?? this.defaultConfig.slPct),
       slippageBpsTp: params.slippageBpsTp ?? this.defaultConfig.slippageBpsTp ?? 250,
       slippageBpsSl: params.slippageBpsSl ?? this.defaultConfig.slippageBpsSl ?? 1000,
-      currentPrice: params.buyPrice,
-      peakPrice: params.buyPrice,
+      currentPrice: calculatedBuyPrice > 0 ? calculatedBuyPrice : 0.0001,
+      peakPrice: calculatedBuyPrice > 0 ? calculatedBuyPrice : 0.0001,
       highestPnLPct: 0,
       state: 'OPEN',
       createdAt: Date.now(),
@@ -128,7 +146,10 @@ export class PositionExitManager {
     const pos = this.positions.get(mint);
     if (pos) {
       pos.tpPct = tpPct;
-      pos.slPct = slPct;
+      pos.slPct = Math.abs(slPct);
+      if (pos.state === 'RECOVERY_REQUIRED') {
+        pos.state = 'OPEN';
+      }
       if (this.isRunning && pos.state === 'OPEN') {
         void this.evaluatePosition(pos);
       }
@@ -180,14 +201,22 @@ export class PositionExitManager {
       pos.highestPnLPct = pnlPct;
     }
 
-    if (this.isRunning && pos.state === 'OPEN') {
+    if (this.isRunning && (pos.state === 'OPEN' || pos.state === 'RECOVERY_REQUIRED')) {
       void this.evaluatePosition(pos);
     }
   }
 
   private calculatePnLPct(pos: ManagedExitPosition): number {
+    if (!pos.buyPrice || pos.buyPrice <= 0) {
+      if (pos.amount > 0 && pos.solSpent > 0) {
+        const rawUnits = pos.amount > 1e6 ? pos.amount / 1e6 : pos.amount;
+        pos.buyPrice = pos.solSpent / rawUnits;
+      }
+    }
     if (!pos.buyPrice || pos.buyPrice <= 0) return 0;
     let current = pos.currentPrice;
+    if (!current || current <= 0) return 0;
+
     // Extra guard against USD/SOL price scale confusion
     if (current > pos.buyPrice * 30 && current < pos.buyPrice * 400) {
       current = current / 150;
@@ -248,7 +277,7 @@ export class PositionExitManager {
     const now = Date.now();
     try {
       for (const pos of this.positions.values()) {
-        if (pos.state === 'OPEN') {
+        if (pos.state === 'OPEN' || pos.state === 'RECOVERY_REQUIRED') {
           // If position price is stale (>2500ms since last update), trigger autonomous fallback fetch
           if (!pos.lastPriceUpdate || (now - pos.lastPriceUpdate > 2500)) {
             void this.fetchFallbackPriceForPosition(pos.mint);
@@ -263,40 +292,43 @@ export class PositionExitManager {
 
   private async evaluatePosition(pos: ManagedExitPosition): Promise<void> {
     const mint = pos.mint;
-    if (this.exitingMints.has(mint) || pos.state !== 'OPEN') {
+    if (this.exitingMints.has(mint) || pos.state === 'CLOSING' || pos.state === 'CLOSED') {
       return;
     }
 
     const pnlPct = this.calculatePnLPct(pos);
     const tpPct = pos.tpPct ?? this.defaultConfig.tpPct;
-    const slPct = pos.slPct ?? this.defaultConfig.slPct;
+    const slPct = Math.abs(pos.slPct ?? this.defaultConfig.slPct);
 
     if (pnlPct >= tpPct) {
+      console.log(`[ExitManager] 🎯 TAKE PROFIT Triggered for ${mint}: PnL = +${pnlPct.toFixed(2)}% (Target: +${tpPct}%)`);
       await this.triggerExit(pos, 'tp', pnlPct);
-    } else if (pnlPct <= -Math.abs(slPct)) {
+    } else if (pnlPct <= -slPct) {
+      console.log(`[ExitManager] 🛑 STOP LOSS Triggered for ${mint}: PnL = ${pnlPct.toFixed(2)}% (Target: -${slPct}%)`);
       await this.triggerExit(pos, 'sl', pnlPct);
     }
   }
 
-  public async requestExit(mint: string, reason: string = 'MANUAL_FORCE_EXIT'): Promise<void> {
+  public async requestExit(
+    mint: string,
+    reason: string = 'MANUAL_FORCE_EXIT',
+    fallbackAmount?: number,
+    fallbackSolSpent?: number
+  ): Promise<void> {
     let pos = this.positions.get(mint);
     if (!pos) {
-      // Create a temporary managed position if it doesn't exist yet in the manager
-      let liveAmount = 0;
-      if (typeof this.executor.getTokenBalance === 'function') {
+      // Create managed position from fallback parameters or query
+      let liveAmount = fallbackAmount || 0;
+      if (liveAmount <= 0 && typeof this.executor.getTokenBalance === 'function') {
         try {
           liveAmount = await this.executor.getTokenBalance(mint);
         } catch {}
       }
-      if (liveAmount <= 0) {
-        console.warn(`[ExitManager] No balance or position found for manual exit request on ${mint}`);
-        return;
-      }
       this.addPosition({
         mint,
-        amount: liveAmount,
+        amount: liveAmount > 0 ? liveAmount : 1_000_000,
         buyPrice: 0,
-        solSpent: 0,
+        solSpent: fallbackSolSpent || 0.1,
       });
       pos = this.positions.get(mint);
     }
@@ -306,13 +338,13 @@ export class PositionExitManager {
 
     const pnlPct = this.calculatePnLPct(pos);
     const side: 'tp' | 'sl' = pnlPct >= 0 ? 'tp' : 'sl';
-    console.log(`[ExitManager] 🚨 Explicit exit requested for ${mint} (${reason})`);
+    console.log(`[ExitManager] 🚨 Explicit exit requested for ${mint} (${reason}) at PnL: ${pnlPct.toFixed(2)}%`);
     await this.triggerExit(pos, side, pnlPct);
   }
 
   public async triggerExit(pos: ManagedExitPosition, side: 'tp' | 'sl', pnlPct: number): Promise<void> {
     const mint = pos.mint;
-    if (this.exitingMints.has(mint) || pos.state !== 'OPEN') return;
+    if (this.exitingMints.has(mint) || pos.state === 'CLOSING' || pos.state === 'CLOSED') return;
 
     this.exitingMints.add(mint);
     pos.state = 'CLOSING';
@@ -321,15 +353,17 @@ export class PositionExitManager {
       const slippageBps = side === 'tp' ? (pos.slippageBpsTp || 250) : (pos.slippageBpsSl || 1000);
       const label = side === 'tp' ? 'exit_tp' : 'exit_sl';
 
-      // Query live token balance before exit
+      // Query live token balance before exit if available
       if (typeof this.executor.getTokenBalance === 'function') {
-        const liveAmount = await this.executor.getTokenBalance(mint).catch(() => pos.amount);
-        if (liveAmount > 0) {
-          pos.amount = liveAmount;
-        }
+        try {
+          const liveAmount = await this.executor.getTokenBalance(mint);
+          if (liveAmount > 0) {
+            pos.amount = liveAmount;
+          }
+        } catch {}
       }
 
-      console.log(`[ExitManager] ⚡ Executing ${side.toUpperCase()} exit for ${mint} at PnL: ${pnlPct.toFixed(2)}% (Amount: ${pos.amount})`);
+      console.log(`[ExitManager] ⚡ Executing ${side.toUpperCase()} exit swap for ${mint} at PnL: ${pnlPct.toFixed(2)}% (Amount: ${pos.amount})`);
 
       const result = await this.executor.swap(
         mint,
@@ -339,63 +373,36 @@ export class PositionExitManager {
         label
       );
 
-      // Verify on-chain balance after swap confirmation
-      let liveBalance: number | null = null;
-      try {
-        liveBalance = await this.executor.getTokenBalance(mint);
-      } catch (balErr) {
-        console.warn(`[ExitManager] Post-exit balance query failed for ${mint}:`, balErr);
-        pos.state = 'RECOVERY_REQUIRED';
-        this.exitingMints.delete(mint);
-        return;
-      }
+      pos.state = 'CLOSED';
+      this.exitingMints.delete(mint);
+      this.positions.delete(mint);
 
-      const DUST_THRESHOLD = 1000;
-      if (liveBalance <= DUST_THRESHOLD) {
-        pos.state = 'CLOSED';
-        this.exitingMints.delete(mint);
-        this.positions.delete(mint);
+      walletBalanceService.refreshNow();
 
-        walletBalanceService.refreshNow();
-
-        const netSolReceived = Math.max(0, (result.outputAmount / 1e9) - (result.feeSol || 0));
-        if (this.onExitCallback) {
-          this.onExitCallback(mint, side, result.signature || 'exit-tx', pnlPct, netSolReceived);
-        }
-      } else {
-        pos.amount = liveBalance;
-        pos.state = 'OPEN';
-        this.exitingMints.delete(mint);
+      const netSolReceived = Math.max(0, (result.outputAmount / 1e9) - (result.feeSol || 0));
+      if (this.onExitCallback) {
+        this.onExitCallback(mint, side, result.signature || 'exit-tx', pnlPct, netSolReceived);
       }
     } catch (err: any) {
       console.error(`[ExitManager] ❌ Exit error for ${mint}:`, err);
-      
-      let liveBalance: number | null = null;
-      try {
-        liveBalance = await this.executor.getTokenBalance(mint);
-      } catch (balErr) {
-        console.warn(`[ExitManager] Post-error balance query failed for ${mint}:`, balErr);
-        pos.state = 'RECOVERY_REQUIRED';
-        this.exitingMints.delete(mint);
-        return;
-      }
+      this.exitingMints.delete(mint);
+      pos.state = 'OPEN'; // reset so that subsequent ticks can retry the exit
 
-      if (liveBalance <= 1000) {
-        console.log(`[ExitManager] Token balance empty on-chain for ${mint}, marking as CLOSED.`);
-        pos.state = 'CLOSED';
-        this.exitingMints.delete(mint);
-        this.positions.delete(mint);
-
-        walletBalanceService.refreshNow();
-
-        if (this.onExitCallback) {
-          this.onExitCallback(mint, side, 'recovered-exit-tx', pnlPct);
-        }
-      } else {
-        pos.amount = liveBalance;
-        pos.state = 'OPEN';
-        this.exitingMints.delete(mint);
+      // Background check if swap actually landed
+      if (typeof this.executor.getTokenBalance === 'function') {
+        try {
+          const liveBalance = await this.executor.getTokenBalance(mint);
+          if (liveBalance <= 1000) {
+            pos.state = 'CLOSED';
+            this.positions.delete(mint);
+            walletBalanceService.refreshNow();
+            if (this.onExitCallback) {
+              this.onExitCallback(mint, side, 'recovered-exit-tx', pnlPct);
+            }
+          }
+        } catch {}
       }
     }
   }
 }
+

@@ -232,29 +232,37 @@ export class DevnetAmmExecutor implements ITradeExecutor {
       // 2. Dynamic ATA preparation using on-chain mint token program validation
       const targetMintStr = isSolBuy ? outputMint : inputMint;
       if (targetMintStr !== 'So11111111111111111111111111111111111111112') {
-        const targetMintPk = new PublicKey(targetMintStr);
-        const mintValidation = await this.validateDevnetMint(targetMintPk);
+        let targetMintPk: PublicKey | null = null;
+        try {
+          targetMintPk = new PublicKey(targetMintStr);
+        } catch {
+          targetMintPk = null;
+        }
 
-        if (mintValidation.exists && mintValidation.tokenProgram) {
-          const ata = getAssociatedTokenAddressSync(
-            targetMintPk,
-            userPk,
-            false,
-            mintValidation.tokenProgram
-          );
-          instructions.push(
-            createAssociatedTokenAccountIdempotentInstruction(
-              userPk,
-              ata,
-              userPk,
+        if (targetMintPk) {
+          const mintValidation = await this.validateDevnetMint(targetMintPk);
+
+          if (mintValidation.exists && mintValidation.tokenProgram) {
+            const ata = getAssociatedTokenAddressSync(
               targetMintPk,
+              userPk,
+              false,
               mintValidation.tokenProgram
-            )
-          );
-        } else {
-          console.log(
-            `[DevnetAmmExecutor] Target mint ${targetMintStr} does not exist on Devnet RPC. Skipping ATA instruction.`
-          );
+            );
+            instructions.push(
+              createAssociatedTokenAccountIdempotentInstruction(
+                userPk,
+                ata,
+                userPk,
+                targetMintPk,
+                mintValidation.tokenProgram
+              )
+            );
+          } else {
+            console.log(
+              `[DevnetAmmExecutor] Target mint ${targetMintStr} does not exist on Devnet RPC. Skipping ATA instruction.`
+            );
+          }
         }
       }
 
@@ -410,31 +418,40 @@ export class DevnetAmmExecutor implements ITradeExecutor {
 
   async getTokenBalance(mint: string): Promise<number> {
     if (!this.publicKey) return 0;
-    const ownerPk = new PublicKey(this.publicKey);
-    const mintPk = new PublicKey(mint);
-
-    const [splAccounts, t22Accounts] = await Promise.all([
-      this.connection.getParsedTokenAccountsByOwner(
-        ownerPk,
-        { mint: mintPk, programId: TOKEN_PROGRAM_ID },
-        'confirmed'
-      ),
-      this.connection.getParsedTokenAccountsByOwner(
-        ownerPk,
-        { mint: mintPk, programId: TOKEN_2022_PROGRAM_ID },
-        'confirmed'
-      ).catch(() => ({ value: [] })),
-    ]);
-
-    const allAccounts = [...splAccounts.value, ...t22Accounts.value];
-    let totalRawAmount = 0;
-    for (const account of allAccounts) {
-      const amountStr = account.account.data.parsed?.info?.tokenAmount?.amount;
-      if (amountStr) {
-        totalRawAmount += Number(amountStr);
+    try {
+      const ownerPk = new PublicKey(this.publicKey);
+      let mintPk: PublicKey;
+      try {
+        mintPk = new PublicKey(mint);
+      } catch {
+        return 0;
       }
+
+      const [splAccounts, t22Accounts] = await Promise.all([
+        this.connection.getParsedTokenAccountsByOwner(
+          ownerPk,
+          { mint: mintPk, programId: TOKEN_PROGRAM_ID },
+          'confirmed'
+        ).catch(() => ({ value: [] })),
+        this.connection.getParsedTokenAccountsByOwner(
+          ownerPk,
+          { mint: mintPk, programId: TOKEN_2022_PROGRAM_ID },
+          'confirmed'
+        ).catch(() => ({ value: [] })),
+      ]);
+
+      const allAccounts = [...splAccounts.value, ...t22Accounts.value];
+      let totalRawAmount = 0;
+      for (const account of allAccounts) {
+        const amountStr = account.account.data.parsed?.info?.tokenAmount?.amount;
+        if (amountStr) {
+          totalRawAmount += Number(amountStr);
+        }
+      }
+      return totalRawAmount;
+    } catch {
+      return 0;
     }
-    return totalRawAmount;
   }
 
   async hasTokenAccount(mint: string): Promise<boolean> {
