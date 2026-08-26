@@ -30,7 +30,7 @@ import {
 
 const router = Router();
 
-export const BUILD_ID = 'devnet-swap-v9-reliable-tp-settlement-2026-08-26';
+export const BUILD_ID = 'devnet-swap-v10-real-onchain-settlement-2026-08-26';
 export const TOKEN_PROGRAM_ID_STR = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 export const TOKEN_2022_PROGRAM_ID_STR = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
 export const ASSOCIATED_TOKEN_PROGRAM_ID_STR = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
@@ -308,7 +308,12 @@ router.post('/build', async (req, res) => {
     const connection = getDevnetConnection();
 
     // Auto-topup settlement wallet if Devnet SOL balance is low
-    await ensureSettlementFunded(connection, settlementPk);
+    const settlementBal = await ensureSettlementFunded(connection, settlementPk);
+    if (settlementBal < 0.005 * LAMPORTS_PER_SOL) {
+      return res.status(400).json({
+        error: `Devnet settlement wallet (${settlementPk.toBase58()}) has insufficient Devnet SOL (${(settlementBal / LAMPORTS_PER_SOL).toFixed(4)} SOL). Please fund it manually at https://faucet.solana.com with address ${settlementPk.toBase58()}`,
+      });
+    }
 
     const isBuy =
       inputMint === 'So11111111111111111111111111111111111111112' ||
@@ -374,7 +379,7 @@ router.post('/build', async (req, res) => {
     let expectedTokenRawAmount = BigInt(0);
 
     if (isBuy) {
-      // BUY: User gives virtual SOL -> receives on-chain Shadow Mint Token
+      // BUY: User gives SOL -> receives Token
       expectedSolLamports = Number(amount);
       if (quoteResponse && quoteResponse.outAmount) {
         expectedTokenRawAmount = BigInt(quoteResponse.outAmount);
@@ -384,7 +389,16 @@ router.post('/build', async (req, res) => {
         expectedTokenRawAmount = BigInt(Math.floor(tokensCalculated * Math.pow(10, tokenDecimals)));
       }
 
-      // Token Transfer: Settlement -> User
+      // 1. SOL Transfer: User -> Settlement
+      instructions.push(
+        SystemProgram.transfer({
+          fromPubkey: userPk,
+          toPubkey: settlementPk,
+          lamports: expectedSolLamports,
+        })
+      );
+
+      // 2. Token Transfer: Settlement -> User
       instructions.push(
         createTransferInstruction(
           settlementTokenAta,
@@ -404,31 +418,6 @@ router.post('/build', async (req, res) => {
         const tokenUnits = Number(expectedTokenRawAmount) / Math.pow(10, tokenDecimals);
         const solCalculated = tokenUnits / 100000;
         expectedSolLamports = Math.max(1000, Math.floor(solCalculated * LAMPORTS_PER_SOL));
-      }
-
-      // Auto-topup userTokenAta if on-chain balance is less than expectedTokenRawAmount
-      if (shadowRecord) {
-        let userOnChainTokenBal = BigInt(0);
-        try {
-          const balInfo = await connection.getTokenAccountBalance(userTokenAta, 'confirmed');
-          if (balInfo?.value?.amount) {
-            userOnChainTokenBal = BigInt(balInfo.value.amount);
-          }
-        } catch {}
-
-        if (userOnChainTokenBal < expectedTokenRawAmount) {
-          const missingAmount = expectedTokenRawAmount - userOnChainTokenBal;
-          instructions.push(
-            createMintToInstruction(
-              tokenMintPk,
-              userTokenAta,
-              settlementPk,
-              missingAmount,
-              [],
-              tokenProgramId
-            )
-          );
-        }
       }
 
       // 1. Token Transfer: User -> Settlement
@@ -455,7 +444,7 @@ router.post('/build', async (req, res) => {
 
     const latestBlockhash = await connection.getLatestBlockhash('confirmed');
     const messageV0 = new TransactionMessage({
-      payerKey: settlementPk,
+      payerKey: userPk,
       recentBlockhash: latestBlockhash.blockhash,
       instructions,
     }).compileToV0Message();

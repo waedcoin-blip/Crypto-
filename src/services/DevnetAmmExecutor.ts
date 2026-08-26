@@ -249,11 +249,9 @@ export class DevnetAmmExecutor implements ITradeExecutor {
 
       const isSolBuy = inputMint === 'So11111111111111111111111111111111111111112';
       const targetMintStr = isSolBuy ? outputMint : inputMint;
-      const requiredSol = isSolBuy ? (amount / LAMPORTS_PER_SOL) + 0.002 : 0;
+      const requiredSol = isSolBuy ? (amount / LAMPORTS_PER_SOL) + 0.002 : 0.002;
 
-      if (requiredSol > 0) {
-        await assertTradeBalance(requiredSol);
-      }
+      await assertTradeBalance(requiredSol);
 
       // Pre-flight check: Ensure shadow mint cache initialized
       await devnetShadowMintCache.ensureInitialized();
@@ -265,7 +263,7 @@ export class DevnetAmmExecutor implements ITradeExecutor {
       const quote = await this.getQuote({ inputMint, outputMint, amount, slippageBps });
 
       // 0. Check server build ID via diagnostic endpoint before building swap
-      const EXPECTED_BUILD_ID = 'devnet-swap-v9-reliable-tp-settlement-2026-08-26';
+      const EXPECTED_BUILD_ID = 'devnet-swap-v10-real-onchain-settlement-2026-08-26';
       const diagRes = await fetch('/api/devnet-swap/diagnostic').catch(() => null);
       if (diagRes && diagRes.ok) {
         const diagData = await diagRes.json().catch(() => ({}));
@@ -395,15 +393,6 @@ export class DevnetAmmExecutor implements ITradeExecutor {
       const landingTimeMs = Date.now() - start;
       const actualFee = 0.000005;
       const outAmountNum = isSolBuy ? Number(expectedTokenAmount) : expectedSolLamports;
-
-      // 8. Adjust persistent paper SOL balance for seamless trading accounting
-      if (isSolBuy) {
-        const solSpent = (amount / LAMPORTS_PER_SOL) + actualFee;
-        useBalanceStore.getState().adjustPaperSol(-solSpent);
-      } else {
-        const solGained = (outAmountNum / LAMPORTS_PER_SOL) - actualFee;
-        useBalanceStore.getState().adjustPaperSol(solGained);
-      }
 
       this.telemetryTotalFeesPaidSol += actualFee;
       this.telemetryLandingTimeTotalMs += landingTimeMs;
