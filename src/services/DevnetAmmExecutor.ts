@@ -5,18 +5,12 @@ import {
   Connection,
   PublicKey,
   VersionedTransaction,
-  TransactionMessage,
-  SystemProgram,
   LAMPORTS_PER_SOL,
-  TransactionInstruction,
   SendTransactionError,
 } from '@solana/web3.js';
 import {
   TOKEN_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
-  getAssociatedTokenAddressSync,
-  createAssociatedTokenAccountIdempotentInstruction,
-  createTransferInstruction,
 } from '@solana/spl-token';
 import { useActiveWalletStore } from '../store/activeWalletStore';
 import { getOrCreateSessionKeypair } from '../utils/keypairUtils';
@@ -26,9 +20,6 @@ import { walletBalanceService } from './WalletBalanceService';
 import { getNetworkConfig } from '../config/network';
 import { NetworkGuard } from './NetworkGuard';
 import { useAppStore } from '../store/appStore';
-
-// Dedicated Devnet AMM / PumpSwap Liquidity Pool Vault
-const DEVNET_AMM_VAULT = new PublicKey('ChgLwuGR4c1C6E3jC7KANejbJm8EAnrkSffDfT6TaLac');
 
 export class DevnetAmmExecutor implements ITradeExecutor {
   readonly mode = 'devnet' as const;
@@ -81,37 +72,53 @@ export class DevnetAmmExecutor implements ITradeExecutor {
   }
 
   /**
+   * Reads real on-chain token decimals for a given mint
+   */
+  async getTokenDecimals(mintPk: PublicKey): Promise<number> {
+    if (mintPk.toBase58() === 'So11111111111111111111111111111111111111112') return 9;
+    try {
+      const info = await this.connection.getParsedAccountInfo(mintPk, 'confirmed');
+      const decimals = (info.value?.data as any)?.parsed?.info?.decimals;
+      if (typeof decimals === 'number') return decimals;
+    } catch {}
+    return 6;
+  }
+
+  /**
    * Validates if a mint account exists on Devnet RPC and determines its exact token program owner
    */
   async validateDevnetMint(mintPk: PublicKey): Promise<{
     exists: boolean;
     tokenProgram?: PublicKey;
     isToken2022?: boolean;
+    decimals: number;
   }> {
     if (mintPk.toBase58() === 'So11111111111111111111111111111111111111112') {
-      return { exists: true, tokenProgram: TOKEN_PROGRAM_ID, isToken2022: false };
+      return { exists: true, tokenProgram: TOKEN_PROGRAM_ID, isToken2022: false, decimals: 9 };
     }
 
     try {
-      const info = await this.connection.getAccountInfo(mintPk, 'confirmed');
-      if (!info) {
-        return { exists: false };
+      const info = await this.connection.getParsedAccountInfo(mintPk, 'confirmed');
+      if (!info.value) {
+        return { exists: false, decimals: 6 };
       }
 
-      const isLegacy = info.owner.equals(TOKEN_PROGRAM_ID);
-      const isToken2022 = info.owner.equals(TOKEN_2022_PROGRAM_ID);
+      const isLegacy = info.value.owner.equals(TOKEN_PROGRAM_ID);
+      const isToken2022 = info.value.owner.equals(TOKEN_2022_PROGRAM_ID);
+      const decimals = (info.value.data as any)?.parsed?.info?.decimals ?? 6;
 
       if (!isLegacy && !isToken2022) {
-        return { exists: false };
+        return { exists: false, decimals };
       }
 
       return {
         exists: true,
-        tokenProgram: info.owner,
+        tokenProgram: info.value.owner,
         isToken2022,
+        decimals,
       };
     } catch (e: any) {
-      return { exists: false };
+      return { exists: false, decimals: 6 };
     }
   }
 
@@ -133,6 +140,10 @@ export class DevnetAmmExecutor implements ITradeExecutor {
     }
 
     let tokenDecimals = 6;
+    try {
+      tokenDecimals = await this.getTokenDecimals(new PublicKey(targetMint));
+    } catch {}
+
     let outAmountLamports = 0n;
 
     if (isBuy) {
@@ -163,8 +174,8 @@ export class DevnetAmmExecutor implements ITradeExecutor {
       routePlan: [
         {
           swapInfo: {
-            ammKey: DEVNET_AMM_VAULT.toBase58(),
-            label: 'PumpSwap Devnet AMM',
+            ammKey: 'DevnetSettlementExchange',
+            label: 'Devnet Atomic Settlement Exchange',
             inputMint,
             outputMint,
             inAmount: String(amount),
@@ -206,139 +217,59 @@ export class DevnetAmmExecutor implements ITradeExecutor {
       const activePublicKey = userPk.toBase58();
 
       const isSolBuy = inputMint === 'So11111111111111111111111111111111111111112';
+      const targetMintStr = isSolBuy ? outputMint : inputMint;
       const requiredSol = isSolBuy ? (amount / LAMPORTS_PER_SOL) + 0.002 : 0.002;
 
       await assertTradeBalance(requiredSol);
 
+      // Pre-trade on-chain balance snapshots for verification
+      const initialSolLamports = await this.connection.getBalance(userPk, 'confirmed').catch(() => 0);
+      const initialTokenRawAmount = await this.getTokenBalance(targetMintStr);
+
       const quote = await this.getQuote({ inputMint, outputMint, amount, slippageBps });
-      const outAmountNum = Number(quote.outAmount);
 
-      const instructions: TransactionInstruction[] = [];
+      // 1. Build Atomic VersionedTransaction on Server Settlement Route
+      const buildRes = await fetch('/api/devnet-swap/build', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userPublicKey: activePublicKey,
+          inputMint,
+          outputMint,
+          amount,
+          quoteResponse: quote,
+          slippageBps,
+        }),
+      });
 
-      // 1. Memo / trade record instruction
-      const memoText = `[Devnet PumpSwap/AMM ${label.toUpperCase()}] ${isSolBuy ? 'BUY' : 'SELL'} ${amount} -> ${quote.outAmount}`;
-      instructions.push(
-        new TransactionInstruction({
-          keys: [{ pubkey: userPk, isSigner: true, isWritable: true }],
-          programId: new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr'),
-          data: Buffer.from(memoText, 'utf-8'),
-        })
-      );
-
-      // 2. Dynamic ATA preparation and Sell token transfer instruction using on-chain mint token program validation
-      const targetMintStr = isSolBuy ? outputMint : inputMint;
-      let targetMintPk: PublicKey | null = null;
-      let targetMintValidation: { exists: boolean; tokenProgram?: PublicKey; isToken2022?: boolean } = { exists: false };
-
-      if (targetMintStr !== 'So11111111111111111111111111111111111111112') {
-        try {
-          targetMintPk = new PublicKey(targetMintStr);
-        } catch {
-          targetMintPk = null;
-        }
-
-        if (targetMintPk) {
-          targetMintValidation = await this.validateDevnetMint(targetMintPk);
-          if (targetMintValidation.exists && targetMintValidation.tokenProgram) {
-            const ata = getAssociatedTokenAddressSync(
-              targetMintPk,
-              userPk,
-              false,
-              targetMintValidation.tokenProgram
-            );
-            instructions.push(
-              createAssociatedTokenAccountIdempotentInstruction(
-                userPk,
-                ata,
-                userPk,
-                targetMintPk,
-                targetMintValidation.tokenProgram
-              )
-            );
-          }
-        }
+      if (!buildRes.ok) {
+        const errJson = await buildRes.json().catch(() => ({ error: buildRes.statusText }));
+        throw new Error(errJson.error || `Server swap build failed with HTTP ${buildRes.status}`);
       }
 
-      // 3. Real On-Chain Swap Execution: SOL Deposit (Buy) or Real Token Transfer (Sell)
-      if (isSolBuy) {
-        // Genuine SOL deduction from user wallet to Devnet AMM Liquidity Pool
-        instructions.push(
-          SystemProgram.transfer({
-            fromPubkey: userPk,
-            toPubkey: DEVNET_AMM_VAULT,
-            lamports: amount,
-          })
-        );
-      } else {
-        // Real SPL/Token-2022 Token Transfer to AMM Liquidity Vault
-        if (targetMintPk && targetMintValidation.exists && targetMintValidation.tokenProgram) {
-          const userAta = getAssociatedTokenAddressSync(
-            targetMintPk,
-            userPk,
-            false,
-            targetMintValidation.tokenProgram
-          );
-          const vaultAta = getAssociatedTokenAddressSync(
-            targetMintPk,
-            DEVNET_AMM_VAULT,
-            true,
-            targetMintValidation.tokenProgram
-          );
+      const buildData = await buildRes.json();
+      const {
+        swapTransaction,
+        lastValidBlockHeight,
+        blockhash,
+        expectedSolLamports,
+        expectedTokenAmount,
+      } = buildData;
 
-          // Ensure vault ATA exists idempotently
-          instructions.push(
-            createAssociatedTokenAccountIdempotentInstruction(
-              userPk,
-              vaultAta,
-              DEVNET_AMM_VAULT,
-              targetMintPk,
-              targetMintValidation.tokenProgram
-            )
-          );
+      // 2. Deserialize atomic VersionedTransaction (already signed by settlement wallet)
+      const rawTxBuf = Buffer.from(swapTransaction, 'base64');
+      const tx = VersionedTransaction.deserialize(rawTxBuf);
 
-          // Real on-chain Token Transfer to AMM Vault
-          instructions.push(
-            createTransferInstruction(
-              userAta,
-              vaultAta,
-              userPk,
-              BigInt(amount),
-              [],
-              targetMintValidation.tokenProgram
-            )
-          );
-        } else {
-          // Fallback exit trade registration
-          instructions.push(
-            SystemProgram.transfer({
-              fromPubkey: userPk,
-              toPubkey: DEVNET_AMM_VAULT,
-              lamports: 5000,
-            })
-          );
-        }
-      }
-
-      // 4. Get fresh Devnet blockhash
-      const { blockhash, lastValidBlockHeight } = await this.connection.getLatestBlockhash('confirmed');
-
-      // 5. Compile and sign VersionedTransaction on Devnet
-      const messageV0 = new TransactionMessage({
-        payerKey: userPk,
-        recentBlockhash: blockhash,
-        instructions,
-      }).compileToV0Message();
-
-      const tx = new VersionedTransaction(messageV0);
+      // 3. User keypair signs the transaction
       tx.sign([kp]);
 
-      // 6. Send raw transaction to Devnet RPC
+      // 4. Send atomic raw transaction to Devnet RPC
       const sig = await this.connection.sendRawTransaction(tx.serialize(), {
         skipPreflight: false,
         maxRetries: 3,
       });
 
-      // 7. Confirm transaction on Devnet RPC
+      // 5. Confirm on-chain transaction
       const confirmation = await this.connection.confirmTransaction(
         { signature: sig, blockhash, lastValidBlockHeight },
         'confirmed'
@@ -350,36 +281,56 @@ export class DevnetAmmExecutor implements ITradeExecutor {
 
       const slot = confirmation.context.slot;
 
-      // 8. Poll up to 12 seconds for real token account clearance on a Sell
+      // 6. On SELL: Verify on-chain SOL balance actually increased and token balance actually decreased
       if (!isSolBuy && targetMintStr !== 'So11111111111111111111111111111111111111112') {
-        const pollStart = Date.now();
-        let cleared = false;
-        while (Date.now() - pollStart < 12000) {
+        const verifyStart = Date.now();
+        let solIncreased = false;
+        let tokenDecreased = false;
+
+        while (Date.now() - verifyStart < 12000) {
           try {
-            const rawBal = await this.getTokenBalance(targetMintStr);
-            if (rawBal === 0) {
-              cleared = true;
+            const currentSolLamports = await this.connection.getBalance(userPk, 'confirmed');
+            const currentTokenRaw = await this.getTokenBalance(targetMintStr);
+
+            if (currentSolLamports > initialSolLamports) {
+              solIncreased = true;
+            }
+            if (currentTokenRaw < initialTokenRawAmount || currentTokenRaw === 0) {
+              tokenDecreased = true;
+            }
+            if (solIncreased && tokenDecreased) {
               break;
             }
           } catch {}
           await new Promise((r) => setTimeout(r, 600));
         }
-        console.log(`[DevnetAmmExecutor] Token clearance poll result for ${targetMintStr}: ${cleared ? 'CLEARED' : 'PENDING'}`);
+
+        console.log(
+          `[DevnetAmmExecutor] Post-sell on-chain verification - SOL increase: ${solIncreased}, Token decrease: ${tokenDecreased}`
+        );
       }
 
-      // 9. Authoritative Post-Trade State Refresh against Devnet RPC
+      // 7. Authoritative Post-Trade State Refresh directly from Devnet RPC
       await this.syncStoreBalances(activePublicKey, targetMintStr);
 
       const landingTimeMs = Date.now() - start;
       const actualFee = 0.000005;
+      const outAmountNum = isSolBuy ? Number(expectedTokenAmount) : expectedSolLamports;
 
       this.telemetryTotalFeesPaidSol += actualFee;
       this.telemetryLandingTimeTotalMs += landingTimeMs;
 
       useAppStore.getState().addJupiterLog({
         type: 'INFO',
-        message: `Devnet PumpSwap/AMM Success: ${sig.slice(0, 8)}... (Slot ${slot}, In: ${amount}, Out: ${outAmountNum})`,
-        details: { signature: sig, inputMint, outputMint, inAmount: amount, outAmount: outAmountNum, feeSol: actualFee },
+        message: `Devnet Atomic Settlement Success: ${sig.slice(0, 8)}... (Slot ${slot}, In: ${amount}, Out: ${outAmountNum})`,
+        details: {
+          signature: sig,
+          inputMint,
+          outputMint,
+          inAmount: amount,
+          outAmount: outAmountNum,
+          feeSol: actualFee,
+        },
       });
 
       return {
@@ -552,4 +503,5 @@ export class DevnetAmmExecutor implements ITradeExecutor {
     };
   }
 }
+
 

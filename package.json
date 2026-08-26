@@ -9,6 +9,7 @@
     "start": "node dist/server.cjs",
     "preview": "vite preview",
     "clean": "rm -rf dist",
+    "create:devnet-settlement": "tsx scripts/createDevnetSettlement.ts",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
