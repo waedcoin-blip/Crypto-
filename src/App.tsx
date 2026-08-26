@@ -2043,14 +2043,28 @@ function App() {
          ? activeAddress!
          : '11111111111111111111111111111111';
       let balanceRaw: string | number = 0;
-      balanceRaw = await getTokenBalanceRaw(connection, walletAddress, tokenAddress);
-      if (balanceRaw === '0') {
-         console.warn(`No on-chain balance found for ${tokenAddress}`);
-      }
-      const sellRawAmount = Math.floor(Number(balanceRaw));
+      try {
+        balanceRaw = await getTokenBalanceRaw(connection, walletAddress, tokenAddress);
+      } catch {}
+      
+      let sellRawAmount = Math.floor(Number(balanceRaw));
       if (sellRawAmount <= 0) {
-          pendingTrades.current.delete(tokenAddress);
-          return;
+        if (position.amountLamports && position.amountLamports > 0) {
+          sellRawAmount = position.amountLamports;
+        } else if (position.amount && position.amount > 0) {
+          sellRawAmount = Math.floor(position.amount * (position.decimals ? Math.pow(10, position.decimals) : 1e6));
+        } else {
+          const storeTokenBal = useBalanceStore.getState().tokenBalances[tokenAddress];
+          if (storeTokenBal && storeTokenBal > 0) {
+            sellRawAmount = Math.floor(storeTokenBal * 1e6);
+          }
+        }
+      }
+
+      if (sellRawAmount <= 0) {
+        console.warn(`[AutoSell Abort] No active position amount found to sell for ${symbol}`);
+        pendingTrades.current.delete(tokenAddress);
+        return;
       }
       let quote = cachedQuote || null;
       if (!quote) {
@@ -2078,13 +2092,16 @@ function App() {
         if (guaranteedMinLamports > 0) {
           const guaranteedSolOut = guaranteedMinLamports / 1_000_000_000.0;
           const networkFeesSol = 0.0035; // Simulated / average Jito fee
-          realNetReturnSol = Math.max(0, guaranteedSolOut - networkFeesSol);
+          const calculatedNet = Math.max(0, guaranteedSolOut - networkFeesSol);
+          if (calculatedNet > 0) {
+            realNetReturnSol = calculatedNet;
+          }
           if (currentCostBasisSol > 0) {
             realNetProfitPct = ((realNetReturnSol - currentCostBasisSol) / currentCostBasisSol) * 100.0;
           }
 
-          // Unify Profit Guard for TAKE PROFIT only (never block stop losses)
-          if (curPnLPercent >= minTakeProfit && realNetReturnSol <= currentCostBasisSol) {
+          // Unify Profit Guard for Mainnet LIVE TAKE PROFIT only (never block stop losses or Devnet paper trading)
+          if (isLiveTrading && curPnLPercent >= minTakeProfit && realNetReturnSol <= currentCostBasisSol) {
              console.log(`⚠️ REJECTED (LIVE): Paper profit drops net return into a loss (${realNetReturnSol} SOL vs ${currentCostBasisSol} SOL).`);
              addNotification(`Profit Guard: Aborted ${symbol} sell. Network slippage overrides return.`);
              pendingTrades.current.delete(tokenAddress);

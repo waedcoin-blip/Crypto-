@@ -184,12 +184,7 @@ export class PositionExitManager {
     const pos = this.positions.get(mint);
     if (!pos || pos.state === 'CLOSED' || !rawPrice || rawPrice <= 0) return;
 
-    let currentPrice = rawPrice;
-    // Sanity check: If rawPrice was mistakenly provided in USD (approx ~100x - 300x higher than native SOL buy price)
-    if (pos.buyPrice > 0 && currentPrice > pos.buyPrice * 30 && currentPrice < pos.buyPrice * 400) {
-      currentPrice = currentPrice / 150;
-    }
-
+    const currentPrice = rawPrice;
     pos.currentPrice = currentPrice;
     pos.lastPriceUpdate = timestamp;
 
@@ -215,13 +210,9 @@ export class PositionExitManager {
       }
     }
     if (!pos.buyPrice || pos.buyPrice <= 0) return 0;
-    let current = pos.currentPrice;
+    const current = pos.currentPrice;
     if (!current || current <= 0) return 0;
 
-    // Extra guard against USD/SOL price scale confusion
-    if (current > pos.buyPrice * 30 && current < pos.buyPrice * 400) {
-      current = current / 150;
-    }
     return ((current - pos.buyPrice) / pos.buyPrice) * 100;
   }
 

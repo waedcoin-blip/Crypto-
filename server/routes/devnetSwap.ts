@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import { Router } from 'express';
 import {
   Connection,
@@ -16,6 +18,7 @@ import {
   getAssociatedTokenAddressSync,
   createAssociatedTokenAccountIdempotentInstruction,
   createTransferInstruction,
+  createMintToInstruction,
 } from '@solana/spl-token';
 import bs58 from 'bs58';
 import {
@@ -27,11 +30,12 @@ import {
 
 const router = Router();
 
-export const BUILD_ID = 'devnet-swap-v7-atomic-shadow-mint-2026-08-26';
+export const BUILD_ID = 'devnet-swap-v9-reliable-tp-settlement-2026-08-26';
 export const TOKEN_PROGRAM_ID_STR = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 export const TOKEN_2022_PROGRAM_ID_STR = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
 export const ASSOCIATED_TOKEN_PROGRAM_ID_STR = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
 
+const SETTLEMENT_KEYPAIR_PATH = path.join(process.cwd(), 'data', 'devnetSettlementKeypair.json');
 let ephemeralDevnetKeypair: Keypair | null = null;
 
 export function getSettlementKeypair(): { keypair: Keypair | null; isConfigured: boolean } {
@@ -55,11 +59,35 @@ export function getSettlementKeypair(): { keypair: Keypair | null; isConfigured:
     }
   }
 
-  // Fallback in-memory keypair for local development/testing if unset
+  // Persistent fallback keypair on disk for development/testing if env var is unset
   if (!ephemeralDevnetKeypair) {
-    ephemeralDevnetKeypair = Keypair.generate();
-    console.warn(
-      '[DevnetSwap] DEVNET_SETTLEMENT_PRIVATE_KEY is not set. Generated in-memory fallback settlement wallet:',
+    try {
+      if (fs.existsSync(SETTLEMENT_KEYPAIR_PATH)) {
+        const rawKey = fs.readFileSync(SETTLEMENT_KEYPAIR_PATH, 'utf8');
+        const secretKey = new Uint8Array(JSON.parse(rawKey));
+        ephemeralDevnetKeypair = Keypair.fromSecretKey(secretKey);
+      }
+    } catch (e: any) {
+      console.warn('[DevnetSwap] Could not load settlement keypair from disk:', e.message);
+    }
+
+    if (!ephemeralDevnetKeypair) {
+      ephemeralDevnetKeypair = Keypair.generate();
+      try {
+        const dir = path.dirname(SETTLEMENT_KEYPAIR_PATH);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(
+          SETTLEMENT_KEYPAIR_PATH,
+          JSON.stringify(Array.from(ephemeralDevnetKeypair.secretKey)),
+          'utf8'
+        );
+      } catch (e: any) {
+        console.warn('[DevnetSwap] Could not save settlement keypair to disk:', e.message);
+      }
+    }
+
+    console.log(
+      '[DevnetSwap] Using persistent fallback settlement wallet:',
       ephemeralDevnetKeypair.publicKey.toBase58()
     );
   }
@@ -72,6 +100,23 @@ function getDevnetConnection(): Connection {
     process.env.VITE_DEVNET_RPC_URL ||
     'https://api.devnet.solana.com';
   return new Connection(rpcUrl, { commitment: 'confirmed' });
+}
+
+async function ensureSettlementFunded(connection: Connection, settlementPk: PublicKey): Promise<number> {
+  let balance = await connection.getBalance(settlementPk, 'confirmed').catch(() => 0);
+  if (balance < 0.2 * LAMPORTS_PER_SOL) {
+    console.log(`[DevnetSwap] Settlement wallet balance low (${balance / LAMPORTS_PER_SOL} SOL). Requesting Devnet airdrop...`);
+    try {
+      const sig = await connection.requestAirdrop(settlementPk, 1 * LAMPORTS_PER_SOL);
+      const latest = await connection.getLatestBlockhash('confirmed');
+      await connection.confirmTransaction({ signature: sig, ...latest }, 'confirmed');
+      balance = await connection.getBalance(settlementPk, 'confirmed').catch(() => 0);
+      console.log(`[DevnetSwap] Airdrop successful! Settlement wallet now has ${balance / LAMPORTS_PER_SOL} SOL`);
+    } catch (airdropErr: any) {
+      console.warn('[DevnetSwap] Devnet airdrop notice:', airdropErr.message || airdropErr);
+    }
+  }
+  return balance;
 }
 
 async function validateMint(
@@ -262,6 +307,9 @@ router.post('/build', async (req, res) => {
     const settlementPk = settlementKp.publicKey;
     const connection = getDevnetConnection();
 
+    // Auto-topup settlement wallet if Devnet SOL balance is low
+    await ensureSettlementFunded(connection, settlementPk);
+
     const isBuy =
       inputMint === 'So11111111111111111111111111111111111111112' ||
       inputMint.toLowerCase().includes('sol');
@@ -282,7 +330,7 @@ router.post('/build', async (req, res) => {
 
     if (!mintInfo.exists) {
       console.log(`[DevnetSwap] Token mint ${tokenMintStr} not found on Devnet. Creating/retrieving Shadow Mint...`);
-      const shadowInfo = await getOrCreateShadowMintInfo(connection, tokenMintStr, userPk, settlementPk);
+      const shadowInfo = await getOrCreateShadowMintInfo(connection, tokenMintStr, settlementPk, settlementPk);
       shadowRecord = shadowInfo.record;
       shadowMintKp = shadowInfo.shadowMintKp;
       tokenMintPk = new PublicKey(shadowRecord.devnetMint);
@@ -301,10 +349,10 @@ router.post('/build', async (req, res) => {
     const tokenDecimals = mintInfo.decimals;
     const tokenProgramId = mintInfo.tokenProgram;
 
-    // Derive and ensure user & settlement ATAs exist (adds creation instruction if ATA does NOT exist on-chain)
+    // Derive and ensure user & settlement ATAs exist (settlementPk pays rent if ATA does NOT exist on-chain)
     const userTokenAta = await ensureAta(
       connection,
-      userPk,
+      settlementPk,
       userPk,
       tokenMintPk,
       tokenProgramId,
@@ -314,7 +362,7 @@ router.post('/build', async (req, res) => {
 
     const settlementTokenAta = await ensureAta(
       connection,
-      userPk,
+      settlementPk,
       settlementPk,
       tokenMintPk,
       tokenProgramId,
@@ -326,7 +374,7 @@ router.post('/build', async (req, res) => {
     let expectedTokenRawAmount = BigInt(0);
 
     if (isBuy) {
-      // BUY: User gives SOL -> receives Token
+      // BUY: User gives virtual SOL -> receives on-chain Shadow Mint Token
       expectedSolLamports = Number(amount);
       if (quoteResponse && quoteResponse.outAmount) {
         expectedTokenRawAmount = BigInt(quoteResponse.outAmount);
@@ -336,16 +384,7 @@ router.post('/build', async (req, res) => {
         expectedTokenRawAmount = BigInt(Math.floor(tokensCalculated * Math.pow(10, tokenDecimals)));
       }
 
-      // 1. SOL Transfer: User -> Settlement
-      instructions.push(
-        SystemProgram.transfer({
-          fromPubkey: userPk,
-          toPubkey: settlementPk,
-          lamports: expectedSolLamports,
-        })
-      );
-
-      // 2. Token Transfer: Settlement -> User
+      // Token Transfer: Settlement -> User
       instructions.push(
         createTransferInstruction(
           settlementTokenAta,
@@ -367,12 +406,29 @@ router.post('/build', async (req, res) => {
         expectedSolLamports = Math.max(1000, Math.floor(solCalculated * LAMPORTS_PER_SOL));
       }
 
-      // Check settlement wallet SOL balance
-      const settlementBal = await connection.getBalance(settlementPk, 'confirmed').catch(() => 0);
-      if (settlementBal < expectedSolLamports) {
-        console.warn(
-          `[DevnetSwap] Warning: Settlement wallet (${settlementPk.toBase58()}) has only ${settlementBal / LAMPORTS_PER_SOL} SOL, requested ${expectedSolLamports / LAMPORTS_PER_SOL} SOL.`
-        );
+      // Auto-topup userTokenAta if on-chain balance is less than expectedTokenRawAmount
+      if (shadowRecord) {
+        let userOnChainTokenBal = BigInt(0);
+        try {
+          const balInfo = await connection.getTokenAccountBalance(userTokenAta, 'confirmed');
+          if (balInfo?.value?.amount) {
+            userOnChainTokenBal = BigInt(balInfo.value.amount);
+          }
+        } catch {}
+
+        if (userOnChainTokenBal < expectedTokenRawAmount) {
+          const missingAmount = expectedTokenRawAmount - userOnChainTokenBal;
+          instructions.push(
+            createMintToInstruction(
+              tokenMintPk,
+              userTokenAta,
+              settlementPk,
+              missingAmount,
+              [],
+              tokenProgramId
+            )
+          );
+        }
       }
 
       // 1. Token Transfer: User -> Settlement
@@ -399,7 +455,7 @@ router.post('/build', async (req, res) => {
 
     const latestBlockhash = await connection.getLatestBlockhash('confirmed');
     const messageV0 = new TransactionMessage({
-      payerKey: userPk,
+      payerKey: settlementPk,
       recentBlockhash: latestBlockhash.blockhash,
       instructions,
     }).compileToV0Message();
