@@ -127,96 +127,45 @@ export class DevnetAmmExecutor implements ITradeExecutor {
     const inputMint = params.inputMint;
     const outputMint = params.outputMint;
     const amount = Number(params.amount);
-    const slippageBps = params.slippageBps || 50;
-
+    const slippageBps = Math.max(0, Math.min(5000, Number(params.slippageBps || 50)));
     const isBuy = inputMint === 'So11111111111111111111111111111111111111112';
     const targetMint = isBuy ? outputMint : inputMint;
+    const diag = await fetch('/api/devnet-swap/diagnostic').then((r) => r.ok ? r.json() : null).catch(() => null);
+    const tokenPriceNative = Number(diag?.tokenPriceNative);
 
-    let tokenPriceNative = 0;
-    const metrics = useAppStore.getState().tokenMetrics?.[targetMint];
-    if (metrics?.priceNative && metrics.priceNative > 0) {
-      tokenPriceNative = metrics.priceNative;
-    } else if (metrics?.priceUsd && metrics.priceUsd > 0) {
-      tokenPriceNative = metrics.priceUsd / 150;
+    if (!Number.isFinite(tokenPriceNative) || tokenPriceNative <= 0) {
+      throw new Error('Invalid Devnet token price configuration');
     }
 
-    // Dynamic price lookup fallback if tokenMetrics not loaded yet
-    if (tokenPriceNative <= 0) {
-      try {
-        const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${targetMint}`);
-        if (res.ok) {
-          const data = await res.json();
-          const pair = data.pairs?.[0];
-          if (pair?.priceNative) {
-            tokenPriceNative = parseFloat(pair.priceNative);
-          } else if (pair?.priceUsd) {
-            tokenPriceNative = parseFloat(pair.priceUsd) / 150;
-          }
-        }
-      } catch {}
-    }
-
-    if (tokenPriceNative <= 0) {
-      tokenPriceNative = 0.001; // SOL per token default fallback
-    }
-
-    let tokenDecimals = 6;
-    try {
-      tokenDecimals = await this.getTokenDecimals(new PublicKey(targetMint));
-    } catch {}
-
-    let outAmountLamports = 0n;
-
-    if (isBuy) {
-      const solIn = amount / 1_000_000_000;
-      const tokensOut = solIn / Math.max(tokenPriceNative, 1e-9);
-      outAmountLamports = BigInt(Math.floor(tokensOut * Math.pow(10, tokenDecimals)));
-    } else {
-      const tokensIn = amount / Math.pow(10, tokenDecimals);
-      const solOut = tokensIn * Math.max(tokenPriceNative, 1e-9);
-      outAmountLamports = BigInt(Math.floor(solOut * 1_000_000_000));
-    }
-
-    if (outAmountLamports <= 0n) outAmountLamports = 1n;
-
-    const slippageFactor = 1 - slippageBps / 10000;
-    const otherThreshold = BigInt(Math.floor(Number(outAmountLamports) * slippageFactor));
-
-    // Dynamic realistic price impact calculation based on trade volume vs liquidity
-    const solVol = isBuy ? amount / 1_000_000_000 : Number(outAmountLamports) / 1_000_000_000;
-    const tradeUsd = solVol * 150;
-    const liquidityUsd = metrics?.liquidity || 50000;
-    const calcImpact = Math.max(0.01, Math.min(15.0, (tradeUsd / Math.max(liquidityUsd, 1000)) * 100));
-    const priceImpactPct = calcImpact.toFixed(2);
-
-    const isPump = targetMint.toLowerCase().endsWith('pump');
-    const routeLabel = isPump ? 'Pump.fun Devnet AMM Pool' : 'Raydium Devnet Settlement Pool';
+    const tokenDecimals = await this.getTokenDecimals(new PublicKey(targetMint));
+    const outAmount = isBuy
+      ? BigInt(Math.max(1, Math.floor((amount / LAMPORTS_PER_SOL / tokenPriceNative) * 10 ** tokenDecimals)))
+      : BigInt(Math.max(1, Math.floor((Number(amount) / 10 ** tokenDecimals) * tokenPriceNative * LAMPORTS_PER_SOL)));
+    const threshold = BigInt(Math.max(1, Math.floor(Number(outAmount) * (1 - slippageBps / 10000))));
 
     return {
       inputMint,
       inAmount: String(amount),
       outputMint,
-      outAmount: String(outAmountLamports),
-      otherAmountThreshold: String(otherThreshold),
+      outAmount: outAmount.toString(),
+      otherAmountThreshold: threshold.toString(),
       swapMode: 'ExactIn',
       slippageBps,
       platformFee: null,
-      priceImpactPct,
-      routePlan: [
-        {
-          swapInfo: {
-            ammKey: 'DevnetSettlementExchange',
-            label: routeLabel,
-            inputMint,
-            outputMint,
-            inAmount: String(amount),
-            outAmount: String(outAmountLamports),
-            feeAmount: '5000',
-            feeMint: inputMint,
-          },
-          percent: 100,
+      priceImpactPct: '0',
+      routePlan: [{
+        swapInfo: {
+          ammKey: 'DevnetSettlementExchange',
+          label: 'Devnet Settlement (SPL transfer)',
+          inputMint,
+          outputMint,
+          inAmount: String(amount),
+          outAmount: outAmount.toString(),
+          feeAmount: '5000',
+          feeMint: inputMint,
         },
-      ],
+        percent: 100,
+      }],
       contextSlot: Math.floor(Date.now() / 400),
     } as unknown as QuoteResponse;
   }
@@ -263,7 +212,7 @@ export class DevnetAmmExecutor implements ITradeExecutor {
       const quote = await this.getQuote({ inputMint, outputMint, amount, slippageBps });
 
       // 0. Check server build ID via diagnostic endpoint before building swap
-      const EXPECTED_BUILD_ID = 'devnet-swap-v10-real-onchain-settlement-2026-08-26';
+      const EXPECTED_BUILD_ID = 'devnet-swap-v11-no-ata-two-wallets-2026-08-26';
       const diagRes = await fetch('/api/devnet-swap/diagnostic').catch(() => null);
       if (diagRes && diagRes.ok) {
         const diagData = await diagRes.json().catch(() => ({}));
@@ -271,6 +220,12 @@ export class DevnetAmmExecutor implements ITradeExecutor {
           throw new Error(
             `Server build mismatch: Server reports build '${diagData.buildId || 'legacy'}', expected '${EXPECTED_BUILD_ID}'. Please rebuild and restart server.`
           );
+        }
+        if (diagData.associatedTokenProgramAllowed !== false || diagData.tokenAccountCreationMethod !== 'system-create-account-plus-spl-initialize-account') {
+          throw new Error('Devnet safety check failed: server does not guarantee ATA-free token account creation.');
+        }
+        if (!diagData.settlementAddress || diagData.settlementAddress === activePublicKey) {
+          throw new Error('Devnet safety check failed: settlement wallet must be different from the active user wallet.');
         }
       }
 
@@ -288,7 +243,6 @@ export class DevnetAmmExecutor implements ITradeExecutor {
               inputMint,
               outputMint,
               amount,
-              quoteResponse: quote,
               slippageBps,
             }),
           });
@@ -325,6 +279,12 @@ export class DevnetAmmExecutor implements ITradeExecutor {
         expectedSolLamports,
         expectedTokenAmount,
       } = buildData;
+      if (buildData.userPublicKey !== activePublicKey) {
+        throw new Error('Devnet build returned a different user wallet than the active wallet.');
+      }
+      if (!buildData.settlementPublicKey || buildData.settlementPublicKey === activePublicKey) {
+        throw new Error('Devnet build returned an invalid settlement wallet.');
+      }
 
       // 2. Deserialize atomic VersionedTransaction (already signed by settlement wallet)
       const rawTxBuf = Buffer.from(swapTransaction, 'base64');
@@ -355,36 +315,36 @@ export class DevnetAmmExecutor implements ITradeExecutor {
 
       const slot = confirmation.context.slot;
 
-      // 6. On SELL: Verify on-chain SOL balance actually increased and token balance actually decreased
-      if (!isSolBuy && targetMintStr !== 'So11111111111111111111111111111111111111112') {
+      // 6. Verify exact Devnet balance effects. A successful signature alone is not enough.
+      const expectedSol = Number(expectedSolLamports);
+      const expectedToken = Number(expectedTokenAmount);
+      if (isSolBuy) {
         const verifyStart = Date.now();
-        let solIncreased = false;
-        let tokenDecreased = false;
-
-        // Mark token cleared optimistically and verify
-        void walletBalanceService.verifyTokenBalanceCleared(targetMintStr, activePublicKey);
-
+        let verified = false;
         while (Date.now() - verifyStart < 12000) {
-          try {
-            const currentSolLamports = await this.connection.getBalance(userPk, 'confirmed');
-            const currentTokenRaw = await this.getTokenBalance(targetMintStr);
-
-            if (currentSolLamports > initialSolLamports) {
-              solIncreased = true;
-            }
-            if (currentTokenRaw < initialTokenRawAmount || currentTokenRaw === 0) {
-              tokenDecreased = true;
-            }
-            if (solIncreased && tokenDecreased) {
-              break;
-            }
-          } catch {}
-          await new Promise((r) => setTimeout(r, 600));
+          const currentTokenRaw = await this.getTokenBalance(targetMintStr);
+          if (currentTokenRaw >= initialTokenRawAmount + expectedToken) {
+            verified = true;
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 500));
         }
-
-        console.log(
-          `[DevnetAmmExecutor] Post-sell on-chain verification - SOL increase: ${solIncreased}, Token decrease: ${tokenDecreased}`
-        );
+        if (!verified) throw new Error('Devnet BUY confirmed on-chain but expected token balance increase was not observed.');
+      } else {
+        const verifyStart = Date.now();
+        let verified = false;
+        while (Date.now() - verifyStart < 12000) {
+          const currentSolLamports = await this.connection.getBalance(userPk, 'confirmed');
+          const currentTokenRaw = await this.getTokenBalance(targetMintStr);
+          const solDelta = currentSolLamports - initialSolLamports;
+          const tokenDelta = initialTokenRawAmount - currentTokenRaw;
+          if (tokenDelta >= expectedToken && solDelta >= Math.max(0, expectedSol - 10000)) {
+            verified = true;
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 500));
+        }
+        if (!verified) throw new Error('Devnet SELL confirmed on-chain but exact token/SOL balance effects were not verified.');
       }
 
       // 7. Authoritative Post-Trade State Refresh directly from Devnet RPC
@@ -392,7 +352,7 @@ export class DevnetAmmExecutor implements ITradeExecutor {
 
       const landingTimeMs = Date.now() - start;
       const actualFee = 0.000005;
-      const outAmountNum = isSolBuy ? Number(expectedTokenAmount) : expectedSolLamports;
+      const outAmountNum = isSolBuy ? Number(expectedTokenAmount) : Number(expectedSolLamports);
 
       this.telemetryTotalFeesPaidSol += actualFee;
       this.telemetryLandingTimeTotalMs += landingTimeMs;
@@ -507,8 +467,8 @@ export class DevnetAmmExecutor implements ITradeExecutor {
         }
       }
       return totalRawAmount;
-    } catch {
-      return 0;
+    } catch (err: any) {
+      throw new Error(`Devnet token balance RPC failed: ${err?.message || err}`);
     }
   }
 

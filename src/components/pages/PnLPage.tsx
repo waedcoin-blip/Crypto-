@@ -50,7 +50,27 @@ const fetchMintDecimals = async (mint: string, rpcUrl?: string): Promise<number>
   if (normalized.toLowerCase().startsWith('sim')) return 6;
   if (decimalsCache[normalized] !== undefined && decimalsCache[normalized] >= 0) return decimalsCache[normalized];
 
-  // 1. Try public Jupiter Token API (very fast, cached)
+  const isDevnet = useTradingEnvironmentStore.getState().network === 'devnet';
+
+  // Devnet: RPC is authoritative. Never use mainnet token metadata first.
+  if (isDevnet && rpcUrl) {
+    try {
+      const conn = new Connection(rpcUrl, 'confirmed');
+      const info = await conn.getParsedAccountInfo(new PublicKey(normalized));
+      if (info?.value?.data && 'parsed' in info.value.data) {
+        const decimals = info.value.data.parsed?.info?.decimals;
+        if (typeof decimals === 'number') {
+          decimalsCache[normalized] = decimals;
+          return decimals;
+        }
+      }
+    } catch (e) {
+      console.warn("Devnet Solana RPC decimals fetch failed:", e);
+    }
+    return -1;
+  }
+
+  // Mainnet: public Jupiter Token API is allowed.
   try {
     const res = await fetch(`https://tokens.jup.ag/token/${normalized}`);
     if (res.ok) {
@@ -3624,9 +3644,11 @@ const checkTokenCriteria = (mint: string): {
             const exactTokenAmount = Number(quote.outAmount);
             const exactMathFallback = solAmount / parsedPrice;
             let decimals = await resolveDecimals(mint, jupRpcUrlToUse);
-            const impliedDecimals = Math.round(Math.log10(exactTokenAmount / exactMathFallback));
-            if (Math.abs(decimals - impliedDecimals) >= 2) {
-               decimals = Math.max(0, impliedDecimals);
+            if (useTradingEnvironmentStore.getState().network !== 'devnet') {
+              const impliedDecimals = Math.round(Math.log10(exactTokenAmount / exactMathFallback));
+              if (Math.abs(decimals - impliedDecimals) >= 2) {
+                decimals = Math.max(0, impliedDecimals);
+              }
             }
             const normalizedOut = exactTokenAmount / Math.pow(10, decimals);
             if (normalizedOut > 0) {
@@ -3779,6 +3801,7 @@ const checkTokenCriteria = (mint: string): {
                solSpent: newSolSpent,
                tpPct: existing?.tpPct ?? (configRef.current.minTakeProfit || 25),
                slPct: Math.abs(existing?.slPct ?? (configRef.current.stopLossPct || 15)),
+               tokenDecimals,
              });
              if (result.txid && result.txid !== 'init-sig') {
                positionExitManagerRef.current.confirmBuy(mint, result.txid, result.slot || 0);
@@ -4030,6 +4053,7 @@ const checkTokenCriteria = (mint: string): {
           solSpent: pos.solSpent || 0.1,
           tpPct: targetTp,
           slPct: targetSl,
+          tokenDecimals: pos.decimals ?? 0,
         });
         if (pos.currentPrice && pos.currentPrice > 0) {
           exitMgr.onPriceUpdate(mint, pos.currentPrice, Date.now());
@@ -4106,6 +4130,7 @@ const checkTokenCriteria = (mint: string): {
             solSpent: pos.solSpent || 0.1,
             tpPct: targetTp,
             slPct: targetSl,
+            tokenDecimals: pos.decimals ?? 0,
           });
           if (pos.currentPrice && pos.currentPrice > 0) {
             positionExitManagerRef.current.onPriceUpdate(mint, pos.currentPrice, Date.now());

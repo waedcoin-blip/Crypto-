@@ -8,13 +8,13 @@ export interface TokenPriceUpdate {
   priceNative: number;
   priceUsd?: number;
   timestamp: number;
-  source: 'rpc_ws' | 'jupiter' | 'dexscreener' | 'price_tracker';
+  source: 'rpc_ws' | 'jupiter' | 'dexscreener' | 'price_tracker' | 'devnet_server';
   slot?: number;
 }
 
 export interface PriceState {
   priceNative: number;
-  source: 'rpc_ws' | 'jupiter' | 'dexscreener' | 'price_tracker';
+  source: 'rpc_ws' | 'jupiter' | 'dexscreener' | 'price_tracker' | 'devnet_server';
   isStale: boolean;
   updatedAt: number;
 }
@@ -30,7 +30,7 @@ export class MasterMonitorService {
   private connectionGeneration = 0;
 
   constructor(rpcEndpoint: string, exitManager: PositionExitManager) {
-    const ep = rpcEndpoint && rpcEndpoint.trim() ? rpcEndpoint.trim() : 'https://api.mainnet-beta.solana.com';
+    const ep = rpcEndpoint && rpcEndpoint.trim() ? rpcEndpoint.trim() : 'https://api.devnet.solana.com';
     const wsEndpoint = masterMonitorHealthManager.getActiveWsEndpoint() || undefined;
     this.connection = new Connection(ep, {
       commitment: 'confirmed',
@@ -107,57 +107,14 @@ export class MasterMonitorService {
       if (mints.length === 0) return;
 
       try {
-        // Single BATCH HTTP call for ALL subscribed tokens with native SOL quote
-        const idsParam = mints.join(',');
-        const response = await fetch(`https://api.jup.ag/price/v2?ids=${idsParam}&vsToken=So11111111111111111111111111111111111111112`).catch(() => null);
-        
-        if (response && response.ok) {
-          const data = await response.json();
-          const priceMap = data.data || {};
-          const now = Date.now();
-
-          for (const mint of mints) {
-            const priceInfo = priceMap[mint];
-            if (priceInfo?.price) {
-              const priceNative = parseFloat(priceInfo.price);
-              if (priceNative > 0) {
-                this.pushPriceUpdate(mint, priceNative, now, 'jupiter');
-                continue;
-              }
-            }
-
-            // Fallback for Devnet or unlisted tokens: fetch from DexScreener or retain active price
-            try {
-              const dexRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`).catch(() => null);
-              if (dexRes && dexRes.ok) {
-                const dexData = await dexRes.json();
-                const pair = dexData.pairs?.[0];
-                if (pair) {
-                  const isSolQuote = pair.quoteToken?.symbol === 'SOL' || pair.quoteToken?.address === 'So11111111111111111111111111111111111111112';
-                  if (isSolQuote && pair.priceNative) {
-                    const priceNative = parseFloat(pair.priceNative);
-                    if (priceNative > 0) {
-                      this.pushPriceUpdate(mint, priceNative, now, 'dexscreener');
-                      continue;
-                    }
-                  } else if (pair.priceUsd) {
-                    const priceInSol = parseFloat(pair.priceUsd) / 150;
-                    if (priceInSol > 0) {
-                      this.pushPriceUpdate(mint, priceInSol, now, 'dexscreener');
-                      continue;
-                    }
-                  }
-                }
-              }
-            } catch {
-              // Ignore DexScreener error
-            }
-
-            // Keep existing price updated if still fresh or active
-            const existing = this.priceEngine.get(mint);
-            if (existing && existing.priceNative > 0) {
-              this.pushPriceUpdate(mint, existing.priceNative, now, existing.source);
-            }
+        const response = await fetch(`/api/devnet-swap/prices?mints=${encodeURIComponent(mints.join(','))}`).catch(() => null);
+        if (!response || !response.ok) throw new Error('Devnet price service unavailable');
+        const data = await response.json();
+        const now = Date.now();
+        for (const mint of mints) {
+          const priceNative = Number(data.prices?.[mint]?.priceNative);
+          if (Number.isFinite(priceNative) && priceNative > 0) {
+            this.pushPriceUpdate(mint, priceNative, now, 'devnet_server');
           }
         }
       } catch (err) {
@@ -210,29 +167,19 @@ export class MasterMonitorService {
   private async triggerInstantPriceCheck(mint: string, slot?: number): Promise<void> {
     const now = Date.now();
     const lastTime = this.lastCheckTime.get(mint) || 0;
-    if (now - lastTime < 750) {
-      // Throttle instant checks to max once every 750ms per mint to prevent rate limits
-      return;
-    }
+    if (now - lastTime < 750) return;
     this.lastCheckTime.set(mint, now);
-
     try {
-      const res = await fetch(`https://api.jup.ag/price/v2?ids=${mint}&vsToken=So11111111111111111111111111111111111111112`).catch(() => null);
+      const res = await fetch(`/api/devnet-swap/prices?mints=${encodeURIComponent(mint)}`).catch(() => null);
       if (res && res.ok) {
         const data = await res.json();
-        const priceStr = data.data?.[mint]?.price;
-        if (priceStr) {
-          const priceNative = parseFloat(priceStr);
-          if (priceNative > 0) {
-            this.pushPriceUpdate(mint, priceNative, Date.now(), 'rpc_ws');
-          }
+        const priceNative = Number(data.prices?.[mint]?.priceNative);
+        if (Number.isFinite(priceNative) && priceNative > 0) {
+          this.pushPriceUpdate(mint, priceNative, Date.now(), 'devnet_server');
         }
       }
-    } catch {
-      // Handled by scheduled batch price ticker
-    }
+    } catch {}
   }
-
 
   stopMonitoring(mint?: string): void {
     if (mint) {

@@ -6,7 +6,8 @@ import { useBalanceStore } from '../store/balanceStore';
 
 export interface ManagedExitPosition {
   mint: string;
-  amount: number; // Token units (lamports or raw tokens)
+  amount: number; // Raw token amount
+  tokenDecimals: number;
   buyPrice: number; // Entry price (SOL or native)
   solSpent: number; // Cost basis in SOL
   tpPct: number;
@@ -114,6 +115,7 @@ export class PositionExitManager {
     slPct?: number;
     slippageBpsTp?: number;
     slippageBpsSl?: number;
+    tokenDecimals?: number;
   }): void {
     const existing = this.positions.get(params.mint);
     if (existing && existing.state !== 'CLOSED') {
@@ -129,13 +131,15 @@ export class PositionExitManager {
 
     let calculatedBuyPrice = params.buyPrice || 0;
     if (calculatedBuyPrice <= 0 && params.solSpent > 0 && params.amount > 0) {
-      const rawUnits = params.amount > 1e6 ? params.amount / 1e6 : params.amount;
-      calculatedBuyPrice = params.solSpent / rawUnits;
+      if (params.tokenDecimals === undefined) return;
+      const rawUnits = params.amount / 10 ** params.tokenDecimals;
+      calculatedBuyPrice = rawUnits > 0 ? params.solSpent / rawUnits : 0;
     }
 
     const pos: ManagedExitPosition = {
       mint: params.mint,
-      amount: params.amount > 0 ? params.amount : 1_000_000,
+      amount: params.amount > 0 ? params.amount : 0,
+      tokenDecimals: params.tokenDecimals ?? 0,
       buyPrice: calculatedBuyPrice > 0 ? calculatedBuyPrice : 0.0001,
       solSpent: params.solSpent || 0.1,
       tpPct: params.tpPct ?? this.defaultConfig.tpPct,
@@ -217,8 +221,8 @@ export class PositionExitManager {
   private calculatePnLPct(pos: ManagedExitPosition): number {
     if (!pos.buyPrice || pos.buyPrice <= 0) {
       if (pos.amount > 0 && pos.solSpent > 0) {
-        const rawUnits = pos.amount > 1e6 ? pos.amount / 1e6 : pos.amount;
-        pos.buyPrice = pos.solSpent / rawUnits;
+        const rawUnits = pos.amount / 10 ** pos.tokenDecimals;
+        if (rawUnits > 0) pos.buyPrice = pos.solSpent / rawUnits;
       }
     }
     if (!pos.buyPrice || pos.buyPrice <= 0) return 0;
@@ -228,51 +232,10 @@ export class PositionExitManager {
     return ((current - pos.buyPrice) / pos.buyPrice) * 100;
   }
 
-  private async fetchFallbackPriceForPosition(mint: string): Promise<void> {
-    if (this.pendingPriceFetches.has(mint)) return;
-    this.pendingPriceFetches.add(mint);
-    try {
-      // 1. Try Jupiter Price V2 with native SOL quote token
-      const jupRes = await fetch(`https://api.jup.ag/price/v2?ids=${mint}&vsToken=So11111111111111111111111111111111111111112`).catch(() => null);
-      if (jupRes && jupRes.ok) {
-        const jupJson = await jupRes.json();
-        const priceStr = jupJson.data?.[mint]?.price;
-        if (priceStr) {
-          const p = parseFloat(priceStr);
-          if (p > 0) {
-            this.onPriceUpdate(mint, p, Date.now());
-            return;
-          }
-        }
-      }
-
-      // 2. Try DexScreener
-      const dexRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`).catch(() => null);
-      if (dexRes && dexRes.ok) {
-        const dexData = await dexRes.json();
-        const pair = dexData.pairs?.[0];
-        if (pair) {
-          const isSolQuote = pair.quoteToken?.symbol === 'SOL' || pair.quoteToken?.address === 'So11111111111111111111111111111111111111112';
-          if (isSolQuote && pair.priceNative) {
-            const p = parseFloat(pair.priceNative);
-            if (p > 0) {
-              this.onPriceUpdate(mint, p, Date.now());
-              return;
-            }
-          } else if (pair.priceUsd) {
-            const p = parseFloat(pair.priceUsd) / 150;
-            if (p > 0) {
-              this.onPriceUpdate(mint, p, Date.now());
-              return;
-            }
-          }
-        }
-      }
-    } catch {
-      // Ignore background fallback fetch error
-    } finally {
-      this.pendingPriceFetches.delete(mint);
-    }
+  private async fetchFallbackPriceForPosition(_mint: string): Promise<void> {
+    // Devnet prices must come from the Devnet server price engine. Never query
+    // Jupiter/DexScreener mainnet as a fallback for a Devnet position.
+    return;
   }
 
   private async evaluateAllPositions(): Promise<void> {
@@ -333,6 +296,7 @@ export class PositionExitManager {
         amount: liveAmount > 0 ? liveAmount : 1_000_000,
         buyPrice: 0,
         solSpent: fallbackSolSpent || 0.1,
+        tokenDecimals: 0,
       });
       pos = this.positions.get(mint);
     }

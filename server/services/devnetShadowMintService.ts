@@ -3,9 +3,6 @@ import {
   TOKEN_PROGRAM_ID,
   MintLayout,
   createInitializeMintInstruction,
-  createAssociatedTokenAccountIdempotentInstruction,
-  createMintToInstruction,
-  getAssociatedTokenAddressSync,
 } from '@solana/spl-token';
 import fs from 'fs';
 import path from 'path';
@@ -113,24 +110,6 @@ export async function getShadowMintMapping(originalMintStr: string): Promise<Sha
   return null;
 }
 
-async function fetchMainnetDecimals(originalMintStr: string): Promise<number> {
-  try {
-    const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${originalMintStr}`);
-    if (res.ok) {
-      const data = await res.json();
-      const pair = data.pairs?.[0];
-      if (pair?.baseToken?.address === originalMintStr && typeof pair.baseToken.decimals === 'number') {
-        return pair.baseToken.decimals;
-      }
-      if (pair?.quoteToken?.address === originalMintStr && typeof pair.quoteToken.decimals === 'number') {
-        return pair.quoteToken.decimals;
-      }
-    }
-  } catch (e) {
-    console.warn(`[DevnetShadowMint] DexScreener decimals fetch failed for ${originalMintStr}, defaulting to 6`);
-  }
-  return 6;
-}
 
 export interface ShadowMintInitInfo {
   record: ShadowMintRecord;
@@ -153,7 +132,8 @@ export async function getOrCreateShadowMintInfo(
   } else {
     shadowMintKp = Keypair.generate();
     devnetMintPk = shadowMintKp.publicKey;
-    const decimals = await fetchMainnetDecimals(originalMintStr);
+    const configuredDecimals = Number(process.env.DEVNET_SHADOW_TOKEN_DECIMALS || '6');
+    const decimals = Number.isInteger(configuredDecimals) && configuredDecimals >= 0 && configuredDecimals <= 9 ? configuredDecimals : 6;
 
     record = {
       originalMint: originalMintStr,
@@ -192,11 +172,9 @@ export async function getOrCreateShadowMintInfo(
     `[DevnetShadowMint] Preparing atomic creation instructions for Devnet Shadow Mint ${originalMintStr} -> ${devnetMintPk.toBase58()} (Decimals: ${record.decimals})`
   );
 
-  const settlementAta = getAssociatedTokenAddressSync(devnetMintPk, settlementPk, true, TOKEN_PROGRAM_ID);
   const rentLamports = await connection.getMinimumBalanceForRentExemption(MintLayout.span);
 
   const initInstructions: TransactionInstruction[] = [
-    // 1. Create account for shadow mint (funded by payerPk)
     SystemProgram.createAccount({
       fromPubkey: payerPk,
       newAccountPubkey: devnetMintPk,
@@ -204,24 +182,8 @@ export async function getOrCreateShadowMintInfo(
       space: MintLayout.span,
       programId: TOKEN_PROGRAM_ID,
     }),
-    // 2. Initialize mint
-    createInitializeMintInstruction(devnetMintPk, record.decimals, settlementPk, settlementPk, TOKEN_PROGRAM_ID),
-    // 3. Ensure settlement ATA exists (funded by payerPk)
-    createAssociatedTokenAccountIdempotentInstruction(
-      payerPk,
-      settlementAta,
-      settlementPk,
-      devnetMintPk,
-      TOKEN_PROGRAM_ID
-    ),
-    // 4. Mint 1,000,000,000 tokens working supply into settlement ATA
-    createMintToInstruction(
-      devnetMintPk,
-      settlementAta,
-      settlementPk,
-      BigInt(1_000_000_000) * BigInt(Math.pow(10, record.decimals)),
-      [],
-      TOKEN_PROGRAM_ID
+    createInitializeMintInstruction(
+      devnetMintPk, record.decimals, settlementPk, settlementPk, TOKEN_PROGRAM_ID
     ),
   ];
 
@@ -249,49 +211,3 @@ export async function getOrCreateShadowMint(
   return info.record;
 }
 
-async function topUpShadowMintIfNeeded(connection: Connection, record: ShadowMintRecord): Promise<void> {
-  try {
-    const { keypair: settlementKp } = getSettlementKeypair();
-    if (!settlementKp) return;
-
-    const devnetMintPk = new PublicKey(record.devnetMint);
-    const settlementPk = settlementKp.publicKey;
-    const settlementAta = getAssociatedTokenAddressSync(devnetMintPk, settlementPk, true, TOKEN_PROGRAM_ID);
-
-    const accountInfo = await connection.getParsedAccountInfo(settlementAta, 'confirmed');
-    const balanceStr = (accountInfo.value?.data as any)?.parsed?.info?.tokenAmount?.amount;
-    const currentBalance = balanceStr ? BigInt(balanceStr) : 0n;
-    const threshold = BigInt(100_000) * BigInt(Math.pow(10, record.decimals));
-
-    if (currentBalance < threshold) {
-      console.log(`[DevnetShadowMint] Inventory low for ${record.originalMint} (${currentBalance.toString()}). Topping up...`);
-      const topUpAmount = BigInt(1_000_000_000) * BigInt(Math.pow(10, record.decimals));
-
-      const instructions = [
-        createAssociatedTokenAccountIdempotentInstruction(
-          settlementPk,
-          settlementAta,
-          settlementPk,
-          devnetMintPk,
-          TOKEN_PROGRAM_ID
-        ),
-        createMintToInstruction(devnetMintPk, settlementAta, settlementPk, topUpAmount, [], TOKEN_PROGRAM_ID),
-      ];
-
-      const latestBlockhash = await connection.getLatestBlockhash('confirmed');
-      const messageV0 = new TransactionMessage({
-        payerKey: settlementPk,
-        recentBlockhash: latestBlockhash.blockhash,
-        instructions,
-      }).compileToV0Message();
-
-      const tx = new VersionedTransaction(messageV0);
-      tx.sign([settlementKp]);
-      const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
-      await connection.confirmTransaction({ signature: sig, ...latestBlockhash }, 'confirmed');
-      console.log(`[DevnetShadowMint] Top up complete: ${sig}`);
-    }
-  } catch (err: any) {
-    console.warn(`[DevnetShadowMint] Top up check failed for ${record.originalMint}:`, err.message);
-  }
-}

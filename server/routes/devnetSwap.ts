@@ -1,5 +1,3 @@
-import fs from 'fs';
-import path from 'path';
 import { Router } from 'express';
 import {
   Connection,
@@ -14,9 +12,8 @@ import {
 import {
   TOKEN_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
-  ASSOCIATED_TOKEN_PROGRAM_ID,
-  getAssociatedTokenAddressSync,
-  createAssociatedTokenAccountIdempotentInstruction,
+  AccountLayout,
+  createInitializeAccountInstruction,
   createTransferInstruction,
   createMintToInstruction,
 } from '@solana/spl-token';
@@ -30,13 +27,9 @@ import {
 
 const router = Router();
 
-export const BUILD_ID = 'devnet-swap-v10-real-onchain-settlement-2026-08-26';
+export const BUILD_ID = 'devnet-swap-v11-no-ata-two-wallets-2026-08-26';
 export const TOKEN_PROGRAM_ID_STR = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 export const TOKEN_2022_PROGRAM_ID_STR = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
-export const ASSOCIATED_TOKEN_PROGRAM_ID_STR = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
-
-const SETTLEMENT_KEYPAIR_PATH = path.join(process.cwd(), 'data', 'devnetSettlementKeypair.json');
-let ephemeralDevnetKeypair: Keypair | null = null;
 
 export function getSettlementKeypair(): { keypair: Keypair | null; isConfigured: boolean } {
   const raw = process.env.DEVNET_SETTLEMENT_PRIVATE_KEY;
@@ -59,39 +52,8 @@ export function getSettlementKeypair(): { keypair: Keypair | null; isConfigured:
     }
   }
 
-  // Persistent fallback keypair on disk for development/testing if env var is unset
-  if (!ephemeralDevnetKeypair) {
-    try {
-      if (fs.existsSync(SETTLEMENT_KEYPAIR_PATH)) {
-        const rawKey = fs.readFileSync(SETTLEMENT_KEYPAIR_PATH, 'utf8');
-        const secretKey = new Uint8Array(JSON.parse(rawKey));
-        ephemeralDevnetKeypair = Keypair.fromSecretKey(secretKey);
-      }
-    } catch (e: any) {
-      console.warn('[DevnetSwap] Could not load settlement keypair from disk:', e.message);
-    }
-
-    if (!ephemeralDevnetKeypair) {
-      ephemeralDevnetKeypair = Keypair.generate();
-      try {
-        const dir = path.dirname(SETTLEMENT_KEYPAIR_PATH);
-        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-        fs.writeFileSync(
-          SETTLEMENT_KEYPAIR_PATH,
-          JSON.stringify(Array.from(ephemeralDevnetKeypair.secretKey)),
-          'utf8'
-        );
-      } catch (e: any) {
-        console.warn('[DevnetSwap] Could not save settlement keypair to disk:', e.message);
-      }
-    }
-
-    console.log(
-      '[DevnetSwap] Using persistent fallback settlement wallet:',
-      ephemeralDevnetKeypair.publicKey.toBase58()
-    );
-  }
-  return { keypair: ephemeralDevnetKeypair, isConfigured: false };
+  // Never generate or persist a server wallet implicitly. A settlement wallet must be explicitly configured.
+  return { keypair: null, isConfigured: false };
 }
 
 function getDevnetConnection(): Connection {
@@ -102,96 +64,111 @@ function getDevnetConnection(): Connection {
   return new Connection(rpcUrl, { commitment: 'confirmed' });
 }
 
-async function ensureSettlementFunded(connection: Connection, settlementPk: PublicKey): Promise<number> {
-  let balance = await connection.getBalance(settlementPk, 'confirmed').catch(() => 0);
-  if (balance < 0.2 * LAMPORTS_PER_SOL) {
-    console.log(`[DevnetSwap] Settlement wallet balance low (${balance / LAMPORTS_PER_SOL} SOL). Requesting Devnet airdrop...`);
-    try {
-      const sig = await connection.requestAirdrop(settlementPk, 1 * LAMPORTS_PER_SOL);
-      const latest = await connection.getLatestBlockhash('confirmed');
-      await connection.confirmTransaction({ signature: sig, ...latest }, 'confirmed');
-      balance = await connection.getBalance(settlementPk, 'confirmed').catch(() => 0);
-      console.log(`[DevnetSwap] Airdrop successful! Settlement wallet now has ${balance / LAMPORTS_PER_SOL} SOL`);
-    } catch (airdropErr: any) {
-      console.warn('[DevnetSwap] Devnet airdrop notice:', airdropErr.message || airdropErr);
-    }
-  }
-  return balance;
-}
 
 async function validateMint(
   connection: Connection,
   mintPk: PublicKey
 ): Promise<{ exists: boolean; tokenProgram: PublicKey; tokenProgramStr: string; decimals: number }> {
-  try {
-    const accountInfo = await connection.getAccountInfo(mintPk, 'confirmed');
-    if (!accountInfo) {
-      return {
-        exists: false,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        tokenProgramStr: TOKEN_PROGRAM_ID_STR,
-        decimals: 6,
-      };
-    }
-    const ownerStr = accountInfo.owner.toBase58();
-    const isToken2022 = ownerStr === TOKEN_2022_PROGRAM_ID_STR;
-    const tokenProgram = isToken2022 ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
-    const tokenProgramStr = isToken2022 ? TOKEN_2022_PROGRAM_ID_STR : TOKEN_PROGRAM_ID_STR;
-
-    let decimals = 6;
-    try {
-      const parsedInfo = await connection.getParsedAccountInfo(mintPk, 'confirmed');
-      const parsedData = (parsedInfo.value?.data as any)?.parsed?.info;
-      if (typeof parsedData?.decimals === 'number') {
-        decimals = parsedData.decimals;
-      }
-    } catch {}
-
-    return { exists: true, tokenProgram, tokenProgramStr, decimals };
-  } catch {
-    return {
-      exists: false,
-      tokenProgram: TOKEN_PROGRAM_ID,
-      tokenProgramStr: TOKEN_PROGRAM_ID_STR,
-      decimals: 6,
-    };
+  const accountInfo = await connection.getAccountInfo(mintPk, 'confirmed');
+  if (!accountInfo) {
+    return { exists: false, tokenProgram: TOKEN_PROGRAM_ID, tokenProgramStr: TOKEN_PROGRAM_ID_STR, decimals: 6 };
   }
+  const ownerStr = accountInfo.owner.toBase58();
+  const isToken2022 = ownerStr === TOKEN_2022_PROGRAM_ID_STR;
+  if (!isToken2022 && ownerStr !== TOKEN_PROGRAM_ID_STR) {
+    throw new Error(`Unsupported Devnet mint owner: ${ownerStr}`);
+  }
+  const tokenProgram = isToken2022 ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+  const tokenProgramStr = isToken2022 ? TOKEN_2022_PROGRAM_ID_STR : TOKEN_PROGRAM_ID_STR;
+  const parsedInfo = await connection.getParsedAccountInfo(mintPk, 'confirmed');
+  const parsedData = (parsedInfo.value?.data as any)?.parsed?.info;
+  const decimals = typeof parsedData?.decimals === 'number' ? parsedData.decimals : 6;
+  return { exists: true, tokenProgram, tokenProgramStr, decimals };
 }
 
-async function ensureAta(
+async function findTokenAccount(
+  connection: Connection,
+  ownerPk: PublicKey,
+  mintPk: PublicKey,
+  tokenProgramId: PublicKey
+): Promise<PublicKey | null> {
+  const result = await connection.getTokenAccountsByOwner(
+    ownerPk,
+    { mint: mintPk, programId: tokenProgramId },
+    'confirmed'
+  );
+  return result.value[0]?.pubkey ?? null;
+}
+
+async function ensureTokenAccount(
   connection: Connection,
   payerPk: PublicKey,
   ownerPk: PublicKey,
   mintPk: PublicKey,
   tokenProgramId: PublicKey,
-  instructions: TransactionInstruction[],
-  allowOwnerOffCurve = true
-): Promise<PublicKey> {
-  const ata = getAssociatedTokenAddressSync(
-    mintPk,
-    ownerPk,
-    allowOwnerOffCurve,
-    tokenProgramId,
-    ASSOCIATED_TOKEN_PROGRAM_ID
+  instructions: TransactionInstruction[]
+): Promise<{ address: PublicKey; signer?: Keypair }> {
+  const existing = await findTokenAccount(connection, ownerPk, mintPk, tokenProgramId);
+  if (existing) return { address: existing };
+
+  const tokenAccountKp = Keypair.generate();
+  const rentLamports = await connection.getMinimumBalanceForRentExemption(AccountLayout.span);
+
+  instructions.push(
+    SystemProgram.createAccount({
+      fromPubkey: payerPk,
+      newAccountPubkey: tokenAccountKp.publicKey,
+      lamports: rentLamports,
+      space: AccountLayout.span,
+      programId: tokenProgramId,
+    }),
+    createInitializeAccountInstruction(
+      tokenAccountKp.publicKey,
+      mintPk,
+      ownerPk,
+      tokenProgramId
+    )
   );
 
-  const accountInfo = await connection.getAccountInfo(ata, 'confirmed');
+  return { address: tokenAccountKp.publicKey, signer: tokenAccountKp };
+}
 
-  if (!accountInfo) {
-    // ATA does not exist on-chain: add idempotent creation instruction using detected tokenProgramId
-    instructions.push(
-      createAssociatedTokenAccountIdempotentInstruction(
-        payerPk,
-        ata,
-        ownerPk,
-        mintPk,
-        tokenProgramId,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      )
-    );
+function parseRawAmount(value: unknown, field: string): bigint {
+  if (typeof value === 'bigint') return value;
+  const text = String(value ?? '');
+  if (!/^\d+$/.test(text)) throw new Error(`Invalid ${field}`);
+  const n = BigInt(text);
+  if (n <= 0n) throw new Error(`${field} must be greater than zero`);
+  return n;
+}
+
+const SOL_MINT = 'So11111111111111111111111111111111111111112';
+const DEVNET_TOKEN_PRICE_SOL = Number(process.env.DEVNET_TOKEN_PRICE_SOL || '0.00001');
+
+function calculateServerAmount(
+  isBuy: boolean,
+  amountRaw: bigint,
+  tokenDecimals: number
+): { expectedSolLamports: bigint; expectedTokenRawAmount: bigint } {
+  if (!Number.isFinite(DEVNET_TOKEN_PRICE_SOL) || DEVNET_TOKEN_PRICE_SOL <= 0) {
+    throw new Error('Invalid DEVNET_TOKEN_PRICE_SOL configuration');
   }
 
-  return ata;
+  if (isBuy) {
+    const sol = Number(amountRaw) / LAMPORTS_PER_SOL;
+    const tokens = sol / DEVNET_TOKEN_PRICE_SOL;
+    return {
+      expectedSolLamports: amountRaw,
+      expectedTokenRawAmount: BigInt(Math.max(1, Math.floor(tokens * 10 ** tokenDecimals))),
+    };
+  }
+
+  const tokenUnits = Number(amountRaw) / 10 ** tokenDecimals;
+  const sol = tokenUnits * DEVNET_TOKEN_PRICE_SOL;
+  return {
+    expectedSolLamports: BigInt(Math.max(1, Math.floor(sol * LAMPORTS_PER_SOL))),
+    expectedTokenRawAmount: amountRaw,
+  };
 }
 
 // GET /api/devnet-swap/status
@@ -272,12 +249,30 @@ router.get('/diagnostic', async (req, res) => {
       buildId: BUILD_ID,
       status,
       settlementAddress: keypair ? keypair.publicKey.toBase58() : null,
-      associatedTokenProgramAllowed: true,
-      tokenAccountCreationMethod: 'associated-token-account-idempotent-instruction',
+      associatedTokenProgramAllowed: false,
+      associatedTokenProgramId: null,
+      tokenAccountCreationMethod: 'system-create-account-plus-spl-initialize-account',
       tokenTransferMethod: 'spl-token-transfer-instruction',
       isConfigured,
       solBalance,
+      tokenPriceNative: DEVNET_TOKEN_PRICE_SOL,
     });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message, buildId: BUILD_ID });
+  }
+});
+
+// GET /api/devnet-swap/prices?mints=a,b,c
+// Devnet-only authoritative simulation price source. This never calls mainnet price APIs.
+router.get('/prices', async (req, res) => {
+  try {
+    const raw = String(req.query.mints || '');
+    const mints = raw.split(',').map((m) => m.trim()).filter(Boolean).slice(0, 100);
+    const price = DEVNET_TOKEN_PRICE_SOL;
+    if (!Number.isFinite(price) || price <= 0) throw new Error('Invalid DEVNET_TOKEN_PRICE_SOL');
+    const prices: Record<string, { priceNative: number; source: string }> = {};
+    for (const mint of mints) prices[mint] = { priceNative: price, source: 'devnet_server' };
+    return res.json({ buildId: BUILD_ID, network: 'devnet', prices });
   } catch (error: any) {
     return res.status(500).json({ error: error.message, buildId: BUILD_ID });
   }
@@ -286,7 +281,7 @@ router.get('/diagnostic', async (req, res) => {
 // POST /api/devnet-swap/build
 router.post('/build', async (req, res) => {
   try {
-    const { userPublicKey, inputMint, outputMint, amount, quoteResponse } = req.body;
+    const { userPublicKey, inputMint, outputMint, amount } = req.body;
     if (!userPublicKey || !inputMint || !outputMint || amount === undefined) {
       return res.status(400).json({
         error: 'Missing required parameters: userPublicKey, inputMint, outputMint, amount',
@@ -305,19 +300,19 @@ router.post('/build', async (req, res) => {
       return res.status(500).json({ error: 'Settlement wallet not initialized on server' });
     }
     const settlementPk = settlementKp.publicKey;
+    if (settlementPk.equals(userPk)) {
+      return res.status(400).json({ error: 'Devnet safety violation: user wallet and settlement wallet must be different.' });
+    }
     const connection = getDevnetConnection();
 
-    // Auto-topup settlement wallet if Devnet SOL balance is low
-    const settlementBal = await ensureSettlementFunded(connection, settlementPk);
+    const settlementBal = await connection.getBalance(settlementPk, 'confirmed');
     if (settlementBal < 0.005 * LAMPORTS_PER_SOL) {
       return res.status(400).json({
-        error: `Devnet settlement wallet (${settlementPk.toBase58()}) has insufficient Devnet SOL (${(settlementBal / LAMPORTS_PER_SOL).toFixed(4)} SOL). Please fund it manually at https://faucet.solana.com with address ${settlementPk.toBase58()}`,
+        error: `Devnet settlement wallet (${settlementPk.toBase58()}) has insufficient Devnet SOL (${(settlementBal / LAMPORTS_PER_SOL).toFixed(4)} SOL). Fund it manually before trading.`,
       });
     }
 
-    const isBuy =
-      inputMint === 'So11111111111111111111111111111111111111112' ||
-      inputMint.toLowerCase().includes('sol');
+    const isBuy = inputMint === SOL_MINT;
     const tokenMintStr = isBuy ? outputMint : inputMint;
     let tokenMintPk: PublicKey;
     try {
@@ -326,16 +321,15 @@ router.post('/build', async (req, res) => {
       return res.status(400).json({ error: 'Invalid token mint address' });
     }
 
-    // Read real on-chain token decimals and token program ID from the mint owner.toBase58()
     let mintInfo = await validateMint(connection, tokenMintPk);
     let shadowRecord: ShadowMintRecord | null = null;
     let shadowMintKp: Keypair | undefined;
-
     const instructions: TransactionInstruction[] = [];
 
     if (!mintInfo.exists) {
-      console.log(`[DevnetSwap] Token mint ${tokenMintStr} not found on Devnet. Creating/retrieving Shadow Mint...`);
-      const shadowInfo = await getOrCreateShadowMintInfo(connection, tokenMintStr, settlementPk, settlementPk);
+      const shadowInfo = await getOrCreateShadowMintInfo(
+        connection, tokenMintStr, settlementPk, settlementPk
+      );
       shadowRecord = shadowInfo.record;
       shadowMintKp = shadowInfo.shadowMintKp;
       tokenMintPk = new PublicKey(shadowRecord.devnetMint);
@@ -345,64 +339,60 @@ router.post('/build', async (req, res) => {
         tokenProgramStr: TOKEN_PROGRAM_ID_STR,
         decimals: shadowRecord.decimals,
       };
-
-      if (shadowInfo.initInstructions && shadowInfo.initInstructions.length > 0) {
-        instructions.push(...shadowInfo.initInstructions);
-      }
+      instructions.push(...(shadowInfo.initInstructions || []));
     }
 
     const tokenDecimals = mintInfo.decimals;
     const tokenProgramId = mintInfo.tokenProgram;
 
-    // Derive and ensure user & settlement ATAs exist (settlementPk pays rent if ATA does NOT exist on-chain)
-    const userTokenAta = await ensureAta(
-      connection,
-      settlementPk,
-      userPk,
-      tokenMintPk,
-      tokenProgramId,
-      instructions,
-      false
+    // IMPORTANT: Devnet trading never uses the Associated Token Account program.
+    // Token accounts are regular SPL accounts created with SystemProgram + InitializeAccount.
+    const existingUserToken = await findTokenAccount(connection, userPk, tokenMintPk, tokenProgramId);
+    if (!isBuy && !existingUserToken) {
+      return res.status(400).json({ error: 'SELL blocked: user has no Devnet token account for this mint.' });
+    }
+    const userToken = existingUserToken
+      ? { address: existingUserToken }
+      : await ensureTokenAccount(connection, settlementPk, userPk, tokenMintPk, tokenProgramId, instructions);
+    const settlementToken = await ensureTokenAccount(
+      connection, settlementPk, settlementPk, tokenMintPk, tokenProgramId, instructions
     );
 
-    const settlementTokenAta = await ensureAta(
-      connection,
-      settlementPk,
-      settlementPk,
-      tokenMintPk,
-      tokenProgramId,
-      instructions,
-      true
-    );
+    // A newly-created shadow mint gets server-controlled inventory. Existing shadow
+    // mints are topped up only when their real SPL balance is low. No ATA is used.
+    if (shadowRecord && tokenProgramId.equals(TOKEN_PROGRAM_ID)) {
+      const parsed = await connection.getParsedAccountInfo(settlementToken.address, 'confirmed');
+      const currentRaw = BigInt((parsed.value?.data as any)?.parsed?.info?.tokenAmount?.amount || '0');
+      const threshold = 100_000n * (10n ** BigInt(tokenDecimals));
+      if (currentRaw < threshold) {
+        const topUp = 1_000_000_000n * (10n ** BigInt(tokenDecimals));
+        instructions.push(
+          createMintToInstruction(
+            tokenMintPk, settlementToken.address, settlementPk, topUp, [], TOKEN_PROGRAM_ID
+          )
+        );
+      }
+    }
 
-    let expectedSolLamports = 0;
-    let expectedTokenRawAmount = BigInt(0);
+    let expectedSolLamports: bigint;
+    let expectedTokenRawAmount: bigint;
+    const amountRaw = parseRawAmount(amount, 'amount');
+
+    // Client quoteResponse is intentionally ignored. Economic output is calculated on the server.
+    ({ expectedSolLamports, expectedTokenRawAmount } = calculateServerAmount(
+      isBuy, amountRaw, tokenDecimals
+    ));
 
     if (isBuy) {
-      // BUY: User gives SOL -> receives Token
-      expectedSolLamports = Number(amount);
-      if (quoteResponse && quoteResponse.outAmount) {
-        expectedTokenRawAmount = BigInt(quoteResponse.outAmount);
-      } else {
-        const solUnits = expectedSolLamports / LAMPORTS_PER_SOL;
-        const tokensCalculated = solUnits * 100000;
-        expectedTokenRawAmount = BigInt(Math.floor(tokensCalculated * Math.pow(10, tokenDecimals)));
-      }
-
-      // 1. SOL Transfer: User -> Settlement
       instructions.push(
         SystemProgram.transfer({
           fromPubkey: userPk,
           toPubkey: settlementPk,
-          lamports: expectedSolLamports,
-        })
-      );
-
-      // 2. Token Transfer: Settlement -> User
-      instructions.push(
+          lamports: Number(expectedSolLamports),
+        }),
         createTransferInstruction(
-          settlementTokenAta,
-          userTokenAta,
+          settlementToken.address,
+          userToken.address,
           settlementPk,
           expectedTokenRawAmount,
           [],
@@ -410,34 +400,19 @@ router.post('/build', async (req, res) => {
         )
       );
     } else {
-      // SELL: User gives Token -> receives SOL
-      expectedTokenRawAmount = BigInt(amount);
-      if (quoteResponse && quoteResponse.outAmount) {
-        expectedSolLamports = Number(quoteResponse.outAmount);
-      } else {
-        const tokenUnits = Number(expectedTokenRawAmount) / Math.pow(10, tokenDecimals);
-        const solCalculated = tokenUnits / 100000;
-        expectedSolLamports = Math.max(1000, Math.floor(solCalculated * LAMPORTS_PER_SOL));
-      }
-
-      // 1. Token Transfer: User -> Settlement
       instructions.push(
         createTransferInstruction(
-          userTokenAta,
-          settlementTokenAta,
+          userToken.address,
+          settlementToken.address,
           userPk,
           expectedTokenRawAmount,
           [],
           tokenProgramId
-        )
-      );
-
-      // 2. SOL Transfer: Settlement -> User
-      instructions.push(
+        ),
         SystemProgram.transfer({
           fromPubkey: settlementPk,
           toPubkey: userPk,
-          lamports: expectedSolLamports,
+          lamports: Number(expectedSolLamports),
         })
       );
     }
@@ -451,10 +426,10 @@ router.post('/build', async (req, res) => {
 
     const versionedTx = new VersionedTransaction(messageV0);
     // Sign with server settlement keypair (and shadowMintKp if initializing a new shadow mint):
-    const signers = [settlementKp];
-    if (shadowMintKp) {
-      signers.push(shadowMintKp);
-    }
+    const signers: Keypair[] = [settlementKp];
+    if (shadowMintKp) signers.push(shadowMintKp);
+    if (userToken.signer) signers.push(userToken.signer);
+    if (settlementToken.signer) signers.push(settlementToken.signer);
     versionedTx.sign(signers);
 
     const serializedBase64 = Buffer.from(versionedTx.serialize()).toString('base64');
@@ -465,10 +440,13 @@ router.post('/build', async (req, res) => {
       lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
       blockhash: latestBlockhash.blockhash,
       settlementPublicKey: settlementPk.toBase58(),
+      userPublicKey: userPk.toBase58(),
       isBuy,
       tokenDecimals,
-      expectedSolLamports,
+      expectedSolLamports: expectedSolLamports.toString(),
       expectedTokenAmount: expectedTokenRawAmount.toString(),
+      userTokenAccount: userToken.address.toBase58(),
+      settlementTokenAccount: settlementToken.address.toBase58(),
       shadowMint: shadowRecord
         ? {
             originalMint: shadowRecord.originalMint,
