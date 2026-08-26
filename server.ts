@@ -99,11 +99,9 @@ async function startServer() {
   app.use("/api/jup", jupiterRouter);
   app.use("/api/dex", dexscreenerRouter);
   app.use("/api/hosting", ftpRouter);
-  app.use("/api/ftp", ftpRouter);
   app.use("/api/telegram", telegramRouter);
   app.use("/api/laserstream", laserstreamRouter);
   app.use("/api/criteria", criteriaRouter);
-  app.use("/api/config", criteriaRouter);
   app.use("/api/devnet-swap", devnetSwapRouter);
 
   // API Catch-all 404 Handler

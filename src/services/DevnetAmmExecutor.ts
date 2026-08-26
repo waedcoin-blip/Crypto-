@@ -55,12 +55,7 @@ export class DevnetAmmExecutor implements ITradeExecutor {
       throw new Error('NETWORK SAFETY ERROR: Devnet execution blocked because no active wallet is selected.');
     }
     if (activeWallet.network !== 'devnet') {
-      console.warn(`[DevnetAmmExecutor] Reconciling active wallet network from '${activeWallet.network}' to 'devnet'`);
-      useActiveWalletStore.getState().setActiveWallet({
-        ...activeWallet,
-        network: 'devnet',
-        version: activeWallet.version + 1,
-      });
+      throw new Error(`NETWORK SAFETY ERROR: Devnet execution blocked. Active wallet is configured for '${activeWallet.network}', not 'devnet'. Explicitly switch your wallet network to devnet before executing devnet trades.`);
     }
     NetworkGuard.assertNetwork('devnet', this.connection.rpcEndpoint);
   }

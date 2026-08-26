@@ -61,10 +61,11 @@ export const corsMiddleware = cors({
     if (isAllowedOrigin(origin)) {
       callback(null, true);
     } else {
-      callback(null, true); // Permissive fallback to prevent breaking cross-domain UI previews
+      securityLogger.warn({ origin }, 'CORS request blocked from unauthorized origin');
+      callback(new Error('Origin not allowed by CORS policy'), false);
     }
   },
-  credentials: true,
+  credentials: false,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key'],
 });

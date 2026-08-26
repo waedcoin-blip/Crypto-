@@ -1,5 +1,6 @@
 // src/services/OrderManager.ts
-import { SwapResult } from './ITradeExecutor';
+import { SwapResult, ITradeExecutor } from './ITradeExecutor';
+import { executionEngine, ExecutionEngine } from './ExecutionEngine';
 
 export type OrderState =
   | 'SIGNAL'
@@ -29,10 +30,15 @@ export interface Order {
   result?: SwapResult;
 }
 
+/**
+ * OrderManager: The single authoritative state manager for orders and trade lifecycle.
+ * Ensures deduplication, idempotency, order tracking, and lifecycle progression.
+ */
 export class OrderManager {
   private static instance: OrderManager;
   private orders: Map<string, Order> = new Map();
   private activeOrdersByMintSide: Map<string, string> = new Map();
+  private executor: ITradeExecutor = executionEngine;
 
   private constructor() {
     this.loadPersistedOrders();
@@ -43,6 +49,14 @@ export class OrderManager {
       OrderManager.instance = new OrderManager();
     }
     return OrderManager.instance;
+  }
+
+  public setExecutor(executor: ITradeExecutor): void {
+    this.executor = executor;
+  }
+
+  public getExecutor(): ITradeExecutor {
+    return this.executor;
   }
 
   private loadPersistedOrders(): void {
@@ -124,6 +138,46 @@ export class OrderManager {
     return order;
   }
 
+  /**
+   * Authoritative order execution method: creates order, validates idempotency,
+   * transitions states, and delegates execution solely through ExecutionEngine.
+   */
+  public async executeOrder(
+    inputMint: string,
+    outputMint: string,
+    amount: number,
+    slippageBps: number,
+    label: 'entry' | 'exit_tp' | 'exit_sl' = 'entry'
+  ): Promise<SwapResult> {
+    const WSOL = 'So11111111111111111111111111111111111111112';
+    const isSolBuy = inputMint === WSOL;
+    const targetMint = isSolBuy ? outputMint : inputMint;
+    const side = isSolBuy ? 'buy' : 'sell';
+
+    const order = this.createOrder(targetMint, side, amount, slippageBps);
+    this.transitionState(order.id, 'VALIDATING');
+
+    try {
+      this.transitionState(order.id, 'QUOTE_REQUESTED');
+      this.transitionState(order.id, 'TRANSACTION_BUILDING');
+      this.transitionState(order.id, 'SUBMITTED');
+
+      const result = await this.executor.swap(inputMint, outputMint, amount, slippageBps, label);
+
+      this.transitionState(order.id, 'CONFIRMED', {
+        signature: result.signature,
+        result,
+      });
+
+      return result;
+    } catch (err: any) {
+      this.transitionState(order.id, 'FAILED', {
+        error: err.message || String(err),
+      });
+      throw err;
+    }
+  }
+
   public getActiveOrderForMint(mint: string, side: 'buy' | 'sell'): Order | undefined {
     const key = `${mint}_${side}`;
     const activeId = this.activeOrdersByMintSide.get(key);
@@ -141,3 +195,4 @@ export class OrderManager {
 }
 
 export const orderManager = OrderManager.getInstance();
+

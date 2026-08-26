@@ -33,8 +33,7 @@ export const BUILD_ID = 'devnet-swap-v11-no-ata-two-wallets-2026-08-26';
 export const TOKEN_PROGRAM_ID_STR = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 export const TOKEN_2022_PROGRAM_ID_STR = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
 
-const SETTLEMENT_KEYPAIR_PATH = path.join(process.cwd(), 'data', 'devnetSettlementKeypair.json');
-let cachedDevnetSettlementKeypair: Keypair | null = null;
+let ephemeralSettlementKeypair: Keypair | null = null;
 
 export function getSettlementKeypair(): { keypair: Keypair | null; isConfigured: boolean } {
   const raw = process.env.DEVNET_SETTLEMENT_PRIVATE_KEY;
@@ -57,35 +56,13 @@ export function getSettlementKeypair(): { keypair: Keypair | null; isConfigured:
     }
   }
 
-  // Load from persistent server settlement keypair on disk if env var is unset
-  if (!cachedDevnetSettlementKeypair) {
-    try {
-      if (fs.existsSync(SETTLEMENT_KEYPAIR_PATH)) {
-        const rawKey = fs.readFileSync(SETTLEMENT_KEYPAIR_PATH, 'utf8');
-        const secretKey = new Uint8Array(JSON.parse(rawKey));
-        cachedDevnetSettlementKeypair = Keypair.fromSecretKey(secretKey);
-      }
-    } catch (e: any) {
-      console.warn('[DevnetSwap] Could not load settlement keypair from disk:', e.message);
-    }
-
-    if (!cachedDevnetSettlementKeypair) {
-      cachedDevnetSettlementKeypair = Keypair.generate();
-      try {
-        const dir = path.dirname(SETTLEMENT_KEYPAIR_PATH);
-        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-        fs.writeFileSync(
-          SETTLEMENT_KEYPAIR_PATH,
-          JSON.stringify(Array.from(cachedDevnetSettlementKeypair.secretKey)),
-          'utf8'
-        );
-      } catch (e: any) {
-        console.warn('[DevnetSwap] Could not save settlement keypair to disk:', e.message);
-      }
-    }
+  // Generate an in-memory ephemeral keypair for the server session if no env key provided (never stored on disk)
+  if (!ephemeralSettlementKeypair) {
+    ephemeralSettlementKeypair = Keypair.generate();
+    console.info(`[DevnetSwap] Generated in-memory ephemeral settlement wallet: ${ephemeralSettlementKeypair.publicKey.toBase58()}`);
   }
 
-  return { keypair: cachedDevnetSettlementKeypair, isConfigured: true };
+  return { keypair: ephemeralSettlementKeypair, isConfigured: true };
 }
 
 function getDevnetConnection(): Connection {

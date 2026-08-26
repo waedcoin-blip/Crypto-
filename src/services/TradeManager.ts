@@ -1,50 +1,48 @@
 // src/services/TradeManager.ts
 import { ITradeExecutor, SwapResult, ExecutorTelemetry } from './ITradeExecutor';
-import { RealTradeExecutor, RealTradeConfig } from './RealTradeExecutor';
+import { ExecutionEngine, executionEngine } from './ExecutionEngine';
 import { QuoteGetRequest, QuoteResponse } from '@jup-ag/api';
 import { TradingNetwork } from '../config/network';
 import { orderManager } from './OrderManager';
 
 export type TradeMode = 'devnet' | 'mainnet';
 
+/**
+ * TradeManager: Adapter layer routing through OrderManager and ExecutionEngine.
+ */
 export class TradeManager {
-  private executor: ITradeExecutor;
+  private executor: ExecutionEngine;
   private _mode: TradeMode;
-  private realConfig: RealTradeConfig;
 
   constructor(options: {
     mode: TradeMode;
-    realConfig?: RealTradeConfig;
+    realConfig?: { network?: TradingNetwork; verbose?: boolean };
   }) {
     this._mode = options.mode;
-    this.realConfig = options.realConfig || {};
-    this.executor = this.createExecutor();
-  }
-
-  private createExecutor(): ITradeExecutor {
-    const network: TradingNetwork = this._mode;
-    return new RealTradeExecutor({
-      ...this.realConfig,
-      network,
-    });
+    this.executor = options.realConfig?.network 
+      ? new ExecutionEngine({ network: options.realConfig.network }) 
+      : executionEngine;
   }
 
   switchMode(mode: TradeMode) {
     if (mode === this._mode) return;
     this.save();
     this._mode = mode;
-    this.executor = this.createExecutor();
+    this.executor = new ExecutionEngine({ network: mode });
+    orderManager.setExecutor(this.executor);
   }
 
   getExecutor(): ITradeExecutor { return this.executor; }
   get mode() { return this._mode; }
 
   save() {
-    // No-op for real on-chain execution
+    // No-op for real execution
   }
 
-  // Passthrough methods
-  getQuote(params: QuoteGetRequest) { return this.executor.getQuote(params); }
+  // Passthrough methods to ExecutionEngine / OrderManager
+  getQuote(params: QuoteGetRequest): Promise<QuoteResponse> {
+    return this.executor.getQuote(params);
+  }
 
   async swap(
     inputMint: string,
@@ -53,40 +51,17 @@ export class TradeManager {
     slippageBps: number,
     label: 'entry' | 'exit_tp' | 'exit_sl' = 'entry'
   ): Promise<SwapResult> {
-    const isSolBuy = inputMint === 'So11111111111111111111111111111111111111112';
-    const targetMint = isSolBuy ? outputMint : inputMint;
-    const side = isSolBuy ? 'buy' : 'sell';
-
-    const order = orderManager.createOrder(targetMint, side, amount, slippageBps);
-    orderManager.transitionState(order.id, 'VALIDATING');
-
-    try {
-      orderManager.transitionState(order.id, 'QUOTE_REQUESTED');
-      orderManager.transitionState(order.id, 'TRANSACTION_BUILDING');
-      orderManager.transitionState(order.id, 'SUBMITTED');
-
-      const result = await this.executor.swap(inputMint, outputMint, amount, slippageBps, label);
-
-      orderManager.transitionState(order.id, 'CONFIRMED', {
-        signature: result.signature,
-        result,
-      });
-
-      return result;
-    } catch (err: any) {
-      orderManager.transitionState(order.id, 'FAILED', {
-        error: err.message || String(err),
-      });
-      throw err;
-    }
+    return orderManager.executeOrder(inputMint, outputMint, amount, slippageBps, label);
   }
 
   batchSwap(...args: Parameters<ITradeExecutor['batchSwap']>) {
     return this.executor.batchSwap(...args);
   }
+
   getSolBalance() { return this.executor.getSolBalance(); }
   getTokenBalance(mint: string) { return this.executor.getTokenBalance(mint); }
   hasTokenAccount(mint: string) { return this.executor.hasTokenAccount(mint); }
-  getTelemetry() { return this.executor.getTelemetry(); }
+  getTelemetry(): ExecutorTelemetry { return this.executor.getTelemetry(); }
 }
+
 

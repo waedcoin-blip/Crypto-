@@ -44,42 +44,67 @@ export function getKeypairFromPrivateKey(input: string): Keypair {
 
 export function getSavedSessionKeypair(): Keypair | null {
   if (typeof window === 'undefined') return null;
-  const candidates = [
-    localStorage.getItem('matrix_user_custom_key'),
+  
+  // 1. Check transient sessionStorage first
+  const sessionCandidates = [
     sessionStorage.getItem('matrix_session_key'),
-    localStorage.getItem('app_active_private_key'),
-    localStorage.getItem('solana_session_wallet'),
     sessionStorage.getItem('solana_session_wallet'),
   ];
-  for (const raw of candidates) {
+  for (const raw of sessionCandidates) {
+    if (raw && raw.trim()) {
+      try {
+        const kp = getKeypairFromPrivateKey(raw);
+        if (kp) return kp;
+      } catch {
+        // continue
+      }
+    }
+  }
+
+  // 2. Check legacy localStorage (migrate to sessionStorage and purge from localStorage)
+  const legacyLocalCandidates = [
+    'matrix_user_custom_key',
+    'app_active_private_key',
+    'solana_session_wallet',
+  ];
+  for (const key of legacyLocalCandidates) {
+    const raw = localStorage.getItem(key);
     if (raw && raw.trim()) {
       try {
         const kp = getKeypairFromPrivateKey(raw);
         if (kp) {
-          // Normalize into all persistent storage slots so they stay fully aligned
+          // Migrate to sessionStorage and remove from localStorage
           saveSessionKeypair(kp);
           return kp;
         }
       } catch {
-        // continue checking next candidate
+        // continue
+      } finally {
+        localStorage.removeItem(key);
       }
     }
   }
+
   return null;
 }
 
 export function saveSessionKeypair(kp: Keypair | null, network: 'devnet' | 'mainnet' = 'devnet'): void {
   if (typeof window === 'undefined') return;
+
+  // Always purge private keys from persistent localStorage
+  localStorage.removeItem('matrix_user_custom_key');
+  localStorage.removeItem('app_active_private_key');
+  localStorage.removeItem('solana_session_wallet');
+
   if (kp) {
     const encoded = bs58.encode(kp.secretKey);
     const address = kp.publicKey.toBase58();
-    localStorage.setItem('matrix_user_custom_key', encoded);
+    
+    // Store only in transient sessionStorage
     sessionStorage.setItem('matrix_session_key', encoded);
-    localStorage.setItem('app_active_private_key', encoded);
-    localStorage.setItem('solana_session_wallet', encoded);
     sessionStorage.setItem('solana_session_wallet', encoded);
     
-    // Explicit metadata persistence
+    // Non-sensitive public metadata is stored in localStorage
     const meta: WalletMetadata = {
       address,
       network,
@@ -88,10 +113,7 @@ export function saveSessionKeypair(kp: Keypair | null, network: 'devnet' | 'main
     };
     localStorage.setItem('matrix_wallet_metadata', JSON.stringify(meta));
   } else {
-    localStorage.removeItem('matrix_user_custom_key');
     sessionStorage.removeItem('matrix_session_key');
-    localStorage.removeItem('app_active_private_key');
-    localStorage.removeItem('solana_session_wallet');
     sessionStorage.removeItem('solana_session_wallet');
     localStorage.removeItem('matrix_wallet_metadata');
   }

@@ -23,7 +23,7 @@ import { WalletStatusWidget } from '../WalletStatusWidget';
 import { MasterMonitorPanel } from '../MasterMonitorPanel';
 import { marketDataManager, TokenPrice } from '../../services/marketDataManager';
 import { rpcHealthManager } from '../../services/rpcHealthManager';
-import { PositionExitManager } from '../../services/PositionExitManager';
+import { PositionExitManager, positionExitManager } from '../../services/PositionExitManager';
 import { MasterMonitorService } from '../../services/MasterMonitorService';
 import { RealTradeExecutor } from '../../services/RealTradeExecutor';
 import { useTradeMode } from '../../context/TradeModeContext';
@@ -3897,37 +3897,13 @@ const checkTokenCriteria = (mint: string): {
     const pos = positionsRef.current[mint];
     const symbol = pos?.symbol || mint.slice(0, 6);
     if (positionExitManagerRef.current) {
-      addLog(`🚨 Delegating exit request for ${symbol} to PositionExitManager (${reason})...`, 'info');
+      addLog(`🚨 Delegating exit request for ${symbol} to RiskManager (${reason})...`, 'info');
       const amountLamports = pos?.amountLamports || (pos?.amount ? Math.floor(pos.amount * (pos.decimals ? Math.pow(10, pos.decimals) : 1e6)) : undefined);
       await positionExitManagerRef.current.requestExit(mint, reason, amountLamports, pos?.solSpent);
     } else {
-      addLog(`⚡ [DIRECT EXIT] Executing immediate sell for ${symbol} (${reason})...`, 'sell');
-      try {
-        const executor = tradeManager.getExecutor();
-        const amountLamports = pos?.amountLamports || (pos?.amount ? Math.floor(pos.amount * (pos.decimals ? Math.pow(10, pos.decimals) : 1e6)) : 1000000);
-        const res = await executor.swap(
-          mint,
-          'So11111111111111111111111111111111111111112',
-          amountLamports,
-          Math.floor((configRef.current.slippage || 10.0) * 100),
-          reason.includes('TP') || reason.includes('TAKE_PROFIT') ? 'exit_tp' : 'exit_sl'
-        );
-        // Remove position
-        setPositions(prev => {
-          const next = { ...prev };
-          delete next[mint];
-          return next;
-        });
-        const costBasisSol = pos?.solSpent || 0;
-        const actualNetSol = res.outputAmount > 0 ? (res.outputAmount / 1e9) - (res.feeSol || 0) : 0;
-        const actualPnl = costBasisSol > 0 ? actualNetSol - costBasisSol : 0;
-        const finalPnlPct = costBasisSol > 0 ? (actualPnl / costBasisSol) * 100 : (pnlPct || 0);
-        addLog(`✅ [EXIT COMPLETE] Sold ${symbol} | Received: ${actualNetSol.toFixed(6)} SOL | PnL: ${finalPnlPct.toFixed(2)}% | Tx: ${res.signature?.slice(0, 12)}...`, 'sell');
-        useBalanceStore.getState().setTokenBalance(mint, 0);
-        await walletBalanceService.refreshWithRetry(undefined, 3, 400);
-      } catch (err: any) {
-        addLog(`❌ [EXIT FAILED] Direct sell failed for ${symbol}: ${err.message}`, 'err');
-      }
+      addLog(`🚨 Requesting exit for ${symbol} via RiskManager (${reason})...`, 'sell');
+      const amountLamports = pos?.amountLamports || (pos?.amount ? Math.floor(pos.amount * (pos.decimals ? Math.pow(10, pos.decimals) : 1e6)) : undefined);
+      await positionExitManager.requestExit(mint, reason, amountLamports, pos?.solSpent);
     }
   };
 

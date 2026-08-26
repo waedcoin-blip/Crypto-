@@ -27,11 +27,10 @@ router.post('/', asyncHandler(async (req, res) => {
     throw new BadGatewayError('Telegram proxying requires valid CORS origin');
   }
 
-  const envToken = process.env.TELEGRAM_BOT_TOKEN;
-  const token = envToken || (req.body.token && typeof req.body.token === 'string' ? req.body.token.trim() : '');
+  const token = process.env.TELEGRAM_BOT_TOKEN;
   
-  if (!token) {
-    throw new BadGatewayError('Telegram bot token not configured');
+  if (!token || !token.trim()) {
+    throw new BadGatewayError('Telegram bot token not configured on server (TELEGRAM_BOT_TOKEN)');
   }
   const chatId = validateRequiredString(req.body.chatId, 'chatId');
   const text = validateRequiredString(req.body.text, 'text');
