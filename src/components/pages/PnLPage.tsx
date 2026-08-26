@@ -6291,7 +6291,7 @@ const checkTokenCriteria = (mint: string): {
                         <div>
                           <div className="text-[#64748b] text-[11px] mb-1 uppercase font-medium">Entry Price</div>
                           <div className="font-mono text-[14px] font-semibold text-[#e2e8f0]">
-                            {pos.buyPrice?.toFixed(8) ?? '...'} SOL
+                            {((pos.amount > 0 && pos.solSpent > 0) ? (pos.solSpent / pos.amount) : (pos.buyPrice && pos.buyPrice < 100 ? pos.buyPrice : 0.0001))?.toFixed(8)} SOL
                           </div>
                           <div className="text-[10px] text-[#64748b] mt-0.5">
                             {pos.amount?.toLocaleString(undefined, { maximumFractionDigits: 4 })} tokens for {(pos.solSpent || 0).toFixed(4)} SOL

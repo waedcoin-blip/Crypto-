@@ -34,7 +34,7 @@ export class PaperTradeExecutor implements ITradeExecutor {
       const resp = await fetch(url);
       if (resp.ok) {
         const data = await resp.json();
-        if (data && data.outAmount) {
+        if (data && data.outAmount && Number(data.outAmount) > 0) {
           return data as QuoteResponse;
         }
       }
@@ -43,18 +43,29 @@ export class PaperTradeExecutor implements ITradeExecutor {
     }
 
     // Fallback simulated quote calculation
+    // Assume simulated unit price = 0.0001 SOL per token (1 SOL = 10,000 tokens)
     const isBuy = params.inputMint === SOL_MINT;
-    const simulatedPriceInSol = 0.001; // Default fallback unit price
-    const outAmount = isBuy
-      ? Math.floor((inputAmount / (simulatedPriceInSol * 1e9)) * 1e6)
-      : Math.floor(inputAmount * simulatedPriceInSol * 1000);
+    const simulatedPriceInSol = 0.0001; 
+    let outAmountRaw = 0;
+
+    if (isBuy) {
+      // inputAmount is SOL lamports (1e9 per SOL).
+      const solAmount = inputAmount / 1e9;
+      const tokensCount = solAmount / simulatedPriceInSol;
+      outAmountRaw = Math.floor(tokensCount * 1e6); // 6 decimals for token
+    } else {
+      // inputAmount is token raw units (1e6 per token).
+      const tokensCount = inputAmount / 1e6;
+      const solAmount = tokensCount * simulatedPriceInSol;
+      outAmountRaw = Math.floor(solAmount * 1e9); // 9 decimals for SOL lamports
+    }
 
     return {
       inputMint: params.inputMint,
       inAmount: params.amount.toString(),
       outputMint: params.outputMint,
-      outAmount: outAmount.toString(),
-      otherAmountThreshold: Math.floor(outAmount * 0.99).toString(),
+      outAmount: outAmountRaw.toString(),
+      otherAmountThreshold: Math.floor(outAmountRaw * 0.99).toString(),
       swapMode: 'ExactIn',
       slippageBps: params.slippageBps || 50,
       priceImpactPct: '0.05',
@@ -76,8 +87,9 @@ export class PaperTradeExecutor implements ITradeExecutor {
     const isBuy = inputMint === SOL_MINT;
 
     if (isBuy) {
-      // Amount is SOL (lamports)
-      const solRequired = amount / 1e9;
+      // Amount is SOL in lamports (if passed as SOL float < 100, convert to lamports)
+      const inputLamports = amount < 1000 ? Math.floor(amount * 1e9) : Math.floor(amount);
+      const solRequired = inputLamports / 1e9;
       const simFee = 0.0005; // 0.0005 SOL simulated transaction fee
       const totalSolNeeded = solRequired + simFee;
 
@@ -89,7 +101,7 @@ export class PaperTradeExecutor implements ITradeExecutor {
           signature: '',
           inputMint,
           outputMint,
-          inputAmount: solRequired,
+          inputAmount: inputLamports,
           outputAmount: 0,
           feeSol: simFee,
           slot: Math.floor(Date.now() / 400),
@@ -100,20 +112,26 @@ export class PaperTradeExecutor implements ITradeExecutor {
         };
       }
 
-      // Fetch quote for token quantity
-      let tokenOutAmount = 0;
+      // Fetch quote for token quantity (returns raw units in quote.outAmount)
+      let rawTokenOut = 0;
       try {
         const quote = await this.getQuote({
           inputMint,
           outputMint,
-          amount: Math.round(amount),
+          amount: inputLamports,
           slippageBps,
         });
-        tokenOutAmount = Number(quote.outAmount) / 1e6; // Default SPL 6 decimals
+        rawTokenOut = Number(quote.outAmount) || 0;
       } catch (e) {
-        // Fallback calculation if quote fails
-        tokenOutAmount = (solRequired / 0.001); // 1 SOL = 1000 tokens fallback
+        console.warn('[PaperTradeExecutor] Quote error, fallback:', e);
       }
+
+      if (rawTokenOut <= 0) {
+        // Fallback: 1 SOL = 10,000 tokens (simulated unit price 0.0001 SOL)
+        rawTokenOut = Math.floor((solRequired / 0.0001) * 1e6);
+      }
+
+      const tokenOutAmount = rawTokenOut / 1e6; // Human-readable token amount for paper store
 
       // Execute Paper Buy
       paperStore.adjustSolBalance(-totalSolNeeded);
@@ -130,8 +148,8 @@ export class PaperTradeExecutor implements ITradeExecutor {
         signature: txHash,
         inputMint,
         outputMint,
-        inputAmount: solRequired,
-        outputAmount: tokenOutAmount,
+        inputAmount: inputLamports,
+        outputAmount: rawTokenOut, // Raw atomic token units
         feeSol: simFee,
         slot: Math.floor(Date.now() / 400),
         landingTimeMs,
@@ -141,7 +159,9 @@ export class PaperTradeExecutor implements ITradeExecutor {
 
     } else {
       // Selling token for SOL
-      const tokenAmount = amount / 1e6; // SPL 6 decimals
+      // amount is raw token units or human amount if < 1,000,000
+      const rawInputTokens = amount < 1e6 ? Math.floor(amount * 1e6) : Math.floor(amount);
+      const tokenAmount = rawInputTokens / 1e6; // Human readable
       const currentTokenBal = paperStore.tokenBalances[inputMint] || 0;
 
       if (currentTokenBal < tokenAmount * 0.99) { // allow 1% floating point variance
@@ -152,7 +172,7 @@ export class PaperTradeExecutor implements ITradeExecutor {
           signature: '',
           inputMint,
           outputMint,
-          inputAmount: tokenAmount,
+          inputAmount: rawInputTokens,
           outputAmount: 0,
           feeSol: 0,
           slot: Math.floor(Date.now() / 400),
@@ -163,21 +183,27 @@ export class PaperTradeExecutor implements ITradeExecutor {
         };
       }
 
-      let solOut = 0;
+      let rawSolOutLamports = 0;
       try {
         const quote = await this.getQuote({
           inputMint,
           outputMint,
-          amount: Math.round(amount),
+          amount: rawInputTokens,
           slippageBps,
         });
-        solOut = Number(quote.outAmount) / 1e9;
+        rawSolOutLamports = Number(quote.outAmount) || 0;
       } catch (e) {
-        solOut = tokenAmount * 0.001; // fallback
+        console.warn('[PaperTradeExecutor] Quote error on sell, fallback:', e);
       }
 
+      if (rawSolOutLamports <= 0) {
+        rawSolOutLamports = Math.floor((tokenAmount * 0.0001) * 1e9);
+      }
+
+      const solOut = rawSolOutLamports / 1e9;
       const simFee = 0.0005;
       const netSolReceived = Math.max(0, solOut - simFee);
+      const netSolLamports = Math.floor(netSolReceived * 1e9);
 
       // Execute Paper Sell
       paperStore.adjustTokenBalance(inputMint, -tokenAmount);
@@ -194,8 +220,8 @@ export class PaperTradeExecutor implements ITradeExecutor {
         signature: txHash,
         inputMint,
         outputMint,
-        inputAmount: tokenAmount,
-        outputAmount: netSolReceived,
+        inputAmount: rawInputTokens,
+        outputAmount: netSolLamports, // Raw SOL lamports
         feeSol: simFee,
         slot: Math.floor(Date.now() / 400),
         landingTimeMs,

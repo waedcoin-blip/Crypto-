@@ -1793,14 +1793,18 @@ function App() {
         if (solBalance < lamports) {
           throw new Error("Insufficient real SOL balance for trade.");
         } else {
+          const amountLamports = Math.floor(buyAmountSol * 1_000_000_000);
           const executor = new RealTradeExecutor();
           const swapRes = await executor.swap(
             'So11111111111111111111111111111111111111112',
             tokenAddress,
-            buyAmountSol,
+            amountLamports,
             Math.round((slippage || 1) * 100),
             'entry'
           );
+          if (swapRes && swapRes.outputAmount > 0) {
+            outTokensRaw = swapRes.outputAmount.toString();
+          }
           signature = swapRes.signature;
         }
       }
@@ -1811,17 +1815,16 @@ function App() {
       
       // Separate actual token amount from SOL spent
       let entryAmountTokens = 0;
-      if (outTokensRaw) {
-        // Attempt to guess decimals to give human-readable token amount
-        // If we can't reliably guess, we fallback to exact computation if we have currentPriceUsd & solUsd
+      if (outTokensRaw && Number(outTokensRaw) > 0) {
+        entryAmountTokens = Number(outTokensRaw) / 1_000_000;
+      } else {
         const solPriceUsd = getSolPriceUsd();
         if (solPriceUsd > 0 && currentPriceUsd > 0) {
           entryAmountTokens = (buyAmountSol * solPriceUsd) / currentPriceUsd;
-        } else {
-          entryAmountTokens = Number(outTokensRaw) / 1_000_000; // rough guess
         }
       }
 
+      const buyPriceInSol = entryAmountTokens > 0 ? (entryCost / entryAmountTokens) : (currentPriceUsd > 0 && getSolPriceUsd() > 0 ? currentPriceUsd / getSolPriceUsd() : 0.0001);
 
       // Record trade
       const newTrade: SniperTrade = {
@@ -1849,7 +1852,7 @@ function App() {
            newEntryPriceUsd = (existingTotalUsd + newTotalUsd) / newAmount;
         }
 
-        const newEntry = { signature, solSpent: entryCost, amount: entryAmountTokens, buyPrice: currentPriceUsd, slot: 0 };
+        const newEntry = { signature, solSpent: entryCost, amount: entryAmountTokens, buyPrice: buyPriceInSol, slot: 0 };
         const newBuyEntries = existing && existing.buyEntries ? [...existing.buyEntries, newEntry] : [newEntry];
 
         return {
@@ -1863,6 +1866,8 @@ function App() {
             tokenQuantityRaw: existing && existing.tokenQuantityRaw ? (BigInt(existing.tokenQuantityRaw) + BigInt(outTokensRaw)).toString() : outTokensRaw, 
             entryPrice: newEntryPriceUsd,
             entryPriceSol: newEntryPriceSol,
+            buyPrice: newAmount > 0 ? (newEntryPriceSol / newAmount) : buyPriceInSol,
+            solSpent: newEntryPriceSol,
             tpPct: existing?.tpPct ?? minTakeProfit,
             slPct: existing?.slPct ?? stopLoss
           }
@@ -2281,14 +2286,16 @@ function App() {
       const currentPriceUsd = security?.priceUsd ?? (tokenMetrics[tokenAddress]?.priceUsd || 0.0000001);
       
       let effectiveEntryAmount = 0;
-      if (outTokensRaw) {
+      if (outTokensRaw && Number(outTokensRaw) > 0) {
+        effectiveEntryAmount = Number(outTokensRaw) / 1_000_000;
+      } else {
         const solPriceUsd = getSolPriceUsd();
         if (solPriceUsd > 0 && currentPriceUsd > 0) {
           effectiveEntryAmount = (actualBuyAmountSol * solPriceUsd) / currentPriceUsd;
-        } else {
-          effectiveEntryAmount = Number(outTokensRaw) / 1_000_000;
         }
       }
+
+      const buyPriceInSol = effectiveEntryAmount > 0 ? (actualBuyAmountSol / effectiveEntryAmount) : (currentPriceUsd > 0 && getSolPriceUsd() > 0 ? currentPriceUsd / getSolPriceUsd() : 0.0001);
 
       setActivePositions(prev => {
         const existing = prev[tokenAddress];
@@ -2303,7 +2310,7 @@ function App() {
            newEntryPriceUsd = (existingTotalUsd + newTotalUsd) / newAmount;
         }
 
-        const newEntry = { signature, solSpent: actualBuyAmountSol, amount: effectiveEntryAmount, buyPrice: currentPriceUsd, slot: 0 };
+        const newEntry = { signature, solSpent: actualBuyAmountSol, amount: effectiveEntryAmount, buyPrice: buyPriceInSol, slot: 0 };
         const newBuyEntries = existing && existing.buyEntries ? [...existing.buyEntries, newEntry] : [newEntry];
 
         return {
@@ -2317,6 +2324,8 @@ function App() {
             tokenQuantityRaw: existing && existing.tokenQuantityRaw ? (BigInt(existing.tokenQuantityRaw) + BigInt(outTokensRaw)).toString() : outTokensRaw,
             entryPrice: newEntryPriceUsd,
             entryPriceSol: newEntryPriceSol,
+            buyPrice: newAmount > 0 ? (newEntryPriceSol / newAmount) : buyPriceInSol,
+            solSpent: newEntryPriceSol,
             tpPct: existing?.tpPct ?? minTakeProfit,
             slPct: existing?.slPct ?? stopLoss,
             entryFeesSol: (existing ? (existing.entryFeesSol || 0) + 0.003 : 0.003), // Tip + Tx
