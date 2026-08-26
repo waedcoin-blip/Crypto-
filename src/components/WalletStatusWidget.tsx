@@ -110,10 +110,11 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
             source: 'session'
           });
        }
-    } else if (activeWallet) {
-       switchActiveWallet({ keypair: null, address: '', network: targetNetwork, source: 'session' });
+    } else if (activeWallet?.keypair) {
+       // If activeWallet already has a restored session keypair, sync it back to sessionWallet
+       setSessionWallet(activeWallet.keypair);
     }
-  }, [publicKey, sessionWallet, isDevnet, activeWallet?.address, activeWallet?.network]);
+  }, [publicKey, sessionWallet, isDevnet, activeWallet?.address, activeWallet?.network, activeWallet?.keypair, setSessionWallet, switchActiveWallet]);
 
   // WalletBalanceService polling for active address
   useEffect(() => {
@@ -153,6 +154,12 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
   const handleGenerateSessionWallet = () => {
     const kp = Keypair.generate();
     setSessionWallet(kp);
+    switchActiveWallet({
+      keypair: kp,
+      address: kp.publicKey.toBase58(),
+      network: isDevnet ? 'devnet' : 'mainnet',
+      source: 'session'
+    });
     useBalanceStore.getState().setWalletAddress(kp.publicKey.toBase58());
     const service = new WalletBalanceService(network);
     service.refresh(kp.publicKey.toBase58());
@@ -160,6 +167,13 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
 
   const handleDisconnectSession = () => {
     setSessionWallet(null);
+    switchActiveWallet({
+      keypair: null,
+      address: '',
+      network: isDevnet ? 'devnet' : 'mainnet',
+      source: 'session',
+      clearStorage: true
+    });
     useBalanceStore.getState().reset();
   };
 

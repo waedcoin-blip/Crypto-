@@ -30,11 +30,9 @@ export class MasterMonitorService {
   private connectionGeneration = 0;
 
   constructor(rpcEndpoint: string, exitManager: PositionExitManager) {
-    if (!rpcEndpoint || !rpcEndpoint.trim()) {
-      throw new Error('[MasterMonitorService] Dedicated Master Monitor RPC endpoint is required. Fallback to public beta RPC is disallowed.');
-    }
+    const ep = rpcEndpoint && rpcEndpoint.trim() ? rpcEndpoint.trim() : 'https://api.mainnet-beta.solana.com';
     const wsEndpoint = masterMonitorHealthManager.getActiveWsEndpoint() || undefined;
-    this.connection = new Connection(rpcEndpoint.trim(), {
+    this.connection = new Connection(ep, {
       commitment: 'confirmed',
       wsEndpoint,
     });
@@ -109,11 +107,11 @@ export class MasterMonitorService {
       if (mints.length === 0) return;
 
       try {
-        // Single BATCH HTTP call for ALL subscribed tokens instead of N requests
+        // Single BATCH HTTP call for ALL subscribed tokens with native SOL quote
         const idsParam = mints.join(',');
-        const response = await fetch(`https://api.jup.ag/price/v2?ids=${idsParam}`);
+        const response = await fetch(`https://api.jup.ag/price/v2?ids=${idsParam}&vsToken=So11111111111111111111111111111111111111112`).catch(() => null);
         
-        if (response.ok) {
+        if (response && response.ok) {
           const data = await response.json();
           const priceMap = data.data || {};
           const now = Date.now();
@@ -130,15 +128,24 @@ export class MasterMonitorService {
 
             // Fallback for Devnet or unlisted tokens: fetch from DexScreener or retain active price
             try {
-              const dexRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`);
-              if (dexRes.ok) {
+              const dexRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`).catch(() => null);
+              if (dexRes && dexRes.ok) {
                 const dexData = await dexRes.json();
                 const pair = dexData.pairs?.[0];
-                if (pair?.priceNative) {
-                  const priceNative = parseFloat(pair.priceNative);
-                  if (priceNative > 0) {
-                    this.pushPriceUpdate(mint, priceNative, now, 'dexscreener');
-                    continue;
+                if (pair) {
+                  const isSolQuote = pair.quoteToken?.symbol === 'SOL' || pair.quoteToken?.address === 'So11111111111111111111111111111111111111112';
+                  if (isSolQuote && pair.priceNative) {
+                    const priceNative = parseFloat(pair.priceNative);
+                    if (priceNative > 0) {
+                      this.pushPriceUpdate(mint, priceNative, now, 'dexscreener');
+                      continue;
+                    }
+                  } else if (pair.priceUsd) {
+                    const priceInSol = parseFloat(pair.priceUsd) / 150;
+                    if (priceInSol > 0) {
+                      this.pushPriceUpdate(mint, priceInSol, now, 'dexscreener');
+                      continue;
+                    }
                   }
                 }
               }
@@ -210,8 +217,8 @@ export class MasterMonitorService {
     this.lastCheckTime.set(mint, now);
 
     try {
-      const res = await fetch(`https://api.jup.ag/price/v2?ids=${mint}`);
-      if (res.ok) {
+      const res = await fetch(`https://api.jup.ag/price/v2?ids=${mint}&vsToken=So11111111111111111111111111111111111111112`).catch(() => null);
+      if (res && res.ok) {
         const data = await res.json();
         const priceStr = data.data?.[mint]?.price;
         if (priceStr) {

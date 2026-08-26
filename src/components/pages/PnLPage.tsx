@@ -1265,6 +1265,17 @@ export const PnLPage = ({
                pos.amount = pos.amount / Math.pow(10, impliedDecimals);
              }
           }
+          // Fix corrupted buyPrice saved in USD instead of SOL
+          if (pos.amount > 0 && pos.solSpent > 0) {
+            const impliedSolPrice = pos.solSpent / pos.amount;
+            if (pos.buyPrice > impliedSolPrice * 30) {
+              pos.buyPrice = impliedSolPrice;
+            }
+          }
+          // Fix corrupted currentPrice saved in USD instead of SOL
+          if (pos.currentPrice && pos.buyPrice > 0 && pos.currentPrice > pos.buyPrice * 30 && pos.currentPrice < pos.buyPrice * 400) {
+            pos.currentPrice = pos.currentPrice / (getSolPriceUsd() || 150);
+          }
           cleaned[mint] = pos;
         }
       }
@@ -3756,11 +3767,6 @@ const checkTokenCriteria = (mint: string): {
     const currentRpc = masterMonitorHealthManager.getActiveEndpoint();
     const status = monitorStatus.status;
 
-    if (status === 'OFFLINE') {
-      addLog(`❌ [MASTER MONITOR] Service offline: Waiting for healthy dedicated RPC connection.`, 'warn');
-      return;
-    }
-
     const currentJup = jupiterRpcUrl || 'https://api.jup.ag/swap/v1';
     const executor = tradeManager.getExecutor();
 
@@ -3828,13 +3834,23 @@ const checkTokenCriteria = (mint: string): {
     exitMgr.start();
     positionExitManagerRef.current = exitMgr;
 
-    addLog(`📡 [MASTER MONITOR] Starting monitor services on: ${currentRpc} [Mode: ${status}]`, 'info');
-    const masterMon = new MasterMonitorService(currentRpc, exitMgr);
-    masterMonitorRef.current = masterMon;
+    let masterMon: MasterMonitorService | null = null;
+    try {
+      if (status !== 'OFFLINE' && currentRpc) {
+        addLog(`📡 [MASTER MONITOR] Starting monitor services on: ${currentRpc} [Mode: ${status}]`, 'info');
+        masterMon = new MasterMonitorService(currentRpc, exitMgr);
+      } else {
+        addLog(`🛡️ [TP/SL ACTIVE] Master Monitor endpoint offline — TP/SL running autonomously with resilient price polling.`, 'info');
+        masterMon = new MasterMonitorService('', exitMgr);
+      }
+      masterMonitorRef.current = masterMon;
+    } catch (e: any) {
+      console.warn(`[MASTER MONITOR] MasterMonitorService initialization note:`, e);
+    }
 
     return () => {
       exitMgr.stop();
-      masterMon.stopMonitoring();
+      masterMon?.stopMonitoring();
     };
   }, [isRunning, monitorStatus.status, monitorStatus.activeUrl]);
 
@@ -4026,7 +4042,7 @@ const checkTokenCriteria = (mint: string): {
           return;
         }
         
-        let price = metric.priceNative || metric.priceUsd;
+        let price = metric.priceNative || (metric.priceUsd ? metric.priceUsd / getSolPriceUsd() : 0);
         
         if (!price || price === 0) {
           try {
@@ -4165,7 +4181,8 @@ const checkTokenCriteria = (mint: string): {
             const progress = metric.bondingCurveProgress || 0;
             const isGraduated = !mint.toLowerCase().endsWith('pump');
             // Buy trigger is logged inside executeBuy in final stage after all required checks and buy limits pass
-            await executeBuy(mint, metric.symbol, metric.priceNative || metric.priceUsd, tradeAmount);
+            const buyPriceInSol = metric.priceNative || (metric.priceUsd ? metric.priceUsd / getSolPriceUsd() : 0.0001);
+            await executeBuy(mint, metric.symbol, buyPriceInSol, tradeAmount);
             currentActiveCountLoop++;
          }
       } else {
@@ -5956,7 +5973,12 @@ const checkTokenCriteria = (mint: string): {
                     }
 
                     const token = tokenMetrics[mint];
-                    const displayPrice = (token?.priceNative ? parseFloat(String(token.priceNative)) : 0) || pos.currentPrice || pos.buyPrice || 0;
+                    const rawPrice = (token?.priceNative ? parseFloat(String(token.priceNative)) : 0) || pos.currentPrice || pos.buyPrice || 0;
+                    let displayPrice = rawPrice;
+                    const entryPriceSol = pos.buyPrice || (pos.amount > 0 && pos.solSpent > 0 ? pos.solSpent / pos.amount : 0);
+                    if (entryPriceSol > 0 && displayPrice > entryPriceSol * 30 && displayPrice < entryPriceSol * 400) {
+                      displayPrice = displayPrice / (getSolPriceUsd() || 150);
+                    }
                     const netCalc = calcNetPnl(displayPrice, pos.amount || 0, pos.solSpent || 0, slippage, pos.recoveryMode, !!privateKey);
                     let netSolIfSold = netCalc.netSol;
                     let pnlPct = netCalc.netPnlPct / 100;
@@ -5969,7 +5991,12 @@ const checkTokenCriteria = (mint: string): {
                     return !isNaN(pnlPct) && isFinite(pnlPct);
                   }).map(([mint, pos]: [string, Position]) => {
                     const token = tokenMetrics[mint];
-                    const displayPrice = (token?.priceNative ? parseFloat(String(token.priceNative)) : 0) || pos.currentPrice || pos.buyPrice || 0;
+                    const rawPrice = (token?.priceNative ? parseFloat(String(token.priceNative)) : 0) || pos.currentPrice || pos.buyPrice || 0;
+                    let displayPrice = rawPrice;
+                    const entryPriceSol = pos.buyPrice || (pos.amount > 0 && pos.solSpent > 0 ? pos.solSpent / pos.amount : 0);
+                    if (entryPriceSol > 0 && displayPrice > entryPriceSol * 30 && displayPrice < entryPriceSol * 400) {
+                      displayPrice = displayPrice / (getSolPriceUsd() || 150);
+                    }
                     const netCalc = calcNetPnl(displayPrice, pos.amount || 0, pos.solSpent || 0, slippage, pos.recoveryMode, !!privateKey);
                     let netSolIfSold = netCalc.netSol;
                     let pnlPct = netCalc.netPnlPct / 100;

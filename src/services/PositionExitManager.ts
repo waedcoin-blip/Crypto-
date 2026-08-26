@@ -19,6 +19,7 @@ export interface ManagedExitPosition {
   buySignature?: string;
   buySlot?: number;
   createdAt: number;
+  lastPriceUpdate?: number;
   pendingSince?: number;
 }
 
@@ -155,11 +156,20 @@ export class PositionExitManager {
     return Array.from(this.positions.values());
   }
 
-  public onPriceUpdate(mint: string, currentPrice: number, _timestamp: number): void {
+  private pendingPriceFetches: Set<string> = new Set();
+
+  public onPriceUpdate(mint: string, rawPrice: number, timestamp: number = Date.now()): void {
     const pos = this.positions.get(mint);
-    if (!pos || pos.state === 'CLOSED') return;
+    if (!pos || pos.state === 'CLOSED' || !rawPrice || rawPrice <= 0) return;
+
+    let currentPrice = rawPrice;
+    // Sanity check: If rawPrice was mistakenly provided in USD (approx ~100x - 300x higher than native SOL buy price)
+    if (pos.buyPrice > 0 && currentPrice > pos.buyPrice * 30 && currentPrice < pos.buyPrice * 400) {
+      currentPrice = currentPrice / 150;
+    }
 
     pos.currentPrice = currentPrice;
+    pos.lastPriceUpdate = timestamp;
 
     if (!pos.peakPrice || currentPrice > pos.peakPrice) {
       pos.peakPrice = currentPrice;
@@ -177,15 +187,72 @@ export class PositionExitManager {
 
   private calculatePnLPct(pos: ManagedExitPosition): number {
     if (!pos.buyPrice || pos.buyPrice <= 0) return 0;
-    return ((pos.currentPrice - pos.buyPrice) / pos.buyPrice) * 100;
+    let current = pos.currentPrice;
+    // Extra guard against USD/SOL price scale confusion
+    if (current > pos.buyPrice * 30 && current < pos.buyPrice * 400) {
+      current = current / 150;
+    }
+    return ((current - pos.buyPrice) / pos.buyPrice) * 100;
+  }
+
+  private async fetchFallbackPriceForPosition(mint: string): Promise<void> {
+    if (this.pendingPriceFetches.has(mint)) return;
+    this.pendingPriceFetches.add(mint);
+    try {
+      // 1. Try Jupiter Price V2 with native SOL quote token
+      const jupRes = await fetch(`https://api.jup.ag/price/v2?ids=${mint}&vsToken=So11111111111111111111111111111111111111112`).catch(() => null);
+      if (jupRes && jupRes.ok) {
+        const jupJson = await jupRes.json();
+        const priceStr = jupJson.data?.[mint]?.price;
+        if (priceStr) {
+          const p = parseFloat(priceStr);
+          if (p > 0) {
+            this.onPriceUpdate(mint, p, Date.now());
+            return;
+          }
+        }
+      }
+
+      // 2. Try DexScreener
+      const dexRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`).catch(() => null);
+      if (dexRes && dexRes.ok) {
+        const dexData = await dexRes.json();
+        const pair = dexData.pairs?.[0];
+        if (pair) {
+          const isSolQuote = pair.quoteToken?.symbol === 'SOL' || pair.quoteToken?.address === 'So11111111111111111111111111111111111111112';
+          if (isSolQuote && pair.priceNative) {
+            const p = parseFloat(pair.priceNative);
+            if (p > 0) {
+              this.onPriceUpdate(mint, p, Date.now());
+              return;
+            }
+          } else if (pair.priceUsd) {
+            const p = parseFloat(pair.priceUsd) / 150;
+            if (p > 0) {
+              this.onPriceUpdate(mint, p, Date.now());
+              return;
+            }
+          }
+        }
+      }
+    } catch {
+      // Ignore background fallback fetch error
+    } finally {
+      this.pendingPriceFetches.delete(mint);
+    }
   }
 
   private async evaluateAllPositions(): Promise<void> {
     if (!this.isRunning || this.isEvaluatingLoop) return;
     this.isEvaluatingLoop = true;
+    const now = Date.now();
     try {
       for (const pos of this.positions.values()) {
         if (pos.state === 'OPEN') {
+          // If position price is stale (>2500ms since last update), trigger autonomous fallback fetch
+          if (!pos.lastPriceUpdate || (now - pos.lastPriceUpdate > 2500)) {
+            void this.fetchFallbackPriceForPosition(pos.mint);
+          }
           await this.evaluatePosition(pos);
         }
       }

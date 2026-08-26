@@ -18,6 +18,7 @@ export interface SwitchActiveWalletParams {
     address?: string;
     network?: 'devnet' | 'mainnet';
     source: 'session' | 'connected';
+    clearStorage?: boolean;
 }
 
 interface ActiveWalletState {
@@ -26,19 +27,50 @@ interface ActiveWalletState {
     switchActiveWallet: (params: SwitchActiveWalletParams) => void;
 }
 
+const getInitialActiveWallet = (): ActiveWallet | null => {
+    try {
+        const restoredKp = getSavedSessionKeypair();
+        const initialNetwork = (typeof window !== 'undefined' && (localStorage.getItem('app_trading_network') as 'devnet' | 'mainnet')) || 'devnet';
+        if (restoredKp) {
+            const address = restoredKp.publicKey.toBase58();
+            // Ensure balance store address is synced immediately
+            useBalanceStore.getState().setWalletAddress(address);
+            setTimeout(() => {
+              import('../services/WalletBalanceService').then(m => {
+                m.walletBalanceService.refreshNow(address);
+              });
+            }, 0);
+            return {
+                address,
+                keypair: restoredKp,
+                network: initialNetwork,
+                source: 'session',
+                version: 1
+            };
+        }
+    } catch (e) {
+        console.warn('[ActiveWalletStore] Failed to restore session keypair on init:', e);
+    }
+    return null;
+};
+
 export const useActiveWalletStore = create<ActiveWalletState>((set, get) => ({
-    activeWallet: null,
+    activeWallet: getInitialActiveWallet(),
     
     setActiveWallet: (wallet) => set({ activeWallet: wallet }),
 
     switchActiveWallet: (params) => {
-        const { keypair, source } = params;
+        const { keypair, source, clearStorage } = params;
         const envNetwork = useTradingEnvironmentStore.getState().network || 'devnet';
         const network = params.network || envNetwork;
         const address = params.address || (keypair ? keypair.publicKey.toBase58() : '');
         
         if (source === 'session') {
-           saveSessionKeypair(keypair);
+           if (keypair) {
+             saveSessionKeypair(keypair, network);
+           } else if (clearStorage) {
+             saveSessionKeypair(null);
+           }
         }
 
         // Clear previous balance to prevent displaying stale balance for the new wallet
