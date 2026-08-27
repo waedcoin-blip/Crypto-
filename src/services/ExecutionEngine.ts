@@ -43,20 +43,13 @@ export class ExecutionEngine implements ITradeExecutor {
     return ExecutionEngine.instance;
   }
 
-  private getActiveExecutor(): ITradeExecutor {
-    const currentNetwork =
-      useTradingEnvironmentStore.getState().network ||
-      (typeof window !== 'undefined' ? (localStorage.getItem('app_trading_network') as TradingNetwork) : null) ||
-      'paper';
-
-    this.mode = currentNetwork;
-
-    if (currentNetwork === 'paper') {
+  public getExecutorForNetwork(network: TradingNetwork): ITradeExecutor {
+    if (network === 'paper') {
       if (!this.paperExecutor) {
         this.paperExecutor = new PaperTradeExecutor();
       }
       return this.paperExecutor;
-    } else if (currentNetwork === 'devnet') {
+    } else if (network === 'devnet') {
       if (!this.devnetExecutor) {
         this.devnetExecutor = new DevnetAmmExecutor();
       }
@@ -67,6 +60,17 @@ export class ExecutionEngine implements ITradeExecutor {
       }
       return this.mainnetExecutor;
     }
+  }
+
+  private getActiveExecutor(): ITradeExecutor {
+    const currentNetwork =
+      useTradingEnvironmentStore.getState().network ||
+      (typeof window !== 'undefined' ? (localStorage.getItem('app_trading_network') as TradingNetwork) : null) ||
+      'paper';
+
+    this.mode = currentNetwork;
+
+    return this.getExecutorForNetwork(currentNetwork);
   }
 
   public get publicKey(): string {

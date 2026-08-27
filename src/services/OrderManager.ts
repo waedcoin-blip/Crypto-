@@ -147,7 +147,8 @@ export class OrderManager {
 
   /**
    * Authoritative order execution method: creates order, validates idempotency,
-   * transitions states, and delegates execution solely through ExecutionEngine.
+   * transitions states accurately through full lifecycle, and delegates execution 
+   * solely to the executor matching the order's exact network.
    */
   public async executeOrder(
     inputMint: string,
@@ -157,23 +158,50 @@ export class OrderManager {
     label: 'entry' | 'exit_tp' | 'exit_sl' = 'entry'
   ): Promise<SwapResult> {
     const WSOL = 'So11111111111111111111111111111111111111112';
-    const isSolBuy = inputMint === WSOL;
+    const isSolBuy = inputMint === WSOL || inputMint === 'So11111111111111111111111111111111111111112';
     const targetMint = isSolBuy ? outputMint : inputMint;
     const side = isSolBuy ? 'buy' : 'sell';
     const currentNetwork = useTradingEnvironmentStore.getState().network || 'devnet';
 
+    // 1. SIGNAL & Order creation with network-scoped idempotency lock
     const order = this.createOrder(targetMint, side, amount, slippageBps, undefined, currentNetwork);
-    this.transitionState(order.id, 'VALIDATING');
+
+    // 2. Network-bound executor resolution (Not global mutable executor)
+    const executor = executionEngine.getExecutorForNetwork(order.network);
 
     try {
-      this.transitionState(order.id, 'QUOTE_REQUESTED');
+      // 3. VALIDATING
+      this.transitionState(order.id, 'VALIDATING');
+      if (amount <= 0) {
+        throw new Error(`INVALID_ORDER: Amount must be > 0. Received ${amount}`);
+      }
 
-      const result = await this.executor.swap(inputMint, outputMint, amount, slippageBps, label);
+      // 4. QUOTE_REQUESTED & QUOTE_RECEIVED
+      this.transitionState(order.id, 'QUOTE_REQUESTED');
+      const quote = await executor.getQuote({
+        inputMint,
+        outputMint,
+        amount,
+        slippageBps,
+      });
+      if (!quote || !quote.outAmount || Number(quote.outAmount) <= 0) {
+        throw new Error(`ORDER_EXECUTION_FAILED: Invalid quote returned for ${inputMint} -> ${outputMint}`);
+      }
+      this.transitionState(order.id, 'QUOTE_RECEIVED');
+
+      // 5. TRANSACTION_BUILDING & SIGNING
+      this.transitionState(order.id, 'TRANSACTION_BUILDING');
+      this.transitionState(order.id, 'SIGNING');
+
+      // 6. SUBMITTED
+      const result = await executor.swap(inputMint, outputMint, amount, slippageBps, label);
 
       if (result.signature) {
         this.transitionState(order.id, 'SUBMITTED', { signature: result.signature });
       }
 
+      // 7. CONFIRMING & CONFIRMED
+      this.transitionState(order.id, 'CONFIRMING');
       this.transitionState(order.id, 'CONFIRMED', {
         signature: result.signature,
         result,

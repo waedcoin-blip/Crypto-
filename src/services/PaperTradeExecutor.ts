@@ -5,60 +5,48 @@ import { SOL_MINT, DEFAULT_PAPER_TRADING_ADDRESS } from '../constants/solana';
 import { usePaperWalletStore } from '../store/paperWalletStore';
 import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
 import { useAppStore } from '../store/appStore';
-import { getSolPriceUsd } from '../utils/pnlCalculator';
 import { tokenRegistry } from './TokenRegistry';
 
 export function resolveTokenDecimals(tokenMint: string): number {
   if (tokenMint === SOL_MINT || tokenMint === 'So11111111111111111111111111111111111111112') return 9;
   const regToken = tokenRegistry.getToken(tokenMint);
-  if (regToken?.decimals !== undefined) return regToken.decimals;
+  if (regToken?.decimals !== undefined && typeof regToken.decimals === 'number') return regToken.decimals;
   const metric = useAppStore.getState()?.tokenMetrics?.[tokenMint] as any;
-  if (metric?.decimals !== undefined) return metric.decimals;
-  return 6;
+  if (metric?.decimals !== undefined && typeof metric.decimals === 'number') return metric.decimals;
+  throw new Error(`UNRESOLVED_TOKEN_DECIMALS: Cannot resolve mint decimals for ${tokenMint}. Order execution blocked to prevent balance corruption.`);
 }
 
-async function resolveTokenPriceInSol(tokenMint: string): Promise<number> {
-  // 1. Check AppStore state for tokenMetrics
+export async function resolveTokenDecimalsAsync(tokenMint: string): Promise<number> {
+  if (tokenMint === SOL_MINT || tokenMint === 'So11111111111111111111111111111111111111112') return 9;
+  
   try {
-    const store = useAppStore.getState();
-    const metric = store?.tokenMetrics?.[tokenMint];
-    if (metric) {
-      if (typeof metric.priceNative === 'number' && metric.priceNative > 0) {
-        return metric.priceNative;
-      }
-      if (typeof metric.priceNative === 'string' && parseFloat(metric.priceNative) > 0) {
-        return parseFloat(metric.priceNative);
-      }
-      if (typeof metric.priceUsd === 'number' && metric.priceUsd > 0) {
-        const solUsd = getSolPriceUsd() || 150;
-        return metric.priceUsd / solUsd;
-      }
-    }
-  } catch (e) {
-    // Ignore store access error
-  }
-
-  // 2. Fetch directly from DexScreener API
-  try {
-    const resp = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${tokenMint}`);
-    if (resp.ok) {
-      const data = await resp.json();
-      if (data && data.pairs && data.pairs.length > 0) {
-        const bestPair = data.pairs[0];
-        if (bestPair.priceNative && parseFloat(bestPair.priceNative) > 0) {
-          return parseFloat(bestPair.priceNative);
-        }
-        if (bestPair.priceUsd && parseFloat(bestPair.priceUsd) > 0) {
-          const solUsd = getSolPriceUsd() || 150;
-          return parseFloat(bestPair.priceUsd) / solUsd;
+    return resolveTokenDecimals(tokenMint);
+  } catch (err) {
+    // Attempt DexScreener lookup to dynamically discover token decimals
+    try {
+      const resp = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${tokenMint}`);
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data && data.pairs && data.pairs.length > 0) {
+          const pair = data.pairs[0];
+          // Try to discover decimals from token metadata or pair
+          const baseDecimals = pair.baseToken?.mint === tokenMint ? pair.baseToken?.decimals : pair.quoteToken?.decimals;
+          if (typeof baseDecimals === 'number') {
+            tokenRegistry.registerOrUpdate({
+              mintAddress: tokenMint,
+              decimals: baseDecimals,
+              symbol: pair.baseToken?.symbol
+            });
+            return baseDecimals;
+          }
         }
       }
+    } catch (fetchErr) {
+      console.warn(`[PaperTradeExecutor] DexScreener decimal lookup failed for ${tokenMint}:`, fetchErr);
     }
-  } catch (e) {
-    // Ignore fetch error
+    
+    throw new Error(`UNRESOLVED_TOKEN_DECIMALS: Failed to fetch mint decimals for ${tokenMint}. Trade execution aborted.`);
   }
-
-  return 0.0000003;
 }
 
 export class PaperTradeExecutor implements ITradeExecutor {
@@ -85,7 +73,7 @@ export class PaperTradeExecutor implements ITradeExecutor {
     const inputAmount = Number(params.amount || 0);
     const slippageBps = Math.max(0, Math.min(5000, Number(params.slippageBps || 50)));
 
-    // Try real Jupiter market quote path
+    // Real Jupiter market quote ONLY. No synthetic fallback permitted.
     try {
       const url = `https://quote-api.jup.ag/v6/quote?inputMint=${params.inputMint}&outputMint=${params.outputMint}&amount=${inputAmount}&slippageBps=${slippageBps}`;
       const resp = await fetch(url);
@@ -95,38 +83,11 @@ export class PaperTradeExecutor implements ITradeExecutor {
           return data as QuoteResponse;
         }
       }
-    } catch (e) {
-      console.warn('[PaperTradeExecutor] Jupiter market quote fetch failed, using fallback calculation:', e);
+    } catch (e: any) {
+      console.warn('[PaperTradeExecutor] Jupiter market quote fetch failed:', e);
     }
 
-    // Fallback calculation using actual decimals and current market token price
-    const isBuy = params.inputMint === SOL_MINT;
-    const targetTokenMint = isBuy ? params.outputMint : params.inputMint;
-    const simulatedPriceInSol = await resolveTokenPriceInSol(targetTokenMint); 
-    const targetDecimals = resolveTokenDecimals(targetTokenMint);
-    let outAmountRaw = 0;
-
-    if (isBuy) {
-      const solAmount = inputAmount / 1e9;
-      const tokensCount = solAmount / (simulatedPriceInSol > 0 ? simulatedPriceInSol : 0.0000003);
-      outAmountRaw = Math.floor(tokensCount * Math.pow(10, targetDecimals));
-    } else {
-      const tokensCount = inputAmount / Math.pow(10, targetDecimals);
-      const solAmount = tokensCount * simulatedPriceInSol;
-      outAmountRaw = Math.floor(solAmount * 1e9);
-    }
-
-    return {
-      inputMint: params.inputMint,
-      inAmount: params.amount.toString(),
-      outputMint: params.outputMint,
-      outAmount: outAmountRaw.toString(),
-      otherAmountThreshold: Math.floor(outAmountRaw * (1 - slippageBps / 10000)).toString(),
-      swapMode: 'ExactIn',
-      slippageBps,
-      priceImpactPct: '0.05',
-      routePlan: [],
-    } as unknown as QuoteResponse;
+    throw new Error(`PAPER_QUOTE_FAILED: Unable to fetch real Jupiter market quote for ${params.inputMint} -> ${params.outputMint}. Real market liquidity required.`);
   }
 
   async swap(
@@ -140,7 +101,7 @@ export class PaperTradeExecutor implements ITradeExecutor {
     this.checkNetworkSafety();
 
     const paperStore = usePaperWalletStore.getState();
-    const isBuy = inputMint === SOL_MINT;
+    const isBuy = inputMint === SOL_MINT || inputMint === 'So11111111111111111111111111111111111111112';
 
     if (isBuy) {
       // Input is SOL in lamports
@@ -173,7 +134,7 @@ export class PaperTradeExecutor implements ITradeExecutor {
         throw new Error(`PAPER_EXECUTION_FAILED: ${errMsg}`);
       }
 
-      const outDecimals = resolveTokenDecimals(outputMint);
+      const outDecimals = await resolveTokenDecimalsAsync(outputMint);
       const tokenOutAmount = rawTokenOut / Math.pow(10, outDecimals);
 
       // Execute Paper Buy
@@ -201,7 +162,7 @@ export class PaperTradeExecutor implements ITradeExecutor {
       };
     } else {
       // Selling token for SOL
-      const inDecimals = resolveTokenDecimals(inputMint);
+      const inDecimals = await resolveTokenDecimalsAsync(inputMint);
       const rawInputTokens = amount < Math.pow(10, inDecimals) ? Math.floor(amount * Math.pow(10, inDecimals)) : Math.floor(amount);
       const tokenAmount = rawInputTokens / Math.pow(10, inDecimals);
       const currentTokenBal = paperStore.tokenBalances[inputMint] || 0;
@@ -233,7 +194,6 @@ export class PaperTradeExecutor implements ITradeExecutor {
       const solOut = rawSolOutLamports / 1e9;
       const simFee = 0.0005;
       const netSolReceived = Math.max(0, solOut - simFee);
-      const netSolLamports = Math.floor(netSolReceived * 1e9);
 
       // Execute Paper Sell
       paperStore.adjustTokenBalance(inputMint, -tokenAmount);
@@ -251,7 +211,7 @@ export class PaperTradeExecutor implements ITradeExecutor {
         inputMint,
         outputMint,
         inputAmount: rawInputTokens,
-        outputAmount: netSolLamports,
+        outputAmount: rawSolOutLamports, // Gross output lamports (fee is separate in feeSol)
         feeSol: simFee,
         slot: Math.floor(Date.now() / 400),
         landingTimeMs,
@@ -295,3 +255,4 @@ export class PaperTradeExecutor implements ITradeExecutor {
     };
   }
 }
+

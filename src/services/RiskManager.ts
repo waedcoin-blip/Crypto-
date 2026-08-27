@@ -9,6 +9,8 @@ import { tokenRegistry } from './TokenRegistry';
 import { tradeHistoryRegistry } from './TradeHistoryRegistry';
 import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
 
+import { resolveTokenDecimals } from './PaperTradeExecutor';
+
 export interface ManagedPosition {
   mint: string;
   amount: number; // Raw token amount
@@ -386,12 +388,18 @@ export class RiskManager {
           liveAmount = await this.executor.getTokenBalance(mint);
         } catch {}
       }
+      let dec = 6;
+      try {
+        dec = resolveTokenDecimals(mint);
+      } catch {
+        dec = tokenRegistry.getToken(mint)?.decimals || 6;
+      }
       this.addPosition({
         mint,
         amount: liveAmount > 0 ? liveAmount : 1_000_000,
         buyPrice: 0,
         solSpent: fallbackSolSpent || 0,
-        tokenDecimals: 6,
+        tokenDecimals: dec,
       });
       pos = this.positions.get(mint);
     }
