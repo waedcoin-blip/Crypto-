@@ -107,7 +107,13 @@ export class ExecutionEngine implements ITradeExecutor {
   }
 
   async batchSwap(
-    swaps: Array<{ inputMint: string; outputMint: string; amount: number; slippageBps: number }>
+    swaps: Array<{
+      inputMint: string;
+      outputMint: string;
+      amount: number;
+      slippageBps: number;
+      label?: 'entry' | 'exit_tp' | 'exit_sl';
+    }>
   ): Promise<SwapResult[]> {
     return this.getActiveExecutor().batchSwap(swaps);
   }

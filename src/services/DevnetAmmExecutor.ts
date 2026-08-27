@@ -394,12 +394,12 @@ export class DevnetAmmExecutor implements ITradeExecutor {
   }
 
   async batchSwap(
-    swaps: Array<{ inputMint: string; outputMint: string; amount: number; slippageBps: number }>
+    swaps: Array<{ inputMint: string; outputMint: string; amount: number; slippageBps: number; label?: 'entry' | 'exit_tp' | 'exit_sl' }>
   ): Promise<SwapResult[]> {
     const results: SwapResult[] = [];
     for (const s of swaps) {
       try {
-        const res = await this.swap(s.inputMint, s.outputMint, s.amount, s.slippageBps, 'exit_tp');
+        const res = await this.swap(s.inputMint, s.outputMint, s.amount, s.slippageBps, s.label || 'exit_tp');
         results.push(res);
       } catch (err: any) {
         results.push({

@@ -2796,15 +2796,9 @@ export const PnLPage = ({
           const freshPrice = tokenPrice.priceNative || (tokenPrice.priceUsd ? tokenPrice.priceUsd / getSolPriceUsd() : 0);
           if (freshPrice <= 0) return;
 
-          const currentGrossSol = freshPrice * (pos.amount || 0);
-          let netSolIfSold = currentGrossSol;
-          if (!privateKey) {
-            const slippageFee = currentGrossSol * (slippage / 100);
-            const opFees = getDynamicOperationalFeeSol(pos.recoveryMode, pos.solSpent);
-            netSolIfSold = Math.max(0, currentGrossSol - slippageFee - opFees);
-          }
-          const calcNetPnlPct = (pos.solSpent && pos.solSpent > 0) ? (netSolIfSold - pos.solSpent) / pos.solSpent : 0;
-          const calcNetSol = netSolIfSold - (pos.solSpent || 0);
+          const netCalc = calcNetPnl(freshPrice, pos.amount || 0, pos.solSpent || 0, slippage, pos.recoveryMode, !!privateKey);
+          const calcNetPnlPct = netCalc.netPnlPct / 100;
+          const calcNetSol = netCalc.netPnlSol;
 
           next[mint] = {
             ...pos,
@@ -2858,15 +2852,9 @@ export const PnLPage = ({
             }
           }
           if (freshPrice > 0 && next[mint].currentPrice !== freshPrice) {
-            const currentGrossSol = freshPrice * (next[mint].amount || 0);
-            let netSolIfSold = currentGrossSol;
-            if (!privateKey) {
-              const slippageFee = currentGrossSol * (slippage / 100);
-              const opFees = getDynamicOperationalFeeSol(next[mint].recoveryMode, next[mint].solSpent);
-              netSolIfSold = Math.max(0, currentGrossSol - slippageFee - opFees);
-            }
-            const calcNetPnlPct = (next[mint].solSpent && next[mint].solSpent > 0) ? (netSolIfSold - next[mint].solSpent) / next[mint].solSpent : 0;
-            const calcNetSol = netSolIfSold - (next[mint].solSpent || 0);
+            const netCalc = calcNetPnl(freshPrice, next[mint].amount || 0, next[mint].solSpent || 0, slippage, next[mint].recoveryMode, !!privateKey);
+            const calcNetPnlPct = netCalc.netPnlPct / 100;
+            const calcNetSol = netCalc.netPnlSol;
 
             next[mint] = {
               ...next[mint],

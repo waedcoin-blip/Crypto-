@@ -5,12 +5,21 @@ import { SOL_MINT, DEFAULT_PAPER_TRADING_ADDRESS } from '../constants/solana';
 import { usePaperWalletStore } from '../store/paperWalletStore';
 import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
 import { useAppStore } from '../store/appStore';
-import { getSolPriceUsd } from '../utils/pnlCalculator';
+import {
+  getSolPriceUsd,
+  getDynamicOperationalFeeSol,
+  ATA_RENT_EXEMPTION_SOL,
+} from '../utils/pnlCalculator';
 import { tokenRegistry } from './TokenRegistry';
 
+const WSOL_MINT = 'So11111111111111111111111111111111111111112';
+
+function isSolMint(mint: string): boolean {
+  return mint === SOL_MINT || mint === WSOL_MINT;
+}
+
 export function resolveTokenDecimals(tokenMint: string): number {
-  if (tokenMint === SOL_MINT || tokenMint === 'So11111111111111111111111111111111111111112') return 9;
-  if (tokenMint.endsWith('pump')) return 6;
+  if (isSolMint(tokenMint)) return 9;
   const regToken = tokenRegistry.getToken(tokenMint);
   if (regToken?.decimals !== undefined && typeof regToken.decimals === 'number') return regToken.decimals;
   const metric = useAppStore.getState()?.tokenMetrics?.[tokenMint] as any;
@@ -19,8 +28,7 @@ export function resolveTokenDecimals(tokenMint: string): number {
 }
 
 export async function resolveTokenDecimalsAsync(tokenMint: string): Promise<number> {
-  if (tokenMint === SOL_MINT || tokenMint === 'So11111111111111111111111111111111111111112') return 9;
-  if (tokenMint.endsWith('pump')) return 6;
+  if (isSolMint(tokenMint)) return 9;
   
   try {
     return resolveTokenDecimals(tokenMint);
@@ -31,16 +39,22 @@ export async function resolveTokenDecimalsAsync(tokenMint: string): Promise<numb
       if (resp.ok) {
         const data = await resp.json();
         if (data && data.pairs && data.pairs.length > 0) {
-          const pair = data.pairs[0];
-          // Try to discover decimals from token metadata or pair
-          const baseDecimals = pair.baseToken?.mint === tokenMint ? pair.baseToken?.decimals : pair.quoteToken?.decimals;
-          if (typeof baseDecimals === 'number') {
+          // Sort pairs by highest liquidity
+          const sortedPairs = [...data.pairs].sort((a: any, b: any) => {
+            const liqA = Number(a.liquidity?.usd || 0);
+            const liqB = Number(b.liquidity?.usd || 0);
+            return liqB - liqA;
+          });
+          const bestPair = sortedPairs[0];
+          const isBase = bestPair.baseToken?.address === tokenMint || bestPair.baseToken?.mint === tokenMint;
+          const discoveredDecimals = isBase ? bestPair.baseToken?.decimals : bestPair.quoteToken?.decimals;
+          if (typeof discoveredDecimals === 'number' && discoveredDecimals >= 0 && discoveredDecimals <= 18) {
             tokenRegistry.registerOrUpdate({
               mintAddress: tokenMint,
-              decimals: baseDecimals,
-              symbol: pair.baseToken?.symbol
+              decimals: discoveredDecimals,
+              symbol: isBase ? (bestPair.baseToken?.symbol || 'UNKNOWN') : (bestPair.quoteToken?.symbol || 'UNKNOWN'),
             });
-            return baseDecimals;
+            return discoveredDecimals;
           }
         }
       }
@@ -48,58 +62,90 @@ export async function resolveTokenDecimalsAsync(tokenMint: string): Promise<numb
       console.warn(`[PaperTradeExecutor] DexScreener decimal lookup failed for ${tokenMint}:`, fetchErr);
     }
     
-    // Default standard SPL token decimals if dynamically unresolved
-    return 6;
+    // Explicitly fail rather than defaulting silently to prevent balance/PnL corruption
+    throw new Error(`UNRESOLVED_TOKEN_DECIMALS: Unable to resolve on-chain decimals for ${tokenMint}. Trade execution aborted to prevent balance corruption.`);
   }
 }
 
 export async function resolveTokenPriceInSol(tokenMint: string): Promise<number | null> {
-  if (tokenMint === SOL_MINT || tokenMint === 'So11111111111111111111111111111111111111112') return 1;
+  if (isSolMint(tokenMint)) return 1;
+
+  const solUsd = getSolPriceUsd() || 150;
 
   // 1. Check AppStore state for tokenMetrics
   try {
     const store = useAppStore.getState();
     const metric = store?.tokenMetrics?.[tokenMint];
     if (metric) {
-      if (typeof metric.priceNative === 'number' && metric.priceNative > 0) {
-        return metric.priceNative;
-      }
-      if (typeof metric.priceNative === 'string' && parseFloat(metric.priceNative) > 0) {
-        return parseFloat(metric.priceNative);
-      }
       if (typeof metric.priceUsd === 'number' && metric.priceUsd > 0) {
-        const solUsd = getSolPriceUsd() || 150;
         return metric.priceUsd / solUsd;
       }
-      if (typeof metric.priceUsd === 'string' && parseFloat(metric.priceUsd) > 0) {
-        const solUsd = getSolPriceUsd() || 150;
-        return parseFloat(metric.priceUsd) / solUsd;
+      if (typeof (metric as any).priceUsd === 'string' && parseFloat((metric as any).priceUsd) > 0) {
+        return parseFloat((metric as any).priceUsd) / solUsd;
+      }
+      // If priceNative exists and is reasonable, check if quote is SOL
+      const quoteSymbol = (metric as any).quoteToken || (metric as any).quoteSymbol;
+      if (quoteSymbol === 'SOL' || quoteSymbol === 'WSOL' || quoteSymbol === SOL_MINT || quoteSymbol === WSOL_MINT) {
+        if (typeof metric.priceNative === 'number' && metric.priceNative > 0) {
+          return metric.priceNative;
+        }
       }
     }
   } catch (e) {
     // Ignore store access error
   }
 
-  // 2. Fetch directly from DexScreener API
+  // 2. Fetch directly from DexScreener API with liquidity/volume ranking
   try {
     const resp = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${tokenMint}`);
     if (resp.ok) {
       const data = await resp.json();
       if (data && data.pairs && data.pairs.length > 0) {
-        const bestPair = data.pairs[0];
-        if (bestPair.priceNative && parseFloat(bestPair.priceNative) > 0) {
+        // Filter for active Solana pairs and sort by highest liquidity, then volume
+        const solanaPairs = data.pairs.filter((p: any) => p.chainId === 'solana');
+        const candidatePairs = solanaPairs.length > 0 ? solanaPairs : data.pairs;
+        
+        const sorted = [...candidatePairs].sort((a: any, b: any) => {
+          const liqA = Number(a.liquidity?.usd || 0);
+          const liqB = Number(b.liquidity?.usd || 0);
+          if (liqB !== liqA) return liqB - liqA;
+          const volA = Number(a.volume?.h24 || 0);
+          const volB = Number(b.volume?.h24 || 0);
+          return volB - volA;
+        });
+
+        const bestPair = sorted[0];
+        const isQuoteSol =
+          bestPair.quoteToken?.symbol === 'SOL' ||
+          bestPair.quoteToken?.address === SOL_MINT ||
+          bestPair.quoteToken?.address === WSOL_MINT;
+
+        if (isQuoteSol && bestPair.priceNative && parseFloat(bestPair.priceNative) > 0) {
           const priceSol = parseFloat(bestPair.priceNative);
-          // Register token in registry for future fast lookup
-          tokenRegistry.registerOrUpdate({
-            mintAddress: tokenMint,
-            symbol: bestPair.baseToken?.symbol || 'UNKNOWN',
-            decimals: bestPair.baseToken?.decimals ?? (tokenMint.endsWith('pump') ? 6 : 6),
-          });
+          const isBase = bestPair.baseToken?.address === tokenMint || bestPair.baseToken?.mint === tokenMint;
+          const decimals = isBase ? bestPair.baseToken?.decimals : bestPair.quoteToken?.decimals;
+          if (typeof decimals === 'number') {
+            tokenRegistry.registerOrUpdate({
+              mintAddress: tokenMint,
+              symbol: bestPair.baseToken?.symbol || 'UNKNOWN',
+              decimals,
+            });
+          }
           return priceSol;
         }
+
         if (bestPair.priceUsd && parseFloat(bestPair.priceUsd) > 0) {
-          const solUsd = getSolPriceUsd() || 150;
-          return parseFloat(bestPair.priceUsd) / solUsd;
+          const priceInSol = parseFloat(bestPair.priceUsd) / solUsd;
+          const isBase = bestPair.baseToken?.address === tokenMint || bestPair.baseToken?.mint === tokenMint;
+          const decimals = isBase ? bestPair.baseToken?.decimals : bestPair.quoteToken?.decimals;
+          if (typeof decimals === 'number') {
+            tokenRegistry.registerOrUpdate({
+              mintAddress: tokenMint,
+              symbol: bestPair.baseToken?.symbol || 'UNKNOWN',
+              decimals,
+            });
+          }
+          return priceInSol;
         }
       }
     }
@@ -133,6 +179,10 @@ export class PaperTradeExecutor implements ITradeExecutor {
   async getQuote(params: QuoteGetRequest): Promise<QuoteResponse> {
     const inputAmount = Number(params.amount || 0);
     const slippageBps = Math.max(0, Math.min(5000, Number(params.slippageBps || 50)));
+
+    if (inputAmount <= 0 || !Number.isFinite(inputAmount)) {
+      throw new Error(`INVALID_QUOTE_REQUEST: Amount must be a positive integer in base units (got: ${params.amount})`);
+    }
 
     // 1. Try Jupiter internal proxy first (handles CORS, fallbacks, and rate-limits)
     try {
@@ -170,50 +220,54 @@ export class PaperTradeExecutor implements ITradeExecutor {
     }
 
     // 3. Real Market Price Fallback for bonding curve / Pump.fun / new AMM tokens not yet routed by Jupiter
-    const isBuy = params.inputMint === SOL_MINT || params.inputMint === 'So11111111111111111111111111111111111111112';
-    const targetTokenMint = isBuy ? params.outputMint : params.inputMint;
-    const realPriceSol = await resolveTokenPriceInSol(targetTokenMint);
+    const isBuy = isSolMint(params.inputMint);
+    const isSell = isSolMint(params.outputMint);
 
-    if (realPriceSol && realPriceSol > 0) {
-      const targetDecimals = await resolveTokenDecimalsAsync(targetTokenMint);
-      let outAmountRaw = 0;
+    if (isBuy || isSell) {
+      const targetTokenMint = isBuy ? params.outputMint : params.inputMint;
+      const realPriceSol = await resolveTokenPriceInSol(targetTokenMint);
 
-      if (isBuy) {
-        const solAmount = inputAmount / 1e9;
-        const tokensCount = solAmount / realPriceSol;
-        outAmountRaw = Math.floor(tokensCount * Math.pow(10, targetDecimals));
-      } else {
-        const tokensCount = inputAmount / Math.pow(10, targetDecimals);
-        const solAmount = tokensCount * realPriceSol;
-        outAmountRaw = Math.floor(solAmount * 1e9);
-      }
+      if (realPriceSol && realPriceSol > 0) {
+        const targetDecimals = await resolveTokenDecimalsAsync(targetTokenMint);
+        let outAmountRaw = 0;
 
-      if (outAmountRaw > 0) {
-        return {
-          inputMint: params.inputMint,
-          inAmount: params.amount.toString(),
-          outputMint: params.outputMint,
-          outAmount: outAmountRaw.toString(),
-          otherAmountThreshold: Math.floor(outAmountRaw * (1 - slippageBps / 10000)).toString(),
-          swapMode: 'ExactIn',
-          slippageBps,
-          priceImpactPct: '0.05',
-          routePlan: [
-            {
-              swapInfo: {
-                ammKey: 'pumpfun_dex_curve',
-                label: 'DexScreener / Pump Pool',
-                inputMint: params.inputMint,
-                outputMint: params.outputMint,
-                inAmount: params.amount.toString(),
-                outAmount: outAmountRaw.toString(),
-                feeAmount: '0',
-                feeMint: params.inputMint,
+        if (isBuy) {
+          const solAmount = inputAmount / 1e9;
+          const tokensCount = solAmount / realPriceSol;
+          outAmountRaw = Math.floor(tokensCount * Math.pow(10, targetDecimals));
+        } else {
+          const tokensCount = inputAmount / Math.pow(10, targetDecimals);
+          const solAmount = tokensCount * realPriceSol;
+          outAmountRaw = Math.floor(solAmount * 1e9);
+        }
+
+        if (outAmountRaw > 0) {
+          return {
+            inputMint: params.inputMint,
+            inAmount: params.amount.toString(),
+            outputMint: params.outputMint,
+            outAmount: outAmountRaw.toString(),
+            otherAmountThreshold: Math.floor(outAmountRaw * (1 - slippageBps / 10000)).toString(),
+            swapMode: 'ExactIn',
+            slippageBps,
+            priceImpactPct: '0.05',
+            routePlan: [
+              {
+                swapInfo: {
+                  ammKey: 'market_liquidity_pool',
+                  label: 'Market Liquidity Pool (DexScreener)',
+                  inputMint: params.inputMint,
+                  outputMint: params.outputMint,
+                  inAmount: params.amount.toString(),
+                  outAmount: outAmountRaw.toString(),
+                  feeAmount: '0',
+                  feeMint: params.inputMint,
+                },
+                percent: 100,
               },
-              percent: 100,
-            },
-          ],
-        } as unknown as QuoteResponse;
+            ],
+          } as unknown as QuoteResponse;
+        }
       }
     }
 
@@ -231,29 +285,39 @@ export class PaperTradeExecutor implements ITradeExecutor {
     this.checkNetworkSafety();
 
     const paperStore = usePaperWalletStore.getState();
-    const isBuy = inputMint === SOL_MINT || inputMint === 'So11111111111111111111111111111111111111112';
+    const isBuy = isSolMint(inputMint);
+    const isSell = isSolMint(outputMint);
+    const isRecovery = label === 'exit_sl';
 
     if (isBuy) {
-      // Input is SOL in lamports
-      const inputLamports = amount < 1000 ? Math.floor(amount * 1e9) : Math.floor(amount);
+      // 1. SOL -> Token (BUY): amount is strictly in raw lamports
+      const inputLamports = Math.floor(amount);
+      if (inputLamports <= 0 || !Number.isFinite(inputLamports)) {
+        throw new Error(`INVALID_SWAP_AMOUNT: Buy amount must be a positive integer in lamports (got: ${amount})`);
+      }
+
       const solRequired = inputLamports / 1e9;
-      const simFee = 0.0005; // 0.0005 SOL simulated transaction fee
-      const totalSolNeeded = solRequired + simFee;
+      const simGasAndJitoFee = getDynamicOperationalFeeSol(isRecovery, solRequired);
+
+      // Check if ATA account needs to be created on first purchase
+      const isFirstBuy = !paperStore.tokenBalances[outputMint] || paperStore.tokenBalances[outputMint] <= 0;
+      const ataRent = isFirstBuy ? ATA_RENT_EXEMPTION_SOL : 0;
+      const totalSolNeeded = solRequired + simGasAndJitoFee + ataRent;
 
       if (paperStore.solBalance < totalSolNeeded) {
         this.telemetryFailedSwaps++;
-        const errMsg = `INSUFFICIENT_FUNDS: Required ${totalSolNeeded.toFixed(4)} SOL, Available ${paperStore.solBalance.toFixed(4)} SOL.`;
+        const errMsg = `INSUFFICIENT_FUNDS: Required ${totalSolNeeded.toFixed(6)} SOL (incl. ${simGasAndJitoFee.toFixed(6)} fee + ${ataRent.toFixed(6)} ATA rent), Available ${paperStore.solBalance.toFixed(6)} SOL.`;
         this.lastFailureReason = errMsg;
         throw new Error(`PAPER_EXECUTION_FAILED: ${errMsg}`);
       }
 
-      // Initial quote
+      // Pre-fetch quote
       await this.getQuote({ inputMint, outputMint, amount: inputLamports, slippageBps });
 
-      // 150ms simulated execution latency delay
+      // Simulated execution delay
       await new Promise((resolve) => setTimeout(resolve, 150));
 
-      // Fresh quote at execution time
+      // Execution-time quote
       const freshQuote = await this.getQuote({ inputMint, outputMint, amount: inputLamports, slippageBps });
       const rawTokenOut = Number(freshQuote.outAmount) || 0;
 
@@ -267,12 +331,13 @@ export class PaperTradeExecutor implements ITradeExecutor {
       const outDecimals = await resolveTokenDecimalsAsync(outputMint);
       const tokenOutAmount = rawTokenOut / Math.pow(10, outDecimals);
 
-      // Execute Paper Buy
+      // Execute Paper Buy: deduct SOL and record position with full cost basis
       paperStore.adjustSolBalance(-totalSolNeeded);
-      paperStore.adjustTokenBalance(outputMint, tokenOutAmount);
+      paperStore.recordBuyPosition(outputMint, tokenOutAmount, totalSolNeeded);
 
+      const totalFeesForTrade = simGasAndJitoFee + ataRent;
       this.telemetryTotalSwaps++;
-      this.telemetryTotalFeesPaidSol += simFee;
+      this.telemetryTotalFeesPaidSol += totalFeesForTrade;
       const landingTimeMs = Date.now() - startTime;
       this.telemetryLandingTimeTotalMs += landingTimeMs;
 
@@ -284,33 +349,39 @@ export class PaperTradeExecutor implements ITradeExecutor {
         outputMint,
         inputAmount: inputLamports,
         outputAmount: rawTokenOut,
-        feeSol: simFee,
+        feeSol: totalFeesForTrade,
+        totalCostSol: totalSolNeeded,
         slot: Math.floor(Date.now() / 400),
         landingTimeMs,
         method: 'rpc',
         simulated: true,
       };
-    } else {
-      // Selling token for SOL
+    } else if (isSell) {
+      // 2. Token -> SOL (SELL): amount is strictly in raw base units
       const inDecimals = await resolveTokenDecimalsAsync(inputMint);
-      const rawInputTokens = amount < Math.pow(10, inDecimals) ? Math.floor(amount * Math.pow(10, inDecimals)) : Math.floor(amount);
+      const rawInputTokens = Math.floor(amount);
+      if (rawInputTokens <= 0 || !Number.isFinite(rawInputTokens)) {
+        throw new Error(`INVALID_SWAP_AMOUNT: Sell amount must be a positive integer in base units (got: ${amount})`);
+      }
+
       const tokenAmount = rawInputTokens / Math.pow(10, inDecimals);
       const currentTokenBal = paperStore.tokenBalances[inputMint] || 0;
 
-      if (currentTokenBal < tokenAmount * 0.99) {
+      // Strict balance check: Never allow selling more tokens than owned
+      if (currentTokenBal < tokenAmount) {
         this.telemetryFailedSwaps++;
-        const errMsg = `INSUFFICIENT_FUNDS: Required ${tokenAmount.toFixed(4)} tokens, Available ${currentTokenBal.toFixed(4)}.`;
+        const errMsg = `INSUFFICIENT_FUNDS: Required ${tokenAmount.toFixed(6)} tokens, Available ${currentTokenBal.toFixed(6)}.`;
         this.lastFailureReason = errMsg;
         throw new Error(`PAPER_EXECUTION_FAILED: ${errMsg}`);
       }
 
-      // Initial quote
+      // Pre-fetch quote
       await this.getQuote({ inputMint, outputMint, amount: rawInputTokens, slippageBps });
 
-      // 150ms simulated execution latency delay
+      // Simulated execution delay
       await new Promise((resolve) => setTimeout(resolve, 150));
 
-      // Fresh quote at execution time
+      // Execution-time quote
       const freshQuote = await this.getQuote({ inputMint, outputMint, amount: rawInputTokens, slippageBps });
       const rawSolOutLamports = Number(freshQuote.outAmount) || 0;
 
@@ -322,15 +393,15 @@ export class PaperTradeExecutor implements ITradeExecutor {
       }
 
       const solOut = rawSolOutLamports / 1e9;
-      const simFee = 0.0005;
-      const netSolReceived = Math.max(0, solOut - simFee);
+      const simGasAndJitoFee = getDynamicOperationalFeeSol(isRecovery, solOut);
+      const netSolReceived = Math.max(0, solOut - simGasAndJitoFee);
 
-      // Execute Paper Sell
-      paperStore.adjustTokenBalance(inputMint, -tokenAmount);
+      // Execute Paper Sell: deduct token and add net SOL received
+      paperStore.recordSellPosition(inputMint, tokenAmount);
       paperStore.adjustSolBalance(netSolReceived);
 
       this.telemetryTotalSwaps++;
-      this.telemetryTotalFeesPaidSol += simFee;
+      this.telemetryTotalFeesPaidSol += simGasAndJitoFee;
       const landingTimeMs = Date.now() - startTime;
       this.telemetryLandingTimeTotalMs += landingTimeMs;
 
@@ -341,8 +412,74 @@ export class PaperTradeExecutor implements ITradeExecutor {
         inputMint,
         outputMint,
         inputAmount: rawInputTokens,
-        outputAmount: rawSolOutLamports, // Gross output lamports (fee is separate in feeSol)
-        feeSol: simFee,
+        outputAmount: rawSolOutLamports,
+        feeSol: simGasAndJitoFee,
+        totalCostSol: netSolReceived,
+        slot: Math.floor(Date.now() / 400),
+        landingTimeMs,
+        method: 'rpc',
+        simulated: true,
+      };
+    } else {
+      // 3. Token -> Token swap: Strictly preserve SOL balance integrity
+      const inDecimals = await resolveTokenDecimalsAsync(inputMint);
+      const outDecimals = await resolveTokenDecimalsAsync(outputMint);
+      const rawInputTokens = Math.floor(amount);
+
+      if (rawInputTokens <= 0 || !Number.isFinite(rawInputTokens)) {
+        throw new Error(`INVALID_SWAP_AMOUNT: Swap amount must be a positive integer in base units (got: ${amount})`);
+      }
+
+      const inputTokenAmount = rawInputTokens / Math.pow(10, inDecimals);
+      const currentTokenBal = paperStore.tokenBalances[inputMint] || 0;
+
+      if (currentTokenBal < inputTokenAmount) {
+        this.telemetryFailedSwaps++;
+        const errMsg = `INSUFFICIENT_FUNDS: Required ${inputTokenAmount.toFixed(6)} ${inputMint}, Available ${currentTokenBal.toFixed(6)}.`;
+        this.lastFailureReason = errMsg;
+        throw new Error(`PAPER_EXECUTION_FAILED: ${errMsg}`);
+      }
+
+      const simGasAndJitoFee = getDynamicOperationalFeeSol(false, 0.05);
+
+      if (paperStore.solBalance < simGasAndJitoFee) {
+        this.telemetryFailedSwaps++;
+        const errMsg = `INSUFFICIENT_FUNDS_FOR_FEE: Required ${simGasAndJitoFee.toFixed(6)} SOL for network fee, Available ${paperStore.solBalance.toFixed(6)} SOL.`;
+        this.lastFailureReason = errMsg;
+        throw new Error(`PAPER_EXECUTION_FAILED: ${errMsg}`);
+      }
+
+      const freshQuote = await this.getQuote({ inputMint, outputMint, amount: rawInputTokens, slippageBps });
+      const rawTokenOut = Number(freshQuote.outAmount) || 0;
+
+      if (rawTokenOut <= 0) {
+        this.telemetryFailedSwaps++;
+        const errMsg = 'Paper swap failed: Invalid output token amount returned by quote.';
+        this.lastFailureReason = errMsg;
+        throw new Error(`PAPER_EXECUTION_FAILED: ${errMsg}`);
+      }
+
+      const outputTokenAmount = rawTokenOut / Math.pow(10, outDecimals);
+
+      // Deduct input token, add output token, deduct network fee from SOL
+      paperStore.recordSellPosition(inputMint, inputTokenAmount);
+      paperStore.adjustTokenBalance(outputMint, outputTokenAmount);
+      paperStore.adjustSolBalance(-simGasAndJitoFee);
+
+      this.telemetryTotalSwaps++;
+      this.telemetryTotalFeesPaidSol += simGasAndJitoFee;
+      const landingTimeMs = Date.now() - startTime;
+      this.telemetryLandingTimeTotalMs += landingTimeMs;
+
+      const txHash = `paper_swap_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
+      return {
+        signature: txHash,
+        inputMint,
+        outputMint,
+        inputAmount: rawInputTokens,
+        outputAmount: rawTokenOut,
+        feeSol: simGasAndJitoFee,
         slot: Math.floor(Date.now() / 400),
         landingTimeMs,
         method: 'rpc',
@@ -352,11 +489,11 @@ export class PaperTradeExecutor implements ITradeExecutor {
   }
 
   async batchSwap(
-    swaps: Array<{ inputMint: string; outputMint: string; amount: number; slippageBps: number }>
+    swaps: Array<{ inputMint: string; outputMint: string; amount: number; slippageBps: number; label?: 'entry' | 'exit_tp' | 'exit_sl' }>
   ): Promise<SwapResult[]> {
     const results: SwapResult[] = [];
     for (const s of swaps) {
-      const res = await this.swap(s.inputMint, s.outputMint, s.amount, s.slippageBps);
+      const res = await this.swap(s.inputMint, s.outputMint, s.amount, s.slippageBps, s.label || 'entry');
       results.push(res);
     }
     return results;
@@ -385,4 +522,3 @@ export class PaperTradeExecutor implements ITradeExecutor {
     };
   }
 }
-

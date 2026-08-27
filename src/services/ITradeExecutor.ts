@@ -8,6 +8,7 @@ export interface SwapResult {
   inputAmount: number;
   outputAmount: number;
   feeSol: number;
+  totalCostSol?: number;
   slot: number;
   landingTimeMs: number;
   method: 'jito' | 'helius' | 'rpc';
@@ -39,6 +40,7 @@ export interface ITradeExecutor {
       outputMint: string;
       amount: number;
       slippageBps: number;
+      label?: 'entry' | 'exit_tp' | 'exit_sl';
     }>
   ): Promise<SwapResult[]>;
 
