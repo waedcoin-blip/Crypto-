@@ -17,7 +17,7 @@ export interface HistoricalTrade {
   pnlPct?: number;
   signature: string;
   timestamp: number;
-  status: 'CONFIRMED' | 'FAILED';
+  status: 'PENDING' | 'CONFIRMED' | 'FAILED';
   metadata?: Record<string, any>;
 }
 
@@ -74,6 +74,15 @@ export class TradeHistoryRegistry {
     }
     this.persist();
     this.notify();
+  }
+
+  public updateTrade(idOrSignature: string, updates: Partial<HistoricalTrade>): void {
+    const idx = this.trades.findIndex(t => t.id === idOrSignature || t.signature === idOrSignature || (t.orderId && t.orderId === idOrSignature));
+    if (idx !== -1) {
+      this.trades[idx] = { ...this.trades[idx], ...updates };
+      this.persist();
+      this.notify();
+    }
   }
 
   public getTrades(network?: TradingNetwork): HistoricalTrade[] {

@@ -6,7 +6,6 @@ import { PaperTradeExecutor } from './PaperTradeExecutor';
 import { QuoteGetRequest, QuoteResponse } from '@jup-ag/api';
 import { TradingNetwork } from '../config/network';
 import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
-import { NetworkGuard } from './NetworkGuard';
 
 export interface ExecutionEngineConfig {
   network?: TradingNetwork;
@@ -17,8 +16,8 @@ export interface ExecutionEngineConfig {
  * ExecutionEngine: The authoritative execution layer.
  * 
  * CORE PRINCIPLE: Only ONE component in the application may submit a blockchain transaction.
- * ExecutionEngine is the single component permitted to route and execute trades via
- * DevnetAmmExecutor (for Devnet) or MainnetJupiterExecutor (for Mainnet).
+ * ExecutionEngine locks executor resolution per transaction to guarantee atomic quote-to-execution
+ * consistency and prevent mid-flight network desynchronization.
  */
 export class ExecutionEngine implements ITradeExecutor {
   private static instance: ExecutionEngine;
@@ -32,7 +31,7 @@ export class ExecutionEngine implements ITradeExecutor {
       config.network ||
       useTradingEnvironmentStore.getState().network ||
       (typeof window !== 'undefined' ? (localStorage.getItem('app_trading_network') as TradingNetwork) : null) ||
-      'devnet';
+      'paper';
     this.mode = network;
   }
 
@@ -62,15 +61,22 @@ export class ExecutionEngine implements ITradeExecutor {
     }
   }
 
-  private getActiveExecutor(): ITradeExecutor {
-    const currentNetwork =
+  /**
+   * Resolves the current network and its corresponding executor atomically for a transaction.
+   */
+  public resolveSession(): { network: TradingNetwork; executor: ITradeExecutor } {
+    const network =
       useTradingEnvironmentStore.getState().network ||
       (typeof window !== 'undefined' ? (localStorage.getItem('app_trading_network') as TradingNetwork) : null) ||
       'paper';
 
-    this.mode = currentNetwork;
+    this.mode = network;
+    const executor = this.getExecutorForNetwork(network);
+    return { network, executor };
+  }
 
-    return this.getExecutorForNetwork(currentNetwork);
+  private getActiveExecutor(): ITradeExecutor {
+    return this.resolveSession().executor;
   }
 
   public get publicKey(): string {
@@ -78,11 +84,12 @@ export class ExecutionEngine implements ITradeExecutor {
   }
 
   public getNetwork(): TradingNetwork {
-    return this.mode;
+    return this.resolveSession().network;
   }
 
   async getQuote(params: QuoteGetRequest): Promise<QuoteResponse> {
-    return this.getActiveExecutor().getQuote(params);
+    const { executor } = this.resolveSession();
+    return executor.getQuote(params);
   }
 
   async swap(
@@ -92,14 +99,14 @@ export class ExecutionEngine implements ITradeExecutor {
     slippageBps: number,
     label: 'entry' | 'exit_tp' | 'exit_sl' = 'entry'
   ): Promise<SwapResult> {
-    const executor = this.getActiveExecutor();
+    // Atomically lock session for the duration of this swap
+    const { network, executor } = this.resolveSession();
     
-    // Strict safety check before execution
-    const currentNetwork = this.getNetwork();
-    if (currentNetwork === 'mainnet' && executor instanceof DevnetAmmExecutor) {
+    // Strict safety verification on locked session
+    if (network === 'mainnet' && executor instanceof DevnetAmmExecutor) {
       throw new Error('EXECUTION ENGINE SAFETY ERROR: Devnet executor cannot execute in Mainnet mode.');
     }
-    if (currentNetwork === 'devnet' && executor instanceof MainnetJupiterExecutor) {
+    if (network === 'devnet' && executor instanceof MainnetJupiterExecutor) {
       throw new Error('EXECUTION ENGINE SAFETY ERROR: Mainnet executor cannot execute in Devnet mode.');
     }
 
@@ -115,23 +122,42 @@ export class ExecutionEngine implements ITradeExecutor {
       label?: 'entry' | 'exit_tp' | 'exit_sl';
     }>
   ): Promise<SwapResult[]> {
-    return this.getActiveExecutor().batchSwap(swaps);
+    const { network, executor } = this.resolveSession();
+
+    if (network === 'mainnet' && executor instanceof DevnetAmmExecutor) {
+      throw new Error('EXECUTION ENGINE SAFETY ERROR: Devnet executor cannot execute in Mainnet mode.');
+    }
+    if (network === 'devnet' && executor instanceof MainnetJupiterExecutor) {
+      throw new Error('EXECUTION ENGINE SAFETY ERROR: Mainnet executor cannot execute in Devnet mode.');
+    }
+
+    // Forward label explicitly for each swap
+    const sanitizedSwaps = swaps.map(s => ({
+      ...s,
+      label: s.label || 'entry',
+    }));
+
+    return executor.batchSwap(sanitizedSwaps);
   }
 
   async getSolBalance(): Promise<number> {
-    return this.getActiveExecutor().getSolBalance();
+    const { executor } = this.resolveSession();
+    return executor.getSolBalance();
   }
 
   async getTokenBalance(mint: string): Promise<number> {
-    return this.getActiveExecutor().getTokenBalance(mint);
+    const { executor } = this.resolveSession();
+    return executor.getTokenBalance(mint);
   }
 
   async hasTokenAccount(mint: string): Promise<boolean> {
-    return this.getActiveExecutor().hasTokenAccount(mint);
+    const { executor } = this.resolveSession();
+    return executor.hasTokenAccount(mint);
   }
 
   getTelemetry(): ExecutorTelemetry {
-    return this.getActiveExecutor().getTelemetry();
+    const { executor } = this.resolveSession();
+    return executor.getTelemetry();
   }
 }
 

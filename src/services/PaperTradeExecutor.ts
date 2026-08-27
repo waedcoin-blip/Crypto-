@@ -397,7 +397,7 @@ export class PaperTradeExecutor implements ITradeExecutor {
       const netSolReceived = Math.max(0, solOut - simGasAndJitoFee);
 
       // Execute Paper Sell: deduct token and add net SOL received
-      paperStore.recordSellPosition(inputMint, tokenAmount);
+      paperStore.recordSellPosition(inputMint, tokenAmount, netSolReceived);
       paperStore.adjustSolBalance(netSolReceived);
 
       this.telemetryTotalSwaps++;

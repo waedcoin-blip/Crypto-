@@ -42,8 +42,14 @@ export class PositionExitManager {
     this.delegate.onPriceUpdate(mint, currentPrice, timestamp);
   }
 
-  public confirmBuy(mint: string, signature: string, slot?: number): void {
-    this.delegate.confirmBuy(mint, signature, slot);
+  public confirmBuy(
+    mint: string,
+    signature: string,
+    slot?: number,
+    actualAmountRaw?: number,
+    actualSolSpent?: number
+  ): void {
+    this.delegate.confirmBuy(mint, signature, slot, actualAmountRaw, actualSolSpent);
   }
 
   public requestExit(mint: string, reason?: string, customAmountLamports?: number, costBasisSol?: number): Promise<void> {

@@ -3,27 +3,26 @@ import { ITradeExecutor } from './ITradeExecutor';
 import { executionEngine } from './ExecutionEngine';
 import { orderManager } from './OrderManager';
 import { walletBalanceService } from './WalletBalanceService';
-import { useBalanceStore } from '../store/balanceStore';
 import { positionRegistry } from './PositionRegistry';
 import { tokenRegistry } from './TokenRegistry';
 import { tradeHistoryRegistry } from './TradeHistoryRegistry';
 import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
-
+import { getSolPriceUsd } from '../utils/pnlCalculator';
 import { resolveTokenDecimals } from './PaperTradeExecutor';
 
 export interface ManagedPosition {
   mint: string;
-  amount: number; // Raw token amount
+  amount: number; // Raw token integer base units
   tokenDecimals: number;
-  buyPrice: number; // Entry price (SOL or native)
-  solSpent: number; // Cost basis in SOL
+  buyPrice: number; // Entry price in SOL per human token unit
+  solSpent: number; // Cumulative cost basis in SOL
   tpPct: number;
   slPct: number;
   trailingSlPct?: number;
   maxHoldTimeMs?: number;
   slippageBpsTp?: number;
   slippageBpsSl?: number;
-  currentPrice: number;
+  currentPrice: number; // Current market price in SOL
   peakPrice?: number;
   highestPnLPct?: number;
   state: 'PENDING_BUY' | 'OPEN' | 'CLOSING' | 'CLOSED' | 'RECOVERY_REQUIRED';
@@ -143,11 +142,16 @@ export class RiskManager {
     return openCount < this.config.maxOpenPositions;
   }
 
+  /**
+   * Adds or accumulates an active trading position.
+   * Handles weighted average cost basis for duplicate mints.
+   * Accepts strictly raw integer token amounts and verified entry prices.
+   */
   public addPosition(params: {
     mint: string;
-    amount: number;
-    buyPrice: number;
-    solSpent: number;
+    amount: number; // Raw integer units
+    buyPrice?: number; // Price in SOL per human token unit
+    solSpent: number; // Total SOL spent on this purchase
     tpPct?: number;
     slPct?: number;
     trailingSlPct?: number;
@@ -158,50 +162,88 @@ export class RiskManager {
     buySignature?: string;
     buyOrderId?: string;
   }): void {
+    const rawAmount = Math.floor(Math.max(0, params.amount || 0));
+    const solSpent = Math.max(0, params.solSpent || 0);
+
+    let decimals = params.tokenDecimals;
+    if (decimals === undefined || typeof decimals !== 'number') {
+      try {
+        decimals = resolveTokenDecimals(params.mint);
+      } catch {
+        decimals = tokenRegistry.getToken(params.mint)?.decimals ?? 6;
+      }
+    }
+
+    const tokenQty = rawAmount / (10 ** decimals);
+
+    // Check if position already exists for this mint
     const existing = this.positions.get(params.mint);
     if (existing && existing.state !== 'CLOSED') {
+      // Update risk parameters if specified
       if (params.tpPct !== undefined) existing.tpPct = params.tpPct;
       if (params.slPct !== undefined) existing.slPct = Math.abs(params.slPct);
       if (params.trailingSlPct !== undefined) existing.trailingSlPct = params.trailingSlPct;
-      if (params.amount > 0) existing.amount = params.amount;
-      if (params.buyPrice > 0) existing.buyPrice = params.buyPrice;
-      if (params.solSpent > 0) existing.solSpent = params.solSpent;
-      if (existing.state === 'RECOVERY_REQUIRED') existing.state = 'OPEN';
+      if (params.maxHoldTimeMs !== undefined) existing.maxHoldTimeMs = params.maxHoldTimeMs;
+      if (params.slippageBpsTp !== undefined) existing.slippageBpsTp = params.slippageBpsTp;
+      if (params.slippageBpsSl !== undefined) existing.slippageBpsSl = params.slippageBpsSl;
+
+      // Weighted average cost basis accumulation
+      if (rawAmount > 0 && solSpent > 0) {
+        const prevTotalCost = existing.solSpent;
+        const prevTotalRaw = existing.amount;
+        const newTotalCost = prevTotalCost + solSpent;
+        const newTotalRaw = prevTotalRaw + rawAmount;
+        const newTotalQty = newTotalRaw / (10 ** existing.tokenDecimals);
+
+        existing.amount = newTotalRaw;
+        existing.solSpent = newTotalCost;
+        if (newTotalQty > 0) {
+          existing.buyPrice = newTotalCost / newTotalQty;
+        }
+      }
+
+      if (existing.state === 'RECOVERY_REQUIRED') {
+        existing.state = 'OPEN';
+      }
+
+      console.log(`[RiskManager] Accumulated position for ${params.mint}: Total Raw=${existing.amount}, CostBasis=${existing.solSpent.toFixed(4)} SOL, AvgEntry=${existing.buyPrice.toFixed(8)} SOL`);
       return;
     }
 
+    // Calculate verified entry price (Price per human token unit in SOL)
     let calculatedBuyPrice = params.buyPrice || 0;
-    const decimals = params.tokenDecimals !== undefined ? params.tokenDecimals : 6;
-    if (calculatedBuyPrice <= 0 && params.solSpent > 0 && params.amount > 0) {
-      const humanAmount = params.amount > 1e6 ? params.amount / (10 ** decimals) : params.amount;
-      calculatedBuyPrice = humanAmount > 0 ? params.solSpent / humanAmount : 0;
+    if (calculatedBuyPrice <= 0 && solSpent > 0 && tokenQty > 0) {
+      calculatedBuyPrice = solSpent / tokenQty;
     }
 
-    const fallbackPrice = calculatedBuyPrice > 0 ? calculatedBuyPrice : 0.0000003;
+    if (calculatedBuyPrice <= 0 || !Number.isFinite(calculatedBuyPrice)) {
+      throw new Error(`INVALID_POSITION_ENTRY: Cannot open position for ${params.mint} without valid buyPrice or positive solSpent and amount.`);
+    }
 
     const pos: ManagedPosition = {
       mint: params.mint,
-      amount: params.amount > 0 ? params.amount : 0,
+      amount: rawAmount,
       tokenDecimals: decimals,
-      buyPrice: fallbackPrice,
-      solSpent: params.solSpent || 0,
+      buyPrice: calculatedBuyPrice,
+      solSpent,
       tpPct: params.tpPct ?? this.config.tpPct,
       slPct: Math.abs(params.slPct ?? this.config.slPct),
       trailingSlPct: params.trailingSlPct ?? this.config.trailingSlPct,
       maxHoldTimeMs: params.maxHoldTimeMs ?? this.config.maxHoldTimeMs,
       slippageBpsTp: params.slippageBpsTp ?? this.config.slippageBpsTp ?? 250,
       slippageBpsSl: params.slippageBpsSl ?? this.config.slippageBpsSl ?? 1000,
-      currentPrice: fallbackPrice,
-      peakPrice: fallbackPrice,
+      currentPrice: calculatedBuyPrice,
+      peakPrice: calculatedBuyPrice,
       highestPnLPct: 0,
-      state: 'OPEN',
+      state: params.buySignature ? 'OPEN' : 'PENDING_BUY',
+      buySignature: params.buySignature,
       createdAt: Date.now(),
     };
 
     this.positions.set(params.mint, pos);
     
     // Sync to PositionRegistry and TokenRegistry
-    const network = useTradingEnvironmentStore.getState().network || 'devnet';
+    const network = useTradingEnvironmentStore.getState().network || 'paper';
     const posRecord = positionRegistry.openPosition({
       mintAddress: params.mint,
       network,
@@ -220,7 +262,7 @@ export class RiskManager {
     });
     tokenRegistry.setExecutionState(params.mint, 'POSITION_OPEN', posRecord.id);
 
-    // Record BUY trade in TradeHistoryRegistry
+    // Record initial BUY trade in TradeHistoryRegistry (PENDING until confirmed or CONFIRMED if signature provided)
     tradeHistoryRegistry.recordTrade({
       id: 'BUY_' + params.mint + '_' + Date.now(),
       orderId: params.buyOrderId,
@@ -229,15 +271,15 @@ export class RiskManager {
       side: 'BUY',
       network,
       amountRaw: pos.amount,
-      amountTokens: pos.amount > 1e6 ? pos.amount / (10 ** decimals) : pos.amount,
+      amountTokens: tokenQty,
       solAmount: pos.solSpent,
       priceSOL: pos.buyPrice,
-      signature: params.buySignature || 'BUY_SIG_' + Math.random().toString(36).substring(7),
+      signature: params.buySignature || '',
       timestamp: Date.now(),
-      status: 'CONFIRMED',
+      status: params.buySignature ? 'CONFIRMED' : 'PENDING',
     });
 
-    if (this.isRunning) {
+    if (this.isRunning && pos.state === 'OPEN') {
       void this.evaluatePosition(pos);
     }
   }
@@ -257,12 +299,41 @@ export class RiskManager {
     }
   }
 
-  public confirmBuy(mint: string, signature: string, slot: number): void {
+  public confirmBuy(
+    mint: string,
+    signature: string,
+    slot?: number,
+    actualAmountRaw?: number,
+    actualSolSpent?: number
+  ): void {
     const pos = this.positions.get(mint);
     if (!pos) return;
+
     pos.state = 'OPEN';
     pos.buySignature = signature;
-    pos.buySlot = slot;
+    if (slot !== undefined) pos.buySlot = slot;
+
+    // Update with real execution outcomes if available
+    if (actualAmountRaw && actualAmountRaw > 0) {
+      pos.amount = Math.floor(actualAmountRaw);
+    }
+    if (actualSolSpent && actualSolSpent > 0) {
+      pos.solSpent = actualSolSpent;
+    }
+    const tokenQty = pos.amount / (10 ** pos.tokenDecimals);
+    if (tokenQty > 0 && pos.solSpent > 0) {
+      pos.buyPrice = pos.solSpent / tokenQty;
+    }
+
+    // Update pending trade in tradeHistoryRegistry
+    tradeHistoryRegistry.updateTrade(signature, {
+      status: 'CONFIRMED',
+      signature,
+      amountRaw: pos.amount,
+      amountTokens: tokenQty,
+      solAmount: pos.solSpent,
+      priceSOL: pos.buyPrice,
+    });
   }
 
   public removePosition(mint: string): void {
@@ -271,51 +342,68 @@ export class RiskManager {
   }
 
   public getPosition(mint: string): ManagedPosition | undefined {
-    return this.positions.get(mint);
+    const p = this.positions.get(mint);
+    return p ? { ...p } : undefined;
   }
 
   public getAllPositions(): ManagedPosition[] {
-    return Array.from(this.positions.values());
+    return Array.from(this.positions.values()).map(p => ({ ...p }));
   }
 
-  public onPriceUpdate(mint: string, rawPrice: number, timestamp: number = Date.now()): void {
+  /**
+   * Price update handler with currency verification and dynamic conversion.
+   */
+  public onPriceUpdate(
+    mint: string,
+    rawPrice: number,
+    timestamp: number = Date.now(),
+    quoteCurrency: 'SOL' | 'USD' = 'SOL'
+  ): void {
     const pos = this.positions.get(mint);
-    if (!pos || pos.state === 'CLOSED' || !rawPrice || rawPrice <= 0) return;
+    if (!pos || pos.state === 'CLOSED' || !rawPrice || !Number.isFinite(rawPrice) || rawPrice <= 0) return;
 
-    const currentPrice = rawPrice;
-    pos.currentPrice = currentPrice;
+    let priceInSol = rawPrice;
+    if (quoteCurrency === 'USD') {
+      const solUsd = getSolPriceUsd() || 150;
+      priceInSol = rawPrice / solUsd;
+    }
+
+    if (priceInSol <= 0 || !Number.isFinite(priceInSol)) return;
+
+    pos.currentPrice = priceInSol;
     pos.lastPriceUpdate = timestamp;
 
-    if (!pos.peakPrice || currentPrice > pos.peakPrice) {
-      pos.peakPrice = currentPrice;
+    if (!pos.peakPrice || priceInSol > pos.peakPrice) {
+      pos.peakPrice = priceInSol;
     }
 
     const pnlPct = this.calculatePnLPct(pos);
-    if (!pos.highestPnLPct || pnlPct > pos.highestPnLPct) {
+    if (pos.highestPnLPct === undefined || pnlPct > pos.highestPnLPct) {
       pos.highestPnLPct = pnlPct;
     }
 
     // Sync price to TokenRegistry & PositionRegistry
-    tokenRegistry.updatePrice(mint, currentPrice);
-    positionRegistry.updatePrice(mint, currentPrice);
+    tokenRegistry.updatePrice(mint, priceInSol);
+    positionRegistry.updatePrice(mint, priceInSol);
 
     if (this.isRunning && (pos.state === 'OPEN' || pos.state === 'RECOVERY_REQUIRED')) {
       void this.evaluatePosition(pos);
     }
   }
 
+  /**
+   * Pure PnL percentage calculation without side-effects or mutating buyPrice.
+   */
   public calculatePnLPct(pos: ManagedPosition): number {
-    if (!pos.buyPrice || pos.buyPrice <= 0) {
-      if (pos.amount > 0 && pos.solSpent > 0) {
-        const rawUnits = pos.amount / (10 ** pos.tokenDecimals);
-        if (rawUnits > 0) pos.buyPrice = pos.solSpent / rawUnits;
-      }
-    }
-    if (!pos.buyPrice || pos.buyPrice <= 0) return 0;
-    const current = pos.currentPrice;
-    if (!current || current <= 0) return 0;
+    const effectiveBuyPrice = pos.buyPrice > 0
+      ? pos.buyPrice
+      : (pos.amount > 0 && pos.solSpent > 0
+          ? pos.solSpent / (pos.amount / (10 ** pos.tokenDecimals))
+          : 0);
 
-    return ((current - pos.buyPrice) / pos.buyPrice) * 100;
+    if (effectiveBuyPrice <= 0 || !pos.currentPrice || pos.currentPrice <= 0) return 0;
+
+    return ((pos.currentPrice - effectiveBuyPrice) / effectiveBuyPrice) * 100;
   }
 
   private async evaluateAllPositions(): Promise<void> {
@@ -353,12 +441,12 @@ export class RiskManager {
     const tpPct = pos.tpPct ?? this.config.tpPct;
     const slPct = Math.abs(pos.slPct ?? this.config.slPct);
 
-    // 2. Trailing stop check
-    const peakPnL = pos.highestPnLPct || 0;
-    if (pos.trailingSlPct && pos.trailingSlPct > 0 && peakPnL >= 15) {
+    // 2. Trailing stop check (Active immediately whenever trailingSlPct is configured)
+    const peakPnL = pos.highestPnLPct ?? 0;
+    if (pos.trailingSlPct && pos.trailingSlPct > 0) {
       const trailingDrop = peakPnL - pnlPct;
       if (trailingDrop >= pos.trailingSlPct) {
-        console.log(`[RiskManager] 📉 TRAILING STOP Triggered for ${mint}: Peak +${peakPnL.toFixed(1)}%, Current: ${pnlPct.toFixed(1)}%`);
+        console.log(`[RiskManager] 📉 TRAILING STOP Triggered for ${mint}: Peak +${peakPnL.toFixed(1)}%, Current: ${pnlPct.toFixed(1)}%, Drop: ${trailingDrop.toFixed(1)}% (Threshold: ${pos.trailingSlPct}%)`);
         await this.triggerExit(pos, 'sl', pnlPct);
         return;
       }
@@ -374,46 +462,32 @@ export class RiskManager {
     }
   }
 
+  /**
+   * Request manual or explicit exit. Rejects untracked positions without inventing fake cost basis.
+   */
   public async requestExit(
     mint: string,
     reason: string = 'MANUAL_FORCE_EXIT',
-    fallbackAmount?: number,
-    fallbackSolSpent?: number
+    _fallbackAmount?: number,
+    _fallbackSolSpent?: number
   ): Promise<void> {
-    let pos = this.positions.get(mint);
+    const pos = this.positions.get(mint);
     if (!pos) {
-      let liveAmount = fallbackAmount || 0;
-      if (liveAmount <= 0 && typeof this.executor.getTokenBalance === 'function') {
-        try {
-          liveAmount = await this.executor.getTokenBalance(mint);
-        } catch {}
-      }
-      let dec = 6;
-      try {
-        dec = resolveTokenDecimals(mint);
-      } catch {
-        dec = tokenRegistry.getToken(mint)?.decimals || 6;
-      }
-      this.addPosition({
-        mint,
-        amount: liveAmount > 0 ? liveAmount : 1_000_000,
-        buyPrice: 0,
-        solSpent: fallbackSolSpent || 0,
-        tokenDecimals: dec,
-      });
-      pos = this.positions.get(mint);
+      console.warn(`[RiskManager] Rejected exit request for untracked position: ${mint}`);
+      throw new Error(`UNTRACKED_POSITION_EXIT: Cannot exit position for ${mint}. No active position found in RiskManager.`);
     }
-    if (!pos || pos.state === 'CLOSING' || pos.state === 'CLOSED') {
+
+    if (pos.state === 'CLOSING' || pos.state === 'CLOSED') {
       return;
     }
 
     const pnlPct = this.calculatePnLPct(pos);
     const side: 'tp' | 'sl' = pnlPct >= 0 ? 'tp' : 'sl';
-    console.log(`[RiskManager] 🚨 Explicit exit requested for ${mint} (${reason}) at PnL: ${pnlPct.toFixed(2)}%`);
+    console.log(`[RiskManager] 🚨 Explicit exit requested for ${mint} (${reason}) at estimated PnL: ${pnlPct.toFixed(2)}%`);
     await this.triggerExit(pos, side, pnlPct);
   }
 
-  public async triggerExit(pos: ManagedPosition, side: 'tp' | 'sl', pnlPct: number): Promise<void> {
+  public async triggerExit(pos: ManagedPosition, side: 'tp' | 'sl', estimatedPnlPct: number): Promise<void> {
     const mint = pos.mint;
     if (this.exitingMints.has(mint) || pos.state === 'CLOSING' || pos.state === 'CLOSED') return;
 
@@ -424,16 +498,20 @@ export class RiskManager {
       const slippageBps = side === 'tp' ? (pos.slippageBpsTp || 250) : (pos.slippageBpsSl || 1000);
       const label = side === 'tp' ? 'exit_tp' : 'exit_sl';
 
+      // Always sync to true raw balance in integer base units
       if (typeof this.executor.getTokenBalance === 'function') {
         try {
-          const liveAmount = await this.executor.getTokenBalance(mint);
-          if (liveAmount > 0) {
-            pos.amount = liveAmount;
+          const liveTokens = await this.executor.getTokenBalance(mint);
+          if (liveTokens > 0) {
+            const rawLive = Math.floor(liveTokens * (10 ** pos.tokenDecimals));
+            if (rawLive > 0) {
+              pos.amount = rawLive;
+            }
           }
         } catch {}
       }
 
-      console.log(`[RiskManager] ⚡ Executing ${side.toUpperCase()} exit swap for ${mint} at PnL: ${pnlPct.toFixed(2)}% (Amount: ${pos.amount})`);
+      console.log(`[RiskManager] ⚡ Executing ${side.toUpperCase()} exit swap for ${mint} (Amount Raw: ${pos.amount})`);
 
       // Route execution through OrderManager & ExecutionEngine
       const result = await orderManager.executeOrder(
@@ -444,28 +522,28 @@ export class RiskManager {
         label
       );
 
-      pos.state = 'CLOSED';
-      this.exitingMints.delete(mint);
-      this.positions.delete(mint);
+      // Compute actual net SOL received and actual realized PnL
+      const netSolReceived = Math.max(0, (result.outputAmount / 1e9) - (result.feeSol || 0));
+      const actualPnlSol = netSolReceived - (pos.solSpent || 0);
+      const actualPnlPct = pos.solSpent > 0
+        ? (actualPnlSol / pos.solSpent) * 100
+        : (netSolReceived > 0 ? 100 : 0);
 
       // Record in PositionRegistry, TokenRegistry, and TradeHistoryRegistry
-      const netSolReceived = Math.max(0, (result.outputAmount / 1e9) - (result.feeSol || 0));
-      const pnlSol = netSolReceived - (pos.solSpent || 0);
-
-      positionRegistry.closePosition(mint, result.signature, pnlSol, pnlPct);
+      positionRegistry.closePosition(mint, result.signature, actualPnlSol, actualPnlPct);
       tokenRegistry.setExecutionState(mint, 'CLOSED');
 
       tradeHistoryRegistry.recordTrade({
         id: `trade_${Date.now()}_${mint.slice(0, 6)}`,
         mintAddress: mint,
         side: 'SELL',
-        network: useTradingEnvironmentStore.getState().network || 'devnet',
+        network: useTradingEnvironmentStore.getState().network || 'paper',
         amountRaw: pos.amount,
         amountTokens: pos.amount / (10 ** pos.tokenDecimals),
         solAmount: netSolReceived,
         priceSOL: pos.currentPrice,
-        pnlSol,
-        pnlPct,
+        pnlSol: actualPnlSol,
+        pnlPct: actualPnlPct,
         signature: result.signature || 'exit-tx',
         timestamp: Date.now(),
         status: 'CONFIRMED',
@@ -473,14 +551,21 @@ export class RiskManager {
 
       await walletBalanceService.verifyTokenBalanceCleared(mint);
 
+      // Successfully finished all operations - now close and remove position
+      pos.state = 'CLOSED';
+      this.positions.delete(mint);
+      this.exitingMints.delete(mint);
+
       if (this.onExitCallback) {
-        this.onExitCallback(mint, side, result.signature || 'exit-tx', pnlPct, netSolReceived);
+        this.onExitCallback(mint, side, result.signature || 'exit-tx', actualPnlPct, netSolReceived);
       }
     } catch (err: any) {
       const errMsg = err?.message || String(err);
       console.error(`[RiskManager] ❌ Exit error for ${mint}:`, err);
+      
+      // Rollback position state to OPEN so next evaluation tick or retry can execute safely
       this.exitingMints.delete(mint);
-      pos.state = 'OPEN'; // Reset state so next evaluation cycle can retry
+      pos.state = 'OPEN';
 
       const now = Date.now();
       const lastLogged = this.lastExitErrorTimes.get(mint) || 0;
@@ -490,26 +575,14 @@ export class RiskManager {
           this.onExitErrorCallback(mint, side, errMsg);
         }
       }
-
-      if (typeof this.executor.getTokenBalance === 'function') {
-        try {
-          const liveBalance = await this.executor.getTokenBalance(mint);
-          if (liveBalance <= 1000) {
-            pos.state = 'CLOSED';
-            this.positions.delete(mint);
-            useBalanceStore.getState().setTokenBalance(mint, 0);
-            await walletBalanceService.refreshWithRetry(undefined, 3, 400);
-            if (this.onExitCallback) {
-              this.onExitCallback(mint, side, 'recovered-exit-tx', pnlPct);
-            }
-          }
-        } catch {}
-      }
     }
   }
 
+  /**
+   * Returns a copy of active positions to protect internal Map from external mutation.
+   */
   public getPositions(): Map<string, ManagedPosition> {
-    return this.positions;
+    return new Map(this.positions);
   }
 }
 

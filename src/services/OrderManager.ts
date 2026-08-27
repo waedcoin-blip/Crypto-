@@ -1,8 +1,13 @@
 // src/services/OrderManager.ts
 import { SwapResult, ITradeExecutor } from './ITradeExecutor';
-import { executionEngine, ExecutionEngine } from './ExecutionEngine';
-import { TradingNetwork } from '../config/network';
+import { executionEngine } from './ExecutionEngine';
+import { TradingNetwork, getNetworkConfig } from '../config/network';
 import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
+import { usePaperWalletStore } from '../store/paperWalletStore';
+import { useBalanceStore } from '../store/balanceStore';
+import { resolveTokenDecimals } from './PaperTradeExecutor';
+import { Connection } from '@solana/web3.js';
+import { getSignatureStatusRobust } from './jupiterService';
 
 export type OrderState =
   | 'SIGNAL'
@@ -22,25 +27,30 @@ export interface Order {
   id: string;
   mint: string;
   side: 'buy' | 'sell';
-  amount: number;
+  amount: number; // In raw integer units (lamports for buy, token base units for sell)
   slippageBps: number;
+  label?: 'entry' | 'exit_tp' | 'exit_sl';
   network: TradingNetwork;
   state: OrderState;
   createdAt: number;
   updatedAt: number;
   signature?: string;
+  effectivePriceSol?: number;
+  totalCostSol?: number;
+  netProceedsSol?: number;
   error?: string;
   result?: SwapResult;
 }
 
 /**
  * OrderManager: The single authoritative state manager for orders and trade lifecycle.
- * Ensures network-scoped deduplication, token-scoped idempotency, order tracking, and lifecycle progression.
+ * Ensures network-scoped deduplication, token-and-side-scoped idempotency, order tracking,
+ * on-chain confirmation verification, and lifecycle progression.
  */
 export class OrderManager {
   private static instance: OrderManager;
   private orders: Map<string, Order> = new Map();
-  private activeOrdersByNetworkMint: Map<string, string> = new Map();
+  private activeOrdersByNetworkSideMint: Map<string, string> = new Map();
   private executor: ITradeExecutor = executionEngine;
 
   private constructor() {
@@ -68,11 +78,29 @@ export class OrderManager {
       const saved = localStorage.getItem('app_order_history');
       if (saved) {
         const parsed = JSON.parse(saved) as Order[];
+        const now = Date.now();
         for (const order of parsed) {
           this.orders.set(order.id, order);
           const net = order.network || 'devnet';
-          if (['VALIDATING', 'QUOTE_REQUESTED', 'QUOTE_RECEIVED', 'TRANSACTION_BUILDING', 'SIGNING', 'SUBMITTED', 'CONFIRMING'].includes(order.state)) {
-            this.activeOrdersByNetworkMint.set(`${net}_${order.mint}`, order.id);
+          const isPending = [
+            'VALIDATING',
+            'QUOTE_REQUESTED',
+            'QUOTE_RECEIVED',
+            'TRANSACTION_BUILDING',
+            'SIGNING',
+            'SUBMITTED',
+            'CONFIRMING',
+          ].includes(order.state);
+
+          if (isPending) {
+            // If order was created more than 60s ago, expire stale lock to avoid blocking new trades on reload
+            if (now - order.createdAt > 60000) {
+              order.state = 'FAILED';
+              order.error = 'SESSION_RESTORE_TIMEOUT';
+              order.updatedAt = now;
+            } else {
+              this.activeOrdersByNetworkSideMint.set(`${net}_${order.side}_${order.mint}`, order.id);
+            }
           }
         }
       }
@@ -91,14 +119,26 @@ export class OrderManager {
     }
   }
 
-  public createOrder(mint: string, side: 'buy' | 'sell', amount: number, slippageBps: number, customId?: string, network?: TradingNetwork): Order {
+  public createOrder(
+    mint: string,
+    side: 'buy' | 'sell',
+    amount: number,
+    slippageBps: number,
+    customId?: string,
+    network?: TradingNetwork,
+    label?: 'entry' | 'exit_tp' | 'exit_sl'
+  ): Order {
     const net = network || useTradingEnvironmentStore.getState().network || 'devnet';
-    const key = `${net}_${mint}`;
-    const existingActiveId = this.activeOrdersByNetworkMint.get(key);
+    // Key is scoped by network + side + mint, allowing simultaneous entry/exit management
+    const key = `${net}_${side}_${mint}`;
+    const existingActiveId = this.activeOrdersByNetworkSideMint.get(key);
+
     if (existingActiveId) {
       const existing = this.orders.get(existingActiveId);
       if (existing && !['CONFIRMED', 'FAILED', 'RECOVERY_REQUIRED', 'CANCELLED'].includes(existing.state)) {
-        throw new Error(`IDEMPOTENCY LOCK: An active ${existing.side.toUpperCase()} order (${existing.id}) is already in state '${existing.state}' for mint ${mint} on ${net}`);
+        throw new Error(
+          `IDEMPOTENCY LOCK: An active ${existing.side.toUpperCase()} order (${existing.id}) is already in state '${existing.state}' for mint ${mint} on ${net}`
+        );
       }
     }
 
@@ -109,6 +149,7 @@ export class OrderManager {
       side,
       amount,
       slippageBps,
+      label,
       network: net,
       state: 'SIGNAL',
       createdAt: Date.now(),
@@ -116,12 +157,23 @@ export class OrderManager {
     };
 
     this.orders.set(id, order);
-    this.activeOrdersByNetworkMint.set(key, id);
+    this.activeOrdersByNetworkSideMint.set(key, id);
     this.persistOrders();
     return order;
   }
 
-  public transitionState(orderId: string, newState: OrderState, details?: { signature?: string; error?: string; result?: SwapResult }): Order {
+  public transitionState(
+    orderId: string,
+    newState: OrderState,
+    details?: {
+      signature?: string;
+      error?: string;
+      result?: SwapResult;
+      effectivePriceSol?: number;
+      totalCostSol?: number;
+      netProceedsSol?: number;
+    }
+  ): Order {
     const order = this.orders.get(orderId);
     if (!order) {
       throw new Error(`Order ${orderId} not found`);
@@ -132,12 +184,15 @@ export class OrderManager {
     if (details?.signature) order.signature = details.signature;
     if (details?.error) order.error = details.error;
     if (details?.result) order.result = details.result;
+    if (details?.effectivePriceSol !== undefined) order.effectivePriceSol = details.effectivePriceSol;
+    if (details?.totalCostSol !== undefined) order.totalCostSol = details.totalCostSol;
+    if (details?.netProceedsSol !== undefined) order.netProceedsSol = details.netProceedsSol;
 
     if (['CONFIRMED', 'FAILED', 'RECOVERY_REQUIRED', 'CANCELLED'].includes(newState)) {
       const net = order.network || 'devnet';
-      const key = `${net}_${order.mint}`;
-      if (this.activeOrdersByNetworkMint.get(key) === orderId) {
-        this.activeOrdersByNetworkMint.delete(key);
+      const key = `${net}_${order.side}_${order.mint}`;
+      if (this.activeOrdersByNetworkSideMint.get(key) === orderId) {
+        this.activeOrdersByNetworkSideMint.delete(key);
       }
     }
 
@@ -147,8 +202,8 @@ export class OrderManager {
 
   /**
    * Authoritative order execution method: creates order, validates idempotency,
-   * transitions states accurately through full lifecycle, and delegates execution 
-   * solely to the executor matching the order's exact network.
+   * transitions states accurately through full lifecycle, verifies on-chain transaction
+   * confirmation for live/devnet modes, calculates effective price metrics, and updates stores.
    */
   public async executeOrder(
     inputMint: string,
@@ -163,8 +218,8 @@ export class OrderManager {
     const side = isSolBuy ? 'buy' : 'sell';
     const currentNetwork = useTradingEnvironmentStore.getState().network || 'devnet';
 
-    // 1. SIGNAL & Order creation with network-scoped idempotency lock
-    const order = this.createOrder(targetMint, side, amount, slippageBps, undefined, currentNetwork);
+    // 1. SIGNAL & Order creation with side-scoped idempotency lock
+    const order = this.createOrder(targetMint, side, amount, slippageBps, undefined, currentNetwork, label);
 
     // 2. Network-bound executor resolution (Not global mutable executor)
     const executor = executionEngine.getExecutorForNetwork(order.network);
@@ -172,7 +227,7 @@ export class OrderManager {
     try {
       // 3. VALIDATING
       this.transitionState(order.id, 'VALIDATING');
-      if (amount <= 0) {
+      if (amount <= 0 || !Number.isFinite(amount)) {
         throw new Error(`INVALID_ORDER: Amount must be > 0. Received ${amount}`);
       }
 
@@ -200,17 +255,64 @@ export class OrderManager {
         this.transitionState(order.id, 'SUBMITTED', { signature: result.signature });
       }
 
-      // 7. CONFIRMING & CONFIRMED
+      // 7. CONFIRMING & On-Chain Verification
       this.transitionState(order.id, 'CONFIRMING');
+
+      if (order.network !== 'paper' && !result.simulated && result.signature) {
+        const netConfig = getNetworkConfig(order.network);
+        const connection = new Connection(netConfig.rpcUrl, 'confirmed');
+        const status = await getSignatureStatusRobust(connection, result.signature);
+
+        if (status?.err) {
+          throw new Error(`ON_CHAIN_TRANSACTION_FAILED: ${JSON.stringify(status.err)}`);
+        }
+      }
+
+      // 8. Effective execution price & proceeds computation
+      let effectivePriceSol = 0;
+      let totalCostSol = 0;
+      let netProceedsSol = 0;
+
+      let decimals = 6;
+      try {
+        decimals = resolveTokenDecimals(targetMint);
+      } catch {
+        decimals = 6;
+      }
+
+      if (isSolBuy) {
+        totalCostSol = result.totalCostSol || (result.inputAmount / 1e9) + (result.feeSol || 0);
+        const tokenQty = result.outputAmount / (10 ** decimals);
+        if (tokenQty > 0) {
+          effectivePriceSol = totalCostSol / tokenQty;
+        }
+      } else {
+        const tokenQty = result.inputAmount / (10 ** decimals);
+        netProceedsSol = Math.max(0, (result.outputAmount / 1e9) - (result.feeSol || 0));
+        if (tokenQty > 0) {
+          effectivePriceSol = netProceedsSol / tokenQty;
+        }
+      }
+
+      // 9. CONFIRMED
       this.transitionState(order.id, 'CONFIRMED', {
         signature: result.signature,
         result,
+        effectivePriceSol,
+        totalCostSol: isSolBuy ? totalCostSol : undefined,
+        netProceedsSol: !isSolBuy ? netProceedsSol : undefined,
       });
+
+      // 10. Sync wallet balance store
+      if (order.network === 'paper') {
+        usePaperWalletStore.getState().syncToBalanceStore();
+      }
 
       return result;
     } catch (err: any) {
+      const errorMsg = err?.message || String(err);
       this.transitionState(order.id, 'FAILED', {
-        error: err.message || String(err),
+        error: errorMsg,
       });
       throw err;
     }
@@ -218,10 +320,13 @@ export class OrderManager {
 
   public getActiveOrderForMint(mint: string, network?: TradingNetwork): Order | undefined {
     const net = network || useTradingEnvironmentStore.getState().network || 'devnet';
-    const key = `${net}_${mint}`;
-    const activeId = this.activeOrdersByNetworkMint.get(key);
-    if (!activeId) return undefined;
-    return this.orders.get(activeId);
+    const buyKey = `${net}_buy_${mint}`;
+    const sellKey = `${net}_sell_${mint}`;
+    const activeBuyId = this.activeOrdersByNetworkSideMint.get(buyKey);
+    if (activeBuyId) return this.orders.get(activeBuyId);
+    const activeSellId = this.activeOrdersByNetworkSideMint.get(sellKey);
+    if (activeSellId) return this.orders.get(activeSellId);
+    return undefined;
   }
 
   public getOrder(orderId: string): Order | undefined {
@@ -234,4 +339,3 @@ export class OrderManager {
 }
 
 export const orderManager = OrderManager.getInstance();
-

@@ -4020,7 +4020,7 @@ const checkTokenCriteria = (mint: string): {
           : (configRef.current.stopLossPct || 15));
         targetSl = Math.abs(targetSl);
 
-        const lamportsTotal = pos.amountLamports || (pos.amount > 0 ? Math.floor(pos.amount * Math.pow(10, pos.decimals || 6)) : 1000000);
+        const lamportsTotal = pos.amountLamports || (pos.amount > 0 ? Math.floor(pos.amount * Math.pow(10, pos.decimals ?? 6)) : 1000000);
         exitMgr.addPosition({
           mint,
           amount: lamportsTotal,
@@ -4028,7 +4028,7 @@ const checkTokenCriteria = (mint: string): {
           solSpent: pos.solSpent || 0,
           tpPct: targetTp,
           slPct: targetSl,
-          tokenDecimals: pos.decimals ?? 0,
+          tokenDecimals: pos.decimals ?? 6,
         });
         if (pos.currentPrice && pos.currentPrice > 0) {
           exitMgr.onPriceUpdate(mint, pos.currentPrice, Date.now());
@@ -4105,7 +4105,7 @@ const checkTokenCriteria = (mint: string): {
             solSpent: pos.solSpent || 0,
             tpPct: targetTp,
             slPct: targetSl,
-            tokenDecimals: pos.decimals ?? 0,
+            tokenDecimals: pos.decimals ?? 6,
           });
           if (pos.currentPrice && pos.currentPrice > 0) {
             positionExitManagerRef.current.onPriceUpdate(mint, pos.currentPrice, Date.now());

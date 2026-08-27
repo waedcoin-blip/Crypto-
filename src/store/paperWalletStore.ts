@@ -5,12 +5,16 @@ import { useBalanceStore } from './balanceStore';
 
 const STORAGE_KEY = 'app_paper_wallet_data';
 const DEFAULT_INITIAL_SOL = 10.0;
+const DUST_THRESHOLD = 1e-10;
 
 export interface PaperPosition {
   mint: string;
   quantity: number;
   avgEntryPriceSol: number;
   totalCostSol: number;
+  realizedPnlSol?: number;
+  realizedPnlPct?: number;
+  lastSoldAt?: number;
   lastUpdatedAt: number;
 }
 
@@ -27,7 +31,7 @@ interface PaperWalletState extends PaperWalletData {
   setTokenBalance: (mint: string, balance: number) => void;
   adjustTokenBalance: (mint: string, delta: number) => void;
   recordBuyPosition: (mint: string, tokenQuantity: number, totalCostSol: number) => void;
-  recordSellPosition: (mint: string, tokenQuantity: number) => void;
+  recordSellPosition: (mint: string, tokenQuantity: number, proceedsSol?: number) => void;
   getPosition: (mint: string) => PaperPosition | undefined;
   resetPaperWallet: (initialSol?: number) => void;
   addPaperSol: (amount: number) => void;
@@ -120,10 +124,15 @@ export const usePaperWalletStore = create<PaperWalletState>((set, get) => {
 
     setTokenBalance: (mint, balance) => {
       const clamped = Math.max(0, balance);
-      const nextTokens = { ...get().tokenBalances, [mint]: clamped };
+      const nextTokens = { ...get().tokenBalances, [mint]: clamped <= DUST_THRESHOLD ? 0 : clamped };
       const nextPositions = { ...get().positions };
-      if (clamped <= 0) {
-        delete nextPositions[mint];
+      if (clamped <= DUST_THRESHOLD && nextPositions[mint]) {
+        nextPositions[mint] = {
+          ...nextPositions[mint],
+          quantity: 0,
+          totalCostSol: 0,
+          lastUpdatedAt: Date.now(),
+        };
       }
       set({ tokenBalances: nextTokens, positions: nextPositions });
       persistData({ ...get(), tokenBalances: nextTokens, positions: nextPositions });
@@ -133,10 +142,15 @@ export const usePaperWalletStore = create<PaperWalletState>((set, get) => {
     adjustTokenBalance: (mint, delta) => {
       const current = get().tokenBalances[mint] || 0;
       const next = Math.max(0, current + delta);
-      const nextTokens = { ...get().tokenBalances, [mint]: next };
+      const nextTokens = { ...get().tokenBalances, [mint]: next <= DUST_THRESHOLD ? 0 : next };
       const nextPositions = { ...get().positions };
-      if (next <= 0) {
-        delete nextPositions[mint];
+      if (next <= DUST_THRESHOLD && nextPositions[mint]) {
+        nextPositions[mint] = {
+          ...nextPositions[mint],
+          quantity: 0,
+          totalCostSol: 0,
+          lastUpdatedAt: Date.now(),
+        };
       }
       set({ tokenBalances: nextTokens, positions: nextPositions });
       persistData({ ...get(), tokenBalances: nextTokens, positions: nextPositions });
@@ -144,14 +158,19 @@ export const usePaperWalletStore = create<PaperWalletState>((set, get) => {
     },
 
     recordBuyPosition: (mint, tokenQuantity, totalCostSol) => {
-      if (tokenQuantity <= 0) return;
+      if (tokenQuantity <= 0 || totalCostSol <= 0) {
+        console.warn(`[PaperWalletStore] Invalid buy position: qty=${tokenQuantity}, cost=${totalCostSol}`);
+        return;
+      }
+
       const existing = get().positions[mint];
       let updatedPos: PaperPosition;
 
-      if (existing && existing.quantity > 0) {
+      if (existing && existing.quantity > DUST_THRESHOLD) {
         const newQty = existing.quantity + tokenQuantity;
         const newCost = existing.totalCostSol + totalCostSol;
         updatedPos = {
+          ...existing,
           mint,
           quantity: newQty,
           totalCostSol: newCost,
@@ -164,6 +183,8 @@ export const usePaperWalletStore = create<PaperWalletState>((set, get) => {
           quantity: tokenQuantity,
           totalCostSol,
           avgEntryPriceSol: tokenQuantity > 0 ? totalCostSol / tokenQuantity : 0,
+          realizedPnlSol: existing?.realizedPnlSol || 0,
+          realizedPnlPct: existing?.realizedPnlPct || 0,
           lastUpdatedAt: Date.now(),
         };
       }
@@ -175,23 +196,52 @@ export const usePaperWalletStore = create<PaperWalletState>((set, get) => {
       sync();
     },
 
-    recordSellPosition: (mint, tokenQuantitySold) => {
+    recordSellPosition: (mint, tokenQuantitySold, proceedsSol?: number) => {
       if (tokenQuantitySold <= 0) return;
       const existing = get().positions[mint];
       const currentBal = get().tokenBalances[mint] || 0;
       const nextBal = Math.max(0, currentBal - tokenQuantitySold);
 
-      const nextTokens = { ...get().tokenBalances, [mint]: nextBal };
+      const nextTokens = { ...get().tokenBalances, [mint]: nextBal <= DUST_THRESHOLD ? 0 : nextBal };
       const nextPositions = { ...get().positions };
 
-      if (nextBal <= 0.00000001 || !existing) {
-        delete nextPositions[mint];
-      } else {
+      // Calculate realized PnL on the sold portion
+      let realizedPnlSol = existing?.realizedPnlSol || 0;
+      let realizedPnlPct = existing?.realizedPnlPct || 0;
+
+      if (existing && existing.quantity > DUST_THRESHOLD) {
+        const soldFraction = Math.min(1, tokenQuantitySold / existing.quantity);
+        const soldCostBasis = existing.totalCostSol * soldFraction;
+        if (proceedsSol !== undefined && proceedsSol >= 0) {
+          const tradePnlSol = proceedsSol - soldCostBasis;
+          const tradePnlPct = soldCostBasis > 0 ? (tradePnlSol / soldCostBasis) * 100 : 0;
+          realizedPnlSol += tradePnlSol;
+          realizedPnlPct = tradePnlPct;
+        }
+      }
+
+      if (nextBal <= DUST_THRESHOLD) {
+        if (existing) {
+          nextPositions[mint] = {
+            ...existing,
+            quantity: 0,
+            totalCostSol: 0,
+            realizedPnlSol,
+            realizedPnlPct,
+            lastSoldAt: Date.now(),
+            lastUpdatedAt: Date.now(),
+          };
+        }
+        nextTokens[mint] = 0;
+      } else if (existing) {
         const remainingFraction = nextBal / existing.quantity;
         nextPositions[mint] = {
           ...existing,
           quantity: nextBal,
           totalCostSol: existing.totalCostSol * remainingFraction,
+          realizedPnlSol,
+          realizedPnlPct,
+          lastSoldAt: Date.now(),
           lastUpdatedAt: Date.now(),
         };
       }
