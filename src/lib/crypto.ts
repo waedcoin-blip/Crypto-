@@ -2,25 +2,34 @@ import { Buffer } from 'buffer';
 
 const ALGO = 'AES-GCM';
 const IV_LENGTH = 12;
+const SALT = new TextEncoder().encode('solana_bot_pbkdf2_salt_v1');
 
 async function deriveKey(uid: string, customPassword?: string): Promise<CryptoKey> {
   const enc = new TextEncoder();
   const secretMaterial = (uid || 'default_app_offline_salt') + (customPassword || '');
-  const raw = await crypto.subtle.digest('SHA-256', enc.encode(secretMaterial));
-  return crypto.subtle.importKey(
+  const baseKey = await crypto.subtle.importKey(
     'raw',
-    raw,
-    { name: ALGO },
+    enc.encode(secretMaterial),
+    'PBKDF2',
+    false,
+    ['deriveKey']
+  );
+  return crypto.subtle.deriveKey(
+    {
+      name: 'PBKDF2',
+      salt: SALT,
+      iterations: 100000,
+      hash: 'SHA-256',
+    },
+    baseKey,
+    { name: ALGO, length: 256 },
     false,
     ['encrypt', 'decrypt']
   );
 }
 
 /**
- * Encrypts a Solana base58 private key using AES-GCM.
- * @param base58Key The raw private key string
- * @param uid The user's UID to derive the AES key
- * @param sessionPassword Optional user password
+ * Encrypts a Solana base58 private key or sensitive secret using AES-GCM (PBKDF2 100k rounds).
  */
 export async function encryptPrivateKey(base58Key: string, uid: string, sessionPassword?: string): Promise<string> {
   if (!base58Key) return '';
@@ -45,18 +54,26 @@ export async function encryptPrivateKey(base58Key: string, uid: string, sessionP
 
 /**
  * Decrypts a previously encrypted base58 private key.
- * Supports backward-compatibility for plaintext keys.
- * @param encryptedBase64 The base64 encrypted string (or plaintext legacy key)
- * @param uid The user's UID to derive the AES key
- * @param sessionPassword Optional user password
+ * Detects legacy plaintext keys and automatically re-encrypts them via onMigrate callback.
  */
-export async function decryptPrivateKey(encryptedBase64: string, uid: string, sessionPassword?: string): Promise<string> {
+export async function decryptPrivateKey(
+  encryptedBase64: string,
+  uid: string,
+  sessionPassword?: string,
+  onMigrate?: (newEncrypted: string) => void
+): Promise<string> {
   if (!encryptedBase64) return '';
-  // Simple check: if it is a valid Solana Base58 private key format (typically ~88 chars of base58 characters),
-  // return as-is for backward compatibility.
+
+  // Check if it is a legacy plaintext Base58 key
   if (encryptedBase64.length >= 80 && /^[1-9A-HJ-NP-Za-km-z]+$/.test(encryptedBase64)) {
+    if (onMigrate) {
+      encryptPrivateKey(encryptedBase64, uid, sessionPassword).then((reEncrypted) => {
+        onMigrate(reEncrypted);
+      }).catch(() => {});
+    }
     return encryptedBase64;
   }
+
   try {
     const key = await deriveKey(uid, sessionPassword);
     const combined = new Uint8Array(Buffer.from(encryptedBase64, 'base64'));
@@ -70,19 +87,27 @@ export async function decryptPrivateKey(encryptedBase64: string, uid: string, se
     );
     return new TextDecoder().decode(plainBuf);
   } catch (err) {
-    // Try fallback without custom password if custom password failed (migration compatibility)
-    if (sessionPassword) {
-      try {
-        const fallbackKey = await deriveKey(uid);
-        const combined = new Uint8Array(Buffer.from(encryptedBase64, 'base64'));
-        const iv = combined.slice(0, IV_LENGTH);
-        const cipherText = combined.slice(IV_LENGTH);
-        const plainBuf = await crypto.subtle.decrypt({ name: ALGO, iv }, fallbackKey, cipherText);
-        return new TextDecoder().decode(plainBuf);
-      } catch {
-        // Fallthrough
+    // Legacy migration fallback for SHA-256 single-pass
+    try {
+      const enc = new TextEncoder();
+      const secretMaterial = (uid || 'default_app_offline_salt') + (sessionPassword || '');
+      const raw = await crypto.subtle.digest('SHA-256', enc.encode(secretMaterial));
+      const legacyKey = await crypto.subtle.importKey('raw', raw, { name: ALGO }, false, ['decrypt']);
+      const combined = new Uint8Array(Buffer.from(encryptedBase64, 'base64'));
+      const iv = combined.slice(0, IV_LENGTH);
+      const cipherText = combined.slice(IV_LENGTH);
+      const plainBuf = await crypto.subtle.decrypt({ name: ALGO, iv }, legacyKey, cipherText);
+      const decryptedPlaintext = new TextDecoder().decode(plainBuf);
+      
+      // Auto-migrate legacy SHA-256 cipher to PBKDF2 100k rounds
+      if (onMigrate) {
+        encryptPrivateKey(decryptedPlaintext, uid, sessionPassword).then((reEncrypted) => {
+          onMigrate(reEncrypted);
+        }).catch(() => {});
       }
+      return decryptedPlaintext;
+    } catch {
+      return encryptedBase64;
     }
-    return encryptedBase64;
   }
 }

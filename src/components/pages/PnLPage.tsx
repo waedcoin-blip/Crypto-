@@ -2815,16 +2815,10 @@ export const PnLPage = ({
           };
           changed = true;
 
-          // Direct redundant TP/SL evaluation on immediate price arrival
-          if (isRunning) {
-            const pnlPct100 = calcNetPnlPct * 100;
-            const tpTarget = pos.tpPct ?? (configRef.current.minTakeProfit || 25);
-            const slTarget = Math.abs(pos.slPct ?? (configRef.current.stopLossPct || 15));
-            if (pnlPct100 >= tpTarget) {
-              void executeSell(mint, freshPrice, pnlPct100, 'TAKE_PROFIT_TRIGGERED');
-            } else if (pnlPct100 <= -slTarget) {
-              void executeSell(mint, freshPrice, pnlPct100, 'STOP_LOSS_TRIGGERED');
-            }
+          // Feed price updates directly to RiskManager
+          positionExitManagerRef.current?.onPriceUpdate(mint, freshPrice, Date.now());
+          if (masterMonitorRef.current) {
+            masterMonitorRef.current.pushPriceUpdate(mint, freshPrice, Date.now(), 'price_tracker');
           }
         });
 
@@ -2883,17 +2877,7 @@ export const PnLPage = ({
             };
             changed = true;
 
-            // Direct redundant TP/SL evaluation on incoming price tick
-            if (isRunning) {
-              const pnlPct100 = calcNetPnlPct * 100;
-              const tpTarget = next[mint].tpPct ?? (configRef.current.minTakeProfit || 25);
-              const slTarget = Math.abs(next[mint].slPct ?? (configRef.current.stopLossPct || 15));
-              if (pnlPct100 >= tpTarget) {
-                void executeSell(mint, freshPrice, pnlPct100, 'TAKE_PROFIT_TRIGGERED');
-              } else if (pnlPct100 <= -slTarget) {
-                void executeSell(mint, freshPrice, pnlPct100, 'STOP_LOSS_TRIGGERED');
-              }
-            }
+            // State updated; RiskManager handles TP/SL evaluation asynchronously
           }
         }
       });
@@ -3276,7 +3260,8 @@ export const PnLPage = ({
       throw new Error("Authentication required: Please sign in with Google/Firebase before placing real on-chain orders.");
     }
 
-    if (!privateKey) throw new Error("Private Key missing");
+    const currentMode = tradeManager.getExecutor().mode;
+    if (currentMode !== 'paper' && !privateKey) throw new Error("Private Key missing");
     
     const slippageToUse = customSlippageBps !== undefined ? customSlippageBps : Math.floor(slippage * 100);
     const intent = inputMint === SOL_MINT ? 'entry' : 'exit_tp';
@@ -4052,7 +4037,7 @@ const checkTokenCriteria = (mint: string): {
           mint,
           amount: lamportsTotal,
           buyPrice: pos.buyPrice || 0,
-          solSpent: pos.solSpent || 0.1,
+          solSpent: pos.solSpent || 0,
           tpPct: targetTp,
           slPct: targetSl,
           tokenDecimals: pos.decimals ?? 0,
@@ -4129,7 +4114,7 @@ const checkTokenCriteria = (mint: string): {
             mint,
             amount: lamportsTotal > 0 ? lamportsTotal : 1000000,
             buyPrice: pos.buyPrice || 0,
-            solSpent: pos.solSpent || 0.1,
+            solSpent: pos.solSpent || 0,
             tpPct: targetTp,
             slPct: targetSl,
             tokenDecimals: pos.decimals ?? 0,
@@ -4918,8 +4903,7 @@ const checkTokenCriteria = (mint: string): {
           pipelineCountersRef.current.validMetrics += validMetricsCount;
         }
       } catch (err: any) {
-        addLog(`⚠️ [DEXSCREENER ENGINE] Error during DexScreener polling: ${err.message}. Triggering simulator.`, 'warn');
-        runHighFidelitySimulator();
+        addLog(`⚠️ [DEXSCREENER ENGINE] Transient error during DexScreener polling: ${err.message}. Retrying on next tick.`, 'warn');
       }
     };
 

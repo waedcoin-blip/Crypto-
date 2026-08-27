@@ -74,9 +74,9 @@ export class NetworkGuard {
       if (err.message?.includes('GENESIS HASH MISMATCH')) {
         throw err;
       }
-      // If RPC provider blocks getGenesisHash, fallback to URL assertions
-      console.warn(`[NetworkGuard] getGenesisHash probe failed on ${rpcUrl}: ${err.message}`);
-      return true;
+      // Fail closed: Do NOT allow execution if cluster identity cannot be verified
+      console.error(`[NetworkGuard] getGenesisHash probe failed on ${rpcUrl}: ${err.message}`);
+      throw new Error(`NETWORK SECURITY BLOCK: Unable to verify cluster genesis hash on RPC ${rpcUrl}. Execution aborted.`);
     }
   }
 

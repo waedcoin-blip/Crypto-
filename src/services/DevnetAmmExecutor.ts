@@ -177,15 +177,9 @@ export class DevnetAmmExecutor implements ITradeExecutor {
 
     try {
       const activeWallet = this.getActiveWallet();
-      let kp = activeWallet.keypair;
+      const kp = activeWallet.keypair;
       if (!kp) {
-        kp = getOrCreateSessionKeypair();
-        useActiveWalletStore.getState().setActiveWallet({
-          ...activeWallet,
-          keypair: kp,
-          address: kp.publicKey.toBase58(),
-          version: activeWallet.version + 1,
-        });
+        throw new Error('KEYPAIR_REQUIRED: Active devnet wallet does not contain a signing private key. Please connect/import your devnet keypair.');
       }
 
       const userPk = kp.publicKey;

@@ -213,7 +213,8 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
                 const postBal = txDetails.meta.postBalances[userIdx];
                 const feeLamports = (userIdx === 0 && txDetails.meta.fee) ? txDetails.meta.fee : 0;
                 const grossLamports = postBal - preBal + feeLamports;
-                if (grossLamports > 0) {
+                // Only accept account delta if it is within 20% of quote output to exclude rent refunds
+                if (grossLamports > 0 && outAmountNum > 0 && Math.abs(grossLamports - outAmountNum) / outAmountNum <= 0.20) {
                   actualOutputAmountLamports = grossLamports;
                 }
               }

@@ -154,7 +154,10 @@ export class WalletBalanceService {
         return sol;
       }
 
-      await devnetShadowMintCache.ensureInitialized();
+      const isDevnet = this.network === 'devnet';
+      if (isDevnet) {
+        await devnetShadowMintCache.ensureInitialized();
+      }
 
       const allAccounts = [...tokenAccounts.value, ...t22Accounts.value];
       const tokenBalances: Record<string, number> = {};
@@ -163,7 +166,7 @@ export class WalletBalanceService {
         const parsed = account.data.parsed?.info;
         if (!parsed) continue;
         const rawMint: string = parsed.mint;
-        const mappedMint = devnetShadowMintCache.resolveMainnetMint(rawMint);
+        const mappedMint = isDevnet ? devnetShadowMintCache.resolveMainnetMint(rawMint) : rawMint;
         if (this.pendingClearedMints.has(mappedMint) || this.pendingClearedMints.has(rawMint)) {
           tokenBalances[mappedMint] = 0;
           continue;
@@ -211,7 +214,7 @@ export class WalletBalanceService {
       this.connection = new Connection(config.rpcUrl, 'confirmed');
     }
     const owner = new PublicKey(address);
-    const resolvedMint = devnetShadowMintCache.resolveDevnetMint(mint);
+    const resolvedMint = (this.network === 'devnet') ? devnetShadowMintCache.resolveDevnetMint(mint) : mint;
     const mintPk = new PublicKey(resolvedMint);
 
     // Fetch parsed token accounts for target mint (covers both legacy SPL and Token-2022)

@@ -61,7 +61,8 @@ import { marketDataManager } from './services/marketDataManager';
 import { rpcHealthManager } from './services/rpcHealthManager';
 import { masterMonitorHealthManager } from './services/MasterMonitorHealthManager';
 import { syncManager } from './services/SyncService';
-import { RealTradeExecutor } from './services/RealTradeExecutor';
+import { orderManager } from './services/OrderManager';
+import { resolveTokenDecimals } from './services/PaperTradeExecutor';
 import { StartupReconciliation } from './services/StartupReconciliation';
 
 
@@ -1208,7 +1209,7 @@ function App() {
 
           if (!amountLamports || amountLamports === 0) continue;
 
-          const realCostBasis = position.solSpent || position.entryPriceSol || 0.1;
+          const realCostBasis = position.solSpent || ((position.entryPriceSol || 0) * (position.amount || 0));
           const currentPriceSol = (token.priceNative || (token.priceUsd ? token.priceUsd / getSolPriceUsd() : 0));
           const posTokensQty = position.amount || 0;
           const netPnlResult = calcNetPnl(currentPriceSol, posTokensQty, realCostBasis, state.slippage, position.recoveryMode, true);
@@ -1760,63 +1761,31 @@ function App() {
     
     optimisticPositions.current.add(tokenAddress);
 
-
-    if (!isLiveTrading && getTradingBalance() < buyAmountSol) {
-      addNotification(`Insufficient Simulation Balance (Need ${buyAmountSol} SOL)`);
-      return;
-    }
-
     setTradingStatus(`Executing Matrix Buy: ${symbol}...`);
     try {
-      let signature = 'SIM_MANUAL_BUY_' + Math.random().toString(36).substring(7);
-      
       const lamports = Math.floor(buyAmountSol * 1_000_000_000);
-      const liquidityUsd = tokenMetrics[tokenAddress]?.liquidity || 0;
-      
-      const quote = await getJupiterQuote(
-        'So11111111111111111111111111111111111111112', // SOL
+      const slippageBps = Math.round((slippage || 1) * 100);
+
+      const swapRes = await orderManager.executeOrder(
+        'So11111111111111111111111111111111111111112',
         tokenAddress,
         lamports,
-        liquidityUsd
+        slippageBps,
+        'entry'
       );
-      if (!quote) throw new Error("Jupiter returned no quote (MARKET_NOT_FOUND).");
 
-      let outTokensRaw = quote.outAmount;
+      const signature = swapRes.signature;
+      const outTokensRaw = swapRes.outputAmount ? swapRes.outputAmount.toString() : '0';
 
-      if (isLiveTrading) {
-        if (!activeAddress) {
-          throw new Error("No wallet connected for Live Trading");
-        }
-        const walletAddress = activeAddress!;
-        const solBalance = await connection.getBalance(new PublicKey(walletAddress));
-        
-        if (solBalance < lamports) {
-          throw new Error("Insufficient real SOL balance for trade.");
-        } else {
-          const amountLamports = Math.floor(buyAmountSol * 1_000_000_000);
-          const executor = new RealTradeExecutor();
-          const swapRes = await executor.swap(
-            'So11111111111111111111111111111111111111112',
-            tokenAddress,
-            amountLamports,
-            Math.round((slippage || 1) * 100),
-            'entry'
-          );
-          if (swapRes && swapRes.outputAmount > 0) {
-            outTokensRaw = swapRes.outputAmount.toString();
-          }
-          signature = swapRes.signature;
-        }
-      }
       const security = await fetchTokenSecurityData(tokenAddress);
       
       const entryCost = buyAmountSol;
       const currentPriceUsd = security?.priceUsd ?? (tokenMetrics[tokenAddress]?.priceUsd || 0.0000001);
       
-      // Separate actual token amount from SOL spent
+      const outDecimals = resolveTokenDecimals(tokenAddress);
       let entryAmountTokens = 0;
       if (outTokensRaw && Number(outTokensRaw) > 0) {
-        entryAmountTokens = Number(outTokensRaw) / 1_000_000;
+        entryAmountTokens = Number(outTokensRaw) / Math.pow(10, outDecimals);
       } else {
         const solPriceUsd = getSolPriceUsd();
         if (solPriceUsd > 0 && currentPriceUsd > 0) {
@@ -1896,115 +1865,55 @@ function App() {
     setTradingStatus(`Partial Sell ${symbol} (${(percent*100).toFixed(0)}%)...`);
     
     try {
-      
-      let signature = 'SIM_PS_' + Math.random().toString(36).substring(7);
+      const positionTokens = position.amount || 0;
+      const tokensToSell = positionTokens * percent;
+      const decimals = resolveTokenDecimals(tokenAddress);
+      const sellAmountRaw = Math.floor(tokensToSell * Math.pow(10, decimals));
 
-      if (isLiveTrading) {
-        if (!activeAddress) throw new Error("Wallet not connected");
-        
-        const walletAddress = activeAddress!;
-        const balanceRaw = await getTokenBalanceRaw(connection, walletAddress, tokenAddress);
-        const sellAmountRaw = Math.floor(Number(balanceRaw) * percent);
-        
-        if (sellAmountRaw === 0) {
-           
-        } else {
-           // PROFIT PROTECTION LOGIC
-           const targetProfit = minTakeProfit; // Use min profit for Tier 1 partial sell
-           
-           const quote = await getJupiterQuote(
-             tokenAddress,
-             'So11111111111111111111111111111111111111112',
-             sellAmountRaw,
-             tokenMetrics[tokenAddress]?.liquidity || 0,
-             (position.entryPriceSol || 0.1) * percent,
-             targetProfit
-           );
-
-           if (!quote) throw new Error("No route for partial sell");
-
-           const guaranteedMinLamports = Number(quote.otherAmountThreshold);
-           const guaranteedSolOut = guaranteedMinLamports / 1_000_000_000.0;
-           const networkFeesSol = 0.003;
-           const realNetReturnSol = guaranteedSolOut - networkFeesSol;
-
-           const entryCostForFraction = (position.entryPriceSol || 0.1) * percent;
-
-           if (realNetReturnSol <= entryCostForFraction) {
-             console.log(`[ABORT] Partial sell blocked. Real net return ${realNetReturnSol.toFixed(4)} SOL <= cost ${entryCostForFraction.toFixed(4)} SOL`);
-             addNotification(`Slippage Guard: Aborted partial sell for ${symbol} to avoid slip into loss.`);
-             setTradingStatus('Idle');
-             return;
-           }
-
-           const realNetProfitPct = ((realNetReturnSol - entryCostForFraction) / entryCostForFraction) * 100.0;
-
-           // Execute
-           const executor = new RealTradeExecutor();
-           const swapRes = await executor.swap(
-             tokenAddress,
-             'So11111111111111111111111111111111111111112',
-             sellAmountRaw,
-             Math.round((slippage || 1) * 100),
-             'exit_tp'
-           );
-           signature = swapRes.signature;
-        }
-      } else {
-        // Simulation Profit Guard for Partial
-        const metric = tokenMetrics[tokenAddress];
-        const entryRatio = position.entryPrice && position.entryPrice > 0 
-          ? position.entryPrice 
-          : (position.entryPriceSol ? position.entryPriceSol * getSolPriceUsd() : 0);
-        if (!entryRatio) {
-          console.warn(`[PartialSell Abort] Missing valid entry price for ${symbol}`);
-          setTradingStatus('Idle');
-          return;
-        }
-        const currentRatio = (metric?.priceUsd && metric?.priceUsd > 0 ? metric.priceUsd : entryRatio);
-        
-        const posAmount = position.amount ?? 0;
-        const simulatedGross = (posAmount * percent) * (currentRatio / entryRatio);
-        const slippageFeeCalc = simulatedGross * (slippage / 100);
-        const swapFeeBaseCalc = simulatedGross * 0.01; 
-        const simulatedNet = Math.max(0, simulatedGross - slippageFeeCalc - swapFeeBaseCalc);
-        
-        let initialSolCost = posAmount * percent;
-        if (slippage && slippage < 100) {
-           initialSolCost = (posAmount * percent) / (1 - (slippage / 100)); 
-        }
-        
-        const realNetProfitPct = ((simulatedNet / initialSolCost) - 1) * 100;
-        
-        if (realNetProfitPct <= 0) {
-           console.log(`[SIM ABORT] Partial sell blocked. Real net ${realNetProfitPct.toFixed(2)}% loss.`);
-           addNotification(`Profit Guard (SIM): Aborted ${symbol} partial sell to prevent ${realNetProfitPct.toFixed(1)}% loss.`);
-           setTradingStatus('Idle');
-           return;
-        }
-
-        await new Promise(resolve => setTimeout(resolve, 800));
-        
-        // Simulation balance update removed for real trading
-
+      if (sellAmountRaw <= 0) {
+        setTradingStatus('Idle');
+        return;
       }
 
-      setActivePositions(prev => {
-        const p = prev[tokenAddress];
-        if (!p) return prev;
-        return {
+      const slippageBps = Math.round((slippage || 1) * 100);
+
+      const swapRes = await orderManager.executeOrder(
+        tokenAddress,
+        'So11111111111111111111111111111111111111112',
+        sellAmountRaw,
+        slippageBps,
+        'exit_tp'
+      );
+
+      const signature = swapRes.signature;
+      const solReceived = swapRes.outputAmount ? (swapRes.outputAmount / 1e9) - (swapRes.feeSol || 0) : 0;
+      const fractionCostBasis = position.solSpent ? position.solSpent * percent : (position.entryPriceSol || 0) * positionTokens * percent;
+      const realizedPnL = fractionCostBasis > 0 ? ((solReceived - fractionCostBasis) / fractionCostBasis) * 100 : 0;
+
+      addNotification(`PARTIAL SELL SUCCESS: ${symbol} (${(percent * 100).toFixed(0)}%) - Realized: ${solReceived.toFixed(4)} SOL (${realizedPnL >= 0 ? '+' : ''}${realizedPnL.toFixed(2)}%)`);
+
+      const remainingAmount = Math.max(0, positionTokens - tokensToSell);
+      if (remainingAmount <= 0) {
+        setActivePositions(prev => {
+          const next = { ...prev };
+          delete next[tokenAddress];
+          return next;
+        });
+        optimisticPositions.current.delete(tokenAddress);
+      } else {
+        setActivePositions(prev => ({
           ...prev,
           [tokenAddress]: {
-            ...p,
-            amount: (p.amount ?? 0) * (1 - percent),
-            entryPriceSol: p.entryPriceSol ? p.entryPriceSol * (1 - percent) : undefined,
-            solSpent: p.solSpent ? p.solSpent * (1 - percent) : undefined,
-            entryFeesSol: p.entryFeesSol ? p.entryFeesSol * (1 - percent) : undefined,
+            ...position,
+            amount: remainingAmount,
+            entryPriceSol: position.entryPriceSol ? position.entryPriceSol * (1 - percent) : undefined,
+            solSpent: position.solSpent ? position.solSpent * (1 - percent) : undefined,
+            entryFeesSol: position.entryFeesSol ? position.entryFeesSol * (1 - percent) : undefined,
             soldPartial: true
           }
-        };
-      });
-      addNotification(`Sold ${percent*100}% of ${symbol} successfully. PN: ${signature.slice(0,8)}`);
+        }));
+      }
+
       setTradingStatus('Idle');
     } catch (e: any) {
       console.error(e);
@@ -2079,7 +1988,7 @@ function App() {
             'So11111111111111111111111111111111111111112', 
             sellRawAmount, 
             metric?.liquidity || 0,
-            curPnLPercent > (position.tpPct ?? minTakeProfit) ? (position.entryPriceSol || 0.1) : undefined,
+            curPnLPercent > (position.tpPct ?? minTakeProfit) ? (position.solSpent || (position.entryPriceSol || 0) * (position.amount || 0)) : undefined,
             curPnLPercent > (position.tpPct ?? minTakeProfit) ? (position.tpPct ?? minTakeProfit) : undefined,
             curPnLPercent
           );
@@ -2088,7 +1997,7 @@ function App() {
         }
       }
 
-      const currentCostBasisSol = position.solSpent || position.entryPriceSol || 0.1;
+      const currentCostBasisSol = position.solSpent || ((position.entryPriceSol || 0) * (position.amount || 0));
       let realNetReturnSol = currentCostBasisSol * (1 + curPnLPercent / 100);
       let realNetProfitPct = curPnLPercent;
 
@@ -2118,8 +2027,7 @@ function App() {
 
       console.log(`✅ APPROVED EXECUTION: Realized returns projected at ${realNetProfitPct.toFixed(2)}%`);
 
-      const executor = new RealTradeExecutor();
-      const swapRes = await executor.swap(
+      const swapRes = await orderManager.executeOrder(
         tokenAddress,
         'So11111111111111111111111111111111111111112',
         position.amountLamports || sellRawAmount || position.amount || 0,
@@ -2240,54 +2148,28 @@ function App() {
     setTradingStatus(`Sniper Triggered: ${symbol}...`);
 
     try {
-      let signature = 'SIM_BN_' + Math.random().toString(36).substring(7);
-
-      
       const lamports = Math.floor(actualBuyAmountSol * 1_000_000_000);
-      const liquidityUsd = tokenMetrics[tokenAddress]?.liquidity || 0;
-      
-      const quote = await getJupiterQuote(
-        'So11111111111111111111111111111111111111112', // SOL
+      const slippageBps = Math.round((slippage || 1) * 100);
+
+      const swapRes = await orderManager.executeOrder(
+        'So11111111111111111111111111111111111111112',
         tokenAddress,
         lamports,
-        liquidityUsd
+        slippageBps,
+        'entry'
       );
-      if (!quote) throw new Error("Token not yet listed, indexed, or no routes available on Jupiter (MARKET_NOT_FOUND / NO_ROUTES_FOUND).");
-      let outTokensRaw = quote.outAmount;
 
-      if (isLiveTrading) {
-        if (!activeAddress) {
-          throw new Error("No wallet connected for Live Trading");
-        }
-        const walletAddress = activeAddress!;
-        const solBalance = await connection.getBalance(new PublicKey(walletAddress));
-                
-        if (solBalance < lamports) {
-          addNotification("⚠️ Insufficient real SOL balance. Falling back to Simulation mode.");
-          
-        } else {
-            const executor = new RealTradeExecutor();
-            const swapRes = await executor.swap(
-              'So11111111111111111111111111111111111111112',
-              tokenAddress,
-              buyAmountSol,
-              Math.round((slippage || 1) * 100),
-              'entry'
-            );
-            signature = swapRes.signature;
-            console.log("🚀 Swap Executed! Transaction Signature:", signature);
-        }
-      }
+      const signature = swapRes.signature;
+      const outTokensRaw = swapRes.outputAmount ? swapRes.outputAmount.toString() : '0';
 
-      
-      
       // Force fresh price for accuracy
       const security = await fetchTokenSecurityData(tokenAddress);
       const currentPriceUsd = security?.priceUsd ?? (tokenMetrics[tokenAddress]?.priceUsd || 0.0000001);
       
+      const outDecimals = resolveTokenDecimals(tokenAddress);
       let effectiveEntryAmount = 0;
       if (outTokensRaw && Number(outTokensRaw) > 0) {
-        effectiveEntryAmount = Number(outTokensRaw) / 1_000_000;
+        effectiveEntryAmount = Number(outTokensRaw) / Math.pow(10, outDecimals);
       } else {
         const solPriceUsd = getSolPriceUsd();
         if (solPriceUsd > 0 && currentPriceUsd > 0) {

@@ -6,6 +6,16 @@ import { usePaperWalletStore } from '../store/paperWalletStore';
 import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
 import { useAppStore } from '../store/appStore';
 import { getSolPriceUsd } from '../utils/pnlCalculator';
+import { tokenRegistry } from './TokenRegistry';
+
+export function resolveTokenDecimals(tokenMint: string): number {
+  if (tokenMint === SOL_MINT || tokenMint === 'So11111111111111111111111111111111111111112') return 9;
+  const regToken = tokenRegistry.getToken(tokenMint);
+  if (regToken?.decimals !== undefined) return regToken.decimals;
+  const metric = useAppStore.getState()?.tokenMetrics?.[tokenMint] as any;
+  if (metric?.decimals !== undefined) return metric.decimals;
+  return 6;
+}
 
 async function resolveTokenPriceInSol(tokenMint: string): Promise<number> {
   // 1. Check AppStore state for tokenMetrics
@@ -48,7 +58,6 @@ async function resolveTokenPriceInSol(tokenMint: string): Promise<number> {
     // Ignore fetch error
   }
 
-  // 3. Fallback for brand new tokens with no dex data yet (~0.0000003 SOL)
   return 0.0000003;
 }
 
@@ -74,10 +83,11 @@ export class PaperTradeExecutor implements ITradeExecutor {
 
   async getQuote(params: QuoteGetRequest): Promise<QuoteResponse> {
     const inputAmount = Number(params.amount || 0);
-    
-    // Try Jupiter API for mainnet price simulation if available
+    const slippageBps = Math.max(0, Math.min(5000, Number(params.slippageBps || 50)));
+
+    // Try real Jupiter market quote path
     try {
-      const url = `https://quote-api.jup.ag/v6/quote?inputMint=${params.inputMint}&outputMint=${params.outputMint}&amount=${inputAmount}&slippageBps=${params.slippageBps || 50}`;
+      const url = `https://quote-api.jup.ag/v6/quote?inputMint=${params.inputMint}&outputMint=${params.outputMint}&amount=${inputAmount}&slippageBps=${slippageBps}`;
       const resp = await fetch(url);
       if (resp.ok) {
         const data = await resp.json();
@@ -86,25 +96,24 @@ export class PaperTradeExecutor implements ITradeExecutor {
         }
       }
     } catch (e) {
-      console.warn('[PaperTradeExecutor] Jupiter quote fetch failed, using fallback calculation:', e);
+      console.warn('[PaperTradeExecutor] Jupiter market quote fetch failed, using fallback calculation:', e);
     }
 
-    // Fallback simulated quote calculation using real token price in SOL
+    // Fallback calculation using actual decimals and current market token price
     const isBuy = params.inputMint === SOL_MINT;
     const targetTokenMint = isBuy ? params.outputMint : params.inputMint;
     const simulatedPriceInSol = await resolveTokenPriceInSol(targetTokenMint); 
+    const targetDecimals = resolveTokenDecimals(targetTokenMint);
     let outAmountRaw = 0;
 
     if (isBuy) {
-      // inputAmount is SOL lamports (1e9 per SOL).
       const solAmount = inputAmount / 1e9;
       const tokensCount = solAmount / (simulatedPriceInSol > 0 ? simulatedPriceInSol : 0.0000003);
-      outAmountRaw = Math.floor(tokensCount * 1e6); // 6 decimals for token
+      outAmountRaw = Math.floor(tokensCount * Math.pow(10, targetDecimals));
     } else {
-      // inputAmount is token raw units (1e6 per token).
-      const tokensCount = inputAmount / 1e6;
+      const tokensCount = inputAmount / Math.pow(10, targetDecimals);
       const solAmount = tokensCount * simulatedPriceInSol;
-      outAmountRaw = Math.floor(solAmount * 1e9); // 9 decimals for SOL lamports
+      outAmountRaw = Math.floor(solAmount * 1e9);
     }
 
     return {
@@ -112,9 +121,9 @@ export class PaperTradeExecutor implements ITradeExecutor {
       inAmount: params.amount.toString(),
       outputMint: params.outputMint,
       outAmount: outAmountRaw.toString(),
-      otherAmountThreshold: Math.floor(outAmountRaw * 0.99).toString(),
+      otherAmountThreshold: Math.floor(outAmountRaw * (1 - slippageBps / 10000)).toString(),
       swapMode: 'ExactIn',
-      slippageBps: params.slippageBps || 50,
+      slippageBps,
       priceImpactPct: '0.05',
       routePlan: [],
     } as unknown as QuoteResponse;
@@ -134,7 +143,7 @@ export class PaperTradeExecutor implements ITradeExecutor {
     const isBuy = inputMint === SOL_MINT;
 
     if (isBuy) {
-      // Amount is SOL in lamports (if passed as SOL float < 100, convert to lamports)
+      // Input is SOL in lamports
       const inputLamports = amount < 1000 ? Math.floor(amount * 1e9) : Math.floor(amount);
       const solRequired = inputLamports / 1e9;
       const simFee = 0.0005; // 0.0005 SOL simulated transaction fee
@@ -142,43 +151,30 @@ export class PaperTradeExecutor implements ITradeExecutor {
 
       if (paperStore.solBalance < totalSolNeeded) {
         this.telemetryFailedSwaps++;
-        const errMsg = `Insufficient Paper SOL balance. Required: ${totalSolNeeded.toFixed(4)} SOL, Available: ${paperStore.solBalance.toFixed(4)} SOL.`;
+        const errMsg = `INSUFFICIENT_FUNDS: Required ${totalSolNeeded.toFixed(4)} SOL, Available ${paperStore.solBalance.toFixed(4)} SOL.`;
         this.lastFailureReason = errMsg;
-        return {
-          signature: '',
-          inputMint,
-          outputMint,
-          inputAmount: inputLamports,
-          outputAmount: 0,
-          feeSol: simFee,
-          slot: Math.floor(Date.now() / 400),
-          landingTimeMs: Date.now() - startTime,
-          method: 'rpc',
-          simulated: true,
-          error: errMsg,
-        };
+        throw new Error(`PAPER_EXECUTION_FAILED: ${errMsg}`);
       }
 
-      // Fetch quote for token quantity (returns raw units in quote.outAmount)
-      let rawTokenOut = 0;
-      try {
-        const quote = await this.getQuote({
-          inputMint,
-          outputMint,
-          amount: inputLamports,
-          slippageBps,
-        });
-        rawTokenOut = Number(quote.outAmount) || 0;
-      } catch (e) {
-        console.warn('[PaperTradeExecutor] Quote error, fallback:', e);
-      }
+      // Initial quote
+      await this.getQuote({ inputMint, outputMint, amount: inputLamports, slippageBps });
+
+      // 150ms simulated execution latency delay
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      // Fresh quote at execution time
+      const freshQuote = await this.getQuote({ inputMint, outputMint, amount: inputLamports, slippageBps });
+      const rawTokenOut = Number(freshQuote.outAmount) || 0;
 
       if (rawTokenOut <= 0) {
-        const simPrice = await resolveTokenPriceInSol(outputMint);
-        rawTokenOut = Math.floor((solRequired / (simPrice > 0 ? simPrice : 0.0000003)) * 1e6);
+        this.telemetryFailedSwaps++;
+        const errMsg = 'Paper swap failed: Invalid output token amount returned by quote.';
+        this.lastFailureReason = errMsg;
+        throw new Error(`PAPER_EXECUTION_FAILED: ${errMsg}`);
       }
 
-      const tokenOutAmount = rawTokenOut / 1e6; // Human-readable token amount for paper store
+      const outDecimals = resolveTokenDecimals(outputMint);
+      const tokenOutAmount = rawTokenOut / Math.pow(10, outDecimals);
 
       // Execute Paper Buy
       paperStore.adjustSolBalance(-totalSolNeeded);
@@ -196,56 +192,42 @@ export class PaperTradeExecutor implements ITradeExecutor {
         inputMint,
         outputMint,
         inputAmount: inputLamports,
-        outputAmount: rawTokenOut, // Raw atomic token units
+        outputAmount: rawTokenOut,
         feeSol: simFee,
         slot: Math.floor(Date.now() / 400),
         landingTimeMs,
         method: 'rpc',
         simulated: true,
       };
-
     } else {
       // Selling token for SOL
-      // amount is raw token units or human amount if < 1,000,000
-      const rawInputTokens = amount < 1e6 ? Math.floor(amount * 1e6) : Math.floor(amount);
-      const tokenAmount = rawInputTokens / 1e6; // Human readable
+      const inDecimals = resolveTokenDecimals(inputMint);
+      const rawInputTokens = amount < Math.pow(10, inDecimals) ? Math.floor(amount * Math.pow(10, inDecimals)) : Math.floor(amount);
+      const tokenAmount = rawInputTokens / Math.pow(10, inDecimals);
       const currentTokenBal = paperStore.tokenBalances[inputMint] || 0;
 
-      if (currentTokenBal < tokenAmount * 0.99) { // allow 1% floating point variance
+      if (currentTokenBal < tokenAmount * 0.99) {
         this.telemetryFailedSwaps++;
-        const errMsg = `Insufficient Paper Token balance. Required: ${tokenAmount.toFixed(2)}, Available: ${currentTokenBal.toFixed(2)}.`;
+        const errMsg = `INSUFFICIENT_FUNDS: Required ${tokenAmount.toFixed(4)} tokens, Available ${currentTokenBal.toFixed(4)}.`;
         this.lastFailureReason = errMsg;
-        return {
-          signature: '',
-          inputMint,
-          outputMint,
-          inputAmount: rawInputTokens,
-          outputAmount: 0,
-          feeSol: 0,
-          slot: Math.floor(Date.now() / 400),
-          landingTimeMs: Date.now() - startTime,
-          method: 'rpc',
-          simulated: true,
-          error: errMsg,
-        };
+        throw new Error(`PAPER_EXECUTION_FAILED: ${errMsg}`);
       }
 
-      let rawSolOutLamports = 0;
-      try {
-        const quote = await this.getQuote({
-          inputMint,
-          outputMint,
-          amount: rawInputTokens,
-          slippageBps,
-        });
-        rawSolOutLamports = Number(quote.outAmount) || 0;
-      } catch (e) {
-        console.warn('[PaperTradeExecutor] Quote error on sell, fallback:', e);
-      }
+      // Initial quote
+      await this.getQuote({ inputMint, outputMint, amount: rawInputTokens, slippageBps });
+
+      // 150ms simulated execution latency delay
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      // Fresh quote at execution time
+      const freshQuote = await this.getQuote({ inputMint, outputMint, amount: rawInputTokens, slippageBps });
+      const rawSolOutLamports = Number(freshQuote.outAmount) || 0;
 
       if (rawSolOutLamports <= 0) {
-        const simPrice = await resolveTokenPriceInSol(inputMint);
-        rawSolOutLamports = Math.floor((tokenAmount * simPrice) * 1e9);
+        this.telemetryFailedSwaps++;
+        const errMsg = 'Paper swap failed: Invalid SOL output returned by quote.';
+        this.lastFailureReason = errMsg;
+        throw new Error(`PAPER_EXECUTION_FAILED: ${errMsg}`);
       }
 
       const solOut = rawSolOutLamports / 1e9;
@@ -269,7 +251,7 @@ export class PaperTradeExecutor implements ITradeExecutor {
         inputMint,
         outputMint,
         inputAmount: rawInputTokens,
-        outputAmount: netSolLamports, // Raw SOL lamports
+        outputAmount: netSolLamports,
         feeSol: simFee,
         slot: Math.floor(Date.now() / 400),
         landingTimeMs,

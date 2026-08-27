@@ -142,6 +142,10 @@ export class TokenRegistry {
     return this.tokens.get(mintAddress.trim());
   }
 
+  public getToken(mintAddress: string): TokenRecord | undefined {
+    return this.get(mintAddress);
+  }
+
   public has(mintAddress: string): boolean {
     return this.tokens.has(mintAddress.trim());
   }

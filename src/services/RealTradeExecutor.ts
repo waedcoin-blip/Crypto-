@@ -4,13 +4,15 @@ import { ExecutionEngine, executionEngine } from './ExecutionEngine';
 import { QuoteGetRequest, QuoteResponse } from '@jup-ag/api';
 import { TradingNetwork } from '../config/network';
 
+import { orderManager } from './OrderManager';
+
 export interface RealTradeConfig {
   network?: TradingNetwork;
   verbose?: boolean;
 }
 
 /**
- * RealTradeExecutor: Compatibility wrapper around the authoritative ExecutionEngine.
+ * RealTradeExecutor: Authoritative execution wrapper routing through OrderManager.
  */
 export class RealTradeExecutor implements ITradeExecutor {
   private engine: ExecutionEngine;
@@ -38,7 +40,7 @@ export class RealTradeExecutor implements ITradeExecutor {
     slippageBps: number,
     label: 'entry' | 'exit_tp' | 'exit_sl' = 'entry'
   ): Promise<SwapResult> {
-    return this.engine.swap(inputMint, outputMint, amount, slippageBps, label);
+    return orderManager.executeOrder(inputMint, outputMint, amount, slippageBps, label);
   }
 
   async batchSwap(

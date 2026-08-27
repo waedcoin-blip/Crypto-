@@ -5,6 +5,7 @@ import { useActiveWalletStore } from '../store/activeWalletStore';
 import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
 import { walletBalanceService } from './WalletBalanceService';
 import { orderManager } from './OrderManager';
+import { tokenRegistry } from './TokenRegistry';
 import { useAppStore } from '../store/appStore';
 
 export class StartupReconciliation {
@@ -45,11 +46,12 @@ export class StartupReconciliation {
             hasChanges = true;
           }
         } else {
-          // Convert raw atomic units to human readable token count (SPL 6 decimals default)
-          const humanAmount = rawBalance / 1_000_000;
+          // Convert raw atomic units to human readable token count using actual decimals
+          const decimals = pos.decimals ?? tokenRegistry.getToken(mint)?.decimals ?? 6;
+          const humanAmount = rawBalance / Math.pow(10, decimals);
           if (Math.abs((pos.amount || 0) - humanAmount) > 0.01 || pos.state === 'RECOVERY_REQUIRED') {
-            console.log(`[StartupReconciliation] Reconciled position ${mint}: humanAmount=${humanAmount}, rawBalance=${rawBalance}, state=OPEN.`);
-            updatedPositions[mint] = { ...pos, amount: humanAmount, tokenQuantityRaw: rawBalance.toString(), state: 'OPEN' };
+            console.log(`[StartupReconciliation] Reconciled position ${mint}: humanAmount=${humanAmount}, rawBalance=${rawBalance}, decimals=${decimals}, state=OPEN.`);
+            updatedPositions[mint] = { ...pos, amount: humanAmount, decimals, tokenQuantityRaw: rawBalance.toString(), state: 'OPEN' };
             hasChanges = true;
           }
         }

@@ -182,7 +182,7 @@ export class RiskManager {
       amount: params.amount > 0 ? params.amount : 0,
       tokenDecimals: decimals,
       buyPrice: fallbackPrice,
-      solSpent: params.solSpent || 0.1,
+      solSpent: params.solSpent || 0,
       tpPct: params.tpPct ?? this.config.tpPct,
       slPct: Math.abs(params.slPct ?? this.config.slPct),
       trailingSlPct: params.trailingSlPct ?? this.config.trailingSlPct,
@@ -390,7 +390,7 @@ export class RiskManager {
         mint,
         amount: liveAmount > 0 ? liveAmount : 1_000_000,
         buyPrice: 0,
-        solSpent: fallbackSolSpent || 0.1,
+        solSpent: fallbackSolSpent || 0,
         tokenDecimals: 6,
       });
       pos = this.positions.get(mint);
@@ -498,6 +498,10 @@ export class RiskManager {
         } catch {}
       }
     }
+  }
+
+  public getPositions(): Map<string, ManagedPosition> {
+    return this.positions;
   }
 }
 

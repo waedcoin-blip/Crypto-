@@ -1,6 +1,8 @@
 // src/services/OrderManager.ts
 import { SwapResult, ITradeExecutor } from './ITradeExecutor';
 import { executionEngine, ExecutionEngine } from './ExecutionEngine';
+import { TradingNetwork } from '../config/network';
+import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
 
 export type OrderState =
   | 'SIGNAL'
@@ -22,6 +24,7 @@ export interface Order {
   side: 'buy' | 'sell';
   amount: number;
   slippageBps: number;
+  network: TradingNetwork;
   state: OrderState;
   createdAt: number;
   updatedAt: number;
@@ -32,12 +35,12 @@ export interface Order {
 
 /**
  * OrderManager: The single authoritative state manager for orders and trade lifecycle.
- * Ensures deduplication, idempotency, order tracking, and lifecycle progression.
+ * Ensures network-scoped deduplication, token-scoped idempotency, order tracking, and lifecycle progression.
  */
 export class OrderManager {
   private static instance: OrderManager;
   private orders: Map<string, Order> = new Map();
-  private activeOrdersByMintSide: Map<string, string> = new Map();
+  private activeOrdersByNetworkMint: Map<string, string> = new Map();
   private executor: ITradeExecutor = executionEngine;
 
   private constructor() {
@@ -67,8 +70,9 @@ export class OrderManager {
         const parsed = JSON.parse(saved) as Order[];
         for (const order of parsed) {
           this.orders.set(order.id, order);
+          const net = order.network || 'devnet';
           if (['VALIDATING', 'QUOTE_REQUESTED', 'QUOTE_RECEIVED', 'TRANSACTION_BUILDING', 'SIGNING', 'SUBMITTED', 'CONFIRMING'].includes(order.state)) {
-            this.activeOrdersByMintSide.set(`${order.mint}_${order.side}`, order.id);
+            this.activeOrdersByNetworkMint.set(`${net}_${order.mint}`, order.id);
           }
         }
       }
@@ -87,13 +91,14 @@ export class OrderManager {
     }
   }
 
-  public createOrder(mint: string, side: 'buy' | 'sell', amount: number, slippageBps: number, customId?: string): Order {
-    const key = `${mint}_${side}`;
-    const existingActiveId = this.activeOrdersByMintSide.get(key);
+  public createOrder(mint: string, side: 'buy' | 'sell', amount: number, slippageBps: number, customId?: string, network?: TradingNetwork): Order {
+    const net = network || useTradingEnvironmentStore.getState().network || 'devnet';
+    const key = `${net}_${mint}`;
+    const existingActiveId = this.activeOrdersByNetworkMint.get(key);
     if (existingActiveId) {
       const existing = this.orders.get(existingActiveId);
       if (existing && !['CONFIRMED', 'FAILED', 'RECOVERY_REQUIRED', 'CANCELLED'].includes(existing.state)) {
-        throw new Error(`IDEMPOTENCY LOCK: An active ${side.toUpperCase()} order (${existing.id}) is already in state '${existing.state}' for mint ${mint}`);
+        throw new Error(`IDEMPOTENCY LOCK: An active ${existing.side.toUpperCase()} order (${existing.id}) is already in state '${existing.state}' for mint ${mint} on ${net}`);
       }
     }
 
@@ -104,13 +109,14 @@ export class OrderManager {
       side,
       amount,
       slippageBps,
+      network: net,
       state: 'SIGNAL',
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
 
     this.orders.set(id, order);
-    this.activeOrdersByMintSide.set(key, id);
+    this.activeOrdersByNetworkMint.set(key, id);
     this.persistOrders();
     return order;
   }
@@ -128,9 +134,10 @@ export class OrderManager {
     if (details?.result) order.result = details.result;
 
     if (['CONFIRMED', 'FAILED', 'RECOVERY_REQUIRED', 'CANCELLED'].includes(newState)) {
-      const key = `${order.mint}_${order.side}`;
-      if (this.activeOrdersByMintSide.get(key) === orderId) {
-        this.activeOrdersByMintSide.delete(key);
+      const net = order.network || 'devnet';
+      const key = `${net}_${order.mint}`;
+      if (this.activeOrdersByNetworkMint.get(key) === orderId) {
+        this.activeOrdersByNetworkMint.delete(key);
       }
     }
 
@@ -153,16 +160,19 @@ export class OrderManager {
     const isSolBuy = inputMint === WSOL;
     const targetMint = isSolBuy ? outputMint : inputMint;
     const side = isSolBuy ? 'buy' : 'sell';
+    const currentNetwork = useTradingEnvironmentStore.getState().network || 'devnet';
 
-    const order = this.createOrder(targetMint, side, amount, slippageBps);
+    const order = this.createOrder(targetMint, side, amount, slippageBps, undefined, currentNetwork);
     this.transitionState(order.id, 'VALIDATING');
 
     try {
       this.transitionState(order.id, 'QUOTE_REQUESTED');
-      this.transitionState(order.id, 'TRANSACTION_BUILDING');
-      this.transitionState(order.id, 'SUBMITTED');
 
       const result = await this.executor.swap(inputMint, outputMint, amount, slippageBps, label);
+
+      if (result.signature) {
+        this.transitionState(order.id, 'SUBMITTED', { signature: result.signature });
+      }
 
       this.transitionState(order.id, 'CONFIRMED', {
         signature: result.signature,
@@ -178,9 +188,10 @@ export class OrderManager {
     }
   }
 
-  public getActiveOrderForMint(mint: string, side: 'buy' | 'sell'): Order | undefined {
-    const key = `${mint}_${side}`;
-    const activeId = this.activeOrdersByMintSide.get(key);
+  public getActiveOrderForMint(mint: string, network?: TradingNetwork): Order | undefined {
+    const net = network || useTradingEnvironmentStore.getState().network || 'devnet';
+    const key = `${net}_${mint}`;
+    const activeId = this.activeOrdersByNetworkMint.get(key);
     if (!activeId) return undefined;
     return this.orders.get(activeId);
   }
