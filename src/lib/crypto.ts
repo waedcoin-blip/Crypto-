@@ -3,9 +3,10 @@ import { Buffer } from 'buffer';
 const ALGO = 'AES-GCM';
 const IV_LENGTH = 12;
 
-async function deriveKey(uid: string): Promise<CryptoKey> {
+async function deriveKey(uid: string, customPassword?: string): Promise<CryptoKey> {
   const enc = new TextEncoder();
-  const raw = await crypto.subtle.digest('SHA-256', enc.encode(uid || 'default_app_offline_salt'));
+  const secretMaterial = (uid || 'default_app_offline_salt') + (customPassword || '');
+  const raw = await crypto.subtle.digest('SHA-256', enc.encode(secretMaterial));
   return crypto.subtle.importKey(
     'raw',
     raw,
@@ -19,11 +20,12 @@ async function deriveKey(uid: string): Promise<CryptoKey> {
  * Encrypts a Solana base58 private key using AES-GCM.
  * @param base58Key The raw private key string
  * @param uid The user's UID to derive the AES key
+ * @param sessionPassword Optional user password
  */
-export async function encryptPrivateKey(base58Key: string, uid: string): Promise<string> {
+export async function encryptPrivateKey(base58Key: string, uid: string, sessionPassword?: string): Promise<string> {
   if (!base58Key) return '';
   try {
-    const key = await deriveKey(uid);
+    const key = await deriveKey(uid, sessionPassword);
     const iv = crypto.getRandomValues(new Uint8Array(IV_LENGTH));
     const enc = new TextEncoder();
     const cipherBuf = await crypto.subtle.encrypt(
@@ -37,7 +39,7 @@ export async function encryptPrivateKey(base58Key: string, uid: string): Promise
     return Buffer.from(combined).toString('base64');
   } catch (err) {
     console.error('Encryption failed:', err);
-    return base58Key; // Graceful fallback
+    throw new Error('SECURITY_ERROR: Failed to encrypt private key. Refusing to persist unencrypted key.');
   }
 }
 
@@ -46,8 +48,9 @@ export async function encryptPrivateKey(base58Key: string, uid: string): Promise
  * Supports backward-compatibility for plaintext keys.
  * @param encryptedBase64 The base64 encrypted string (or plaintext legacy key)
  * @param uid The user's UID to derive the AES key
+ * @param sessionPassword Optional user password
  */
-export async function decryptPrivateKey(encryptedBase64: string, uid: string): Promise<string> {
+export async function decryptPrivateKey(encryptedBase64: string, uid: string, sessionPassword?: string): Promise<string> {
   if (!encryptedBase64) return '';
   // Simple check: if it is a valid Solana Base58 private key format (typically ~88 chars of base58 characters),
   // return as-is for backward compatibility.
@@ -55,7 +58,7 @@ export async function decryptPrivateKey(encryptedBase64: string, uid: string): P
     return encryptedBase64;
   }
   try {
-    const key = await deriveKey(uid);
+    const key = await deriveKey(uid, sessionPassword);
     const combined = new Uint8Array(Buffer.from(encryptedBase64, 'base64'));
     if (combined.length <= IV_LENGTH) return encryptedBase64;
     const iv = combined.slice(0, IV_LENGTH);
@@ -67,7 +70,19 @@ export async function decryptPrivateKey(encryptedBase64: string, uid: string): P
     );
     return new TextDecoder().decode(plainBuf);
   } catch (err) {
-    // If decryption fails, it could be a raw key or wrong UID.
+    // Try fallback without custom password if custom password failed (migration compatibility)
+    if (sessionPassword) {
+      try {
+        const fallbackKey = await deriveKey(uid);
+        const combined = new Uint8Array(Buffer.from(encryptedBase64, 'base64'));
+        const iv = combined.slice(0, IV_LENGTH);
+        const cipherText = combined.slice(IV_LENGTH);
+        const plainBuf = await crypto.subtle.decrypt({ name: ALGO, iv }, fallbackKey, cipherText);
+        return new TextDecoder().decode(plainBuf);
+      } catch {
+        // Fallthrough
+      }
+    }
     return encryptedBase64;
   }
 }

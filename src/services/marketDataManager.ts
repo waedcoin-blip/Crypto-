@@ -1,4 +1,5 @@
 // src/services/marketDataManager.ts
+import { getSolPriceUsd } from '../utils/pnlCalculator';
 /**
  * MarketDataManager
  * Centralized, deduplicated, batched market data service with tiered caching,
@@ -409,7 +410,7 @@ export class MarketDataManager {
             const tokenPrice: TokenPrice = {
               mint,
               priceUsd,
-              priceNative: priceNative > 0 ? priceNative : priceUsd / 145,
+              priceNative: priceNative > 0 ? priceNative : (priceUsd / (getSolPriceUsd() || 150)),
               priceChange24h: parseFloat(bestPair.priceChange?.h24 || '0'),
               priceChange5m: parseFloat(bestPair.priceChange?.m5 || '0'),
               volume24h: parseFloat(bestPair.volume?.h24 || '0'),

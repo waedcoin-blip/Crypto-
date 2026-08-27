@@ -6,6 +6,7 @@ import { DEFAULT_HELIUS_RPC } from '../constants/solana';
 import { telemetryService } from './telemetryService';
 import { DevnetAmmExecutor } from './DevnetAmmExecutor';
 import { getNetworkConfig } from '../config/network';
+import { getSolPriceUsd } from '../utils/pnlCalculator';
 
 // ─── RPC POOL: Smart multi-endpoint with health tracking ───────────────────
 export interface RpcEndpoint {
@@ -299,7 +300,7 @@ export const calculateDynamicJitoTip = async (
   
   const expectedProfitPctSafe = Math.max(0, expectedProfitPct);
   const maxTipFromProfit = (tradeValueUsd * (expectedProfitPctSafe / 100) * 0.05);
-  const solPrice = 150; 
+  const solPrice = getSolPriceUsd() || 150; 
   const maxTipSol = Math.min(maxTipFromProfit / solPrice, 0.5);
   
   const baseTip = floorTip * urgencyMultipliers[urgency];

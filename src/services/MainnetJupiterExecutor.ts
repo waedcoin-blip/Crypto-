@@ -43,7 +43,7 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
     return wallet.address || '';
   }
 
-  private checkNetworkSafety(): void {
+  private async checkNetworkSafety(): Promise<void> {
     const envNetwork = useTradingEnvironmentStore.getState().network;
     if (envNetwork !== 'mainnet') {
       throw new Error(`NETWORK SAFETY ERROR: Mainnet execution blocked because selected environment network is '${envNetwork}'.`);
@@ -56,6 +56,7 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
       throw new Error(`NETWORK SAFETY ERROR: Mainnet execution blocked. Active wallet is configured for '${activeWallet.network}', not 'mainnet'. Explicitly switch your wallet network to mainnet before executing mainnet trades.`);
     }
     NetworkGuard.assertNetwork('mainnet', this.connection.rpcEndpoint);
+    await NetworkGuard.verifyGenesisHash('mainnet', this.connection.rpcEndpoint);
   }
 
   private validateQuoteSafety(quote: QuoteResponse, inputAmount: number, slippageBps: number): void {
@@ -80,8 +81,8 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
     }
   }
 
-  private getActiveWallet() {
-    this.checkNetworkSafety();
+  private async getActiveWallet() {
+    await this.checkNetworkSafety();
     const wallet = useActiveWalletStore.getState().activeWallet;
     if (!wallet) throw new Error('No active wallet selected for Mainnet trading');
     return wallet;
@@ -94,7 +95,7 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
   }
 
   async getQuote(params: QuoteGetRequest): Promise<QuoteResponse> {
-    this.checkNetworkSafety();
+    await this.checkNetworkSafety();
     return this.jupiterApi.quoteGet(params);
   }
 
@@ -109,17 +110,11 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
     this.telemetryTotalSwaps++;
 
     try {
-      this.checkNetworkSafety();
-      const activeWallet = this.getActiveWallet();
-      let kp = activeWallet.keypair;
+      await this.checkNetworkSafety();
+      const activeWallet = await this.getActiveWallet();
+      const kp = activeWallet.keypair;
       if (!kp) {
-        kp = getOrCreateSessionKeypair();
-        useActiveWalletStore.getState().setActiveWallet({
-          ...activeWallet,
-          keypair: kp,
-          address: kp.publicKey.toBase58(),
-          version: activeWallet.version + 1,
-        });
+        throw new Error('KEYPAIR_REQUIRED: Active mainnet wallet does not contain a signing private key. Please connect/import your mainnet wallet private key.');
       }
 
       const userPk = kp.publicKey;
@@ -260,7 +255,7 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
   async batchSwap(
     swaps: Array<{ inputMint: string; outputMint: string; amount: number; slippageBps: number }>
   ): Promise<SwapResult[]> {
-    this.checkNetworkSafety();
+    await this.checkNetworkSafety();
     const results: SwapResult[] = [];
     for (const s of swaps) {
       try {

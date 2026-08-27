@@ -153,6 +153,8 @@ export class RiskManager {
     slippageBpsTp?: number;
     slippageBpsSl?: number;
     tokenDecimals?: number;
+    buySignature?: string;
+    buyOrderId?: string;
   }): void {
     const existing = this.positions.get(params.mint);
     if (existing && existing.state !== 'CLOSED') {
@@ -211,8 +213,27 @@ export class RiskManager {
       maxHoldTimeMs: pos.maxHoldTimeMs,
       slippageBpsTp: pos.slippageBpsTp,
       slippageBpsSl: pos.slippageBpsSl,
+      orderId: params.buyOrderId,
+      buySignature: params.buySignature,
     });
     tokenRegistry.setExecutionState(params.mint, 'POSITION_OPEN', posRecord.id);
+
+    // Record BUY trade in TradeHistoryRegistry
+    tradeHistoryRegistry.recordTrade({
+      id: 'BUY_' + params.mint + '_' + Date.now(),
+      orderId: params.buyOrderId,
+      positionId: posRecord.id,
+      mintAddress: params.mint,
+      side: 'BUY',
+      network,
+      amountRaw: pos.amount,
+      amountTokens: pos.amount > 1e6 ? pos.amount / (10 ** decimals) : pos.amount,
+      solAmount: pos.solSpent,
+      priceSOL: pos.buyPrice,
+      signature: params.buySignature || 'BUY_SIG_' + Math.random().toString(36).substring(7),
+      timestamp: Date.now(),
+      status: 'CONFIRMED',
+    });
 
     if (this.isRunning) {
       void this.evaluatePosition(pos);

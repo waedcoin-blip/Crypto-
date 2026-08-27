@@ -1761,7 +1761,7 @@ function App() {
     optimisticPositions.current.add(tokenAddress);
 
 
-    if (false && getTradingBalance() < buyAmountSol) {
+    if (!isLiveTrading && getTradingBalance() < buyAmountSol) {
       addNotification(`Insufficient Simulation Balance (Need ${buyAmountSol} SOL)`);
       return;
     }
@@ -1783,7 +1783,7 @@ function App() {
 
       let outTokensRaw = quote.outAmount;
 
-      if (true) {
+      if (isLiveTrading) {
         if (!activeAddress) {
           throw new Error("No wallet connected for Live Trading");
         }
@@ -1899,7 +1899,7 @@ function App() {
       
       let signature = 'SIM_PS_' + Math.random().toString(36).substring(7);
 
-      if (true) {
+      if (isLiveTrading) {
         if (!activeAddress) throw new Error("Wallet not connected");
         
         const walletAddress = activeAddress!;
@@ -2218,7 +2218,7 @@ function App() {
     // Set optimistic position to prevent concurrent duplicate buys
     optimisticPositions.current.add(tokenAddress);
     
-    if (false && getTradingBalance() < buyAmountSol) {
+    if (!isLiveTrading && getTradingBalance() < buyAmountSol) {
       console.log("Auto-Sniper: Insufficient simulation balance");
       return;
     }
@@ -2255,7 +2255,7 @@ function App() {
       if (!quote) throw new Error("Token not yet listed, indexed, or no routes available on Jupiter (MARKET_NOT_FOUND / NO_ROUTES_FOUND).");
       let outTokensRaw = quote.outAmount;
 
-      if (true) {
+      if (isLiveTrading) {
         if (!activeAddress) {
           throw new Error("No wallet connected for Live Trading");
         }

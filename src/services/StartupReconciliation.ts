@@ -45,10 +45,11 @@ export class StartupReconciliation {
             hasChanges = true;
           }
         } else {
-          // Token balance exists on-chain
-          if (pos.amount !== rawBalance || pos.state === 'RECOVERY_REQUIRED') {
-            console.log(`[StartupReconciliation] Reconciled position ${mint}: balance=${rawBalance}, state=OPEN.`);
-            updatedPositions[mint] = { ...pos, amount: rawBalance, state: 'OPEN' };
+          // Convert raw atomic units to human readable token count (SPL 6 decimals default)
+          const humanAmount = rawBalance / 1_000_000;
+          if (Math.abs((pos.amount || 0) - humanAmount) > 0.01 || pos.state === 'RECOVERY_REQUIRED') {
+            console.log(`[StartupReconciliation] Reconciled position ${mint}: humanAmount=${humanAmount}, rawBalance=${rawBalance}, state=OPEN.`);
+            updatedPositions[mint] = { ...pos, amount: humanAmount, tokenQuantityRaw: rawBalance.toString(), state: 'OPEN' };
             hasChanges = true;
           }
         }

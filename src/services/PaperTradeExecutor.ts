@@ -39,7 +39,8 @@ async function resolveTokenPriceInSol(tokenMint: string): Promise<number> {
           return parseFloat(bestPair.priceNative);
         }
         if (bestPair.priceUsd && parseFloat(bestPair.priceUsd) > 0) {
-          return parseFloat(bestPair.priceUsd) / 150;
+          const solUsd = getSolPriceUsd() || 150;
+          return parseFloat(bestPair.priceUsd) / solUsd;
         }
       }
     }

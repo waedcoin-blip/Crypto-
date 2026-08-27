@@ -1681,8 +1681,12 @@ export const PnLPage = ({
       )
     ];
     try {
-      localStorage.setItem('pnl_profitable_token_addresses', JSON.stringify(profitablePnlTokens));
-      window.dispatchEvent(new CustomEvent('pnl_trade_history_updated', { detail: profitablePnlTokens }));
+      const prevStr = localStorage.getItem('pnl_profitable_token_addresses') || '';
+      const newStr = JSON.stringify(profitablePnlTokens);
+      if (prevStr !== newStr) {
+        localStorage.setItem('pnl_profitable_token_addresses', newStr);
+        window.dispatchEvent(new CustomEvent('pnl_trade_history_updated', { detail: profitablePnlTokens }));
+      }
     } catch (e) {}
   }, [tradeHistory]);
 
@@ -1824,23 +1828,35 @@ export const PnLPage = ({
             setRpcUrl2(sanitized);
           }
           if (data.customWsUrl) setCustomWsUrl(data.customWsUrl);
-          if (data.apiKey) setApiKey(data.apiKey);
+          if (data.apiKey) {
+            const dec = await decryptPrivateKey(data.apiKey, user.uid);
+            setApiKey(dec);
+          }
           if (data.privateKey) {
             const decrypted = await decryptPrivateKey(data.privateKey, user.uid);
             setPrivateKey(decrypted);
           }
           if (data.senderEnabled !== undefined) setSenderEnabled(data.senderEnabled === true);
-          if (data.senderApiKey !== undefined) setSenderApiKey(String(data.senderApiKey));
+          if (data.senderApiKey !== undefined) {
+            const dec = await decryptPrivateKey(String(data.senderApiKey), user.uid);
+            setSenderApiKey(dec);
+          }
           if (data.senderEndpoint !== undefined) setSenderEndpoint(String(data.senderEndpoint));
           if (data.senderSwqos !== undefined) setSenderSwqos(data.senderSwqos === true);
           if (data.laserstreamEnabled !== undefined) setLaserstreamEnabled(data.laserstreamEnabled === true);
-          if (data.laserstreamApiKey !== undefined) setLaserstreamApiKey(String(data.laserstreamApiKey));
+          if (data.laserstreamApiKey !== undefined) {
+            const dec = await decryptPrivateKey(String(data.laserstreamApiKey), user.uid);
+            setLaserstreamApiKey(dec);
+          }
           if (data.laserstreamEndpoint !== undefined) setLaserstreamEndpoint(String(data.laserstreamEndpoint));
           if (data.dexScreenerEnabled !== undefined) setDexScreenerEnabled(data.dexScreenerEnabled === true);
           if (data.forceUsdcRouting !== undefined) setForceUsdcRouting(data.forceUsdcRouting === true);
           if (data.ftpHost !== undefined) setFtpHost(String(data.ftpHost));
           if (data.ftpUser !== undefined) setFtpUser(String(data.ftpUser));
-          if (data.ftpPass !== undefined) setFtpPass(String(data.ftpPass));
+          if (data.ftpPass !== undefined) {
+            const dec = await decryptPrivateKey(String(data.ftpPass), user.uid);
+            setFtpPass(dec);
+          }
           if (data.ftpDir !== undefined) setFtpDir(String(data.ftpDir));
           if (data.ftpWebUrl !== undefined) setFtpWebUrl(String(data.ftpWebUrl));
           if (data.ftpSecure !== undefined) setFtpSecure(data.ftpSecure === true);
@@ -2020,26 +2036,31 @@ export const PnLPage = ({
     const saveSettings = async () => {
       try {
         const encryptedKey = await encryptPrivateKey(privateKey, user.uid);
+        const encryptedApiKey = apiKey ? await encryptPrivateKey(apiKey, user.uid) : '';
+        const encryptedSenderKey = senderApiKey ? await encryptPrivateKey(senderApiKey, user.uid) : '';
+        const encryptedLaserstreamKey = laserstreamApiKey ? await encryptPrivateKey(laserstreamApiKey, user.uid) : '';
+        const encryptedFtpPass = ftpPass ? await encryptPrivateKey(ftpPass, user.uid) : '';
+
         const docRef = doc(db, 'settings', user.uid);
         await setDoc(docRef, {
           userId: user.uid,
           rpcUrl,
           rpcUrl2,
           customWsUrl,
-          apiKey,
+          apiKey: encryptedApiKey,
           privateKey: encryptedKey,
           senderEnabled,
-          senderApiKey,
+          senderApiKey: encryptedSenderKey,
           senderEndpoint,
           senderSwqos,
           laserstreamEnabled,
-          laserstreamApiKey,
+          laserstreamApiKey: encryptedLaserstreamKey,
           laserstreamEndpoint,
           dexScreenerEnabled,
           forceUsdcRouting,
           ftpHost,
           ftpUser,
-          ftpPass,
+          ftpPass: encryptedFtpPass,
           ftpDir,
           ftpWebUrl,
           ftpSecure,
@@ -2530,29 +2551,34 @@ export const PnLPage = ({
         let finalPriceInSol = tp.priceNative || (tp.priceUsd ? tp.priceUsd / solPriceInUsd : 0);
         let isStale = false;
 
-        // Liquidity-aware sanity check comparing against a fresh Jupiter quote, not a hardcoded multiplier
+        // Liquidity-aware sanity check comparing against a fresh Jupiter quote (throttled to 10s intervals)
         const activePos = positionsRef.current[mint];
         if (activePos && activePos.buyPrice > 0) {
-          try {
-            const rawAmount = activePos.amountLamports || Math.floor((activePos.amount || 1) * Math.pow(10, activePos.decimals || 6));
-            const validationQuote = await getJupiterQuote(
-              mint,
-              'So11111111111111111111111111111111111111112',
-              rawAmount,
-              activePos.liquidityUsd || 0
-            );
-            if (validationQuote && validationQuote.outAmount && activePos.amount > 0) {
-              const quotedPrice = Number(validationQuote.outAmount) / activePos.amount / 1e9;
-              if (quotedPrice > 0) {
-                // If our price source diverges >10× from Jupiter, use Jupiter's price
-                if (finalPriceInSol > quotedPrice * 10 || finalPriceInSol < quotedPrice / 10) {
-                  finalPriceInSol = quotedPrice;
+          const nowMs = Date.now();
+          const lastCheck = (activePos as any)._lastQuoteCheck || 0;
+          if (nowMs - lastCheck > 10000) {
+            (activePos as any)._lastQuoteCheck = nowMs;
+            try {
+              const rawAmount = activePos.amountLamports || Math.floor((activePos.amount || 1) * Math.pow(10, activePos.decimals || 6));
+              const validationQuote = await getJupiterQuote(
+                mint,
+                'So11111111111111111111111111111111111111112',
+                rawAmount,
+                activePos.liquidityUsd || 0
+              );
+              if (validationQuote && validationQuote.outAmount && activePos.amount > 0) {
+                const quotedPrice = Number(validationQuote.outAmount) / activePos.amount / 1e9;
+                if (quotedPrice > 0) {
+                  // If our price source diverges >10× from Jupiter, use Jupiter's price
+                  if (finalPriceInSol > quotedPrice * 10 || finalPriceInSol < quotedPrice / 10) {
+                    finalPriceInSol = quotedPrice;
+                  }
                 }
               }
+            } catch {
+              // If Jupiter fails, keep the price but mark as STALE
+              isStale = true;
             }
-          } catch {
-            // If Jupiter fails, keep the price but mark as STALE
-            isStale = true;
           }
         }
 

@@ -53,10 +53,15 @@ export class TradingEngine {
       const outputMint = isBuy ? tokenMint : WSOL;
       const slippageBps = Math.round((useAppStore.getState().slippage || 1) * 100);
 
+      // Convert amountSol to raw atomic units (lamports for SOL, raw units for tokens)
+      const rawAmount = isBuy
+        ? Math.floor(amountSol * 1_000_000_000)
+        : (amountSol > 1e6 ? Math.floor(amountSol) : Math.floor(amountSol * 1e6));
+
       const result = await orderManager.executeOrder(
         inputMint,
         outputMint,
-        amountSol,
+        rawAmount,
         slippageBps,
         isBuy ? 'entry' : 'exit_tp'
       );
