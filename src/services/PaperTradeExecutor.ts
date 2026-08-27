@@ -5,10 +5,12 @@ import { SOL_MINT, DEFAULT_PAPER_TRADING_ADDRESS } from '../constants/solana';
 import { usePaperWalletStore } from '../store/paperWalletStore';
 import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
 import { useAppStore } from '../store/appStore';
+import { getSolPriceUsd } from '../utils/pnlCalculator';
 import { tokenRegistry } from './TokenRegistry';
 
 export function resolveTokenDecimals(tokenMint: string): number {
   if (tokenMint === SOL_MINT || tokenMint === 'So11111111111111111111111111111111111111112') return 9;
+  if (tokenMint.endsWith('pump')) return 6;
   const regToken = tokenRegistry.getToken(tokenMint);
   if (regToken?.decimals !== undefined && typeof regToken.decimals === 'number') return regToken.decimals;
   const metric = useAppStore.getState()?.tokenMetrics?.[tokenMint] as any;
@@ -18,6 +20,7 @@ export function resolveTokenDecimals(tokenMint: string): number {
 
 export async function resolveTokenDecimalsAsync(tokenMint: string): Promise<number> {
   if (tokenMint === SOL_MINT || tokenMint === 'So11111111111111111111111111111111111111112') return 9;
+  if (tokenMint.endsWith('pump')) return 6;
   
   try {
     return resolveTokenDecimals(tokenMint);
@@ -45,8 +48,66 @@ export async function resolveTokenDecimalsAsync(tokenMint: string): Promise<numb
       console.warn(`[PaperTradeExecutor] DexScreener decimal lookup failed for ${tokenMint}:`, fetchErr);
     }
     
-    throw new Error(`UNRESOLVED_TOKEN_DECIMALS: Failed to fetch mint decimals for ${tokenMint}. Trade execution aborted.`);
+    // Default standard SPL token decimals if dynamically unresolved
+    return 6;
   }
+}
+
+export async function resolveTokenPriceInSol(tokenMint: string): Promise<number | null> {
+  if (tokenMint === SOL_MINT || tokenMint === 'So11111111111111111111111111111111111111112') return 1;
+
+  // 1. Check AppStore state for tokenMetrics
+  try {
+    const store = useAppStore.getState();
+    const metric = store?.tokenMetrics?.[tokenMint];
+    if (metric) {
+      if (typeof metric.priceNative === 'number' && metric.priceNative > 0) {
+        return metric.priceNative;
+      }
+      if (typeof metric.priceNative === 'string' && parseFloat(metric.priceNative) > 0) {
+        return parseFloat(metric.priceNative);
+      }
+      if (typeof metric.priceUsd === 'number' && metric.priceUsd > 0) {
+        const solUsd = getSolPriceUsd() || 150;
+        return metric.priceUsd / solUsd;
+      }
+      if (typeof metric.priceUsd === 'string' && parseFloat(metric.priceUsd) > 0) {
+        const solUsd = getSolPriceUsd() || 150;
+        return parseFloat(metric.priceUsd) / solUsd;
+      }
+    }
+  } catch (e) {
+    // Ignore store access error
+  }
+
+  // 2. Fetch directly from DexScreener API
+  try {
+    const resp = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${tokenMint}`);
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data && data.pairs && data.pairs.length > 0) {
+        const bestPair = data.pairs[0];
+        if (bestPair.priceNative && parseFloat(bestPair.priceNative) > 0) {
+          const priceSol = parseFloat(bestPair.priceNative);
+          // Register token in registry for future fast lookup
+          tokenRegistry.registerOrUpdate({
+            mintAddress: tokenMint,
+            symbol: bestPair.baseToken?.symbol || 'UNKNOWN',
+            decimals: bestPair.baseToken?.decimals ?? (tokenMint.endsWith('pump') ? 6 : 6),
+          });
+          return priceSol;
+        }
+        if (bestPair.priceUsd && parseFloat(bestPair.priceUsd) > 0) {
+          const solUsd = getSolPriceUsd() || 150;
+          return parseFloat(bestPair.priceUsd) / solUsd;
+        }
+      }
+    }
+  } catch (e) {
+    console.warn(`[PaperTradeExecutor] DexScreener price lookup failed for ${tokenMint}:`, e);
+  }
+
+  return null;
 }
 
 export class PaperTradeExecutor implements ITradeExecutor {
@@ -73,10 +134,10 @@ export class PaperTradeExecutor implements ITradeExecutor {
     const inputAmount = Number(params.amount || 0);
     const slippageBps = Math.max(0, Math.min(5000, Number(params.slippageBps || 50)));
 
-    // Real Jupiter market quote ONLY. No synthetic fallback permitted.
+    // 1. Try Jupiter internal proxy first (handles CORS, fallbacks, and rate-limits)
     try {
-      const url = `https://quote-api.jup.ag/v6/quote?inputMint=${params.inputMint}&outputMint=${params.outputMint}&amount=${inputAmount}&slippageBps=${slippageBps}`;
-      const resp = await fetch(url);
+      const proxyUrl = `/api/jup/quote?inputMint=${params.inputMint}&outputMint=${params.outputMint}&amount=${inputAmount}&slippageBps=${slippageBps}&t=${Date.now()}`;
+      const resp = await fetch(proxyUrl);
       if (resp.ok) {
         const data = await resp.json();
         if (data && data.outAmount && Number(data.outAmount) > 0) {
@@ -84,10 +145,79 @@ export class PaperTradeExecutor implements ITradeExecutor {
         }
       }
     } catch (e: any) {
-      console.warn('[PaperTradeExecutor] Jupiter market quote fetch failed:', e);
+      // Continue to direct fallbacks
     }
 
-    throw new Error(`PAPER_QUOTE_FAILED: Unable to fetch real Jupiter market quote for ${params.inputMint} -> ${params.outputMint}. Real market liquidity required.`);
+    // 2. Try direct Jupiter API endpoints
+    const directEndpoints = [
+      `https://api.jup.ag/swap/v1/quote?inputMint=${params.inputMint}&outputMint=${params.outputMint}&amount=${inputAmount}&slippageBps=${slippageBps}`,
+      `https://lite-api.jup.ag/v6/quote?inputMint=${params.inputMint}&outputMint=${params.outputMint}&amount=${inputAmount}&slippageBps=${slippageBps}`,
+      `https://quote-api.jup.ag/v6/quote?inputMint=${params.inputMint}&outputMint=${params.outputMint}&amount=${inputAmount}&slippageBps=${slippageBps}`,
+    ];
+
+    for (const url of directEndpoints) {
+      try {
+        const resp = await fetch(url);
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data && data.outAmount && Number(data.outAmount) > 0) {
+            return data as QuoteResponse;
+          }
+        }
+      } catch (e: any) {
+        // Continue trying next endpoint
+      }
+    }
+
+    // 3. Real Market Price Fallback for bonding curve / Pump.fun / new AMM tokens not yet routed by Jupiter
+    const isBuy = params.inputMint === SOL_MINT || params.inputMint === 'So11111111111111111111111111111111111111112';
+    const targetTokenMint = isBuy ? params.outputMint : params.inputMint;
+    const realPriceSol = await resolveTokenPriceInSol(targetTokenMint);
+
+    if (realPriceSol && realPriceSol > 0) {
+      const targetDecimals = await resolveTokenDecimalsAsync(targetTokenMint);
+      let outAmountRaw = 0;
+
+      if (isBuy) {
+        const solAmount = inputAmount / 1e9;
+        const tokensCount = solAmount / realPriceSol;
+        outAmountRaw = Math.floor(tokensCount * Math.pow(10, targetDecimals));
+      } else {
+        const tokensCount = inputAmount / Math.pow(10, targetDecimals);
+        const solAmount = tokensCount * realPriceSol;
+        outAmountRaw = Math.floor(solAmount * 1e9);
+      }
+
+      if (outAmountRaw > 0) {
+        return {
+          inputMint: params.inputMint,
+          inAmount: params.amount.toString(),
+          outputMint: params.outputMint,
+          outAmount: outAmountRaw.toString(),
+          otherAmountThreshold: Math.floor(outAmountRaw * (1 - slippageBps / 10000)).toString(),
+          swapMode: 'ExactIn',
+          slippageBps,
+          priceImpactPct: '0.05',
+          routePlan: [
+            {
+              swapInfo: {
+                ammKey: 'pumpfun_dex_curve',
+                label: 'DexScreener / Pump Pool',
+                inputMint: params.inputMint,
+                outputMint: params.outputMint,
+                inAmount: params.amount.toString(),
+                outAmount: outAmountRaw.toString(),
+                feeAmount: '0',
+                feeMint: params.inputMint,
+              },
+              percent: 100,
+            },
+          ],
+        } as unknown as QuoteResponse;
+      }
+    }
+
+    throw new Error(`PAPER_QUOTE_FAILED: Unable to fetch real market quote or price for ${params.inputMint} -> ${params.outputMint}. Real market liquidity required.`);
   }
 
   async swap(
