@@ -98,7 +98,7 @@ export class MasterMonitorService {
     });
 
     // 🔥 INSTANT DIRECT PATH: Price update -> Exit Manager (<1ms evaluation)
-    this.exitManager.onPriceUpdate(mint, priceNative, timestamp);
+    this.exitManager.onPriceUpdate(mint, priceNative, timestamp, 'SOL', source);
   }
 
   private ensureBatchPolling(): void {

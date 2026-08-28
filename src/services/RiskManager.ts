@@ -31,6 +31,8 @@ export interface ManagedPosition {
   createdAt: number;
   lastPriceUpdate?: number;
   pendingSince?: number;
+  activePriceSource?: 'dexscreener' | 'jupiter';
+  isPnLPositive?: boolean;
 }
 
 export interface RiskConfig {
@@ -161,6 +163,7 @@ export class RiskManager {
     mint: string;
     amount: number; // Raw integer units
     buyPrice?: number; // Price in SOL per human token unit
+    currentPrice?: number; // Current market price in SOL
     solSpent: number; // Total SOL spent on this purchase
     tpPct?: number;
     slPct?: number;
@@ -266,6 +269,13 @@ export class RiskManager {
       throw new Error(`INVALID_POSITION_ENTRY: Cannot open position for ${params.mint} without valid buyPrice or positive solSpent and amount.`);
     }
 
+    const initialPrice = params.currentPrice && params.currentPrice > 0 ? params.currentPrice : calculatedBuyPrice;
+    const initialPnL = calculatedBuyPrice > 0 && initialPrice > 0
+      ? ((initialPrice - calculatedBuyPrice) / calculatedBuyPrice) * 100
+      : 0;
+    const isPnLPositive = initialPnL >= 0;
+    const activePriceSource: 'dexscreener' | 'jupiter' = isPnLPositive ? 'jupiter' : 'dexscreener';
+
     const pos: ManagedPosition = {
       mint: params.mint,
       amount: rawAmount,
@@ -278,12 +288,14 @@ export class RiskManager {
       maxHoldTimeMs: params.maxHoldTimeMs ?? this.config.maxHoldTimeMs,
       slippageBpsTp: params.slippageBpsTp ?? this.config.slippageBpsTp ?? 250,
       slippageBpsSl: params.slippageBpsSl ?? this.config.slippageBpsSl ?? 1000,
-      currentPrice: calculatedBuyPrice,
-      peakPrice: calculatedBuyPrice,
-      highestPnLPct: 0,
+      currentPrice: initialPrice,
+      peakPrice: initialPrice,
+      highestPnLPct: Math.max(0, initialPnL),
       state: params.buySignature ? 'OPEN' : 'PENDING_BUY',
       buySignature: params.buySignature,
       createdAt: Date.now(),
+      activePriceSource,
+      isPnLPositive,
     };
 
     this.positions.set(params.mint, pos);
@@ -397,13 +409,14 @@ export class RiskManager {
   }
 
   /**
-   * Price update handler with currency verification and dynamic conversion.
+   * Price update handler with currency verification, source authority tracking, and dynamic conversion.
    */
   public onPriceUpdate(
     mint: string,
     rawPrice: number,
     timestamp: number = Date.now(),
-    quoteCurrency: 'SOL' | 'USD' = 'SOL'
+    quoteCurrency: 'SOL' | 'USD' = 'SOL',
+    source: 'dexscreener' | 'jupiter' | 'rpc_ws' | 'price_tracker' = 'dexscreener'
   ): void {
     const pos = this.positions.get(mint);
     if (!pos || pos.state === 'CLOSED' || !rawPrice || !Number.isFinite(rawPrice) || rawPrice <= 0) return;
@@ -427,6 +440,72 @@ export class RiskManager {
 
     if (priceInSol <= 0 || !Number.isFinite(priceInSol)) return;
 
+    const effectiveBuyPrice = pos.buyPrice > 0
+      ? pos.buyPrice
+      : (pos.amount > 0 && pos.solSpent > 0
+          ? pos.solSpent / (pos.amount / (10 ** pos.tokenDecimals))
+          : 0);
+
+    const candidatePnLPct = effectiveBuyPrice > 0
+      ? ((priceInSol - effectiveBuyPrice) / effectiveBuyPrice) * 100
+      : 0;
+
+    const candidateIsPositive = candidatePnLPct >= 0;
+    const normalizedSource: 'dexscreener' | 'jupiter' = source === 'jupiter' ? 'jupiter' : 'dexscreener';
+
+    // Initialize position state if unassigned
+    if (pos.isPnLPositive === undefined) {
+      const currentPnL = this.calculateGrossPnLPct(pos);
+      pos.isPnLPositive = currentPnL >= 0;
+      pos.activePriceSource = pos.isPnLPositive ? 'jupiter' : 'dexscreener';
+    }
+
+    // REFERENCE PRICE AUTHORITY RULES:
+    // 1. Position is negative: use DexScreener as reference price.
+    // 2. Position is positive: use Jupiter as reference price.
+    // 3. When switching negative -> positive: switch to Jupiter.
+    // 4. When switching positive -> negative: switch to DexScreener.
+    // 5. Never let a non-authoritative source overwrite current PnL price.
+
+    let isAuthoritative = false;
+
+    if (!pos.isPnLPositive) {
+      // Position is currently NEGATIVE (authoritative reference source: 'dexscreener')
+      if (candidateIsPositive) {
+        // Switch negative -> positive: switch authority to 'jupiter'
+        pos.isPnLPositive = true;
+        pos.activePriceSource = 'jupiter';
+        isAuthoritative = true;
+        console.log(`[RiskManager] 🔄 Position ${mint.slice(0, 6)} switched NEGATIVE -> POSITIVE (+${candidatePnLPct.toFixed(2)}%). Reference source set to JUPITER.`);
+      } else if (normalizedSource === 'dexscreener') {
+        // Still negative, update comes from authoritative source 'dexscreener'
+        isAuthoritative = true;
+      } else {
+        // Non-authoritative update (e.g. Jupiter sending negative update while position is negative)
+        isAuthoritative = false;
+      }
+    } else {
+      // Position is currently POSITIVE (authoritative reference source: 'jupiter')
+      if (!candidateIsPositive) {
+        // Switch positive -> negative: switch authority to 'dexscreener'
+        pos.isPnLPositive = false;
+        pos.activePriceSource = 'dexscreener';
+        isAuthoritative = true;
+        console.log(`[RiskManager] 🔄 Position ${mint.slice(0, 6)} switched POSITIVE -> NEGATIVE (${candidatePnLPct.toFixed(2)}%). Reference source set to DEXSCREENER.`);
+      } else if (normalizedSource === 'jupiter') {
+        // Still positive, update comes from authoritative source 'jupiter'
+        isAuthoritative = true;
+      } else {
+        // Non-authoritative update (e.g. DexScreener sending positive update while position is positive)
+        isAuthoritative = false;
+      }
+    }
+
+    if (!isAuthoritative) {
+      // Reject non-authoritative update without overwriting current PnL price
+      return;
+    }
+
     pos.currentPrice = priceInSol;
     pos.lastPriceUpdate = timestamp;
 
@@ -439,7 +518,7 @@ export class RiskManager {
       pos.highestPnLPct = grossPnlPct;
     }
 
-    // Sync price to TokenRegistry & PositionRegistry
+    // Sync authoritative price to TokenRegistry & PositionRegistry
     tokenRegistry.updatePrice(mint, priceInSol);
     positionRegistry.updatePrice(mint, priceInSol);
 
@@ -552,6 +631,7 @@ export class RiskManager {
 
     let executableSolOut = 0;
     let executablePnlPct = grossPnlPct;
+    let isQuoteValid = false;
 
     try {
       const quote = await this.executor.getQuote({
@@ -565,10 +645,53 @@ export class RiskManager {
         executableSolOut = Number(quote.outAmount) / 1e9;
         if (pos.solSpent > 0 && executableSolOut > 0) {
           executablePnlPct = ((executableSolOut - pos.solSpent) / pos.solSpent) * 100;
+          isQuoteValid = true;
         }
       }
     } catch (quoteErr) {
       console.warn(`[RiskManager] Pre-fetch executable SELL quote warning for ${mint}:`, quoteErr);
+      isQuoteValid = false;
+    }
+
+    const tokenQty = pos.amount > 0 ? pos.amount / (10 ** pos.tokenDecimals) : 0;
+    const quotePriceSol = tokenQty > 0 && executableSolOut > 0 ? executableSolOut / tokenQty : pos.currentPrice;
+
+    // REQUIREMENT 8: If Jupiter's quote is stale, unavailable, or clearly anomalous, do not use it to manufacture a loss.
+    const isAnomalousQuote = isQuoteValid && (
+      (grossPnlPct > -30 && executablePnlPct < -75) || // Discrepancy > 45% between market and executable quote
+      (executableSolOut <= 0)
+    );
+
+    if (!isQuoteValid || isAnomalousQuote) {
+      if (candidateReason === 'sl' || grossPnlPct < 0) {
+        console.warn(
+          `[RiskManager] ⚠️ Jupiter executable quote is ${!isQuoteValid ? 'unavailable/stale' : 'clearly anomalous'} ` +
+          `(Market PnL: ${grossPnlPct.toFixed(2)}%, Quote PnL: ${executablePnlPct.toFixed(2)}%). ` +
+          `ABORTING exit to avoid manufacturing a loss.`
+        );
+        return;
+      }
+    }
+
+    // REQUIREMENT 7: If Jupiter says the executable exit would be profitable while the monitoring source says negative,
+    // do not sell based on the conflicting negative signal; revalidate instead.
+    if ((candidateReason === 'sl' || grossPnlPct < 0) && executablePnlPct >= 0) {
+      console.warn(
+        `[RiskManager] ⚠️ Conflicting negative signal (${exitType}, market PnL: ${grossPnlPct.toFixed(2)}%) ` +
+        `conflicts with PROFITABLE Jupiter executable quote (+${executablePnlPct.toFixed(2)}%). ` +
+        `ABORTING SELL & revalidating position.`
+      );
+
+      // Revalidate: switch state to positive and set Jupiter as reference authority
+      pos.isPnLPositive = true;
+      pos.activePriceSource = 'jupiter';
+      if (quotePriceSol > 0) {
+        pos.currentPrice = quotePriceSol;
+        pos.lastPriceUpdate = Date.now();
+        tokenRegistry.updatePrice(mint, quotePriceSol);
+        positionRegistry.updatePrice(mint, quotePriceSol);
+      }
+      return;
     }
 
     // CRITICAL SAFETY GATE:
@@ -583,9 +706,6 @@ export class RiskManager {
         return;
       }
     }
-
-    const tokenQty = pos.amount > 0 ? pos.amount / (10 ** pos.tokenDecimals) : 0;
-    const quotePriceSol = tokenQty > 0 && executableSolOut > 0 ? executableSolOut / tokenQty : pos.currentPrice;
 
     console.log(
       `[RiskManager] ⚡ Authorizing ${exitType} exit for ${mint}: Market PnL = ${grossPnlPct.toFixed(2)}%, ` +

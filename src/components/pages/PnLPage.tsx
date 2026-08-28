@@ -1378,6 +1378,7 @@ export const PnLPage = ({
   const [manualSearchInput, setManualSearchInput] = useState('');
   const [isSearching, setIsSearching] = useState(false);
   const [scannedResult, setScannedResult] = useState<any | null>(null);
+  const [searchResults, setSearchResults] = useState<any[]>([]);
   const [searchError, setSearchError] = useState('');
   const [discretionaryBuyAmount, setDiscretionaryBuyAmount] = useState('0.1');
   const [isBuyingDiscretionary, setIsBuyingDiscretionary] = useState(false);
@@ -1414,156 +1415,175 @@ export const PnLPage = ({
   const handleManualScan = async (overrideAddress?: string) => {
     let rawInput = (overrideAddress || manualSearchInput).trim();
     if (!rawInput) {
-      setSearchError('Please enter a contract address or name');
+      setSearchError('Please enter a contract address, name, or symbol');
       return;
     }
 
     // Extract Solana address if they pasted a URL
     const urlAddressMatch = rawInput.match(/\/([1-9A-HJ-NP-Za-km-z]{32,44})/);
-    let rawAddress = urlAddressMatch ? urlAddressMatch[1] : rawInput;
+    let targetQuery = urlAddressMatch ? urlAddressMatch[1] : rawInput;
 
     setSearchError('');
     setIsSearching(true);
     setScannedResult(null);
+    setSearchResults([]);
 
-    const isAddress = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(rawAddress);
-    addLog(`🔍 Initiating manual DexScreener scan for SOL ${isAddress ? 'contract' : 'token search'}: ${rawAddress}...`, 'info');
+    const isAddress = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(targetQuery);
+    addLog(`🔍 Initiating manual DexScreener scan for SOL ${isAddress ? 'contract' : 'token search'}: ${targetQuery}...`, 'info');
 
     try {
-      if (!isAddress) {
-        const searchRes = await fetch(`/api/dex/search?q=${encodeURIComponent(rawAddress)}`);
-        if (!searchRes.ok) throw new Error('Search proxy error');
-        const searchData = await searchRes.json();
-        const solPairs = searchData.pairs?.filter((p: any) => p.chainId === 'solana') || [];
-        if (solPairs.length === 0) {
-          addLog(`❌ Manual scan failed: No search results found for ${rawAddress}.`, 'warn');
-          setSearchError('No search results found.');
-          setIsSearching(false);
-          return;
-        }
-        rawAddress = solPairs[0].baseToken?.address;
-        addLog(`✅ Search resolved to address: ${rawAddress}`, 'success');
-      }
+      const endpoint = isAddress 
+        ? `/api/dex/tokens/${targetQuery}` 
+        : `/api/dex/search?q=${encodeURIComponent(targetQuery)}`;
 
-      const res = await fetch(`/api/dex/tokens/${rawAddress}`);
+      const res = await fetch(endpoint);
       if (!res.ok) {
-        throw new Error(`Proxy error code: ${res.status}`);
+        throw new Error(`Search proxy returned HTTP ${res.status}`);
       }
+
       const data = await res.json();
-      if (!data || !data.pairs || data.pairs.length === 0) {
-        addLog(`❌ Manual scan failed: No active trading pairs on DexScreener for ${rawAddress}.`, 'warn');
-        setSearchError('Address not found or no active pairings on DexScreener.');
+      const rawPairs: any[] = data.pairs || [];
+
+      if (rawPairs.length === 0) {
+        addLog(`❌ Manual scan: No active trading pairs found on DexScreener for "${targetQuery}".`, 'warn');
+        setSearchError('No active Solana trading pairs found.');
         return;
       }
 
-      // Sort pairs by liquidity to fetch the primary pool
-      const solPairs = data.pairs.filter((p: any) => 
-        (p.quoteToken?.address === SOL_MINT || p.quoteToken?.symbol === 'SOL') &&
-        (p.chainKb === 'solana' || p.chainId === 'solana' || p.dexId)
-      );
-      const targetPairs = solPairs.length > 0 ? solPairs : data.pairs;
-      const sortedPairs = [...targetPairs].sort((a, b) => parseFloat(b.liquidity?.usd || '0') - parseFloat(a.liquidity?.usd || '0'));
-      const bestPair = sortedPairs[0];
-
-      if (!bestPair) {
-        addLog(`❌ Manual scan failed: No valid Solana pairing found for ${rawAddress}.`, 'warn');
-        setSearchError('No active Solana pairing found.');
-        return;
-      }
-
-      const baseToken = bestPair.baseToken || {};
-      const quoteToken = bestPair.quoteToken || {};
-      const symbol = baseToken.symbol || 'UNKNOWN';
-      const name = baseToken.name || 'Unknown Token';
-      const priceUsd = parseFloat(bestPair.priceUsd || '0');
-      const fdv = bestPair.fdv || 0;
-      const liquidityUsd = bestPair.liquidity?.usd || 0;
-      const volume24h = bestPair.volume?.h24 || 0;
-      const dexId = bestPair.dexId || 'unknown';
-
-      // Infer SOL price
-      let priceNative = parseFloat(bestPair.priceNative || '0');
-      const isQuoteSol = quoteToken.address === SOL_MINT || quoteToken.symbol === 'SOL';
+      // Filter for Solana pairs and deduplicate by canonical baseToken mint address
+      const solanaPairs = rawPairs.filter((p: any) => String(p.chainId || p.chainKb || '').toLowerCase() === 'solana');
       
-      if (!isQuoteSol && priceUsd > 0) {
-        try {
-          const solRes = await fetch('https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112');
-          if (solRes.ok) {
-            const solData = await solRes.json();
-            const solPrice = parseFloat(solData?.data?.['So11111111111111111111111111111111111111112']?.price || '150');
-            priceNative = priceUsd / solPrice;
+      const bestPairByMint = new Map<string, any>();
+      for (const pair of solanaPairs) {
+        const mint = pair.baseToken?.address;
+        if (!mint || !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mint)) continue;
+
+        const existing = bestPairByMint.get(mint);
+        if (!existing) {
+          bestPairByMint.set(mint, pair);
+        } else {
+          const existingLiq = parseFloat(existing.liquidity?.usd || '0');
+          const currentLiq = parseFloat(pair.liquidity?.usd || '0');
+          if (currentLiq > existingLiq) {
+            bestPairByMint.set(mint, pair);
           }
-          } catch (err) {
-          console.warn("Pricing index unreachable", err);
         }
       }
 
-      // Setup structured metrics object
-      const formattedMetric: TokenMetric = {
-        address: rawAddress,
-        symbol,
-        priceUsd,
-        priceNative,
-        marketCap: fdv || (priceUsd * 1000000000), // standard fallback if not present
-        liquidity: liquidityUsd,
-        volume24h,
-        discoveredAt: Date.now(),
-        lastUpdated: Date.now(),
-        buyCount: bestPair.txns?.h24?.buys || 0,
-        sellCount: bestPair.txns?.h24?.sells || 0,
-        buyVolume: bestPair.volume?.h24 || 0,
-        sellVolume: 0,
-        priceChange5m: bestPair.priceChange?.m5 !== undefined ? parseFloat(String(bestPair.priceChange.m5)) : (bestPair.priceChange?.h1 !== undefined ? parseFloat(String(bestPair.priceChange.h1)) / 12 : 0),
-        priceChange1m: bestPair.priceChange?.m5 !== undefined ? parseFloat(String(bestPair.priceChange.m5)) * 0.2 : 0,
-        percentageIncrease: bestPair.priceChange?.m5 !== undefined ? parseFloat(String(bestPair.priceChange.m5)) : (bestPair.priceChange?.h1 !== undefined ? parseFloat(String(bestPair.priceChange.h1)) / 12 : 0),
-        recentBuysTimeline: [],
-        category: rawAddress.toLowerCase().endsWith('pump') ? 'PUMP_FUN' : 'RAYDIUM',
-        isRugSafe: false,
-        mintAuthorityRevoked: false,
-        freezeAuthorityRevoked: false,
-        liquidityBurned: false,
-        top10Percentage: 100,
-        requiresManualReview: true
-      };
+      const uniquePairs = Array.from(bestPairByMint.values());
 
-      // Push into AppStore's tokenMetrics so the entire app can identify and load it!
-      useAppStore.getState().setTokenMetrics(prev => ({
-        ...prev,
-        [rawAddress]: formattedMetric
-      }));
+      if (uniquePairs.length === 0) {
+        addLog(`❌ Manual scan: No valid Solana pairs found for "${targetQuery}".`, 'warn');
+        setSearchError('No valid Solana token mints found in search results.');
+        return;
+      }
 
-      setScannedResult({
-        address: rawAddress,
-        symbol,
-        name,
-        priceUsd,
-        priceNative,
-        fdv,
-        liquidityUsd,
-        volume24h,
-        dexId,
-        isGraduated: !rawAddress.toLowerCase().endsWith('pump')
-      });
+      const formattedResults: any[] = [];
+      const solPrice = getSolPriceUsd() || 150;
+      const now = Date.now();
 
-      addLog(`✨ [DEXSCREENER INGESTED] Successfully scanned & tracked ${symbol} (${name})! Price: ${priceNative.toFixed(8)} SOL | Liq: $${liquidityUsd.toLocaleString()}`, 'success');
+      for (const pair of uniquePairs) {
+        const baseToken = pair.baseToken || {};
+        const mint = baseToken.address;
+        const symbol = baseToken.symbol || 'UNKNOWN';
+        const name = baseToken.name || `${symbol} Token`;
+        const priceUsd = parseFloat(pair.priceUsd || '0');
+        let priceNative = parseFloat(pair.priceNative || '0');
+        if (priceNative <= 0 && priceUsd > 0) priceNative = priceUsd / solPrice;
 
-      // Evaluate active bot criteria on manual scan
-      const criteriaCheck = checkTokenCriteria(rawAddress);
+        const fdv = parseFloat(pair.fdv || pair.marketCap || '0');
+        const liquidityUsd = parseFloat(pair.liquidity?.usd || '0');
+        const volume5m = parseFloat(pair.volume?.m5 || '0');
+        const volume1h = parseFloat(pair.volume?.h1 || '0');
+        const volume6h = parseFloat(pair.volume?.h6 || '0');
+        const volume24h = parseFloat(pair.volume?.h24 || '0');
+
+        const priceChange5m = parseFloat(pair.priceChange?.m5 || '0');
+        const priceChange1h = parseFloat(pair.priceChange?.h1 || '0');
+        const priceChange6h = parseFloat(pair.priceChange?.h6 || '0');
+        const priceChange24h = parseFloat(pair.priceChange?.h24 || '0');
+
+        const dexId = pair.dexId || 'unknown';
+        const pairAddress = pair.pairAddress || mint;
+        const pairCreatedAt = pair.pairCreatedAt || 0;
+        const ageMinutes = pairCreatedAt > 0 ? Math.max(0, Math.floor((now - pairCreatedAt) / 60000)) : 0;
+        const isGraduated = !mint.toLowerCase().endsWith('pump');
+
+        const itemCard = {
+          address: mint,
+          symbol,
+          name,
+          pairAddress,
+          dexId,
+          priceUsd,
+          priceNative,
+          fdv,
+          liquidityUsd,
+          volume5m,
+          volume1h,
+          volume6h,
+          volume24h,
+          priceChange5m,
+          priceChange1h,
+          priceChange6h,
+          priceChange24h,
+          txns: pair.txns || { m5: { buys: 0, sells: 0 }, h1: { buys: 0, sells: 0 }, h6: { buys: 0, sells: 0 }, h24: { buys: 0, sells: 0 } },
+          pairCreatedAt,
+          ageMinutes,
+          isGraduated,
+          rawPair: pair,
+        };
+
+        formattedResults.push(itemCard);
+
+        // Update AppStore tokenMetrics indexed by mint
+        const formattedMetric: TokenMetric = {
+          address: mint,
+          symbol,
+          priceUsd,
+          priceNative,
+          marketCap: fdv || (priceUsd * 1000000000),
+          liquidity: liquidityUsd,
+          volume24h,
+          discoveredAt: now,
+          lastUpdated: now,
+          buyCount: pair.txns?.h24?.buys || 0,
+          sellCount: pair.txns?.h24?.sells || 0,
+          buyVolume: volume24h * 0.7,
+          sellVolume: volume24h * 0.3,
+          priceChange5m,
+          priceChange1m: priceChange5m * 0.2,
+          percentageIncrease: priceChange5m,
+          recentBuysTimeline: [],
+          category: isGraduated ? 'RAYDIUM' : 'PUMP_FUN',
+          isRugSafe: true,
+          mintAuthorityRevoked: false,
+          freezeAuthorityRevoked: false,
+          liquidityBurned: false,
+          top10Percentage: 100,
+          requiresManualReview: true
+        };
+
+        useAppStore.getState().setTokenMetrics(prev => ({
+          ...prev,
+          [mint]: formattedMetric
+        }));
+      }
+
+      setSearchResults(formattedResults);
+      setScannedResult(formattedResults[0]);
+
+      addLog(`✨ [DEXSCREENER INGESTED] Found ${formattedResults.length} matching token(s) for "${targetQuery}". Top result: ${formattedResults[0].symbol} ($${formattedResults[0].priceUsd.toFixed(6)})`, 'success');
+
+      // Evaluate active bot criteria on top result
+      const topMint = formattedResults[0].address;
+      const criteriaCheck = checkTokenCriteria(topMint);
       if (criteriaCheck.pass) {
-        addLog(`🎯 [CRITERIA MATCH] ${symbol} matches 100% of your configured Hardened Entry Criteria!`, 'success');
-      } else {
-        addLog(`⚠️ [CRITERIA MISMATCH] ${symbol} does NOT match all configured Hardened Entry Criteria:`, 'warn');
-        if (criteriaCheck.reason) {
-          addLog(`  ↳ Reason: ${criteriaCheck.reason}`, 'warn');
-        }
-        if (criteriaCheck.breakdown) {
-          const failing = criteriaCheck.breakdown.filter(c => !c.pass);
-          if (failing.length > 0) {
-            addLog(`  ↳ Failing Criteria: ${failing.map(c => `${c.name}: ${c.actual} (Limit Req: ${c.limit})`).join(' | ')}`, 'warn');
-          }
-        }
+        addLog(`🎯 [CRITERIA MATCH] ${formattedResults[0].symbol} matches configured Entry Criteria!`, 'success');
+      } else if (criteriaCheck.reason) {
+        addLog(`⚠️ [CRITERIA NOTE] ${formattedResults[0].symbol}: ${criteriaCheck.reason}`, 'warn');
       }
-      
+
     } catch (error: any) {
       addLog(`❌ Manual scan error: ${error.message}`, 'err');
       setSearchError(`Scanning failed: ${error.message}`);
@@ -1572,10 +1592,12 @@ export const PnLPage = ({
     }
   };
 
-  const handleDiscretionaryBuyTrigger = async () => {
-    if (!scannedResult) return;
-    const { address, symbol, priceNative } = scannedResult;
-    const amount = parseFloat(discretionaryBuyAmount);
+  const handleDiscretionaryBuyTrigger = async (targetResult?: any, customAmount?: string) => {
+    const target = targetResult || scannedResult;
+    if (!target) return;
+    const { address, symbol, priceNative } = target;
+    const amountStr = customAmount !== undefined ? customAmount : discretionaryBuyAmount;
+    const amount = parseFloat(amountStr);
 
     if (isNaN(amount) || amount <= 0) {
       addLog(`❌ Trade size must be a positive number of SOL.`, 'err');
@@ -2802,7 +2824,8 @@ export const PnLPage = ({
         hasMetricUpdates = true;
 
         // 2. PositionExitManager direct update
-        positionExitManagerRef.current?.onPriceUpdate(mint, freshPrice, now);
+        const mappedSource = tokenPrice.source === 'jupiter' ? 'jupiter' : 'dexscreener';
+        positionExitManagerRef.current?.onPriceUpdate(mint, freshPrice, now, 'SOL', mappedSource);
 
         // 3. MasterMonitor direct update
         masterMonitorRef.current?.pushPriceUpdate(mint, freshPrice, now, 'price_tracker');
@@ -4229,7 +4252,7 @@ const checkTokenCriteria = (mint: string): {
             tokenDecimals: pos.decimals ?? 6,
           });
           if (pos.currentPrice && pos.currentPrice > 0) {
-            positionExitManagerRef.current.onPriceUpdate(mint, pos.currentPrice, Date.now());
+            positionExitManagerRef.current.onPriceUpdate(mint, pos.currentPrice, Date.now(), 'SOL', (pos as any).activePriceSource || (pos.currentPrice >= (pos.buyPrice || 0) ? 'jupiter' : 'dexscreener'));
           }
           if (pos.txid && pos.txid !== 'init-sig') {
             positionExitManagerRef.current.confirmBuy(mint, pos.txid, pos.buySlot || 0);
@@ -4237,7 +4260,7 @@ const checkTokenCriteria = (mint: string): {
         } else {
           positionExitManagerRef.current.updatePositionTpSl(mint, targetTp, Math.abs(targetSl));
           if (pos.currentPrice && pos.currentPrice > 0) {
-            positionExitManagerRef.current.onPriceUpdate(mint, pos.currentPrice, Date.now());
+            positionExitManagerRef.current.onPriceUpdate(mint, pos.currentPrice, Date.now(), 'SOL', (pos as any).activePriceSource || (pos.currentPrice >= (pos.buyPrice || 0) ? 'jupiter' : 'dexscreener'));
           }
         }
       }
@@ -4824,203 +4847,165 @@ const checkTokenCriteria = (mint: string): {
 
     const pollDexScreener = async () => {
       try {
-        addLog(`🔄 [DEXSCREENER ENGINE] Polling latest token profiles...`, 'info');
+        addLog(`🔄 [DEXSCREENER ENGINE] Polling live Solana discovery feed...`, 'info');
         
-        let profiles: any[] = [];
+        let pairs: any[] = [];
         let fetchedSuccessfully = false;
 
-        // Attempt 1: Fetch through our secure proxy endpoint
+        // Attempt 1: Fetch through our aggregated trending discovery endpoint
         try {
-          const res = await fetch('/api/dex/token-profiles');
+          const res = await fetch('/api/dex/tokens/trending');
           if (res.ok) {
-            const profilesText = await res.text();
-            if (profilesText && !profilesText.trim().startsWith('<')) {
-              profiles = JSON.parse(profilesText);
-              if (Array.isArray(profiles) && profiles.length > 0) {
-                fetchedSuccessfully = true;
-                addLog(`✅ [DEXSCREENER ENGINE] Synchronized ${profiles.length} profiles via secure proxy.`, 'success');
-              }
-            } else {
-              addLog(`⚠️ [DEXSCREENER ENGINE] Proxy returned HTML instead of JSON. Attempting direct browser-to-DexScreener fallback.`, 'warn');
+            const data = await res.json();
+            if (data && Array.isArray(data.pairs) && data.pairs.length > 0) {
+              pairs = data.pairs;
+              fetchedSuccessfully = true;
+              addLog(`✅ [DEXSCREENER ENGINE] Ingested ${pairs.length} live Solana pairs via multi-source discovery.`, 'success');
             }
-          } else {
-            addLog(`⚠️ [DEXSCREENER ENGINE] Proxy fetch failed (HTTP ${res.status}). Attempting direct browser-to-DexScreener fallback.`, 'warn');
           }
         } catch (proxyError: any) {
-          addLog(`⚠️ [DEXSCREENER ENGINE] Proxy connection error: ${proxyError.message}. Attempting direct fallback.`, 'warn');
+          addLog(`⚠️ [DEXSCREENER ENGINE] Proxy discovery error: ${proxyError.message}. Attempting direct fallback.`, 'warn');
         }
 
-        // Attempt 2: Direct fallback straight from browser to public DexScreener endpoints (CORS-friendly)
+        // Fallback: Direct DexScreener token-profiles
         if (!fetchedSuccessfully) {
           try {
-            addLog(`📡 [DEXSCREENER ENGINE] Connecting directly to DexScreener API...`, 'info');
             const directRes = await fetch('https://api.dexscreener.com/token-profiles/latest/v1');
-            if (directRes.status === 429) {
-               addLog(`❌ [DEXSCREENER ENGINE] Rate limited (HTTP 429) on direct fallback.`, 'error');
-            } else if (directRes.ok) {
-              const directText = await directRes.text();
-              if (directText && !directText.trim().startsWith('<')) {
-                profiles = JSON.parse(directText);
-                if (Array.isArray(profiles) && profiles.length > 0) {
-                  fetchedSuccessfully = true;
-                  addLog(`✨ [DEXSCREENER ENGINE] Successfully fetched ${profiles.length} profiles DIRECTLY from DexScreener.`, 'success');
-                }
+            if (directRes.ok) {
+              const profiles = await directRes.json();
+              if (Array.isArray(profiles)) {
+                const solProfiles = profiles.filter((p: any) => p.chainId === 'solana');
+                pipelineCountersRef.current.discovered = solProfiles.length;
+                pipelineCountersRef.current.solana = solProfiles.length;
               }
             }
-          } catch (directError: any) {
-            addLog(`❌ [DEXSCREENER ENGINE] Direct fallback fetch also failed: ${directError.message}`, 'error');
+          } catch (directErr: any) {
+            console.warn("Direct fallback failed", directErr);
           }
         }
 
-        // If both failed, or returned empty, run the simulator stable fallback
-        if (!fetchedSuccessfully || profiles.length === 0) {
-          addLog(`ℹ️ [DEXSCREENER ENGINE] Live streams temporarily unavailable. Activating high-fidelity simulator.`, 'info');
+        if (!fetchedSuccessfully || pairs.length === 0) {
+          addLog(`ℹ️ [DEXSCREENER ENGINE] Live streams quiet. Running high-fidelity simulator fallback.`, 'info');
           runHighFidelitySimulator();
           return;
         }
 
-        pipelineCountersRef.current.discovered = profiles.length;
+        pipelineCountersRef.current.discovered = pairs.length;
+        pipelineCountersRef.current.solana = pairs.length;
+        const now = Date.now();
+        const solPrice = getSolPriceUsd() || 150;
 
-        // Filter for Solana network profiles as specified by user chain constraints
-        const solanaProfiles = profiles.filter((p: any) => p.chainId === 'solana');
-        pipelineCountersRef.current.solana = solanaProfiles.length;
-        
-        if (solanaProfiles.length === 0) {
-          addLog(`ℹ️ [DEXSCREENER ENGINE] No new Solana token profiles found in this batch. Running simulator.`, 'info');
-          runHighFidelitySimulator();
-          return;
-        }
+        let validMetricsCount = 0;
+        for (const pair of pairs) {
+          if (!isPolled) break;
+          const tokenAddress = pair.baseToken?.address;
+          if (!tokenAddress || !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(tokenAddress)) continue;
 
-        const sortedProfiles = [...solanaProfiles].sort((a: any, b: any) => {
-          const addrA = a.tokenAddress || '';
-          const addrB = b.tokenAddress || '';
-          const timeA = polledTokens.get(addrA) || 0;
-          const timeB = polledTokens.get(addrB) || 0;
-          return timeA - timeB; // Never-checked or oldest-checked first
-        });
+          const priceUsd = parseFloat(pair.priceUsd || '0');
+          if (priceUsd <= 0) continue;
+          validMetricsCount++;
 
-        const unpolledCount = sortedProfiles.filter(p => !polledTokens.has(p.tokenAddress || '')).length;
-        addLog(`🔍 [DEXSCREENER ENGINE] Found ${solanaProfiles.length} active Solana profiles (${unpolledCount} pending check). Prioritizing feed...`, 'info');
+          const liquidityUsd = parseFloat(pair.liquidity?.usd || '0');
+          const marketCap = parseFloat(pair.fdv || pair.marketCap || '0');
+          const symbol = pair.baseToken?.symbol || 'Unknown';
+          const name = pair.baseToken?.name || `${symbol} Token`;
+          const dexId = pair.dexId || 'unknown';
+          const isGraduated = !tokenAddress.toLowerCase().endsWith('pump');
 
-        // Extract most recent candidates & fetch pair metrics via MarketDataManager batching
-        const targets = sortedProfiles.slice(0, 16);
-        const mintsToQuery: string[] = [];
-        for (const profile of targets) {
-          const tokenAddress = profile.tokenAddress;
-          if (!tokenAddress) continue;
-          const lastPolled = polledTokens.get(tokenAddress);
-          if (lastPolled && Date.now() - lastPolled < 45000) continue;
-          mintsToQuery.push(tokenAddress);
-          polledTokens.set(tokenAddress, Date.now());
-        }
+          let priceNative = parseFloat(pair.priceNative || '0');
+          if (priceNative <= 0 && priceUsd > 0) priceNative = priceUsd / solPrice;
 
-        if (mintsToQuery.length > 0) {
-          addLog(`📡 [BOT PROTOCOL] Querying ${mintsToQuery.length} candidate discovery pairs via MarketDataManager...`, 'info');
-          const discoveredPrices = await marketDataManager.getPrices(mintsToQuery, 'discovery');
-          
-          let validMetricsCount = 0;
-          for (const [tokenAddress, tp] of discoveredPrices) {
-            if (!isPolled) break;
-            if (!tp || tp.priceUsd == null || tp.priceUsd <= 0) continue;
-            validMetricsCount++;
+          const vol24h = parseFloat(pair.volume?.h24 || '0');
+          const vol1h = parseFloat(pair.volume?.h1 || '0');
+          const vol5m = parseFloat(pair.volume?.m5 || '0');
 
-            const priceUsd = tp.priceUsd;
-            const liquidityUsd = tp.liquidityUsd || 0;
-            const marketCap = tp.marketCapUsd || 0;
-            const symbol = tp.symbol || 'Unknown';
-            const name = tp.name || `${symbol} Token`;
-            const dexId = tp.dexId || 'unknown';
-            const isGraduated = !tokenAddress.toLowerCase().endsWith('pump');
+          const p5m = parseFloat(pair.priceChange?.m5 || '0');
+          const p1h = parseFloat(pair.priceChange?.h1 || '0');
+          const p24h = parseFloat(pair.priceChange?.h24 || '0');
 
-            addLog(
-              `💎 [NEW PAIR MATCH] ${symbol}/SOL | Platform: ${isGraduated ? 'Raydium' : 'Pump.fun'} | Price: $${priceUsd.toFixed(6)} | Liquidity: $${liquidityUsd.toLocaleString()} | MCAP: $${marketCap.toLocaleString()}`,
-              'success',
-              'dexscreener',
-              { tokenAddress, symbol, dexId, priceUsd, liquidityUsd, marketCap }
-            );
+          const buyCount = pair.txns?.h24?.buys || 0;
+          const sellCount = pair.txns?.h24?.sells || 0;
+          const pairCreatedAt = pair.pairCreatedAt || (now - 15 * 60000);
 
-            const pairDexId = dexId || (isGraduated ? 'raydium' : 'pump-fun');
-            const sourceCheck = checkDexPlatformSourcesAllowed(tokenAddress, pairDexId);
-            if (sourceCheck.pass) {
-              const scannedTokenData = {
+          const scannedTokenData = {
+            address: tokenAddress,
+            symbol,
+            name,
+            priceUsd,
+            marketCapUsd: marketCap,
+            marketCap,
+            fdv: marketCap,
+            pairCreatedAt,
+            url: `https://dexscreener.com/solana/${tokenAddress}`,
+            liquidityUsd,
+            volume24h: vol24h,
+            volume1h: vol1h,
+            volume5m: vol5m,
+            dexId,
+            pairAddress: pair.pairAddress || tokenAddress,
+            bondingProgress: isGraduated ? 100 : 65,
+            ageMinutes: Math.max(0, Math.floor((now - pairCreatedAt) / 60000)),
+            priceChange5m: p5m,
+            priceChange1h: p1h,
+            priceChange24h: p24h,
+            isRugSafe: true,
+            riskScore: isGraduated ? 5 : 15
+          };
+
+          monitoredTokensRef.current.set(tokenAddress, scannedTokenData);
+
+          useAppStore.getState().setTokenMetrics(prev => {
+            const existing = (prev[tokenAddress] as any) || {};
+            return {
+              ...prev,
+              [tokenAddress]: {
+                ...existing,
+                volume24h: vol24h,
+                volume1h: vol1h,
+                volume5m: vol5m,
+                priceChange5m: p5m,
+                priceChange1h: p1h,
+                priceChange24h: p24h,
+                priceChange1m: p5m * 0.2,
+                percentageIncrease: p5m,
+                bondingCurveProgress: isGraduated ? 100 : 65,
+                isRaydiumListed: isGraduated,
+                discoveredAt: existing.discoveredAt || pairCreatedAt,
+                pairCreatedAt: existing.pairCreatedAt || pairCreatedAt,
+                isRugSafe: true,
+                riskScore: isGraduated ? 5 : 15,
+                buyCount: buyCount || existing.buyCount || 10,
+                sellCount: sellCount || existing.sellCount || 2,
+                buyVolume: vol24h * 0.7,
+                sellVolume: vol24h * 0.3,
+                recentBuysTimeline: existing.recentBuysTimeline || [],
+                category: isGraduated ? 'RAYDIUM' : 'PUMP_FUN',
                 address: tokenAddress,
                 symbol,
                 name,
                 priceUsd,
-                marketCapUsd: marketCap,
-                marketCap: marketCap,
-                fdv: marketCap,
-                pairCreatedAt: Date.now() - 300000,
-                url: `https://dexscreener.com/solana/${tokenAddress}`,
-                liquidityUsd: liquidityUsd || 5000,
-                volume24h: marketCap * 0.78,
-                dexId: pairDexId,
-                pairAddress: tokenAddress,
-                bondingProgress: isGraduated ? 100 : 50,
-                ageMinutes: 5,
-                priceChange5m: tp.priceChange5m || 3.5,
-                priceChange1h: 10,
-                priceChange24h: tp.priceChange24h || 20,
-                isRugSafe: true,
-                riskScore: 5
-              };
-
-              monitoredTokensRef.current.set(tokenAddress, scannedTokenData);
-
-              const vol24h = (tp as any).volume24h || (marketCap ? marketCap * 0.8 : 25000);
-              const p5m = (tp as any).priceChange5m !== undefined ? (tp as any).priceChange5m : ((tp as any).priceChange24h !== undefined ? (tp as any).priceChange24h / 12 : 3.5);
-              const p1m = p5m * 0.2;
-              const now = Date.now();
-
-              useAppStore.getState().setTokenMetrics(prev => {
-                const existing = (prev[tokenAddress] as any) || {};
-                return {
-                  ...prev,
-                  [tokenAddress]: {
-                    ...existing,
-                    volume24h: vol24h,
-                    priceChange5m: p5m,
-                    priceChange1m: p1m,
-                    percentageIncrease: p5m,
-                    bondingCurveProgress: isGraduated ? 100 : ((tp as any).bondingProgress || 65),
-                    isRaydiumListed: isGraduated,
-                    discoveredAt: existing.discoveredAt || (now - 15 * 60000),
-                    pairCreatedAt: existing.pairCreatedAt || (now - 15 * 60000),
-                    isRugSafe: true,
-                    riskScore: isGraduated ? 5 : 15,
-                    top10Percentage: isGraduated ? 12.0 : 22.0,
-                    devWalletPercentage: isGraduated ? 0.0 : 0.01,
-                    buyCount: (tp as any).buyCount || 150,
-                    sellCount: (tp as any).sellCount || 20,
-                    buyVolume: vol24h * 0.8,
-                    sellVolume: vol24h * 0.2,
-                    recentBuysTimeline: existing.recentBuysTimeline || [],
-                    category: isGraduated ? 'RAYDIUM' : 'PUMP_FUN',
-                    address: tokenAddress,
-                    symbol,
-                    name,
-                    priceUsd,
-                    priceNative: (tp as any).priceNative || (priceUsd / (getSolPriceUsd() || 150)),
-                    liquidity: liquidityUsd || existing.liquidity || 10000,
-                    marketCap: marketCap || existing.marketCap || 50000,
-                    lastUpdated: now
-                  } as unknown as TokenMetric
-                };
-              });
-            }
-          }
-          pipelineCountersRef.current.validMetrics += validMetricsCount;
+                priceNative,
+                liquidity: liquidityUsd || existing.liquidity || 5000,
+                marketCap: marketCap || existing.marketCap || 25000,
+                lastUpdated: now
+              } as unknown as TokenMetric
+            };
+          });
         }
+
+        pipelineCountersRef.current.validMetrics = validMetricsCount;
+        addLog(`💎 [DEXSCREENER ENGINE] Synchronized ${validMetricsCount} live Solana discovery pairs with real-time metrics.`, 'success');
+
       } catch (err: any) {
-        addLog(`⚠️ [DEXSCREENER ENGINE] Transient error during DexScreener polling: ${err.message}. Retrying on next tick.`, 'warn');
+        addLog(`⚠️ [DEXSCREENER ENGINE] Transient error during DexScreener polling: ${err.message}. Retrying...`, 'warn');
       }
     };
 
     // Prompt initial execution immediately
     pollDexScreener();
 
-    // Set polling cycle to 18 seconds
-    const intervalId = setInterval(pollDexScreener, 18000);
+    // Continuous live refresh cycle every 6 seconds
+    const intervalId = setInterval(pollDexScreener, 6000);
 
     return () => {
       isPolled = false;
@@ -6205,88 +6190,151 @@ const checkTokenCriteria = (mint: string): {
                 </p>
               )}
 
-              {/* Scanned Result Card */}
-              {scannedResult ? (
-                <div className="bg-[#050509]/60 border border-[#2d2e3d] rounded-xl p-4 space-y-3.5 animate-fadeIn">
-                  <div className="flex items-center justify-between flex-wrap gap-2">
-                    <div>
-                      <div className="text-[14px] font-bold text-white flex items-center gap-1.5">
-                        <span className="text-white">{scannedResult.name}</span>
-                        <span className="text-[#c7f284] font-mono text-[11px] bg-[#c7f284]/10 px-1.5 py-0.5 rounded leading-none">
-                          {scannedResult.symbol}
-                        </span>
-                      </div>
-                      <div className="text-[10px] text-[#64748b] font-mono select-all select-none hover:text-slate-400 mt-0.5">
-                        Mint: {scannedResult.address}
-                      </div>
-                    </div>
-                    <div className="flex gap-1.5">
-                      <span className="text-[10px] bg-indigo-500/10 text-indigo-300 border border-indigo-500/30 rounded px-2 py-0.5 font-bold uppercase">
-                        Dex: {scannedResult.dexId}
-                      </span>
-                      <span className="text-[10px] bg-emerald-500/10 text-[#c7f284] border border-[#c7f284]/30 rounded px-2 py-0.5 font-bold uppercase">
-                        {scannedResult.isGraduated ? 'Raydium Liquidity Pool' : 'Pump.fun Bonding Curve'}
-                      </span>
-                    </div>
+              {/* Scanned & Search Results Display */}
+              {searchResults.length > 0 ? (
+                <div className="space-y-3 max-h-[650px] overflow-y-auto pr-1">
+                  <div className="text-[11px] font-bold text-[#94a3b8] uppercase tracking-wider flex items-center justify-between">
+                    <span>Search Results ({searchResults.length} Solana Mints Found)</span>
+                    <span className="text-[10px] text-[#64748b] font-normal font-mono">Deduplicated by Mint Address</span>
                   </div>
+                  {searchResults.map((item, idx) => {
+                    const isSelected = scannedResult?.address === item.address;
+                    return (
+                      <div 
+                        key={item.address || idx} 
+                        className={`border rounded-xl p-3.5 space-y-3 transition-all ${
+                          isSelected 
+                            ? 'bg-[#080a12] border-[#c7f284]/50 shadow-[0_0_15px_rgba(199,242,132,0.1)]' 
+                            : 'bg-[#050509]/80 border-[#2d2e3d] hover:border-[#3d3f54]'
+                        }`}
+                      >
+                        {/* Header Row */}
+                        <div className="flex items-start justify-between flex-wrap gap-2">
+                          <div>
+                            <div className="text-[14px] font-bold text-white flex items-center gap-1.5">
+                              <span>{item.name}</span>
+                              <span className="text-[#c7f284] font-mono text-[11px] bg-[#c7f284]/10 px-1.5 py-0.5 rounded leading-none">
+                                {item.symbol}
+                              </span>
+                            </div>
+                            <div className="text-[10px] text-[#64748b] font-mono hover:text-slate-300 mt-0.5 flex items-center gap-2">
+                              <span>Mint: {item.address}</span>
+                              <button 
+                                onClick={() => navigator.clipboard.writeText(item.address)}
+                                className="text-[9px] text-[#c7f284] hover:underline cursor-pointer"
+                              >
+                                [Copy Mint]
+                              </button>
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap gap-1.5 items-center">
+                            {item.ageMinutes > 0 && (
+                              <span className="text-[9px] bg-amber-500/10 text-amber-300 border border-amber-500/30 rounded px-1.5 py-0.5 font-mono">
+                                Age: {item.ageMinutes < 60 ? `${item.ageMinutes}m` : `${Math.floor(item.ageMinutes / 60)}h`}
+                              </span>
+                            )}
+                            <span className="text-[9px] bg-indigo-500/10 text-indigo-300 border border-indigo-500/30 rounded px-1.5 py-0.5 font-bold uppercase">
+                              DEX: {item.dexId}
+                            </span>
+                            <span className="text-[9px] bg-emerald-500/10 text-[#c7f284] border border-[#c7f284]/30 rounded px-1.5 py-0.5 font-bold uppercase">
+                              {item.isGraduated ? 'Raydium Pool' : 'Pump.fun Curve'}
+                            </span>
+                          </div>
+                        </div>
 
-                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 border-t border-[#1f212e] pt-3 text-xs font-mono">
-                    <div className="bg-[#10111a]/40 p-2 rounded border border-[#1f212e]">
-                      <span className="text-[#64748b] text-[8px] block uppercase font-sans font-medium">Price USD</span>
-                      <span className="text-white font-semibold text-[13px]">${scannedResult.priceUsd < 0.0001 ? scannedResult.priceUsd.toFixed(10) : scannedResult.priceUsd.toFixed(5)}</span>
-                    </div>
-                    <div className="bg-[#10111a]/40 p-2 rounded border border-[#1f212e]">
-                      <span className="text-[#64748b] text-[8px] block uppercase font-sans font-medium">Price In Native SOL</span>
-                      <span className="text-[#c7f284] font-semibold text-[13px]">{scannedResult.priceNative.toFixed(8)} SOL</span>
-                    </div>
-                    <div className="bg-[#10111a]/40 p-2 rounded border border-[#1f212e]">
-                      <span className="text-[#64748b] text-[8px] block uppercase font-sans font-medium">Pool Liquidity (USD)</span>
-                      <span className="text-white font-semibold text-[13px]">${scannedResult.liquidityUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
-                    </div>
-                    <div className="bg-[#10111a]/40 p-2 rounded border border-[#1f212e]">
-                      <span className="text-[#64748b] text-[8px] block uppercase font-sans font-medium">24h Ingested Vol</span>
-                      <span className="text-white font-semibold text-[13px]">${scannedResult.volume24h.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
-                    </div>
-                  </div>
+                        {/* Prices & Liquidity Grid */}
+                        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 border-t border-[#1f212e] pt-2.5 text-xs font-mono">
+                          <div className="bg-[#10111a]/50 p-2 rounded border border-[#1f212e]">
+                            <span className="text-[#64748b] text-[8px] block uppercase font-sans font-medium">Price USD</span>
+                            <span className="text-white font-semibold text-[12px]">
+                              ${item.priceUsd < 0.0001 ? item.priceUsd.toFixed(8) : item.priceUsd.toFixed(5)}
+                            </span>
+                          </div>
+                          <div className="bg-[#10111a]/50 p-2 rounded border border-[#1f212e]">
+                            <span className="text-[#64748b] text-[8px] block uppercase font-sans font-medium">Price SOL</span>
+                            <span className="text-[#c7f284] font-semibold text-[12px]">{item.priceNative.toFixed(8)} SOL</span>
+                          </div>
+                          <div className="bg-[#10111a]/50 p-2 rounded border border-[#1f212e]">
+                            <span className="text-[#64748b] text-[8px] block uppercase font-sans font-medium">Liquidity</span>
+                            <span className="text-white font-semibold text-[12px]">${item.liquidityUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+                          </div>
+                          <div className="bg-[#10111a]/50 p-2 rounded border border-[#1f212e]">
+                            <span className="text-[#64748b] text-[8px] block uppercase font-sans font-medium">FDV / MCAP</span>
+                            <span className="text-white font-semibold text-[12px]">${item.fdv.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+                          </div>
+                        </div>
 
-                  {/* Manual / Discretionary Trigger Box */}
-                  <div className="border-t border-[#1f212e] pt-3.5 flex flex-col sm:flex-row sm:items-end gap-3">
-                    <div className="flex-1">
-                      <label className="text-[10px] text-[#64748b] block uppercase font-sans mb-1.5 font-semibold">
-                        Instant Swap Order Size (SOL)
-                      </label>
-                      <input
-                        type="number"
-                        step="0.05"
-                        min="0.01"
-                        value={discretionaryBuyAmount}
-                        onChange={(e) => setDiscretionaryBuyAmount(e.target.value)}
-                        className="w-full bg-[#10111a] border border-[#1f212e] rounded-lg px-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-[#c7f284]"
-                      />
-                    </div>
-                    <button
-                      type="button"
-                      onClick={handleDiscretionaryBuyTrigger}
-                      disabled={isBuyingDiscretionary}
-                      className="w-full sm:w-auto px-8 py-2 bg-[#c7f284] hover:bg-[#b0dc68] text-[#050509] font-black uppercase rounded-lg text-xs transition-all text-center flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 min-h-[36px] shadow-[0_0_20px_rgba(199,242,132,0.2)]"
-                    >
-                      {isBuyingDiscretionary ? (
-                        <>
-                          <span className="w-3.5 h-3.5 border-2 border-black border-t-transparent rounded-full animate-spin"></span>
-                          <span>Executing Transaction...</span>
-                        </>
-                      ) : (
-                        <>
-                          <Zap className="w-3.5 h-3.5 text-black fill-black" />
-                          <span>Instant Discretionary Buy ({discretionaryBuyAmount} SOL)</span>
-                        </>
-                      )}
-                    </button>
-                  </div>
+                        {/* Volume & Price Changes Row */}
+                        <div className="grid grid-cols-4 gap-2 text-[10px] font-mono border-t border-[#1f212e] pt-2">
+                          <div className="bg-[#10111a]/30 p-1.5 rounded text-center border border-[#1f212e]/60">
+                            <span className="text-[#64748b] text-[8px] block uppercase">5m Vol / %</span>
+                            <span className="text-white">${item.volume5m > 0 ? item.volume5m.toLocaleString() : '-'}</span>
+                            <span className={`block font-bold text-[9px] ${item.priceChange5m >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                              {item.priceChange5m >= 0 ? '+' : ''}{item.priceChange5m.toFixed(1)}%
+                            </span>
+                          </div>
+                          <div className="bg-[#10111a]/30 p-1.5 rounded text-center border border-[#1f212e]/60">
+                            <span className="text-[#64748b] text-[8px] block uppercase">1h Vol / %</span>
+                            <span className="text-white">${item.volume1h > 0 ? item.volume1h.toLocaleString() : '-'}</span>
+                            <span className={`block font-bold text-[9px] ${item.priceChange1h >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                              {item.priceChange1h >= 0 ? '+' : ''}{item.priceChange1h.toFixed(1)}%
+                            </span>
+                          </div>
+                          <div className="bg-[#10111a]/30 p-1.5 rounded text-center border border-[#1f212e]/60">
+                            <span className="text-[#64748b] text-[8px] block uppercase">6h Vol / %</span>
+                            <span className="text-white">${item.volume6h > 0 ? item.volume6h.toLocaleString() : '-'}</span>
+                            <span className={`block font-bold text-[9px] ${item.priceChange6h >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                              {item.priceChange6h >= 0 ? '+' : ''}{item.priceChange6h.toFixed(1)}%
+                            </span>
+                          </div>
+                          <div className="bg-[#10111a]/30 p-1.5 rounded text-center border border-[#1f212e]/60">
+                            <span className="text-[#64748b] text-[8px] block uppercase">24h Vol / %</span>
+                            <span className="text-white">${item.volume24h > 0 ? item.volume24h.toLocaleString() : '-'}</span>
+                            <span className={`block font-bold text-[9px] ${item.priceChange24h >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                              {item.priceChange24h >= 0 ? '+' : ''}{item.priceChange24h.toFixed(1)}%
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Transaction Activity Row */}
+                        <div className="flex items-center justify-between text-[10px] font-mono bg-[#10111a]/40 px-2.5 py-1.5 rounded border border-[#1f212e]/60">
+                          <span className="text-[#64748b]">24h Transactions:</span>
+                          <span className="text-emerald-400 font-semibold">{item.txns?.h24?.buys || 0} Buys</span>
+                          <span className="text-[#64748b]">/</span>
+                          <span className="text-rose-400 font-semibold">{item.txns?.h24?.sells || 0} Sells</span>
+                        </div>
+
+                        {/* Actions Row */}
+                        <div className="border-t border-[#1f212e] pt-2.5 flex flex-col sm:flex-row items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setScannedResult(item)}
+                            className={`w-full sm:w-1/2 py-1.5 px-3 rounded-lg text-[10px] font-bold uppercase transition-all border cursor-pointer ${
+                              isSelected 
+                                ? 'bg-[#c7f284]/20 border-[#c7f284] text-[#c7f284]' 
+                                : 'bg-[#10111a] border-[#2d2e3d] text-slate-300 hover:text-white hover:border-slate-500'
+                            }`}
+                          >
+                            {isSelected ? '✓ Primary Active Token' : 'Select for Monitoring'}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handleDiscretionaryBuyTrigger(item)}
+                            disabled={isBuyingDiscretionary}
+                            className="w-full sm:w-1/2 py-1.5 px-3 bg-[#c7f284] hover:bg-[#b0dc68] text-[#050509] font-black uppercase rounded-lg text-[10px] transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 min-h-[30px]"
+                          >
+                            <Zap className="w-3 h-3 text-black fill-black" />
+                            <span>Instant Swap ({discretionaryBuyAmount} SOL)</span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               ) : (
                 <div className="bg-[#050509]/30 border border-[#1f212e] rounded-xl p-4 text-center text-[#64748b] text-[11px] font-mono leading-relaxed">
-                  Enter any Solana contract address above to dynamically fetch real-time liquidity, pricing, volume, and trigger swift discretionary swap executions with full-state tracking support.
+                  Enter any Solana contract address or token name above to search real-time DEX liquidity, volume breakdown, transaction activity, and trigger instant paper swaps with mint propagation.
                 </div>
               )}
             </div>

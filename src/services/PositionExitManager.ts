@@ -38,8 +38,14 @@ export class PositionExitManager {
     this.delegate.addPosition(params);
   }
 
-  public onPriceUpdate(mint: string, currentPrice: number, timestamp?: number): void {
-    this.delegate.onPriceUpdate(mint, currentPrice, timestamp);
+  public onPriceUpdate(
+    mint: string,
+    currentPrice: number,
+    timestamp?: number,
+    quoteCurrency: 'SOL' | 'USD' = 'SOL',
+    source: 'dexscreener' | 'jupiter' | 'rpc_ws' | 'price_tracker' = 'dexscreener'
+  ): void {
+    this.delegate.onPriceUpdate(mint, currentPrice, timestamp, quoteCurrency, source);
   }
 
   public confirmBuy(

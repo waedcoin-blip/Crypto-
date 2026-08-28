@@ -5,17 +5,30 @@ export interface ScannedToken {
   symbol: string;
   name: string;
   priceUsd: number;
+  priceNative?: number;
   priceChange5m: number;
   priceChange1h: number;
+  priceChange6h?: number;
   priceChange24h: number;
+  volume5m?: number;
+  volume1h?: number;
+  volume6h?: number;
   volume24h: number;
   liquidityUsd: number;
   fdv: number;
   marketCap: number;
   pairCreatedAt: number;
+  ageMinutes?: number;
   dexId: string;
   pairAddress: string;
   url: string;
+  txns?: {
+    m5?: { buys: number; sells: number };
+    h1?: { buys: number; sells: number };
+    h6?: { buys: number; sells: number };
+    h24?: { buys: number; sells: number };
+  };
+  rawPair?: any;
 }
 
 export interface TokenSecurityResult {
@@ -52,7 +65,7 @@ export class TokenScanner {
    */
   async scanForNewTokens(): Promise<ScannedToken[]> {
     try {
-      // Use your existing server-side proxy for DEXScreener
+      // Use server-side proxy for DEXScreener
       const response = await fetch('/api/dex/tokens/trending');
 
       if (!response.ok) {
@@ -74,29 +87,42 @@ export class TokenScanner {
         const address = pair.baseToken?.address;
         if (!address) continue;
 
-        // Skip already-scanned tokens (within 60s)
+        // Skip already-scanned tokens (within 5s to allow live updates)
         const lastScan = this.scannedCache.get(address) || 0;
-        if (Date.now() - lastScan < 60_000) continue;
+        if (Date.now() - lastScan < 5_000) continue;
 
         // Skip excluded mints
         if (this.criteria.excludedMints.has(address)) continue;
 
+        const priceUsd = parseFloat(pair.priceUsd || '0');
+        const priceNative = parseFloat(pair.priceNative || '0');
+        const pairCreatedAt = pair.pairCreatedAt || 0;
+        const ageMinutes = pairCreatedAt > 0 ? Math.max(0, Math.floor((Date.now() - pairCreatedAt) / 60000)) : 0;
+
         const token: ScannedToken = {
           address,
           symbol: pair.baseToken?.symbol || 'UNKNOWN',
-          name: pair.baseToken?.name || 'Unknown',
-          priceUsd: parseFloat(pair.priceUsd || '0'),
+          name: pair.baseToken?.name || `${pair.baseToken?.symbol || 'Solana'} Token`,
+          priceUsd,
+          priceNative: priceNative > 0 ? priceNative : (priceUsd / 150),
           priceChange5m: parseFloat(pair.priceChange?.m5 || '0'),
           priceChange1h: parseFloat(pair.priceChange?.h1 || '0'),
+          priceChange6h: parseFloat(pair.priceChange?.h6 || '0'),
           priceChange24h: parseFloat(pair.priceChange?.h24 || '0'),
+          volume5m: parseFloat(pair.volume?.m5 || '0'),
+          volume1h: parseFloat(pair.volume?.h1 || '0'),
+          volume6h: parseFloat(pair.volume?.h6 || '0'),
           volume24h: parseFloat(pair.volume?.h24 || '0'),
           liquidityUsd: parseFloat(pair.liquidity?.usd || '0'),
           fdv: parseFloat(pair.fdv || '0'),
-          marketCap: parseFloat(pair.marketCap || '0'),
-          pairCreatedAt: pair.pairCreatedAt || 0,
-          dexId: pair.dexId || '',
-          pairAddress: pair.pairAddress || '',
-          url: pair.url || '',
+          marketCap: parseFloat(pair.marketCap || pair.fdv || '0'),
+          pairCreatedAt,
+          ageMinutes,
+          dexId: pair.dexId || 'unknown',
+          pairAddress: pair.pairAddress || address,
+          url: pair.url || `https://dexscreener.com/solana/${pair.pairAddress || address}`,
+          txns: pair.txns || undefined,
+          rawPair: pair,
         };
 
         candidates.push(token);

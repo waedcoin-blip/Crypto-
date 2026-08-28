@@ -442,13 +442,23 @@ export class PaperTradeExecutor implements ITradeExecutor {
       // Simulated execution delay
       await new Promise((resolve) => setTimeout(resolve, 150));
 
-      // Execution-time quote
-      const freshQuote = await this.getQuote({ inputMint, outputMint, amount: rawInputTokens, slippageBps });
+      // Execution-time fresh quote check (Requirement 6)
+      let freshQuote;
+      try {
+        freshQuote = await this.getQuote({ inputMint, outputMint, amount: rawInputTokens, slippageBps });
+      } catch (quoteErr: any) {
+        // Requirement 8: If quote is stale or unavailable, refuse to manufacture a loss
+        this.telemetryFailedSwaps++;
+        const errMsg = `Jupiter quote unavailable or stale during sell execution: ${quoteErr?.message || String(quoteErr)}`;
+        this.lastFailureReason = errMsg;
+        throw new Error(`PAPER_EXECUTION_FAILED: ${errMsg}`);
+      }
+
       const rawSolOutLamports = Number(freshQuote.outAmount) || 0;
 
       if (rawSolOutLamports <= 0) {
         this.telemetryFailedSwaps++;
-        const errMsg = 'Paper swap failed: Invalid SOL output returned by quote.';
+        const errMsg = 'Paper swap failed: Invalid or zero SOL output returned by quote.';
         this.lastFailureReason = errMsg;
         throw new Error(`PAPER_EXECUTION_FAILED: ${errMsg}`);
       }
@@ -456,6 +466,25 @@ export class PaperTradeExecutor implements ITradeExecutor {
       const solOut = rawSolOutLamports / 1e9;
       const simGasAndJitoFee = getDynamicOperationalFeeSol(isRecovery, solOut);
       const netSolReceived = Math.max(0, solOut - simGasAndJitoFee);
+
+      // Requirement 7 & 8: Check against position cost basis before recording paper sell
+      const paperPos = paperStore.positions[inputMint];
+      const positionCostBasis = paperPos?.totalCostSol || 0;
+
+      if (positionCostBasis > 0) {
+        // Requirement 7: If Jupiter says executable exit would be profitable while signal was negative (exit_sl), revalidate instead!
+        if (label === 'exit_sl' && netSolReceived >= positionCostBasis) {
+          console.warn(`[PaperTradeExecutor] ⚠️ Jupiter executable quote is profitable (${netSolReceived.toFixed(4)} SOL >= ${positionCostBasis.toFixed(4)} SOL cost) for negative signal exit. Aborting sell for revalidation.`);
+          throw new Error(`PAPER_EXECUTION_REVALIDATE: Executable quote is profitable (${netSolReceived.toFixed(4)} SOL >= ${positionCostBasis.toFixed(4)} SOL cost). Aborting negative exit for revalidation.`);
+        }
+
+        // Requirement 8: If Jupiter quote claims >80% loss while position was not down >80% in market, treat as anomalous and refuse to manufacture loss
+        const quotePnlPct = ((netSolReceived - positionCostBasis) / positionCostBasis) * 100;
+        if (quotePnlPct < -80) {
+          console.warn(`[PaperTradeExecutor] ⚠️ Anomalous Jupiter quote detected (${quotePnlPct.toFixed(2)}% loss). Refusing to manufacture loss.`);
+          throw new Error(`PAPER_EXECUTION_FAILED: Anomalous Jupiter quote (${quotePnlPct.toFixed(2)}% loss). Refusing to manufacture loss.`);
+        }
+      }
 
       // Execute Paper Sell: deduct token and add net SOL received
       paperStore.recordSellPosition(inputMint, tokenAmount, netSolReceived);
