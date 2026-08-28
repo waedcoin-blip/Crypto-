@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { CheckCircle2, XCircle, Loader2, Play, Activity, Gauge, Server, Wifi, Network, Send, RefreshCw, AlertTriangle, ShieldCheck, Database } from 'lucide-react';
 import { Connection } from '@solana/web3.js';
-import { telemetryService, TelemetrySpan } from '../../services/telemetryService';
+import { jupiterPreSellValidator } from '../../services/JupiterPreSellValidator';
+import { pingJupiterApi } from '../../services/jupiterService';
 import { marketDataManager } from '../../services/marketDataManager';
 
 export const SystemCheckPage = ({
@@ -21,11 +22,13 @@ export const SystemCheckPage = ({
   const [results, setResults] = useState<{
     rpcUrl: { status: 'idle' | 'testing' | 'success' | 'error', details: string },
     masterMonitorRpc: { status: 'idle' | 'testing' | 'success' | 'error', details: string },
+    jupiterPreSell: { status: 'idle' | 'testing' | 'success' | 'error', details: string },
     laserstream: { status: 'idle' | 'testing' | 'success' | 'error', details: string },
     dexscreener: { status: 'idle' | 'testing' | 'success' | 'error', details: string },
   }>({
     rpcUrl: { status: 'idle', details: '' },
     masterMonitorRpc: { status: 'idle', details: '' },
+    jupiterPreSell: { status: 'idle', details: '' },
     laserstream: { status: 'idle', details: '' },
     dexscreener: { status: 'idle', details: '' },
   });
@@ -105,7 +108,32 @@ export const SystemCheckPage = ({
       }));
     }
 
-    // Test 3: Helius LaserStream
+    // Test 3: Jupiter Executable Pre-Sell Validator
+    try {
+      const start = performance.now();
+      const pingRes = await pingJupiterApi();
+      const duration = performance.now() - start;
+      if (pingRes.healthy) {
+        setResults(prev => ({
+          ...prev,
+          jupiterPreSell: { status: 'success', details: `Latency: ${pingRes.pingMs || duration.toFixed(2)}ms. Jupiter Executable Pre-Sell Validation Engine Nominal. Non-Jupiter fallbacks disabled.` }
+        }));
+        telemetryService.recordApiRequest('Jupiter API', 'preSellPing', 200, duration);
+      } else {
+        setResults(prev => ({
+          ...prev,
+          jupiterPreSell: { status: 'error', details: `Jupiter API health check returned: ${pingRes.error || 'Unhealthy'}` }
+        }));
+        telemetryService.recordApiRequest('Jupiter API', 'preSellPing', 500, 0, pingRes.error);
+      }
+    } catch (e: any) {
+      setResults(prev => ({
+        ...prev,
+        jupiterPreSell: { status: 'error', details: e.message || 'Failed to ping Jupiter Executable Quote API.' }
+      }));
+    }
+
+    // Test 4: Helius LaserStream
     try {
       const start = performance.now();
       const res = await fetch('/api/laserstream/status');
@@ -497,6 +525,7 @@ export const SystemCheckPage = ({
           <div className="grid gap-3">
             <TestItem title="Solana RPC Connection (Execution Node)" result={results.rpcUrl} />
             <TestItem title="Master Monitor RPC (onLogs, Discovery & Metrics)" result={results.masterMonitorRpc} />
+            <TestItem title="Jupiter Executable Pre-Sell Validator (Jupiter Only)" result={results.jupiterPreSell} />
             <TestItem title="Helius LaserStream Ingestion Feed" result={results.laserstream} />
             <TestItem title="DexScreener Market Price Feed" result={results.dexscreener} />
           </div>

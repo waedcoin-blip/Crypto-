@@ -19,132 +19,77 @@ const router = Router();
 // ─── Cache Instances ───
 const searchCache = new SwrCache<DexTokenResponse>({
   name: 'dex-search',
-  softTtl: 3000,
-  hardTtl: 30000,
+  softTtl: 15000,
+  hardTtl: 60000,
   maxSize: 2000,
 });
 
 const tokenCache = new SwrCache<DexTokenResponse>({
   name: 'dex-token',
   softTtl: 2000,
-  hardTtl: 30000,
+  hardTtl: 60000,
   maxSize: 2000,
 });
 
 const pairsCache = new SwrCache<unknown>({
   name: 'dex-pairs',
-  softTtl: 5000,
-  hardTtl: 30000,
+  softTtl: 15000,
+  hardTtl: 60000,
   maxSize: 2000,
 });
 
 const profilesCache = new SwrCache<TokenProfile[]>({
   name: 'dex-profiles',
-  softTtl: 5000,
-  hardTtl: 45000,
+  softTtl: 15000,
+  hardTtl: 90000,
   maxSize: 10,
 });
 
 const trendingCache = new SwrCache<DexTokenResponse>({
   name: 'dex-trending',
-  softTtl: 4000,
-  hardTtl: 20000,
+  softTtl: 15000,
+  hardTtl: 60000,
   maxSize: 100,
 });
 
 // ─── Helpers ───
-function filterAndSortPairs(pairs: any[], query?: string): any[] {
-  if (!Array.isArray(pairs)) return [];
+function filterAndSortPairs(pairs: any[], query: string): any[] {
+  const exactQuery = query.toLowerCase();
+  const isExactAddress = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(query);
 
-  const exactQuery = query ? query.trim().toLowerCase() : '';
-  const isExactAddress = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(exactQuery);
+  // Filter Solana pairs
+  let solPairs = pairs.filter((p) => p.chainId === 'solana');
 
-  // 1. Filter valid Solana pairs with real address & valid prices & liquidity > 0
-  const validSolanaPairs = pairs.filter((p) => {
-    if (!p || typeof p !== 'object') return false;
-
-    // Chain check
-    const chain = String(p.chainId || p.chainKb || '').toLowerCase();
-    if (chain !== 'solana') return false;
-
-    // Base token check
-    const baseAddr = p.baseToken?.address;
-    if (!baseAddr || typeof baseAddr !== 'string') return false;
-    if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(baseAddr)) return false;
-
-    // Price check
-    const priceUsd = parseFloat(p.priceUsd || '0');
-    const priceNative = parseFloat(p.priceNative || '0');
-    if ((priceUsd <= 0 || !Number.isFinite(priceUsd)) && (priceNative <= 0 || !Number.isFinite(priceNative))) {
-      return false;
-    }
-
-    // Liquidity check: require liquidityUsd > 0 (unless exact address search)
-    const liqUsd = parseFloat(p.liquidity?.usd || '0');
-    if (liqUsd <= 0 && !isExactAddress) return false;
-
-    return true;
-  });
-
-  // 2. Deduplicate tokens by canonical mint address (`baseToken.address`)
-  // Group pairs by baseToken.address and select the primary pair with highest liquidity USD
-  const bestPairByMint = new Map<string, any>();
-
-  for (const pair of validSolanaPairs) {
-    const mint = pair.baseToken.address;
-    const existing = bestPairByMint.get(mint);
-
-    if (!existing) {
-      bestPairByMint.set(mint, pair);
-    } else {
-      const existingLiq = parseFloat(existing.liquidity?.usd || '0');
-      const currentLiq = parseFloat(pair.liquidity?.usd || '0');
-
-      const existingVol = parseFloat(existing.volume?.h24 || '0');
-      const currentVol = parseFloat(pair.volume?.h24 || '0');
-
-      // Prefer pair with higher liquidity; tie-break by volume
-      if (currentLiq > existingLiq || (currentLiq === existingLiq && currentVol > existingVol)) {
-        bestPairByMint.set(mint, pair);
-      }
-    }
+  // Remove low-liquidity scams (unless exact address query)
+  if (!isExactAddress) {
+    solPairs = solPairs.filter((p) => {
+      const liquidity = p.liquidity?.usd || 0;
+      const volume = p.volume?.h24 || 0;
+      return liquidity >= 1000 || volume >= 500;
+    });
   }
 
-  const deduplicatedPairs = Array.from(bestPairByMint.values());
+  // Smart sort: exact match > score
+  solPairs.sort((a: any, b: any) => {
+    const aExact =
+      (a.baseToken?.symbol?.toLowerCase() === exactQuery ||
+        a.baseToken?.address?.toLowerCase() === exactQuery)
+        ? 1
+        : 0;
+    const bExact =
+      (b.baseToken?.symbol?.toLowerCase() === exactQuery ||
+        b.baseToken?.address?.toLowerCase() === exactQuery)
+        ? 1
+        : 0;
 
-  // 3. Smart Sort: exact match > liquidity + volume + recency
-  deduplicatedPairs.sort((a: any, b: any) => {
-    if (exactQuery) {
-      const aSymbol = (a.baseToken?.symbol || '').toLowerCase();
-      const aName = (a.baseToken?.name || '').toLowerCase();
-      const aAddr = (a.baseToken?.address || '').toLowerCase();
+    if (aExact !== bExact) return bExact - aExact;
 
-      const bSymbol = (b.baseToken?.symbol || '').toLowerCase();
-      const bName = (b.baseToken?.name || '').toLowerCase();
-      const bAddr = (b.baseToken?.address || '').toLowerCase();
-
-      const aExact = (aSymbol === exactQuery || aAddr === exactQuery) ? 2 : (aName === exactQuery ? 1 : 0);
-      const bExact = (bSymbol === exactQuery || bAddr === exactQuery) ? 2 : (bName === exactQuery ? 1 : 0);
-
-      if (aExact !== bExact) return bExact - aExact;
-    }
-
-    const aLiq = parseFloat(a.liquidity?.usd || '0');
-    const bLiq = parseFloat(b.liquidity?.usd || '0');
-
-    const aVol = parseFloat(a.volume?.h24 || '0');
-    const bVol = parseFloat(b.volume?.h24 || '0');
-
-    const aCreated = a.pairCreatedAt || 0;
-    const bCreated = b.pairCreatedAt || 0;
-
-    const aScore = aLiq * 0.4 + aVol * 0.4 + (aCreated > 0 ? (aCreated / 1e10) : 0);
-    const bScore = bLiq * 0.4 + bVol * 0.4 + (bCreated > 0 ? (bCreated / 1e10) : 0);
-
+    const aScore = (a.liquidity?.usd || 0) * 0.5 + (a.volume?.h24 || 0) * 0.5;
+    const bScore = (b.liquidity?.usd || 0) * 0.5 + (b.volume?.h24 || 0) * 0.5;
     return bScore - aScore;
   });
 
-  return deduplicatedPairs;
+  return solPairs;
 }
 
 // ─── Routes ───
@@ -155,37 +100,24 @@ router.get('/search', asyncHandler(async (req, res) => {
 
   try {
     const data = await searchCache.fetch(`search_${q}`, async () => {
-      const isExactMint = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(q.trim());
-      
-      const urls = [
-        `https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(q.trim())}`
-      ];
-      if (isExactMint) {
-        urls.push(`https://api.dexscreener.com/latest/dex/tokens/${q.trim()}`);
-      }
-
-      const allPairs: any[] = [];
-      const responses = await Promise.allSettled(
-        urls.map((u) => fetchWithRetry(u, { headers: { 'User-Agent': 'Mozilla/5.0' } }, 2))
+      const { response, text } = await fetchWithRetry(
+        `https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(q)}`,
+        { headers: { 'User-Agent': 'Mozilla/5.0' } },
+        2
       );
 
-      for (const result of responses) {
-        if (result.status === 'fulfilled' && result.value.response.ok) {
-          try {
-            const parsed = JSON.parse(result.value.text);
-            if (Array.isArray(parsed?.pairs)) {
-              allPairs.push(...parsed.pairs);
-            }
-          } catch (_) {}
-        }
+      if (!response.ok) {
+        throw new Error(`DexScreener API status: ${response.status}`);
       }
 
-      return { pairs: allPairs };
+      return JSON.parse(text);
     });
 
-    const filteredPairs = filterAndSortPairs(data?.pairs || [], q);
+    if (data?.pairs) {
+      data.pairs = filterAndSortPairs(data.pairs, q);
+    }
 
-    res.json({ schemaVersion: '2.0.0', pairs: filteredPairs });
+    res.json(data);
   } catch (error: any) {
     dexLogger.warn({ query: q, errDetails: error.message }, 'DEX search failed');
     res.status(500).json({ errDetails: error.message, pairs: [] });
@@ -193,20 +125,16 @@ router.get('/search', asyncHandler(async (req, res) => {
 }));
 
 // GET /api/dex/tokens/trending
-// Real discovery feed — multi-source endpoints, pagination handling, mint deduplication.
+// Real discovery feed — no hard-coded token list.
 router.get('/tokens/trending', asyncHandler(async (req, res) => {
   try {
-    const data = await trendingCache.fetch('trending_tokens_v3', async () => {
+    const data = await trendingCache.fetch('trending_tokens_v2', async () => {
       const discoveryEndpoints = [
         'https://api.dexscreener.com/token-profiles/latest/v1',
         'https://api.dexscreener.com/token-profiles/recent-updates/v1',
-        'https://api.dexscreener.com/token-boosts/latest/v1',
-        'https://api.dexscreener.com/token-boosts/top/v1',
-        'https://api.dexscreener.com/latest/dex/search?q=solana',
-        'https://api.dexscreener.com/latest/dex/search?q=pump',
       ];
 
-      const discoveredMints = new Map<string, any>();
+      const discovered = new Map<string, any>();
 
       // Fetch discovery feeds concurrently.
       const responses = await Promise.allSettled(
@@ -231,7 +159,6 @@ router.get('/tokens/trending', asyncHandler(async (req, res) => {
 
           if (Array.isArray(json)) return json;
           if (Array.isArray(json?.data)) return json.data;
-          if (Array.isArray(json?.pairs)) return json.pairs;
 
           return [];
         })
@@ -241,41 +168,36 @@ router.get('/tokens/trending', asyncHandler(async (req, res) => {
         if (result.status !== 'fulfilled') continue;
 
         for (const item of result.value) {
-          if (!item || typeof item !== 'object') continue;
+          const chainId = item?.chainId || item?.chain;
 
-          // Handle pair objects directly returned by search
-          if (item.baseToken?.address) {
-            const chainId = String(item.chainId || 'solana').toLowerCase();
-            if (chainId === 'solana' && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(item.baseToken.address)) {
-              discoveredMints.set(item.baseToken.address, item);
-            }
-            continue;
-          }
-
-          const chainId = String(item?.chainId || item?.chain || '').toLowerCase();
           if (chainId && chainId !== 'solana') continue;
 
           const address =
             item?.tokenAddress ||
             item?.address ||
-            item?.mint;
+            item?.baseToken?.address;
 
           if (!address) continue;
 
-          // Solana mint addresses are 32–44 chars.
-          if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address)) {
-            discoveredMints.set(address, { ...item, address });
+          // Solana mint addresses are normally 32–44 chars.
+          if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address)) {
+            continue;
           }
+
+          discovered.set(address, {
+            ...item,
+            address,
+          });
         }
       }
 
-      const mints = Array.from(discoveredMints.keys());
+      const mints = Array.from(discovered.keys());
 
       if (mints.length === 0) {
-        return { schemaVersion: '2.0.0', pairs: [], discoveredAt: Date.now() };
+        return { pairs: [] };
       }
 
-      // Query pair details for discovered mints in chunks of 30
+      // DexScreener supports batches of up to 30 token addresses.
       const pairs: any[] = [];
 
       for (let i = 0; i < mints.length; i += 30) {
@@ -302,16 +224,58 @@ router.get('/tokens/trending', asyncHandler(async (req, res) => {
             pairs.push(...parsed.pairs);
           }
         } catch (error) {
-          dexLogger.warn({ error }, 'Discovery batch failed');
+          dexLogger.warn(
+            { error },
+            'Discovery batch failed'
+          );
         }
       }
 
-      // Sanitize, deduplicate by baseToken.address (canonical mint), and sort
-      const sanitizedPairs = filterAndSortPairs(pairs);
+      // Only Solana pairs.
+      const solanaPairs = pairs.filter(
+        (pair) => pair?.chainId === 'solana'
+      );
+
+      // Deduplicate pair addresses.
+      const uniquePairs = new Map<string, any>();
+
+      for (const pair of solanaPairs) {
+        const key =
+          pair.pairAddress ||
+          `${pair.baseToken?.address}:${pair.quoteToken?.address}`;
+
+        if (!uniquePairs.has(key)) {
+          uniquePairs.set(key, pair);
+        }
+      }
+
+      // Rank candidates by liquidity + recent volume + momentum.
+      const ranked = Array.from(uniquePairs.values())
+        .filter((pair) => {
+          const liquidity = Number(pair.liquidity?.usd || 0);
+          const volume5m = Number(pair.volume?.m5 || 0);
+
+          return liquidity >= 1000 || volume5m >= 500;
+        })
+        .sort((a, b) => {
+          const score = (pair: any) => {
+            const liquidity = Number(pair.liquidity?.usd || 0);
+            const volume5m = Number(pair.volume?.m5 || 0);
+            const momentum = Number(pair.priceChange?.m5 || 0);
+
+            return (
+              Math.log10(Math.max(liquidity, 1)) * 2 +
+              Math.log10(Math.max(volume5m, 1)) +
+              momentum
+            );
+          };
+
+          return score(b) - score(a);
+        });
 
       return {
         schemaVersion: '2.0.0',
-        pairs: sanitizedPairs.slice(0, 100),
+        pairs: ranked.slice(0, 100),
         discoveredAt: Date.now(),
       };
     });
@@ -323,6 +287,8 @@ router.get('/tokens/trending', asyncHandler(async (req, res) => {
       'Real token discovery failed'
     );
 
+    // IMPORTANT:
+    // Do NOT inject simulated tokens into live discovery.
     res.status(503).json({
       schemaVersion: '2.0.0',
       pairs: [],

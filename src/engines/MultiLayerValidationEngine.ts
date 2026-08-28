@@ -1,3 +1,5 @@
+import { jupiterPreSellValidator, PreSellValidationParams, PreSellValidationResult } from '../services/JupiterPreSellValidator';
+
 export type TokenState = 'BONDING_CURVE' | 'GRADUATED';
 
 export interface TokenTelemetry {
@@ -169,6 +171,16 @@ export class MultiLayerValidationEngine {
       classification: state,
       reason: 'All constraints successfully verified.'
     };
+  }
+
+  /**
+   * Executable Pre-Sell Validation strictly and ONLY by Jupiter.
+   * Mandates that all token exits are verified against Jupiter Executable Quotes.
+   */
+  public async validatePreSellOnlyByJupiter(
+    params: PreSellValidationParams
+  ): Promise<PreSellValidationResult> {
+    return jupiterPreSellValidator.validatePreSell(params);
   }
 }
 

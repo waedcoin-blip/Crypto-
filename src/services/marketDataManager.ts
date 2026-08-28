@@ -11,27 +11,14 @@ export interface TokenPrice {
   priceUsd: number | null;
   priceNative?: number | null;
   priceChange24h?: number;
-  priceChange6h?: number;
-  priceChange1h?: number;
   priceChange5m?: number;
-  volume5m?: number;
-  volume1h?: number;
-  volume6h?: number;
   volume24h?: number;
   liquidityUsd?: number;
   marketCapUsd?: number;
   symbol?: string;
   name?: string;
   pairAddress?: string;
-  pairCreatedAt?: number;
-  ageMinutes?: number;
   dexId?: string;
-  txns?: {
-    m5?: { buys: number; sells: number };
-    h1?: { buys: number; sells: number };
-    h6?: { buys: number; sells: number };
-    h24?: { buys: number; sells: number };
-  };
   updatedAt: number;
   source?: 'dexscreener' | 'jupiter' | 'simulation' | 'failed';
   isStale?: boolean;
@@ -419,30 +406,20 @@ export class MarketDataManager {
 
             const priceUsd = parseFloat(bestPair.priceUsd || '0');
             const priceNative = parseFloat(bestPair.priceNative || '0');
-            const pairCreatedAt = bestPair.pairCreatedAt || 0;
-            const ageMinutes = pairCreatedAt > 0 ? Math.max(0, Math.floor((now - pairCreatedAt) / 60000)) : 0;
 
             const tokenPrice: TokenPrice = {
               mint,
               priceUsd,
               priceNative: priceNative > 0 ? priceNative : (priceUsd / (getSolPriceUsd() || 150)),
-              priceChange5m: parseFloat(bestPair.priceChange?.m5 || '0'),
-              priceChange1h: parseFloat(bestPair.priceChange?.h1 || '0'),
-              priceChange6h: parseFloat(bestPair.priceChange?.h6 || '0'),
               priceChange24h: parseFloat(bestPair.priceChange?.h24 || '0'),
-              volume5m: parseFloat(bestPair.volume?.m5 || '0'),
-              volume1h: parseFloat(bestPair.volume?.h1 || '0'),
-              volume6h: parseFloat(bestPair.volume?.h6 || '0'),
+              priceChange5m: parseFloat(bestPair.priceChange?.m5 || '0'),
               volume24h: parseFloat(bestPair.volume?.h24 || '0'),
               liquidityUsd: parseFloat(bestPair.liquidity?.usd || '0'),
               marketCapUsd: parseFloat(bestPair.fdv || bestPair.marketCap || '0'),
               symbol: bestPair.baseToken?.symbol || 'UNKNOWN',
               name: bestPair.baseToken?.name || 'Unknown Token',
               pairAddress: bestPair.pairAddress,
-              pairCreatedAt,
-              ageMinutes,
               dexId: bestPair.dexId,
-              txns: bestPair.txns || undefined,
               updatedAt: now,
               source: 'dexscreener',
               rawPair: bestPair,

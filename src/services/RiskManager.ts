@@ -9,6 +9,7 @@ import { tradeHistoryRegistry } from './TradeHistoryRegistry';
 import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
 import { getSolPriceUsd, calcNetPnl } from '../utils/pnlCalculator';
 import { resolveTokenDecimals } from './PaperTradeExecutor';
+import { jupiterPreSellValidator } from './JupiterPreSellValidator';
 
 export interface ManagedPosition {
   mint: string;
@@ -625,91 +626,45 @@ export class RiskManager {
 
     if (!candidateReason) return;
 
-    // Fetch fresh executable SELL quote before authorizing exit
+    // Perform Executable Pre-Sell Validation STRICTLY & ONLY by Jupiter
+    const label = candidateReason === 'tp' ? 'exit_tp' : 'exit_sl';
     const slippageBps = candidateReason === 'tp' ? (pos.slippageBpsTp || 250) : (pos.slippageBpsSl || 1000);
-    const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 
-    let executableSolOut = 0;
-    let executablePnlPct = grossPnlPct;
-    let isQuoteValid = false;
+    const validationResult = await jupiterPreSellValidator.validatePreSell({
+      mint: pos.mint,
+      rawAmount: pos.amount,
+      slippageBps,
+      costBasisSol: pos.solSpent,
+      currentMarketPriceSol: pos.currentPrice,
+      label,
+    });
 
-    try {
-      const quote = await this.executor.getQuote({
-        inputMint: pos.mint,
-        outputMint: WSOL_MINT,
-        amount: pos.amount,
-        slippageBps,
-      });
-
-      if (quote && quote.outAmount) {
-        executableSolOut = Number(quote.outAmount) / 1e9;
-        if (pos.solSpent > 0 && executableSolOut > 0) {
-          executablePnlPct = ((executableSolOut - pos.solSpent) / pos.solSpent) * 100;
-          isQuoteValid = true;
+    if (!validationResult.isValid) {
+      if (validationResult.reason?.includes('conflicts with PROFITABLE Jupiter')) {
+        // Revalidate: switch state to positive and set Jupiter as reference authority
+        pos.isPnLPositive = true;
+        pos.activePriceSource = 'jupiter';
+        if (validationResult.outAmountSol > 0) {
+          const tokenQty = pos.amount > 0 ? pos.amount / (10 ** pos.tokenDecimals) : 0;
+          const quotePriceSol = tokenQty > 0 ? validationResult.outAmountSol / tokenQty : pos.currentPrice;
+          pos.currentPrice = quotePriceSol;
+          pos.lastPriceUpdate = Date.now();
+          tokenRegistry.updatePrice(mint, quotePriceSol);
+          positionRegistry.updatePrice(mint, quotePriceSol);
         }
       }
-    } catch (quoteErr) {
-      console.warn(`[RiskManager] Pre-fetch executable SELL quote warning for ${mint}:`, quoteErr);
-      isQuoteValid = false;
-    }
-
-    const tokenQty = pos.amount > 0 ? pos.amount / (10 ** pos.tokenDecimals) : 0;
-    const quotePriceSol = tokenQty > 0 && executableSolOut > 0 ? executableSolOut / tokenQty : pos.currentPrice;
-
-    // REQUIREMENT 8: If Jupiter's quote is stale, unavailable, or clearly anomalous, do not use it to manufacture a loss.
-    const isAnomalousQuote = isQuoteValid && (
-      (grossPnlPct > -30 && executablePnlPct < -75) || // Discrepancy > 45% between market and executable quote
-      (executableSolOut <= 0)
-    );
-
-    if (!isQuoteValid || isAnomalousQuote) {
-      if (candidateReason === 'sl' || grossPnlPct < 0) {
-        console.warn(
-          `[RiskManager] ⚠️ Jupiter executable quote is ${!isQuoteValid ? 'unavailable/stale' : 'clearly anomalous'} ` +
-          `(Market PnL: ${grossPnlPct.toFixed(2)}%, Quote PnL: ${executablePnlPct.toFixed(2)}%). ` +
-          `ABORTING exit to avoid manufacturing a loss.`
-        );
-        return;
-      }
-    }
-
-    // REQUIREMENT 7: If Jupiter says the executable exit would be profitable while the monitoring source says negative,
-    // do not sell based on the conflicting negative signal; revalidate instead.
-    if ((candidateReason === 'sl' || grossPnlPct < 0) && executablePnlPct >= 0) {
-      console.warn(
-        `[RiskManager] ⚠️ Conflicting negative signal (${exitType}, market PnL: ${grossPnlPct.toFixed(2)}%) ` +
-        `conflicts with PROFITABLE Jupiter executable quote (+${executablePnlPct.toFixed(2)}%). ` +
-        `ABORTING SELL & revalidating position.`
-      );
-
-      // Revalidate: switch state to positive and set Jupiter as reference authority
-      pos.isPnLPositive = true;
-      pos.activePriceSource = 'jupiter';
-      if (quotePriceSol > 0) {
-        pos.currentPrice = quotePriceSol;
-        pos.lastPriceUpdate = Date.now();
-        tokenRegistry.updatePrice(mint, quotePriceSol);
-        positionRegistry.updatePrice(mint, quotePriceSol);
-      }
+      console.warn(`[RiskManager] ⛔ Pre-Sell Validation failed by Jupiter for ${mint}: ${validationResult.reason}`);
       return;
     }
 
-    // CRITICAL SAFETY GATE:
-    // If candidate trigger is TAKE_PROFIT or TRAILING_STOP (when market PnL is positive),
-    // verify that Jupiter executable SELL quote actually yields a profitable exit!
-    if (exitType === 'TAKE_PROFIT' || (exitType === 'TRAILING_STOP' && grossPnlPct > 0)) {
-      if (executablePnlPct < 0 || (executableSolOut > 0 && executableSolOut < pos.solSpent)) {
-        console.warn(
-          `[RiskManager] ⚠️ ${exitType} candidate triggered on market price (+${grossPnlPct.toFixed(2)}%), ` +
-          `but Jupiter executable SELL quote yields LOSS (${executablePnlPct.toFixed(2)}%). ABORTING SELL & continuing monitoring.`
-        );
-        return;
-      }
-    }
+    const executableSolOut = validationResult.outAmountSol;
+    const executablePnlPct = validationResult.executablePnlPct;
+    const tokenQty = pos.amount > 0 ? pos.amount / (10 ** pos.tokenDecimals) : 0;
+    const quotePriceSol = tokenQty > 0 && executableSolOut > 0 ? executableSolOut / tokenQty : pos.currentPrice;
 
     console.log(
-      `[RiskManager] ⚡ Authorizing ${exitType} exit for ${mint}: Market PnL = ${grossPnlPct.toFixed(2)}%, ` +
-      `Executable Quote PnL = ${executablePnlPct.toFixed(2)}%`
+      `[RiskManager] ⚡ Authorizing ${exitType} exit for ${mint} via Jupiter Pre-Sell Validation: Market PnL = ${grossPnlPct.toFixed(2)}%, ` +
+      `Jupiter Executable PnL = ${executablePnlPct.toFixed(2)}%`
     );
 
     await this.triggerExit(pos, candidateReason, {
@@ -744,13 +699,29 @@ export class RiskManager {
 
     const pnlPct = this.calculatePnLPct(pos);
     const side: 'tp' | 'sl' = pnlPct >= 0 ? 'tp' : 'sl';
-    console.log(`[RiskManager] 🚨 Explicit exit requested for ${mint} (${reason}) at estimated PnL: ${pnlPct.toFixed(2)}%`);
+
+    // Perform Executable Pre-Sell Validation strictly by Jupiter before manual exit
+    const validationResult = await jupiterPreSellValidator.validatePreSell({
+      mint: pos.mint,
+      rawAmount: pos.amount,
+      slippageBps: side === 'tp' ? (pos.slippageBpsTp || 250) : (pos.slippageBpsSl || 1000),
+      costBasisSol: pos.solSpent,
+      currentMarketPriceSol: pos.currentPrice,
+      label: 'MANUAL_FORCE_EXIT',
+    });
+
+    if (!validationResult.isValid) {
+      console.warn(`[RiskManager] ⛔ Explicit exit for ${mint} rejected by Jupiter Pre-Sell Validator: ${validationResult.reason}`);
+      throw new Error(`PRE_SELL_VALIDATION_FAILED: ${validationResult.reason}`);
+    }
+
+    console.log(`[RiskManager] 🚨 Explicit exit validated by Jupiter for ${mint} (${reason}) at estimated PnL: ${pnlPct.toFixed(2)}%`);
     await this.triggerExit(pos, side, {
       exitType: 'MANUAL',
       triggerPriceSol: pos.currentPrice,
       triggerPnLPct: pnlPct,
-      quotePriceSol: pos.currentPrice,
-      quotePnlPct: pnlPct,
+      quotePriceSol: validationResult.outAmountSol > 0 ? (validationResult.outAmountSol / (pos.amount / (10 ** pos.tokenDecimals))) : pos.currentPrice,
+      quotePnlPct: validationResult.executablePnlPct,
       configuredTpPct: pos.tpPct,
       configuredSlPct: pos.slPct,
     });
