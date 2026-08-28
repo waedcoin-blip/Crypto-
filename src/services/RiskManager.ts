@@ -43,6 +43,16 @@ export interface RiskConfig {
   slippageBpsSl?: number;
 }
 
+export interface ExitTelemetryOptions {
+  exitType?: 'TAKE_PROFIT' | 'STOP_LOSS' | 'TRAILING_STOP' | 'MAX_HOLD' | 'MANUAL';
+  triggerPriceSol?: number;
+  triggerPnLPct?: number;
+  quotePriceSol?: number;
+  quotePnlPct?: number;
+  configuredTpPct?: number;
+  configuredSlPct?: number;
+}
+
 export type ExitCallback = (
   mint: string,
   side: 'tp' | 'sl',
@@ -398,6 +408,17 @@ export class RiskManager {
     const pos = this.positions.get(mint);
     if (!pos || pos.state === 'CLOSED' || !rawPrice || !Number.isFinite(rawPrice) || rawPrice <= 0) return;
 
+    // Monotonic timestamp guard: Reject older or duplicate timestamps
+    if (pos.lastPriceUpdate && timestamp <= pos.lastPriceUpdate) {
+      return;
+    }
+
+    // Stale timestamp guard: Reject updates older than 5 seconds
+    const now = Date.now();
+    if (timestamp < now - 5000) {
+      return;
+    }
+
     let priceInSol = rawPrice;
     if (quoteCurrency === 'USD') {
       const solUsd = getSolPriceUsd() || 150;
@@ -492,16 +513,6 @@ export class RiskManager {
     }
 
     const now = Date.now();
-
-    // 1. Max hold time check
-    if (pos.maxHoldTimeMs && pos.maxHoldTimeMs > 0 && pos.createdAt > 0) {
-      if (now - pos.createdAt >= pos.maxHoldTimeMs) {
-        console.log(`[RiskManager] ⏱ MAX HOLD TIME reached for ${mint}. Triggering exit.`);
-        await this.triggerExit(pos, 'sl', this.calculateGrossPnLPct(pos));
-        return;
-      }
-    }
-
     const grossPnlPct = this.calculateGrossPnLPct(pos);
     const tpPct = pos.tpPct ?? this.config.tpPct;
     const slPct = Math.abs(pos.slPct ?? this.config.slPct);
@@ -511,25 +522,85 @@ export class RiskManager {
       return;
     }
 
-    // 2. Trailing stop check (evaluates trailing drop from peak gross market PnL)
-    const peakPnL = pos.highestPnLPct ?? grossPnlPct;
-    if (pos.trailingSlPct && pos.trailingSlPct > 0 && peakPnL > 0) {
-      const trailingDrop = peakPnL - grossPnlPct;
-      if (trailingDrop >= pos.trailingSlPct) {
-        console.log(`[RiskManager] 📉 TRAILING STOP Triggered for ${mint}: Peak +${peakPnL.toFixed(2)}%, Current: ${grossPnlPct.toFixed(2)}%, Drop: ${trailingDrop.toFixed(2)}% (Threshold: ${pos.trailingSlPct}%)`);
-        await this.triggerExit(pos, 'sl', grossPnlPct);
+    let candidateReason: 'tp' | 'sl' | null = null;
+    let exitType: 'TAKE_PROFIT' | 'STOP_LOSS' | 'TRAILING_STOP' | 'MAX_HOLD' = 'TAKE_PROFIT';
+
+    // 1. Max hold time check
+    if (pos.maxHoldTimeMs && pos.maxHoldTimeMs > 0 && pos.createdAt > 0 && (now - pos.createdAt >= pos.maxHoldTimeMs)) {
+      candidateReason = 'sl';
+      exitType = 'MAX_HOLD';
+    } else {
+      // 2. Trailing stop check (evaluates trailing drop from peak gross market PnL)
+      const peakPnL = pos.highestPnLPct ?? grossPnlPct;
+      if (pos.trailingSlPct && pos.trailingSlPct > 0 && peakPnL > 0 && (peakPnL - grossPnlPct >= pos.trailingSlPct)) {
+        candidateReason = 'sl';
+        exitType = 'TRAILING_STOP';
+      } else if (grossPnlPct >= tpPct) {
+        candidateReason = 'tp';
+        exitType = 'TAKE_PROFIT';
+      } else if (grossPnlPct <= -slPct) {
+        candidateReason = 'sl';
+        exitType = 'STOP_LOSS';
+      }
+    }
+
+    if (!candidateReason) return;
+
+    // Fetch fresh executable SELL quote before authorizing exit
+    const slippageBps = candidateReason === 'tp' ? (pos.slippageBpsTp || 250) : (pos.slippageBpsSl || 1000);
+    const WSOL_MINT = 'So11111111111111111111111111111111111111112';
+
+    let executableSolOut = 0;
+    let executablePnlPct = grossPnlPct;
+
+    try {
+      const quote = await this.executor.getQuote({
+        inputMint: pos.mint,
+        outputMint: WSOL_MINT,
+        amount: pos.amount,
+        slippageBps,
+      });
+
+      if (quote && quote.outAmount) {
+        executableSolOut = Number(quote.outAmount) / 1e9;
+        if (pos.solSpent > 0 && executableSolOut > 0) {
+          executablePnlPct = ((executableSolOut - pos.solSpent) / pos.solSpent) * 100;
+        }
+      }
+    } catch (quoteErr) {
+      console.warn(`[RiskManager] Pre-fetch executable SELL quote warning for ${mint}:`, quoteErr);
+    }
+
+    // CRITICAL SAFETY GATE:
+    // If candidate trigger is TAKE_PROFIT or TRAILING_STOP (when market PnL is positive),
+    // verify that Jupiter executable SELL quote actually yields a profitable exit!
+    if (exitType === 'TAKE_PROFIT' || (exitType === 'TRAILING_STOP' && grossPnlPct > 0)) {
+      if (executablePnlPct < 0 || (executableSolOut > 0 && executableSolOut < pos.solSpent)) {
+        console.warn(
+          `[RiskManager] ⚠️ ${exitType} candidate triggered on market price (+${grossPnlPct.toFixed(2)}%), ` +
+          `but Jupiter executable SELL quote yields LOSS (${executablePnlPct.toFixed(2)}%). ABORTING SELL & continuing monitoring.`
+        );
         return;
       }
     }
 
-    // 3. Static TP / SL checks against gross market price movements
-    if (grossPnlPct >= tpPct) {
-      console.log(`[RiskManager] 🎯 TAKE PROFIT Triggered for ${mint}: Market Price Delta = +${grossPnlPct.toFixed(2)}% (Target: +${tpPct}%)`);
-      await this.triggerExit(pos, 'tp', grossPnlPct);
-    } else if (grossPnlPct <= -slPct) {
-      console.log(`[RiskManager] 🛑 STOP LOSS Triggered for ${mint}: Market Price Delta = ${grossPnlPct.toFixed(2)}% (Target: -${slPct}%)`);
-      await this.triggerExit(pos, 'sl', grossPnlPct);
-    }
+    const tokenQty = pos.amount > 0 ? pos.amount / (10 ** pos.tokenDecimals) : 0;
+    const quotePriceSol = tokenQty > 0 && executableSolOut > 0 ? executableSolOut / tokenQty : pos.currentPrice;
+
+    console.log(
+      `[RiskManager] ⚡ Authorizing ${exitType} exit for ${mint}: Market PnL = ${grossPnlPct.toFixed(2)}%, ` +
+      `Executable Quote PnL = ${executablePnlPct.toFixed(2)}%`
+    );
+
+    await this.triggerExit(pos, candidateReason, {
+      exitType,
+      triggerPriceSol: pos.currentPrice,
+      triggerPnLPct: grossPnlPct,
+      quotePriceSol,
+      quotePnlPct: executablePnlPct,
+      configuredTpPct: tpPct,
+      configuredSlPct: slPct,
+    });
   }
 
   /**
@@ -554,15 +625,39 @@ export class RiskManager {
     const pnlPct = this.calculatePnLPct(pos);
     const side: 'tp' | 'sl' = pnlPct >= 0 ? 'tp' : 'sl';
     console.log(`[RiskManager] 🚨 Explicit exit requested for ${mint} (${reason}) at estimated PnL: ${pnlPct.toFixed(2)}%`);
-    await this.triggerExit(pos, side, pnlPct);
+    await this.triggerExit(pos, side, {
+      exitType: 'MANUAL',
+      triggerPriceSol: pos.currentPrice,
+      triggerPnLPct: pnlPct,
+      quotePriceSol: pos.currentPrice,
+      quotePnlPct: pnlPct,
+      configuredTpPct: pos.tpPct,
+      configuredSlPct: pos.slPct,
+    });
   }
 
-  public async triggerExit(pos: ManagedPosition, side: 'tp' | 'sl', estimatedPnlPct: number): Promise<void> {
+  public async triggerExit(
+    pos: ManagedPosition,
+    side: 'tp' | 'sl',
+    telemetryOrPnl?: number | ExitTelemetryOptions
+  ): Promise<void> {
     const mint = pos.mint;
     if (this.exitingMints.has(mint) || pos.state === 'CLOSING' || pos.state === 'CLOSED') return;
 
     this.exitingMints.add(mint);
     pos.state = 'CLOSING';
+
+    const telemetry: ExitTelemetryOptions = typeof telemetryOrPnl === 'object'
+      ? telemetryOrPnl
+      : {
+          exitType: side === 'tp' ? 'TAKE_PROFIT' : 'STOP_LOSS',
+          triggerPriceSol: pos.currentPrice,
+          triggerPnLPct: typeof telemetryOrPnl === 'number' ? telemetryOrPnl : this.calculateGrossPnLPct(pos),
+          quotePriceSol: pos.currentPrice,
+          quotePnlPct: typeof telemetryOrPnl === 'number' ? telemetryOrPnl : this.calculateGrossPnLPct(pos),
+          configuredTpPct: pos.tpPct,
+          configuredSlPct: pos.slPct,
+        };
 
     try {
       const slippageBps = side === 'tp' ? (pos.slippageBpsTp || 250) : (pos.slippageBpsSl || 1000);
@@ -598,6 +693,8 @@ export class RiskManager {
       const actualPnlPct = pos.solSpent > 0
         ? (actualPnlSol / pos.solSpent) * 100
         : (netSolReceived > 0 ? 100 : 0);
+      const tokenQty = pos.amount > 0 ? pos.amount / (10 ** pos.tokenDecimals) : 0;
+      const executionPriceSol = tokenQty > 0 ? netSolReceived / tokenQty : pos.currentPrice;
 
       // Record in PositionRegistry, TokenRegistry, and TradeHistoryRegistry
       positionRegistry.closePosition(mint, result.signature, actualPnlSol, actualPnlPct);
@@ -609,14 +706,26 @@ export class RiskManager {
         side: 'SELL',
         network: useTradingEnvironmentStore.getState().network || 'paper',
         amountRaw: pos.amount,
-        amountTokens: pos.amount / (10 ** pos.tokenDecimals),
+        amountTokens: tokenQty,
         solAmount: netSolReceived,
-        priceSOL: pos.currentPrice,
+        priceSOL: executionPriceSol,
         pnlSol: actualPnlSol,
         pnlPct: actualPnlPct,
         signature: result.signature || 'exit-tx',
         timestamp: Date.now(),
         status: 'CONFIRMED',
+        metadata: {
+          exitReason: telemetry.exitType || (side === 'tp' ? 'TAKE_PROFIT' : 'STOP_LOSS'),
+          triggerPriceSol: telemetry.triggerPriceSol || pos.currentPrice,
+          triggerPnLPct: telemetry.triggerPnLPct ?? actualPnlPct,
+          quotePriceSol: telemetry.quotePriceSol || pos.currentPrice,
+          quotePnlPct: telemetry.quotePnlPct ?? actualPnlPct,
+          executionPriceSol,
+          realizedPnlPct: actualPnlPct,
+          configuredTpPct: telemetry.configuredTpPct ?? pos.tpPct,
+          configuredSlPct: telemetry.configuredSlPct ?? pos.slPct,
+          slippageBps,
+        },
       });
 
       await walletBalanceService.verifyTokenBalanceCleared(mint);

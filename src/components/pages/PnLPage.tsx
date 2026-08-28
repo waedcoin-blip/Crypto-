@@ -3757,6 +3757,7 @@ const checkTokenCriteria = (mint: string): {
       const amountLamports = Math.floor(solAmount * 1_000_000_000);
       const slippageBps = Math.floor(configRef.current.slippage * 100);
       const swapRes = await tradeManager.swap(SOL_MINT, mint, amountLamports, slippageBps, 'entry');
+      const actualSolSpent = swapRes.totalCostSol || (solAmount + (swapRes.feeSol || 0));
       const result = {
         txid: swapRes.signature,
         slot: swapRes.slot || 0,
@@ -3773,7 +3774,7 @@ const checkTokenCriteria = (mint: string): {
         let exactTokenAmount = solAmount / parsedPrice;
         if (result.quoteOutAmountRaw && passedOutputAmount > 0) {
           exactTokenAmount = passedOutputAmount / Math.pow(10, tokenDecimals);
-          parsedPrice = solAmount / exactTokenAmount; // Update to actual execution price
+          parsedPrice = actualSolSpent / exactTokenAmount; // Update to actual execution cost basis
         }
         
         setPositions((prev) => {
@@ -3782,10 +3783,10 @@ const checkTokenCriteria = (mint: string): {
            }
            const existing = prev[mint];
            const tokenAmount = exactTokenAmount; 
-           const newSolSpent = existing ? (existing.solSpent || 0) + solAmount : solAmount;
+           const newSolSpent = existing ? (existing.solSpent || 0) + actualSolSpent : actualSolSpent;
            const newAmount = existing ? (existing.amount || 0) + tokenAmount : tokenAmount;
            
-           const newEntry = { signature: result.txid, solSpent: solAmount, amount: tokenAmount, buyPrice: parsedPrice, slot: result.slot };
+           const newEntry = { signature: result.txid, solSpent: actualSolSpent, amount: tokenAmount, buyPrice: parsedPrice, slot: result.slot };
            const newBuyEntries = existing && existing.buyEntries ? [...existing.buyEntries, newEntry] : [newEntry];
            
            const stage = detectTokenStage({
@@ -3840,7 +3841,7 @@ const checkTokenCriteria = (mint: string): {
                buyPrice: calcBuyPrice,
                solSpent: newSolSpent,
                tpPct: initialTp,
-               slPct: getEngineSl(initialSl),
+               slPct: Math.abs(initialSl),
                tokenDecimals,
              });
              if (result.txid && result.txid !== 'init-sig') {
@@ -4072,7 +4073,7 @@ const checkTokenCriteria = (mint: string): {
           buyPrice: pos.buyPrice || 0,
           solSpent: pos.solSpent || 0,
           tpPct: targetTp,
-          slPct: getEngineSl(targetSl),
+          slPct: Math.abs(targetSl),
           tokenDecimals: pos.decimals ?? 6,
         });
         if (pos.currentPrice && pos.currentPrice > 0) {
@@ -4128,11 +4129,11 @@ const checkTokenCriteria = (mint: string): {
       };
       positionsRef.current = next;
       useAppStore.getState().updateActivePositions(() => next);
-      positionExitManagerRef.current?.updatePositionTpSl(mint, safeTp, getEngineSl(safeSl));
+      positionExitManagerRef.current?.updatePositionTpSl(mint, safeTp, safeSl);
       return next;
     });
     addLog(`⚙️ Set ${positionsRef.current[mint]?.symbol || mint.slice(0, 6)} TP: +${safeTp}% | SL: -${safeSl}%`, 'info');
-  }, [addLog, getEngineSl]);
+  }, [addLog]);
 
   // Handler to reset per-position TP/SL back to global settings
   const handleResetPositionTpSl = useCallback((mint: string) => {
@@ -4167,11 +4168,11 @@ const checkTokenCriteria = (mint: string): {
       };
       positionsRef.current = next;
       useAppStore.getState().updateActivePositions(() => next);
-      positionExitManagerRef.current?.updatePositionTpSl(mint, defaultTp, getEngineSl(Math.abs(defaultSl)));
+      positionExitManagerRef.current?.updatePositionTpSl(mint, defaultTp, Math.abs(defaultSl));
       return next;
     });
     addLog(`🔄 Reset ${positionsRef.current[mint]?.symbol || mint.slice(0, 6)} TP/SL to Global (TP: +${defaultTp}%, SL: -${Math.abs(defaultSl)}%)`, 'info');
-  }, [bondingCurveTakeProfit, minTakeProfit, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct, stopLossPct, addLog, getEngineSl]);
+  }, [bondingCurveTakeProfit, minTakeProfit, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct, stopLossPct, addLog]);
 
   // Sync active positions and updated TP/SL to PositionExitManager & MasterMonitorService when settings or positions change
   useEffect(() => {
@@ -4224,7 +4225,7 @@ const checkTokenCriteria = (mint: string): {
             buyPrice: pos.buyPrice || 0,
             solSpent: pos.solSpent || 0,
             tpPct: targetTp,
-            slPct: getEngineSl(targetSl),
+            slPct: Math.abs(targetSl),
             tokenDecimals: pos.decimals ?? 6,
           });
           if (pos.currentPrice && pos.currentPrice > 0) {
@@ -4234,7 +4235,7 @@ const checkTokenCriteria = (mint: string): {
             positionExitManagerRef.current.confirmBuy(mint, pos.txid, pos.buySlot || 0);
           }
         } else {
-          positionExitManagerRef.current.updatePositionTpSl(mint, targetTp, getEngineSl(targetSl));
+          positionExitManagerRef.current.updatePositionTpSl(mint, targetTp, Math.abs(targetSl));
           if (pos.currentPrice && pos.currentPrice > 0) {
             positionExitManagerRef.current.onPriceUpdate(mint, pos.currentPrice, Date.now());
           }
@@ -4245,7 +4246,7 @@ const checkTokenCriteria = (mint: string): {
     if (masterMonitorRef.current && activeMints.length > 0) {
       masterMonitorRef.current.startMonitoring(activeMints);
     }
-  }, [positions, isRunning, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct, getEngineSl]);
+  }, [positions, isRunning, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct]);
 
   const processedAlerts = useRef<Set<string>>(new Set());
   useEffect(() => {
