@@ -25,7 +25,7 @@ let isActive = false;
 let currentOptions: LaserStreamOptions = {
   apiKey: process.env.HELIUS_API_KEY || '',
   endpoint: 'auto',
-  network: 'devnet',
+  network: 'mainnet',
   programAddresses: [],
 };
 
@@ -92,7 +92,7 @@ function getSafeStatus(): LaserStreamStatus {
   const telemetry = getLaserStreamTelemetry();
   return {
     active: isActive,
-    network: currentOptions.network || 'devnet',
+    network: currentOptions.network || 'mainnet',
     options: {
       ...currentOptions,
       apiKey: currentOptions.apiKey ? '***' : '',
@@ -115,7 +115,7 @@ router.get('/status', (req, res) => {
 const ConfigSchema = z.object({
   enabled: z.boolean().optional(),
   apiKey: z.string().optional(),
-  network: z.enum(['devnet', 'mainnet']).optional(),
+  network: z.enum(['mainnet']).optional(),
   endpoint: z.string().optional(),
   programAddresses: z.array(z.string()).max(10).optional(),
   customWsUrl: z.string().url().optional().or(z.literal('')),
@@ -136,7 +136,7 @@ router.post('/config', asyncHandler(async (req, res) => {
 
   currentOptions = {
     apiKey: apiKey !== undefined ? apiKey : currentOptions.apiKey,
-    network: network || currentOptions.network || 'devnet',
+    network: network || currentOptions.network || 'mainnet',
     endpoint: endpoint || currentOptions.endpoint || 'auto',
     programAddresses: programAddresses || currentOptions.programAddresses,
     customWsUrl: customWsUrl !== undefined ? customWsUrl : currentOptions.customWsUrl,
@@ -144,7 +144,7 @@ router.post('/config', asyncHandler(async (req, res) => {
 
   // Vercel doesn't support long-lived processes
   if (config.IS_VERCEL) {
-    const wsHost = currentOptions.network === 'devnet' ? 'devnet.helius-rpc.com' : 'mainnet.helius-rpc.com';
+    const wsHost = 'mainnet.helius-rpc.com';
     return res.json({
       success: true,
       active: enabled,
@@ -178,7 +178,7 @@ router.post('/config', asyncHandler(async (req, res) => {
     isFallback: isLaserStreamUsingFallback(),
     isSimulated: isLaserStreamSimulated(),
     activeEndpoint: getActiveLaserStreamEndpoint(),
-    network: currentOptions.network || 'devnet',
+    network: currentOptions.network || 'mainnet',
     telemetry: getLaserStreamTelemetry(),
   } as any);
 

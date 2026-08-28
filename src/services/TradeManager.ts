@@ -5,7 +5,7 @@ import { QuoteGetRequest, QuoteResponse } from '@jup-ag/api';
 import { TradingNetwork } from '../config/network';
 import { orderManager } from './OrderManager';
 
-export type TradeMode = 'paper' | 'devnet' | 'mainnet';
+export type TradeMode = 'paper' | 'mainnet';
 
 /**
  * TradeManager: Adapter layer routing through OrderManager and ExecutionEngine.

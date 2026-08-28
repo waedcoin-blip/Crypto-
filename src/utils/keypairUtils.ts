@@ -3,7 +3,7 @@ import bs58 from 'bs58';
 
 export interface WalletMetadata {
   address: string;
-  network: 'paper' | 'devnet' | 'mainnet';
+  network: 'paper' | 'mainnet';
   initialized: boolean;
   lastUpdated: number;
 }
@@ -88,7 +88,7 @@ export function getSavedSessionKeypair(): Keypair | null {
   return null;
 }
 
-export function saveSessionKeypair(kp: Keypair | null, network: 'paper' | 'devnet' | 'mainnet' = 'devnet'): void {
+export function saveSessionKeypair(kp: Keypair | null, network: 'paper' | 'mainnet' = 'paper'): void {
   if (typeof window === 'undefined') return;
 
   // Always purge private keys from persistent localStorage

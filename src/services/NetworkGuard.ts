@@ -4,7 +4,6 @@ import { getNetworkConfig, TradingNetwork } from '../config/network';
 
 export const GENESIS_HASHES: Record<TradingNetwork, string> = {
   mainnet: '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d',
-  devnet: 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG',
   paper: '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d',
 };
 
@@ -16,17 +15,6 @@ export class NetworkGuard {
     rpcUrl: string
   ): void {
     const config = getNetworkConfig(network);
-
-    if (network === 'devnet') {
-      if (
-        rpcUrl.includes('mainnet') ||
-        rpcUrl.includes('mainnet-beta')
-      ) {
-        throw new Error(
-          'NETWORK SAFETY ERROR: Devnet cannot use Mainnet RPC endpoint'
-        );
-      }
-    }
 
     if (network === 'mainnet') {
       if (rpcUrl.includes('devnet')) {

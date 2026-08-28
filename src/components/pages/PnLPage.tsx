@@ -50,10 +50,7 @@ const fetchMintDecimals = async (mint: string, rpcUrl?: string): Promise<number>
   if (normalized.toLowerCase().startsWith('sim')) return 6;
   if (decimalsCache[normalized] !== undefined && decimalsCache[normalized] >= 0) return decimalsCache[normalized];
 
-  const isDevnet = useTradingEnvironmentStore.getState().network === 'devnet';
-
-  // Devnet: RPC is authoritative. Never use mainnet token metadata first.
-  if (isDevnet && rpcUrl) {
+  if (rpcUrl) {
     try {
       const conn = new Connection(rpcUrl, 'confirmed');
       const info = await conn.getParsedAccountInfo(new PublicKey(normalized));
@@ -65,12 +62,11 @@ const fetchMintDecimals = async (mint: string, rpcUrl?: string): Promise<number>
         }
       }
     } catch (e) {
-      console.warn("Devnet Solana RPC decimals fetch failed:", e);
+      console.warn("Solana RPC decimals fetch note:", e);
     }
-    return -1;
   }
 
-  // Mainnet: public Jupiter Token API is allowed.
+  // Public Jupiter Token API fallback.
   try {
     const res = await fetch(`https://tokens.jup.ag/token/${normalized}`);
     if (res.ok) {
@@ -2186,16 +2182,10 @@ export const PnLPage = ({
     const syncLaserstream = async () => {
       try {
         setLaserstreamStatus('connecting');
-        const defaultPrograms = tradingNetwork === 'devnet'
-          ? [
-              'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', // SPL Token
-              '11111111111111111111111111111111', // System Program
-              'ComputeBudget111111111111111111111111111111', // Compute Budget
-            ]
-          : [
-              '6EF87t756LkSg6GptZTEAtgX9v7R24C4FtsZbXm9o6RA', // Pump.fun
-              '675k1q2AYp74sk2Wym6L6nd56N7Y5D7T6jhpxS22bbe', // Raydium AMM
-            ];
+        const defaultPrograms = [
+          '6EF87t756LkSg6GptZTEAtgX9v7R24C4FtsZbXm9o6RA', // Pump.fun
+          '675k1q2AYp74sk2Wym6L6nd56N7Y5D7T6jhpxS22bbe', // Raydium AMM
+        ];
 
         const res = await fetch('/api/laserstream/config', {
           method: 'POST',
@@ -2217,11 +2207,11 @@ export const PnLPage = ({
                data = await res.json();
            } else {
                // Vercel deployment without backend, fallback to client-side websocket
-               const wsHost = tradingNetwork === 'devnet' ? 'devnet.helius-rpc.com' : 'mainnet.helius-rpc.com';
+               const wsHost = 'mainnet.helius-rpc.com';
                data = { success: true, active: laserstreamEnabled, isFallback: true, isSimulated: false, activeEndpoint: `WebSocket (Vercel Fallback: ${wsHost})` };
            }
         } else {
-           const wsHost = tradingNetwork === 'devnet' ? 'devnet.helius-rpc.com' : 'mainnet.helius-rpc.com';
+           const wsHost = 'mainnet.helius-rpc.com';
            data = { success: true, active: laserstreamEnabled, isFallback: true, isSimulated: false, activeEndpoint: `WebSocket (Fallback: ${wsHost})` };
         }
 
@@ -2280,7 +2270,7 @@ export const PnLPage = ({
       if (laserstreamActiveEndpoint && laserstreamActiveEndpoint.includes('Vercel')) {
         // Vercel serverless doesn't support SSE, connect WebSocket directly
         console.log("🔗 Vercel Detected: Connecting directly via network-matched WebSocket...");
-        const wsHost = tradingNetwork === 'devnet' ? 'devnet.helius-rpc.com' : 'mainnet.helius-rpc.com';
+        const wsHost = 'mainnet.helius-rpc.com';
         const wsUrl = (laserstreamApiKey && laserstreamApiKey.length > 20 && laserstreamApiKey !== 'default' && laserstreamApiKey !== 'free') 
           ? `wss://${wsHost}/?api-key=${laserstreamApiKey}` 
           : `wss://${wsHost}`;
@@ -2292,9 +2282,7 @@ export const PnLPage = ({
           setLaserstreamStatus('connected');
           pingTimer = setInterval(() => ws.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' })), 30000);
           
-          const prog = tradingNetwork === 'devnet'
-            ? 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
-            : '6EF87t756LkSg6GptZTEAtgX9v7R24C4FtsZbXm9o6RA';
+          const prog = '6EF87t756LkSg6GptZTEAtgX9v7R24C4FtsZbXm9o6RA';
 
           ws.send(JSON.stringify({
             jsonrpc: '2.0',
@@ -3643,11 +3631,9 @@ const checkTokenCriteria = (mint: string): {
             const exactTokenAmount = Number(quote.outAmount);
             const exactMathFallback = solAmount / parsedPrice;
             let decimals = await resolveDecimals(mint, jupRpcUrlToUse);
-            if (useTradingEnvironmentStore.getState().network !== 'devnet') {
-              const impliedDecimals = Math.round(Math.log10(exactTokenAmount / exactMathFallback));
-              if (Math.abs(decimals - impliedDecimals) >= 2) {
-                decimals = Math.max(0, impliedDecimals);
-              }
+            const impliedDecimals = Math.round(Math.log10(exactTokenAmount / exactMathFallback));
+            if (Math.abs(decimals - impliedDecimals) >= 2) {
+              decimals = Math.max(0, impliedDecimals);
             }
             const normalizedOut = exactTokenAmount / Math.pow(10, decimals);
             if (normalizedOut > 0) {
@@ -3717,7 +3703,7 @@ const checkTokenCriteria = (mint: string): {
     }
     
     const storeStateForBuyMode = useAppStore.getState();
-    const tradeModeFromStorage = (typeof localStorage !== 'undefined' ? localStorage.getItem('trade_mode') : null) || (typeof localStorage !== 'undefined' && localStorage.getItem('is_live_trading') === 'true' ? 'mainnet' : 'devnet');
+    const tradeModeFromStorage = (typeof localStorage !== 'undefined' ? localStorage.getItem('trade_mode') : null) || (typeof localStorage !== 'undefined' && localStorage.getItem('is_live_trading') === 'true' ? 'mainnet' : 'paper');
     
     if (tradeModeFromStorage === 'mainnet' && !user) {
       addLog(`❌ [BUY ABORTED] Mainnet Trading requires an authenticated Google/Firebase user session.`, 'err');
@@ -3726,7 +3712,7 @@ const checkTokenCriteria = (mint: string): {
     }
     
     if (!privateKey) {
-      addLog(`❌ [BUY ABORTED] No Private Key configured in settings. A wallet is required for both Devnet and Mainnet trading.`, 'err');
+      addLog(`❌ [BUY ABORTED] No Private Key configured in settings. A wallet is required for trading.`, 'err');
       pendingBuyMintsRef.current.delete(mint);
       return;
     }
@@ -5385,23 +5371,13 @@ const checkTokenCriteria = (mint: string): {
                         }}
                         className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-2.5 py-1.5 text-[12px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors"
                       >
-                        {tradingNetwork === 'devnet' ? (
-                          <>
-                            <option value="auto">⚡ Auto-Select (Devnet Edge)</option>
-                            <option value="https://laserstream-devnet-ams.helius-rpc.com">Amsterdam (AMS) - Devnet Edge</option>
-                            <option value="https://laserstream-devnet-ewr.helius-rpc.com">Newark (EWR) - Devnet Edge</option>
-                          </>
-                        ) : (
-                          <>
-                            <option value="auto">⚡ Auto-Select Fastest (TLS Ping)</option>
-                            <option value="https://laserstream-mainnet-ams.helius-rpc.com">Amsterdam (AMS) - Europe Edge</option>
-                            <option value="https://laserstream-mainnet-fra.helius-rpc.com">Frankfurt (FRA) - Central Europe</option>
-                            <option value="https://laserstream-mainnet-lon.helius-rpc.com">London (LON) - UK Edge</option>
-                            <option value="https://laserstream-mainnet-ewr.helius-rpc.com">Newark (EWR) - East US Edge</option>
-                            <option value="https://laserstream-mainnet-tyo.helius-rpc.com">Tokyo (TYO) - Asia Edge</option>
-                            <option value="https://laserstream-mainnet-sgp.helius-rpc.com">Singapore (SGP) - Asia Edge</option>
-                          </>
-                        )}
+                        <option value="auto">⚡ Auto-Select Fastest (TLS Ping)</option>
+                        <option value="https://laserstream-mainnet-ams.helius-rpc.com">Amsterdam (AMS) - Europe Edge</option>
+                        <option value="https://laserstream-mainnet-fra.helius-rpc.com">Frankfurt (FRA) - Central Europe</option>
+                        <option value="https://laserstream-mainnet-lon.helius-rpc.com">London (LON) - UK Edge</option>
+                        <option value="https://laserstream-mainnet-ewr.helius-rpc.com">Newark (EWR) - East US Edge</option>
+                        <option value="https://laserstream-mainnet-tyo.helius-rpc.com">Tokyo (TYO) - Asia Edge</option>
+                        <option value="https://laserstream-mainnet-sgp.helius-rpc.com">Singapore (SGP) - Asia Edge</option>
                       </select>
                     </div>
 
@@ -5411,19 +5387,9 @@ const checkTokenCriteria = (mint: string): {
                         <span className="text-[8px] font-mono text-[#94a3b8] uppercase">{tradingNetwork}</span>
                       </div>
                       <div className="flex flex-wrap gap-1 mt-1">
-                        {tradingNetwork === 'devnet' ? (
-                          <>
-                            <span className="text-[8px] bg-[#c7f284]/10 text-[#c7f284] border border-[#c7f284]/25 px-1.5 py-0.5 rounded font-mono font-medium">SPL Token Program</span>
-                            <span className="text-[8px] bg-[#c7f284]/10 text-[#c7f284] border border-[#c7f284]/25 px-1.5 py-0.5 rounded font-mono font-medium">System Program</span>
-                            <span className="text-[8px] bg-[#c7f284]/10 text-[#c7f284] border border-[#c7f284]/25 px-1.5 py-0.5 rounded font-mono font-medium">Compute Budget</span>
-                          </>
-                        ) : (
-                          <>
-                            <span className="text-[8px] bg-[#c7f284]/10 text-[#c7f284] border border-[#c7f284]/25 px-1.5 py-0.5 rounded font-mono font-medium">Pump.fun Ingestion</span>
-                            <span className="text-[8px] bg-[#c7f284]/10 text-[#c7f284] border border-[#c7f284]/25 px-1.5 py-0.5 rounded font-mono font-medium">Raydium Liquidity Pool</span>
-                            <span className="text-[8px] bg-[#c7f284]/10 text-[#c7f284] border border-[#c7f284]/25 px-1.5 py-0.5 rounded font-mono font-medium">Jupiter v6</span>
-                          </>
-                        )}
+                        <span className="text-[8px] bg-[#c7f284]/10 text-[#c7f284] border border-[#c7f284]/25 px-1.5 py-0.5 rounded font-mono font-medium">Pump.fun Ingestion</span>
+                        <span className="text-[8px] bg-[#c7f284]/10 text-[#c7f284] border border-[#c7f284]/25 px-1.5 py-0.5 rounded font-mono font-medium">Raydium Liquidity Pool</span>
+                        <span className="text-[8px] bg-[#c7f284]/10 text-[#c7f284] border border-[#c7f284]/25 px-1.5 py-0.5 rounded font-mono font-medium">Jupiter v6</span>
                       </div>
                     </div>
                   </div>
@@ -6340,7 +6306,7 @@ const checkTokenCriteria = (mint: string): {
                                         <span className="text-slate-500">{(entry.solSpent || 0).toFixed(4)} SOL</span>
                                         {entry.signature && entry.signature !== 'recovered-exit-tx' && entry.signature !== 'init-sig' && (
                                           <a
-                                            href={`https://solscan.io/tx/${entry.signature}?cluster=devnet`}
+                                            href={`https://solscan.io/tx/${entry.signature}`}
                                             target="_blank"
                                             rel="noopener noreferrer"
                                             className="text-indigo-400 hover:text-indigo-300 underline"

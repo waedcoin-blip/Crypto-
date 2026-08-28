@@ -62,13 +62,6 @@ export const TradingSettings: React.FC = () => {
   const [saved, setSaved] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  const [settlementStatus, setSettlementStatus] = useState<{
-    isConfigured: boolean;
-    settlementAddress: string | null;
-    solBalance: number;
-    status: string;
-  } | null>(null);
-
   // Load encrypted keys on mount
   useEffect(() => {
     const encApiKey = localStorage.getItem('enc_jupiter_api_key');
@@ -88,12 +81,6 @@ export const TradingSettings: React.FC = () => {
     // Keys remain encrypted until user enters password
     if (encApiKey) setJupiterApiKey('••••••••••••••••••••••••••');
     if (encPrivKey) setPrivateKey('••••••••••••••••••••••••••');
-
-    // Fetch Devnet settlement wallet status
-    fetch('/api/devnet-swap/status')
-      .then((res) => res.json())
-      .then((data) => setSettlementStatus(data))
-      .catch(() => setSettlementStatus(null));
   }, []);
 
   const handleSave = async () => {
@@ -115,7 +102,7 @@ export const TradingSettings: React.FC = () => {
       if (privateKey && privateKey !== '••••••••••••••••••••••••••') {
         try {
           const kp = getKeypairFromPrivateKey(privateKey);
-          const envNet = useTradingEnvironmentStore.getState().network || 'devnet';
+          const envNet = useTradingEnvironmentStore.getState().network || 'paper';
           useActiveWalletStore.getState().switchActiveWallet({ keypair: kp, network: envNet, source: 'session' });
         } catch (e) {}
 
@@ -166,16 +153,6 @@ export const TradingSettings: React.FC = () => {
             Paper
           </button>
           <button
-            onClick={() => setMode('devnet')}
-            className={`px-3 py-1.5 rounded-md text-[12px] font-semibold transition-all cursor-pointer ${
-              mode === 'devnet'
-                ? 'bg-cyan-600 text-white shadow'
-                : 'text-gray-400 hover:text-cyan-300'
-            }`}
-          >
-            Devnet
-          </button>
-          <button
             onClick={() => setMode('mainnet')}
             className={`px-3 py-1.5 rounded-md text-[12px] font-semibold transition-all cursor-pointer ${
               mode === 'mainnet'
@@ -187,47 +164,6 @@ export const TradingSettings: React.FC = () => {
           </button>
         </div>
       </div>
-
-      {mode === 'devnet' && settlementStatus && (
-        <div className="rounded-[10px] border border-cyan-500/30 bg-cyan-500/10 p-3.5 space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-[12px] font-semibold text-cyan-300 uppercase tracking-wider">
-              Devnet Settlement Exchange
-            </span>
-            <span
-              className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase ${
-                settlementStatus.status === 'ready'
-                  ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                  : settlementStatus.status === 'needs_funding'
-                  ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                  : 'bg-gray-700/50 text-gray-400 border border-gray-600/30'
-              }`}
-            >
-              {settlementStatus.status}
-            </span>
-          </div>
-          {settlementStatus.settlementAddress && (
-            <div className="text-[11px] font-mono text-gray-300 break-all bg-black/40 p-2 rounded border border-cyan-500/20">
-              Address: {settlementStatus.settlementAddress}
-            </div>
-          )}
-          <div className="flex items-center justify-between text-[11px] text-gray-300 pt-1">
-            <span>Exchange SOL Balance:</span>
-            <span className="font-mono font-semibold text-white">
-              {(settlementStatus.solBalance ?? 0).toFixed(4)} SOL
-            </span>
-          </div>
-          {!settlementStatus.isConfigured && (
-            <p className="text-[11px] text-amber-300/90 pt-1">
-              💡 Using temporary in-memory wallet. To configure a persistent wallet, run{' '}
-              <code className="bg-black/60 px-1 py-0.5 rounded text-white font-mono text-[10px]">
-                npm run create:devnet-settlement
-              </code>{' '}
-              and set <code className="text-cyan-300">DEVNET_SETTLEMENT_PRIVATE_KEY</code> in .env.
-            </p>
-          )}
-        </div>
-      )}
 
       {mode === 'mainnet' && (
         <div className="rounded-[10px] border border-rose-500/30 bg-rose-500/10 p-3">

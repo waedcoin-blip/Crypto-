@@ -10,7 +10,7 @@ import { useAppStore } from '../store/appStore';
 
 export class StartupReconciliation {
   public static async runReconciliation(): Promise<void> {
-    const network = useTradingEnvironmentStore.getState().network || 'devnet';
+    const network = useTradingEnvironmentStore.getState().network || 'paper';
     const activeWallet = useActiveWalletStore.getState().activeWallet;
     if (!activeWallet || !activeWallet.address) {
       console.log('[StartupReconciliation] No active wallet connected. Skipping startup reconciliation.');

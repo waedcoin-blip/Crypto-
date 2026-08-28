@@ -17,7 +17,7 @@ export interface SwapResult {
 }
 
 export interface ITradeExecutor {
-  readonly mode: 'paper' | 'devnet' | 'mainnet';
+  readonly mode: 'paper' | 'mainnet';
   readonly publicKey: string;
 
   getQuote(params: QuoteGetRequest): Promise<QuoteResponse>;

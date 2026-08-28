@@ -81,7 +81,7 @@ export class OrderManager {
         const now = Date.now();
         for (const order of parsed) {
           this.orders.set(order.id, order);
-          const net = order.network || 'devnet';
+          const net = order.network || 'paper';
           const isPending = [
             'VALIDATING',
             'QUOTE_REQUESTED',
@@ -128,7 +128,7 @@ export class OrderManager {
     network?: TradingNetwork,
     label?: 'entry' | 'exit_tp' | 'exit_sl'
   ): Order {
-    const net = network || useTradingEnvironmentStore.getState().network || 'devnet';
+    const net = network || useTradingEnvironmentStore.getState().network || 'paper';
     // Key is scoped by network + side + mint, allowing simultaneous entry/exit management
     const key = `${net}_${side}_${mint}`;
     const existingActiveId = this.activeOrdersByNetworkSideMint.get(key);
@@ -189,7 +189,7 @@ export class OrderManager {
     if (details?.netProceedsSol !== undefined) order.netProceedsSol = details.netProceedsSol;
 
     if (['CONFIRMED', 'FAILED', 'RECOVERY_REQUIRED', 'CANCELLED'].includes(newState)) {
-      const net = order.network || 'devnet';
+      const net = order.network || 'paper';
       const key = `${net}_${order.side}_${order.mint}`;
       if (this.activeOrdersByNetworkSideMint.get(key) === orderId) {
         this.activeOrdersByNetworkSideMint.delete(key);
@@ -203,7 +203,7 @@ export class OrderManager {
   /**
    * Authoritative order execution method: creates order, validates idempotency,
    * transitions states accurately through full lifecycle, verifies on-chain transaction
-   * confirmation for live/devnet modes, calculates effective price metrics, and updates stores.
+   * confirmation for live modes, calculates effective price metrics, and updates stores.
    */
   public async executeOrder(
     inputMint: string,
@@ -216,7 +216,7 @@ export class OrderManager {
     const isSolBuy = inputMint === WSOL || inputMint === 'So11111111111111111111111111111111111111112';
     const targetMint = isSolBuy ? outputMint : inputMint;
     const side = isSolBuy ? 'buy' : 'sell';
-    const currentNetwork = useTradingEnvironmentStore.getState().network || 'devnet';
+    const currentNetwork = useTradingEnvironmentStore.getState().network || 'paper';
 
     // 1. SIGNAL & Order creation with side-scoped idempotency lock
     const order = this.createOrder(targetMint, side, amount, slippageBps, undefined, currentNetwork, label);
@@ -319,7 +319,7 @@ export class OrderManager {
   }
 
   public getActiveOrderForMint(mint: string, network?: TradingNetwork): Order | undefined {
-    const net = network || useTradingEnvironmentStore.getState().network || 'devnet';
+    const net = network || useTradingEnvironmentStore.getState().network || 'paper';
     const buyKey = `${net}_buy_${mint}`;
     const sellKey = `${net}_sell_${mint}`;
     const activeBuyId = this.activeOrdersByNetworkSideMint.get(buyKey);

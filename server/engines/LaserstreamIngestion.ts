@@ -40,10 +40,6 @@ export const LASERSTREAM_ENDPOINTS = {
     'https://laserstream-mainnet-tyo.helius-rpc.com', // Asia TYO (Tokyo)
     'https://laserstream-mainnet-sgp.helius-rpc.com', // Asia SGP (Singapore)
   ],
-  devnet: [
-    'https://laserstream-devnet-ams.helius-rpc.com',
-    'https://laserstream-devnet-ewr.helius-rpc.com',
-  ],
 } as const;
 
 export const DEFAULT_NETWORK_PROGRAMS: Record<LaserStreamNetwork, string[]> = {
@@ -51,12 +47,6 @@ export const DEFAULT_NETWORK_PROGRAMS: Record<LaserStreamNetwork, string[]> = {
     '6EF87t756LkSg6GptZTEAtgX9v7R24C4FtsZbXm9o6RA', // Pump.fun Mainnet
     '675k1q2AYp74sk2Wym6L6nd56N7Y5D7T6jhpxS22bbe', // Raydium AMM Mainnet
     'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4', // Jupiter v6 Mainnet
-  ],
-  devnet: [
-    'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', // SPL Token Program
-    '11111111111111111111111111111111', // System Program
-    'ComputeBudget111111111111111111111111111111', // Compute Budget Program
-    'metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s', // Metaplex Token Metadata
   ],
 };
 
@@ -146,7 +136,7 @@ const state: StreamState = {
   transportConnected: false,
   isUsingFallback: false,
   isSimulated: false,
-  network: 'devnet',
+  network: 'mainnet',
   mode: 'simulation',
   status: 'disabled',
   activeEndpoint: null,
@@ -181,9 +171,9 @@ export function getLaserStreamTelemetry(): LaserStreamTelemetry {
 }
 
 // ─── Helpers ───
-export function getHeliusWsUrl(network: LaserStreamNetwork = 'devnet', apiKey = '', customWsUrl?: string): string {
+export function getHeliusWsUrl(network: LaserStreamNetwork = 'mainnet', apiKey = '', customWsUrl?: string): string {
   if (customWsUrl?.trim()) return customWsUrl.trim();
-  const host = network === 'devnet' ? 'devnet.helius-rpc.com' : 'mainnet.helius-rpc.com';
+  const host = 'mainnet.helius-rpc.com';
   const key = apiKey?.trim() || config.HELIUS_API_KEY || '';
   return key && !isFreeOrDefaultKey(key)
     ? `wss://${host}/?api-key=${encodeURIComponent(key)}`
@@ -277,7 +267,7 @@ function generateRandomSignature(): string {
 // ─── Simulation Stream ───
 export function startSimulationStream(
   eventBusCallback: (event: SseEvent) => void,
-  network: LaserStreamNetwork = 'devnet'
+  network: LaserStreamNetwork = 'mainnet'
 ): void {
   stopSimulationStream();
 
@@ -294,7 +284,7 @@ export function startSimulationStream(
 
   laserLogger.info({ network }, 'Initializing LaserStream local simulation feed');
 
-  let currentSlot = network === 'devnet' ? 320_000_000 : 274_152_000;
+  let currentSlot = 274_152_000;
   currentSlot += Math.floor(Math.random() * 10_000);
 
   state.simulationTimer = setInterval(() => {
@@ -455,7 +445,7 @@ export async function runLaserstreamWorker(): Promise<void> {
   const apiKey = options.apiKey;
   const endpoint = options.endpoint;
   const programs = options.programAddresses || [];
-  const network = options.network || 'devnet';
+  const network = options.network || 'mainnet';
 
   const laserConfig: LaserstreamConfig = {
     apiKey,
@@ -550,7 +540,7 @@ export async function startLaserStream(
   failedHubs: Set<string> = new Set()
 ): Promise<{ cancel(): void; unsubscribe(): void } | null> {
   const sessionId = ++state.currentSessionId;
-  const network = options.network || 'devnet';
+  const network = options.network || 'mainnet';
   const apiKey = sanitizeApiKey(options.apiKey || config.HELIUS_API_KEY || '');
   const programs = (options.programAddresses && options.programAddresses.length > 0)
     ? options.programAddresses
@@ -727,7 +717,7 @@ export async function startFallbackWebSocket(
   programs: string[],
   eventBusCallback: (event: SseEvent) => void,
   apiKey: string,
-  network: LaserStreamNetwork = 'devnet',
+  network: LaserStreamNetwork = 'mainnet',
   customWsUrl?: string,
   sessionId = state.currentSessionId
 ): Promise<void> {

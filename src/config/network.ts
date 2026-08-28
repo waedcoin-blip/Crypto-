@@ -2,19 +2,15 @@
 
 /// <reference types="vite/client" />
 
-export type TradingNetwork = 'paper' | 'devnet' | 'mainnet';
+export type TradingNetwork = 'paper' | 'mainnet';
 
 export interface NetworkConfig {
   network: TradingNetwork;
   rpcUrl: string;
   wsUrl: string;
-  explorerCluster: 'devnet' | 'mainnet-beta';
+  explorerCluster: 'mainnet-beta';
   isProduction: boolean;
 }
-
-const DEVNET_RPC =
-  import.meta.env.VITE_DEVNET_RPC_URL ||
-  'https://api.devnet.solana.com';
 
 const MAINNET_RPC =
   import.meta.env.VITE_MAINNET_RPC_URL ||
@@ -41,16 +37,6 @@ export function getNetworkConfig(
       rpcUrl: MAINNET_RPC,
       wsUrl: toWsUrl(MAINNET_RPC),
       explorerCluster: 'mainnet-beta',
-      isProduction: false,
-    };
-  }
-
-  if (network === 'devnet') {
-    return {
-      network: 'devnet',
-      rpcUrl: DEVNET_RPC,
-      wsUrl: toWsUrl(DEVNET_RPC),
-      explorerCluster: 'devnet',
       isProduction: false,
     };
   }

@@ -1,13 +1,13 @@
 // src/store/balanceStore.ts
 import { create } from 'zustand';
 
-export type BalanceNetwork = 'paper' | 'devnet' | 'mainnet';
+export type BalanceNetwork = 'paper' | 'mainnet';
 
 export interface BalanceState {
   network: BalanceNetwork;
   walletAddress: string | null;
 
-  // On-Chain Wallet Balance (RPC queried for Devnet/Mainnet)
+  // On-Chain Wallet Balance (RPC queried for Mainnet)
   onChainSolBalance: number | null;
   onChainAvailableSol: number | null;
   onChainReservedSol: number;
@@ -51,7 +51,7 @@ export interface BalanceState {
 }
 
 const initialState = {
-  network: 'devnet' as BalanceNetwork,
+  network: 'paper' as BalanceNetwork,
   walletAddress: null,
   
   onChainSolBalance: null,
@@ -252,13 +252,9 @@ export async function assertTradeBalance(requiredSol: number, expectedNetwork?: 
  * Asserts the execution environment matches the active RPC cluster
  */
 export function assertExecutionEnvironment(
-  network: 'devnet' | 'mainnet',
+  network: 'mainnet',
   rpcUrl: string
 ): void {
-  if (network === 'devnet' && !rpcUrl.includes('devnet')) {
-    throw new Error('BLOCKED: Devnet execution requires Devnet RPC');
-  }
-
   if (network === 'mainnet' && rpcUrl.includes('devnet')) {
     throw new Error('BLOCKED: Mainnet execution cannot use Devnet RPC');
   }

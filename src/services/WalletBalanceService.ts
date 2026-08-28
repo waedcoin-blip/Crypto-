@@ -3,7 +3,6 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import { getNetworkConfig, TradingNetwork } from '../config/network';
 import { useBalanceStore } from '../store/balanceStore';
 import { useActiveWalletStore } from '../store/activeWalletStore';
-import { devnetShadowMintCache } from './devnetShadowMintCache';
 
 const LAMPORTS_PER_SOL = 1_000_000_000;
 const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
@@ -16,7 +15,7 @@ export class WalletBalanceService {
   private refreshSeq = 0;
   private pendingClearedMints: Set<string> = new Set();
 
-  constructor(network: TradingNetwork) {
+  constructor(network: TradingNetwork = 'paper') {
     this.network = network;
     const config = getNetworkConfig(network);
     this.connection = new Connection(config.rpcUrl, 'confirmed');
@@ -154,11 +153,6 @@ export class WalletBalanceService {
         return sol;
       }
 
-      const isDevnet = this.network === 'devnet';
-      if (isDevnet) {
-        await devnetShadowMintCache.ensureInitialized();
-      }
-
       const allAccounts = [...tokenAccounts.value, ...t22Accounts.value];
       const tokenBalances: Record<string, number> = {};
 
@@ -166,15 +160,14 @@ export class WalletBalanceService {
         const parsed = account.data.parsed?.info;
         if (!parsed) continue;
         const rawMint: string = parsed.mint;
-        const mappedMint = isDevnet ? devnetShadowMintCache.resolveMainnetMint(rawMint) : rawMint;
-        if (this.pendingClearedMints.has(mappedMint) || this.pendingClearedMints.has(rawMint)) {
-          tokenBalances[mappedMint] = 0;
+        if (this.pendingClearedMints.has(rawMint)) {
+          tokenBalances[rawMint] = 0;
           continue;
         }
         const ta = parsed.tokenAmount;
         const uiAmt = ta.uiAmount ?? Number(ta.amount) / Math.pow(10, ta.decimals);
         // Correctly aggregate across multiple token accounts for same mint
-        tokenBalances[mappedMint] = (tokenBalances[mappedMint] || 0) + uiAmt;
+        tokenBalances[rawMint] = (tokenBalances[rawMint] || 0) + uiAmt;
       }
 
       // 3. Push authoritative balance to store
@@ -214,8 +207,7 @@ export class WalletBalanceService {
       this.connection = new Connection(config.rpcUrl, 'confirmed');
     }
     const owner = new PublicKey(address);
-    const resolvedMint = (this.network === 'devnet') ? devnetShadowMintCache.resolveDevnetMint(mint) : mint;
-    const mintPk = new PublicKey(resolvedMint);
+    const mintPk = new PublicKey(mint);
 
     // Fetch parsed token accounts for target mint (covers both legacy SPL and Token-2022)
     const accounts = await this.connection.getParsedTokenAccountsByOwner(
@@ -235,4 +227,4 @@ export class WalletBalanceService {
   }
 }
 
-export const walletBalanceService = new WalletBalanceService('devnet');
+export const walletBalanceService = new WalletBalanceService('paper');

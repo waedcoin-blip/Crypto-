@@ -2,19 +2,20 @@
 import { Connection } from '@solana/web3.js';
 import { PositionExitManager } from './PositionExitManager';
 import { masterMonitorHealthManager } from './MasterMonitorHealthManager';
+import { getNetworkConfig } from '../config/network';
 
 export interface TokenPriceUpdate {
   mint: string;
   priceNative: number;
   priceUsd?: number;
   timestamp: number;
-  source: 'rpc_ws' | 'jupiter' | 'dexscreener' | 'price_tracker' | 'devnet_server';
+  source: 'rpc_ws' | 'jupiter' | 'dexscreener' | 'price_tracker';
   slot?: number;
 }
 
 export interface PriceState {
   priceNative: number;
-  source: 'rpc_ws' | 'jupiter' | 'dexscreener' | 'price_tracker' | 'devnet_server';
+  source: 'rpc_ws' | 'jupiter' | 'dexscreener' | 'price_tracker';
   isStale: boolean;
   updatedAt: number;
 }
@@ -30,7 +31,8 @@ export class MasterMonitorService {
   private connectionGeneration = 0;
 
   constructor(rpcEndpoint: string, exitManager: PositionExitManager) {
-    const ep = rpcEndpoint && rpcEndpoint.trim() ? rpcEndpoint.trim() : 'https://api.devnet.solana.com';
+    const defaultRpc = getNetworkConfig('paper').rpcUrl;
+    const ep = rpcEndpoint && rpcEndpoint.trim() ? rpcEndpoint.trim() : defaultRpc;
     const wsEndpoint = masterMonitorHealthManager.getActiveWsEndpoint() || undefined;
     this.connection = new Connection(ep, {
       commitment: 'confirmed',
@@ -107,14 +109,14 @@ export class MasterMonitorService {
       if (mints.length === 0) return;
 
       try {
-        const response = await fetch(`/api/devnet-swap/prices?mints=${encodeURIComponent(mints.join(','))}`).catch(() => null);
-        if (!response || !response.ok) throw new Error('Devnet price service unavailable');
+        const response = await fetch(`https://api.jup.ag/price/v2?ids=${encodeURIComponent(mints.join(','))}`).catch(() => null);
+        if (!response || !response.ok) return;
         const data = await response.json();
         const now = Date.now();
         for (const mint of mints) {
-          const priceNative = Number(data.prices?.[mint]?.priceNative);
+          const priceNative = Number(data.data?.[mint]?.price);
           if (Number.isFinite(priceNative) && priceNative > 0) {
-            this.pushPriceUpdate(mint, priceNative, now, 'devnet_server');
+            this.pushPriceUpdate(mint, priceNative, now, 'jupiter');
           }
         }
       } catch (err) {
@@ -125,7 +127,6 @@ export class MasterMonitorService {
             this.priceEngine.set(mint, {
               ...existing,
               isStale: true,
-              // Bug 6 Fix: DO NOT refresh updatedAt to Date.now() when marking stale
             });
           }
         }
@@ -135,8 +136,8 @@ export class MasterMonitorService {
     // Initial poll
     pollBatch();
 
-    // Single fast unified ticker for ALL active tokens (1000ms)
-    this.batchInterval = setInterval(pollBatch, 1000);
+    // Single fast unified ticker for ALL active tokens (2000ms)
+    this.batchInterval = setInterval(pollBatch, 2000);
   }
 
   private setupWsSubscriptions(): void {
@@ -164,18 +165,18 @@ export class MasterMonitorService {
     }
   }
 
-  private async triggerInstantPriceCheck(mint: string, slot?: number): Promise<void> {
+  private async triggerInstantPriceCheck(mint: string, _slot?: number): Promise<void> {
     const now = Date.now();
     const lastTime = this.lastCheckTime.get(mint) || 0;
     if (now - lastTime < 750) return;
     this.lastCheckTime.set(mint, now);
     try {
-      const res = await fetch(`/api/devnet-swap/prices?mints=${encodeURIComponent(mint)}`).catch(() => null);
+      const res = await fetch(`https://api.jup.ag/price/v2?ids=${encodeURIComponent(mint)}`).catch(() => null);
       if (res && res.ok) {
         const data = await res.json();
-        const priceNative = Number(data.prices?.[mint]?.priceNative);
+        const priceNative = Number(data.data?.[mint]?.price);
         if (Number.isFinite(priceNative) && priceNative > 0) {
-          this.pushPriceUpdate(mint, priceNative, Date.now(), 'devnet_server');
+          this.pushPriceUpdate(mint, priceNative, Date.now(), 'jupiter');
         }
       }
     } catch {}

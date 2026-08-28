@@ -3,7 +3,7 @@ import { create } from 'zustand';
 import { getNetworkConfig, TradingNetwork } from '../config/network';
 import { useBalanceStore } from './balanceStore';
 import { useActiveWalletStore } from './activeWalletStore';
-import { DEFAULT_DEVNET_TRADING_ADDRESS, DEFAULT_PAPER_TRADING_ADDRESS } from '../constants/solana';
+import { DEFAULT_PAPER_TRADING_ADDRESS } from '../constants/solana';
 import { usePaperWalletStore } from './paperWalletStore';
 
 interface TradingEnvironmentState {
@@ -53,9 +53,7 @@ export const useTradingEnvironmentStore = create<TradingEnvironmentState>((set) 
           });
           usePaperWalletStore.getState().syncToBalanceStore();
         } else if (activeWalletState.activeWallet) {
-          const newAddress = network === 'devnet' && !activeWalletState.activeWallet.keypair
-            ? DEFAULT_DEVNET_TRADING_ADDRESS
-            : activeWalletState.activeWallet.address;
+          const newAddress = activeWalletState.activeWallet.address;
 
           activeWalletState.setActiveWallet({
             ...activeWalletState.activeWallet,
@@ -71,13 +69,6 @@ export const useTradingEnvironmentStore = create<TradingEnvironmentState>((set) 
               m.walletBalanceService.refreshNow(newAddress);
             });
           }, 0);
-        } else if (network === 'devnet') {
-          activeWalletState.switchActiveWallet({
-            keypair: null,
-            address: DEFAULT_DEVNET_TRADING_ADDRESS,
-            network: 'devnet',
-            source: 'connected',
-          });
         }
 
         set({

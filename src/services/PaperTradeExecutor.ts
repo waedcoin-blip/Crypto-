@@ -11,6 +11,8 @@ import {
   ATA_RENT_EXEMPTION_SOL,
 } from '../utils/pnlCalculator';
 import { tokenRegistry } from './TokenRegistry';
+import { Connection, PublicKey } from '@solana/web3.js';
+import { getNetworkConfig } from '../config/network';
 
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 
@@ -18,53 +20,112 @@ function isSolMint(mint: string): boolean {
   return mint === SOL_MINT || mint === WSOL_MINT;
 }
 
+function isPumpMint(mint: string): boolean {
+  return typeof mint === 'string' && mint.trim().toLowerCase().endsWith('pump');
+}
+
 export function resolveTokenDecimals(tokenMint: string): number {
-  if (isSolMint(tokenMint)) return 9;
-  const regToken = tokenRegistry.getToken(tokenMint);
+  const cleanMint = (tokenMint || '').trim();
+  if (!cleanMint) return 6;
+  if (isSolMint(cleanMint)) return 9;
+  if (isPumpMint(cleanMint)) {
+    tokenRegistry.registerOrUpdate({ mintAddress: cleanMint, decimals: 6 });
+    return 6;
+  }
+  const regToken = tokenRegistry.getToken(cleanMint);
   if (regToken?.decimals !== undefined && typeof regToken.decimals === 'number') return regToken.decimals;
-  const metric = useAppStore.getState()?.tokenMetrics?.[tokenMint] as any;
+  const metric = useAppStore.getState()?.tokenMetrics?.[cleanMint] as any;
   if (metric?.decimals !== undefined && typeof metric.decimals === 'number') return metric.decimals;
-  throw new Error(`UNRESOLVED_TOKEN_DECIMALS: Cannot resolve mint decimals for ${tokenMint}. Order execution blocked to prevent balance corruption.`);
+  return 6;
 }
 
 export async function resolveTokenDecimalsAsync(tokenMint: string): Promise<number> {
-  if (isSolMint(tokenMint)) return 9;
+  const cleanMint = (tokenMint || '').trim();
+  if (!cleanMint) return 6;
+  if (isSolMint(cleanMint)) return 9;
+  if (isPumpMint(cleanMint)) {
+    tokenRegistry.registerOrUpdate({ mintAddress: cleanMint, decimals: 6 });
+    return 6;
+  }
   
+  // 1. Check registry & app store
+  const regToken = tokenRegistry.getToken(cleanMint);
+  if (regToken?.decimals !== undefined && typeof regToken.decimals === 'number' && regToken.decimals >= 0) {
+    return regToken.decimals;
+  }
+  const metric = useAppStore.getState()?.tokenMetrics?.[cleanMint] as any;
+  if (metric?.decimals !== undefined && typeof metric.decimals === 'number' && metric.decimals >= 0) {
+    tokenRegistry.registerOrUpdate({ mintAddress: cleanMint, decimals: metric.decimals });
+    return metric.decimals;
+  }
+
+  // 2. Query Solana RPC on-chain parsed account info
   try {
-    return resolveTokenDecimals(tokenMint);
-  } catch (err) {
-    // Attempt DexScreener lookup to dynamically discover token decimals
-    try {
-      const resp = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${tokenMint}`);
-      if (resp.ok) {
-        const data = await resp.json();
-        if (data && data.pairs && data.pairs.length > 0) {
-          // Sort pairs by highest liquidity
-          const sortedPairs = [...data.pairs].sort((a: any, b: any) => {
-            const liqA = Number(a.liquidity?.usd || 0);
-            const liqB = Number(b.liquidity?.usd || 0);
-            return liqB - liqA;
+    const net = useTradingEnvironmentStore.getState().network || 'paper';
+    const cfg = getNetworkConfig(net);
+    const connection = new Connection(cfg.rpcUrl, 'confirmed');
+    const info = await connection.getParsedAccountInfo(new PublicKey(cleanMint));
+    if (info?.value?.data && typeof info.value.data === 'object' && 'parsed' in info.value.data) {
+      const decimals = info.value.data.parsed?.info?.decimals;
+      if (typeof decimals === 'number' && decimals >= 0 && decimals <= 18) {
+        tokenRegistry.registerOrUpdate({ mintAddress: cleanMint, decimals });
+        return decimals;
+      }
+    }
+  } catch (rpcErr) {
+    console.warn(`[PaperTradeExecutor] RPC decimal lookup skipped for ${cleanMint}:`, rpcErr);
+  }
+
+  // 3. Query Jupiter Token API
+  try {
+    const res = await fetch(`https://tokens.jup.ag/token/${cleanMint}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data && typeof data.decimals === 'number' && data.decimals >= 0 && data.decimals <= 18) {
+        tokenRegistry.registerOrUpdate({
+          mintAddress: cleanMint,
+          decimals: data.decimals,
+          symbol: data.symbol || 'UNKNOWN',
+        });
+        return data.decimals;
+      }
+    }
+  } catch (jupErr) {
+    // ignore
+  }
+
+  // 4. Query DexScreener
+  try {
+    const resp = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${cleanMint}`);
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data && data.pairs && data.pairs.length > 0) {
+        const sortedPairs = [...data.pairs].sort((a: any, b: any) => {
+          const liqA = Number(a.liquidity?.usd || 0);
+          const liqB = Number(b.liquidity?.usd || 0);
+          return liqB - liqA;
+        });
+        const bestPair = sortedPairs[0];
+        const isBase = bestPair.baseToken?.address === cleanMint || bestPair.baseToken?.mint === cleanMint;
+        const discoveredDecimals = isBase ? bestPair.baseToken?.decimals : bestPair.quoteToken?.decimals;
+        if (typeof discoveredDecimals === 'number' && discoveredDecimals >= 0 && discoveredDecimals <= 18) {
+          tokenRegistry.registerOrUpdate({
+            mintAddress: cleanMint,
+            decimals: discoveredDecimals,
+            symbol: isBase ? (bestPair.baseToken?.symbol || 'UNKNOWN') : (bestPair.quoteToken?.symbol || 'UNKNOWN'),
           });
-          const bestPair = sortedPairs[0];
-          const isBase = bestPair.baseToken?.address === tokenMint || bestPair.baseToken?.mint === tokenMint;
-          const discoveredDecimals = isBase ? bestPair.baseToken?.decimals : bestPair.quoteToken?.decimals;
-          if (typeof discoveredDecimals === 'number' && discoveredDecimals >= 0 && discoveredDecimals <= 18) {
-            tokenRegistry.registerOrUpdate({
-              mintAddress: tokenMint,
-              decimals: discoveredDecimals,
-              symbol: isBase ? (bestPair.baseToken?.symbol || 'UNKNOWN') : (bestPair.quoteToken?.symbol || 'UNKNOWN'),
-            });
-            return discoveredDecimals;
-          }
+          return discoveredDecimals;
         }
       }
-    } catch (fetchErr) {
-      console.warn(`[PaperTradeExecutor] DexScreener decimal lookup failed for ${tokenMint}:`, fetchErr);
     }
-    
-    // Explicitly fail rather than defaulting silently to prevent balance/PnL corruption
-    throw new Error(`UNRESOLVED_TOKEN_DECIMALS: Unable to resolve on-chain decimals for ${tokenMint}. Trade execution aborted to prevent balance corruption.`);
+  } catch (fetchErr) {
+    console.warn(`[PaperTradeExecutor] DexScreener decimal lookup failed for ${cleanMint}:`, fetchErr);
   }
+  
+  // 5. Standard fallback to 6 (standard SPL token decimals on Solana)
+  const defaultDecimals = 6;
+  tokenRegistry.registerOrUpdate({ mintAddress: cleanMint, decimals: defaultDecimals });
+  return defaultDecimals;
 }
 
 export async function resolveTokenPriceInSol(tokenMint: string): Promise<number | null> {

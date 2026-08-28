@@ -14,7 +14,6 @@ import {
   RefreshCw, 
   LogOut, 
   Flame, 
-  Globe,
   ShieldCheck, 
   ChevronDown,
   ExternalLink,
@@ -34,7 +33,6 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
   const { sessionWallet, setSessionWallet } = useAppStore();
   const { network, setNetwork, switching } = useTradingEnvironmentStore();
   const isPaper = network === 'paper';
-  const isDevnet = network === 'devnet';
   const isMainnet = network === 'mainnet';
 
   const {
@@ -95,7 +93,7 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
 
   // Synchronize phantom connect/disconnect to the ActiveWalletStore
   useEffect(() => {
-    const targetNetwork = isDevnet ? 'devnet' : 'mainnet';
+    const targetNetwork = 'mainnet';
     if (publicKey) {
       if (activeWallet?.address !== publicKey.toBase58() || activeWallet?.network !== targetNetwork) {
          switchActiveWallet({
@@ -117,7 +115,7 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
        // If activeWallet already has a restored session keypair, sync it back to sessionWallet
        setSessionWallet(activeWallet.keypair);
     }
-  }, [publicKey, sessionWallet, isDevnet, activeWallet?.address, activeWallet?.network, activeWallet?.keypair, setSessionWallet, switchActiveWallet]);
+  }, [publicKey, sessionWallet, activeWallet?.address, activeWallet?.network, activeWallet?.keypair, setSessionWallet, switchActiveWallet]);
 
   // WalletBalanceService polling for active address
   useEffect(() => {
@@ -160,7 +158,7 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
     switchActiveWallet({
       keypair: kp,
       address: kp.publicKey.toBase58(),
-      network: isDevnet ? 'devnet' : 'mainnet',
+      network: 'mainnet',
       source: 'session'
     });
     useBalanceStore.getState().setWalletAddress(kp.publicKey.toBase58());
@@ -173,14 +171,14 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
     switchActiveWallet({
       keypair: null,
       address: '',
-      network: isDevnet ? 'devnet' : 'mainnet',
+      network: 'mainnet',
       source: 'session',
       clearStorage: true
     });
     useBalanceStore.getState().reset();
   };
 
-  const handleNetworkSwitch = async (target: 'paper' | 'devnet' | 'mainnet') => {
+  const handleNetworkSwitch = async (target: 'paper' | 'mainnet') => {
     if (target === network) return;
     if (target === 'mainnet') {
       const confirmed = window.confirm(
@@ -195,7 +193,7 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
 
   return (
     <div className={cn("flex flex-wrap items-center gap-2", className)}>
-      {/* Network Selector Pill (Paper vs Devnet vs Mainnet) */}
+      {/* Network Selector Pill (Paper vs Mainnet) */}
       <div className="flex items-center bg-slate-950/90 border border-slate-800/90 rounded-xl p-1 shadow-md gap-0.5">
         <button
           id="toggle-network-paper"
@@ -212,22 +210,6 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
         >
           <Sparkles className="w-3 h-3 text-purple-400" />
           <span>Paper</span>
-        </button>
-        <button
-          id="toggle-network-devnet"
-          type="button"
-          disabled={switching}
-          onClick={() => handleNetworkSwitch('devnet')}
-          className={cn(
-            "flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-black tracking-wider uppercase transition-all cursor-pointer",
-            isDevnet
-              ? "bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow-sm"
-              : "text-slate-400 hover:text-white"
-          )}
-          title="Devnet Cluster (Testnet Tokens)"
-        >
-          <Globe className="w-3 h-3" />
-          <span>Devnet</span>
         </button>
         <button
           id="toggle-network-mainnet"
@@ -256,21 +238,13 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
             onClick={() => setShowDropdown(!showDropdown)}
             className={cn(
               "flex items-center gap-2 px-3 py-1.5 rounded-xl border transition-all cursor-pointer text-xs font-mono shadow-md",
-              isDevnet 
-                ? "bg-slate-900/90 border-cyan-500/40 hover:border-cyan-400/80 text-white" 
-                : "bg-slate-900/90 border-emerald-500/40 hover:border-emerald-400/80 text-white"
+              "bg-slate-900/90 border-emerald-500/40 hover:border-emerald-400/80 text-white"
             )}
           >
             {/* Status Dot */}
             <span className="relative flex h-2 w-2">
-              <span className={cn(
-                "animate-ping absolute inline-flex h-full w-full rounded-full opacity-75",
-                isDevnet ? "bg-cyan-400" : "bg-emerald-400"
-              )}></span>
-              <span className={cn(
-                "relative inline-flex rounded-full h-2 w-2",
-                isDevnet ? "bg-cyan-500" : "bg-emerald-500"
-              )}></span>
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 bg-emerald-400"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
             </span>
 
             {/* Icon */}
@@ -286,15 +260,9 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
             </span>
 
             {/* Header Balance */}
-            <div className={cn(
-              "flex items-center gap-1 pl-1.5 border-l border-slate-700/60 text-[11px] font-sans font-bold",
-              isDevnet ? "text-cyan-300" : "text-emerald-400"
-            )}>
+            <div className="flex items-center gap-1 pl-1.5 border-l border-slate-700/60 text-[11px] font-sans font-bold text-emerald-400">
               <span>{displayHeaderBalance}</span>
-              <span className={cn(
-                "text-[9px] font-mono px-1 py-0.2 rounded uppercase",
-                isDevnet ? "bg-cyan-500/20 text-cyan-300" : "bg-emerald-500/20 text-emerald-300"
-              )}>
+              <span className="text-[9px] font-mono px-1 py-0.2 rounded uppercase bg-emerald-500/20 text-emerald-300">
                 {network}
               </span>
             </div>
@@ -307,7 +275,7 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
             <div className="absolute right-0 mt-2 w-80 rounded-2xl border border-slate-800 bg-slate-950/98 p-4 shadow-2xl backdrop-blur-xl z-50 text-slate-200 text-xs">
               <div className="flex items-center justify-between pb-3 border-b border-slate-800/80">
                 <div className="flex items-center gap-2">
-                  <ShieldCheck className={cn("w-4 h-4", isDevnet ? "text-cyan-400" : "text-emerald-400")} />
+                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
                   <span className="font-bold text-slate-100">
                     {isSessionActive ? 'Session Keypair' : wallet?.adapter.name || 'Browser Wallet'}
                   </span>
@@ -327,18 +295,16 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
                   "p-3 rounded-xl border transition-all",
                   isPaper
                     ? "bg-purple-950/20 border-purple-500/40"
-                    : isDevnet 
-                      ? "bg-cyan-950/20 border-cyan-500/40" 
-                      : "bg-emerald-950/20 border-emerald-500/40"
+                    : "bg-emerald-950/20 border-emerald-500/40"
                 )}>
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-1.5">
                       <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
-                        {isPaper ? 'Paper Trading Simulated Balance' : isDevnet ? 'Devnet On-Chain Balance' : 'Mainnet On-Chain Balance'}
+                        {isPaper ? 'Paper Trading Simulated Balance' : 'Mainnet On-Chain Balance'}
                       </span>
                       <span className={cn(
                         "text-[8px] font-black px-1.5 py-0.5 rounded uppercase",
-                        isPaper ? "bg-purple-500/20 text-purple-300" : isDevnet ? "bg-cyan-500/20 text-cyan-300" : "bg-emerald-500/20 text-emerald-300"
+                        isPaper ? "bg-purple-500/20 text-purple-300" : "bg-emerald-500/20 text-emerald-300"
                       )}>
                         {network}
                       </span>
@@ -358,7 +324,7 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
                   <div className="flex items-baseline justify-between mt-1">
                     <span className={cn(
                       "text-base font-black font-mono",
-                      isPaper ? "text-purple-300" : isDevnet ? "text-cyan-300" : "text-emerald-400"
+                      isPaper ? "text-purple-300" : "text-emerald-400"
                     )}>
                       {typeof currentSolBalance === 'number' ? `${currentSolBalance.toFixed(4)} SOL` : '0.0000 SOL'}
                     </span>
@@ -411,32 +377,13 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
                       </div>
                     </div>
                   </div>
-                  <span className={cn(
-                    "text-sm font-black font-mono",
-                    isDevnet ? "text-cyan-300" : "text-emerald-300"
-                  )}>
+                  <span className="text-sm font-black font-mono text-emerald-300">
                     {typeof currentAvailableSol === 'number' ? `${currentAvailableSol.toFixed(4)} SOL` : '0.0000 SOL'}
                   </span>
                 </div>
-
-                {isDevnet && (
-                  <div className="p-2 rounded-lg bg-cyan-950/30 border border-cyan-500/20 flex items-center justify-between text-[10px] text-cyan-400">
-                    <span className="flex items-center gap-1">
-                      <Shield className="w-3 h-3" /> Need free Devnet SOL?
-                    </span>
-                    <a
-                      href="https://faucet.solana.com"
-                      target="_blank"
-                      rel="noreferrer"
-                      className="underline font-bold hover:text-cyan-200"
-                    >
-                      Devnet Faucet ↗
-                    </a>
-                  </div>
-                )}
               </div>
 
-                            {/* Key Management Row */}
+              {/* Key Management Row */}
               <div className="mb-3 space-y-1.5">
                 <div className="flex items-center justify-between">
                   <div className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Wallet Key Management</div>
@@ -510,7 +457,7 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
                       {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
                     </button>
                     <a
-                      href={isDevnet ? `https://solscan.io/account/${activeAddress}?cluster=devnet` : `https://solscan.io/account/${activeAddress}`}
+                      href={`https://solscan.io/account/${activeAddress}`}
                       target="_blank"
                       rel="noreferrer"
                       className="text-slate-400 hover:text-cyan-400 p-1 cursor-pointer"

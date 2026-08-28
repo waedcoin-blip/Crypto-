@@ -466,7 +466,7 @@ function App() {
 
   const setPrivateKey = useCallback((newKey: string) => {
     setPrivateKeyState(newKey);
-    const envNet = useTradingEnvironmentStore.getState().network || 'devnet';
+    const envNet = useTradingEnvironmentStore.getState().network || 'paper';
     if (newKey && newKey.trim()) {
       try {
         const kp = getKeypairFromPrivateKey(newKey.trim());
@@ -1071,7 +1071,7 @@ function App() {
 
   const generateSessionWallet = () => {
     const kp = Keypair.generate();
-    const envNet = useTradingEnvironmentStore.getState().network || 'devnet';
+    const envNet = useTradingEnvironmentStore.getState().network || 'paper';
     activeWalletStore.switchActiveWallet({ keypair: kp, network: envNet, source: "session" });
     addNotification('New Session Wallet Generated. Deposit SOL to start auto-trading.');
   };
@@ -2013,7 +2013,7 @@ function App() {
             realNetProfitPct = ((realNetReturnSol - currentCostBasisSol) / currentCostBasisSol) * 100.0;
           }
 
-          // Unify Profit Guard for Mainnet LIVE TAKE PROFIT only (never block stop losses or Devnet paper trading)
+          // Unify Profit Guard for Mainnet LIVE TAKE PROFIT only (never block stop losses or paper trading)
           if (isLiveTrading && curPnLPercent >= minTakeProfit && realNetReturnSol <= currentCostBasisSol) {
              console.log(`⚠️ REJECTED (LIVE): Paper profit drops net return into a loss (${realNetReturnSol} SOL vs ${currentCostBasisSol} SOL).`);
              addNotification(`Profit Guard: Aborted ${symbol} sell. Network slippage overrides return.`);

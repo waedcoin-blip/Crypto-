@@ -114,7 +114,7 @@ export class TokenRegistry {
 
     const record: TokenRecord = {
       mintAddress: mint,
-      network: params.network || existing?.network || 'devnet',
+      network: params.network || existing?.network || 'paper',
       symbol: params.symbol || existing?.symbol || 'UNKNOWN',
       name: params.name || existing?.name || existing?.symbol || 'Unknown Token',
       decimals: params.decimals !== undefined ? params.decimals : (existing?.decimals ?? 6),

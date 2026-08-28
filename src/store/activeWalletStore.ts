@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { Keypair } from '@solana/web3.js';
 import { getSavedSessionKeypair, saveSessionKeypair } from '../utils/keypairUtils';
 import { useBalanceStore } from './balanceStore';
-import { DEFAULT_DEVNET_TRADING_ADDRESS, DEFAULT_PAPER_TRADING_ADDRESS } from '../constants/solana';
+import { DEFAULT_PAPER_TRADING_ADDRESS } from '../constants/solana';
 import { usePaperWalletStore } from './paperWalletStore';
 
 import { useTradingEnvironmentStore } from './tradingEnvironmentStore';
@@ -10,7 +10,7 @@ import { useTradingEnvironmentStore } from './tradingEnvironmentStore';
 export interface ActiveWallet {
     address: string;
     keypair: Keypair | null;
-    network: 'paper' | 'devnet' | 'mainnet';
+    network: 'paper' | 'mainnet';
     source: 'session' | 'connected';
     version: number;
 }
@@ -18,7 +18,7 @@ export interface ActiveWallet {
 export interface SwitchActiveWalletParams {
     keypair: Keypair | null;
     address?: string;
-    network?: 'paper' | 'devnet' | 'mainnet';
+    network?: 'paper' | 'mainnet';
     source: 'session' | 'connected';
     clearStorage?: boolean;
 }
@@ -32,7 +32,7 @@ interface ActiveWalletState {
 const getInitialActiveWallet = (): ActiveWallet | null => {
     try {
         const restoredKp = getSavedSessionKeypair();
-        const initialNetwork = (typeof window !== 'undefined' && (localStorage.getItem('app_trading_network') as 'paper' | 'devnet' | 'mainnet')) || 'paper';
+        const initialNetwork = (typeof window !== 'undefined' && (localStorage.getItem('app_trading_network') as 'paper' | 'mainnet')) || 'paper';
         if (restoredKp) {
             const address = restoredKp.publicKey.toBase58();
             useBalanceStore.getState().setWalletAddress(address);
@@ -60,21 +60,6 @@ const getInitialActiveWallet = (): ActiveWallet | null => {
                 source: 'connected',
                 version: 1
             };
-        } else if (initialNetwork === 'devnet') {
-            const address = DEFAULT_DEVNET_TRADING_ADDRESS;
-            useBalanceStore.getState().setWalletAddress(address);
-            setTimeout(() => {
-              import('../services/WalletBalanceService').then(m => {
-                m.walletBalanceService.refreshNow(address);
-              });
-            }, 0);
-            return {
-                address,
-                keypair: null,
-                network: 'devnet',
-                source: 'connected',
-                version: 1
-            };
         }
     } catch (e) {
         console.warn('[ActiveWalletStore] Failed to restore session keypair on init:', e);
@@ -89,7 +74,7 @@ export const useActiveWalletStore = create<ActiveWalletState>((set, get) => ({
 
     switchActiveWallet: (params) => {
         const { keypair, source, clearStorage } = params;
-        const envNetwork = useTradingEnvironmentStore.getState().network || 'devnet';
+        const envNetwork = useTradingEnvironmentStore.getState().network || 'paper';
         const network = params.network || envNetwork;
         const address = params.address || (keypair ? keypair.publicKey.toBase58() : '');
         

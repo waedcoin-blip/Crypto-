@@ -257,7 +257,7 @@ function Root() {
   ], []);
 
   const tradeManager = useMemo(() => new TradeManager({
-    mode: (localStorage.getItem('trade_mode') as TradeMode) || 'devnet',
+    mode: (localStorage.getItem('trade_mode') as TradeMode) || 'paper',
     realConfig: {},
   }), []);
 

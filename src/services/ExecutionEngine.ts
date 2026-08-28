@@ -1,6 +1,5 @@
 // src/services/ExecutionEngine.ts
 import { ITradeExecutor, SwapResult, ExecutorTelemetry } from './ITradeExecutor';
-import { DevnetAmmExecutor } from './DevnetAmmExecutor';
 import { MainnetJupiterExecutor } from './MainnetJupiterExecutor';
 import { PaperTradeExecutor } from './PaperTradeExecutor';
 import { QuoteGetRequest, QuoteResponse } from '@jup-ag/api';
@@ -23,7 +22,6 @@ export class ExecutionEngine implements ITradeExecutor {
   private static instance: ExecutionEngine;
   public mode: TradingNetwork;
   private paperExecutor: PaperTradeExecutor | null = null;
-  private devnetExecutor: DevnetAmmExecutor | null = null;
   private mainnetExecutor: MainnetJupiterExecutor | null = null;
 
   constructor(config: ExecutionEngineConfig = {}) {
@@ -48,11 +46,6 @@ export class ExecutionEngine implements ITradeExecutor {
         this.paperExecutor = new PaperTradeExecutor();
       }
       return this.paperExecutor;
-    } else if (network === 'devnet') {
-      if (!this.devnetExecutor) {
-        this.devnetExecutor = new DevnetAmmExecutor();
-      }
-      return this.devnetExecutor;
     } else {
       if (!this.mainnetExecutor) {
         this.mainnetExecutor = new MainnetJupiterExecutor();
@@ -100,16 +93,7 @@ export class ExecutionEngine implements ITradeExecutor {
     label: 'entry' | 'exit_tp' | 'exit_sl' = 'entry'
   ): Promise<SwapResult> {
     // Atomically lock session for the duration of this swap
-    const { network, executor } = this.resolveSession();
-    
-    // Strict safety verification on locked session
-    if (network === 'mainnet' && executor instanceof DevnetAmmExecutor) {
-      throw new Error('EXECUTION ENGINE SAFETY ERROR: Devnet executor cannot execute in Mainnet mode.');
-    }
-    if (network === 'devnet' && executor instanceof MainnetJupiterExecutor) {
-      throw new Error('EXECUTION ENGINE SAFETY ERROR: Mainnet executor cannot execute in Devnet mode.');
-    }
-
+    const { executor } = this.resolveSession();
     return executor.swap(inputMint, outputMint, amount, slippageBps, label);
   }
 
@@ -122,14 +106,7 @@ export class ExecutionEngine implements ITradeExecutor {
       label?: 'entry' | 'exit_tp' | 'exit_sl';
     }>
   ): Promise<SwapResult[]> {
-    const { network, executor } = this.resolveSession();
-
-    if (network === 'mainnet' && executor instanceof DevnetAmmExecutor) {
-      throw new Error('EXECUTION ENGINE SAFETY ERROR: Devnet executor cannot execute in Mainnet mode.');
-    }
-    if (network === 'devnet' && executor instanceof MainnetJupiterExecutor) {
-      throw new Error('EXECUTION ENGINE SAFETY ERROR: Mainnet executor cannot execute in Devnet mode.');
-    }
+    const { executor } = this.resolveSession();
 
     // Forward label explicitly for each swap
     const sanitizedSwaps = swaps.map(s => ({
