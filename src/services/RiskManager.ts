@@ -413,25 +413,25 @@ export class RiskManager {
       pos.peakPrice = priceInSol;
     }
 
-    const pnlPct = this.calculatePnLPct(pos);
-    if (pos.highestPnLPct === undefined || pnlPct > pos.highestPnLPct) {
-      pos.highestPnLPct = pnlPct;
+    const grossPnlPct = this.calculateGrossPnLPct(pos);
+    if (pos.highestPnLPct === undefined || grossPnlPct > pos.highestPnLPct) {
+      pos.highestPnLPct = grossPnlPct;
     }
 
     // Sync price to TokenRegistry & PositionRegistry
     tokenRegistry.updatePrice(mint, priceInSol);
     positionRegistry.updatePrice(mint, priceInSol);
 
-    if (this.isRunning && (pos.state === 'OPEN' || pos.state === 'RECOVERY_REQUIRED')) {
+    if (this.isRunning && pos.state === 'OPEN') {
       void this.evaluatePosition(pos);
     }
   }
 
   /**
-   * Pure PnL percentage calculation without side-effects or mutating buyPrice.
-   * Matches calcNetPnl net calculation to align UI PnL display and execution triggers.
+   * Pure gross market price percentage change relative to execution fill price.
+   * Authoritative price delta calculation used for TP, SL, and Trailing Stop triggers.
    */
-  public calculatePnLPct(pos: ManagedPosition): number {
+  public calculateGrossPnLPct(pos: ManagedPosition): number {
     const effectiveBuyPrice = pos.buyPrice > 0
       ? pos.buyPrice
       : (pos.amount > 0 && pos.solSpent > 0
@@ -439,14 +439,26 @@ export class RiskManager {
           : 0);
 
     if (effectiveBuyPrice <= 0 || !pos.currentPrice || pos.currentPrice <= 0) return 0;
+    return ((pos.currentPrice - effectiveBuyPrice) / effectiveBuyPrice) * 100;
+  }
 
+  /**
+   * Estimated Net PnL percentage after operational fees and slippage (for display).
+   */
+  public calculateNetPnLPct(pos: ManagedPosition): number {
     const tokenQty = pos.amount > 0 ? pos.amount / (10 ** pos.tokenDecimals) : 0;
-    if (tokenQty > 0 && pos.solSpent > 0) {
+    if (tokenQty > 0 && pos.solSpent > 0 && pos.currentPrice > 0) {
       const netRes = calcNetPnl(pos.currentPrice, tokenQty, pos.solSpent, (pos.slippageBpsTp || 100) / 100);
       return netRes.netPnlPct;
     }
+    return this.calculateGrossPnLPct(pos);
+  }
 
-    return ((pos.currentPrice - effectiveBuyPrice) / effectiveBuyPrice) * 100;
+  /**
+   * PnL percentage calculation for RiskManager triggers (maps directly to gross market price delta).
+   */
+  public calculatePnLPct(pos: ManagedPosition): number {
+    return this.calculateGrossPnLPct(pos);
   }
 
   private async evaluateAllPositions(): Promise<void> {
@@ -454,7 +466,7 @@ export class RiskManager {
     this.isEvaluatingLoop = true;
     try {
       for (const pos of this.positions.values()) {
-        if (pos.state === 'OPEN' || pos.state === 'RECOVERY_REQUIRED') {
+        if (pos.state === 'OPEN') {
           await this.evaluatePosition(pos);
         }
       }
@@ -465,7 +477,17 @@ export class RiskManager {
 
   private async evaluatePosition(pos: ManagedPosition): Promise<void> {
     const mint = pos.mint;
-    if (this.exitingMints.has(mint) || pos.state === 'CLOSING' || pos.state === 'CLOSED') {
+    if (this.exitingMints.has(mint) || pos.state !== 'OPEN') {
+      return;
+    }
+
+    const effectiveBuyPrice = pos.buyPrice > 0
+      ? pos.buyPrice
+      : (pos.amount > 0 && pos.solSpent > 0
+          ? pos.solSpent / (pos.amount / (10 ** pos.tokenDecimals))
+          : 0);
+
+    if (effectiveBuyPrice <= 0 || !pos.currentPrice || pos.currentPrice <= 0) {
       return;
     }
 
@@ -475,33 +497,38 @@ export class RiskManager {
     if (pos.maxHoldTimeMs && pos.maxHoldTimeMs > 0 && pos.createdAt > 0) {
       if (now - pos.createdAt >= pos.maxHoldTimeMs) {
         console.log(`[RiskManager] ⏱ MAX HOLD TIME reached for ${mint}. Triggering exit.`);
-        await this.triggerExit(pos, 'sl', this.calculatePnLPct(pos));
+        await this.triggerExit(pos, 'sl', this.calculateGrossPnLPct(pos));
         return;
       }
     }
 
-    const pnlPct = this.calculatePnLPct(pos);
+    const grossPnlPct = this.calculateGrossPnLPct(pos);
     const tpPct = pos.tpPct ?? this.config.tpPct;
     const slPct = Math.abs(pos.slPct ?? this.config.slPct);
 
-    // 2. Trailing stop check (Active immediately whenever trailingSlPct is configured)
-    const peakPnL = pos.highestPnLPct ?? 0;
-    if (pos.trailingSlPct && pos.trailingSlPct > 0) {
-      const trailingDrop = peakPnL - pnlPct;
+    // Initialization protection: Within 1.5 seconds of creation, skip SL if price delta is negligible
+    if (now - pos.createdAt < 1500 && grossPnlPct > -0.1) {
+      return;
+    }
+
+    // 2. Trailing stop check (evaluates trailing drop from peak gross market PnL)
+    const peakPnL = pos.highestPnLPct ?? grossPnlPct;
+    if (pos.trailingSlPct && pos.trailingSlPct > 0 && peakPnL > 0) {
+      const trailingDrop = peakPnL - grossPnlPct;
       if (trailingDrop >= pos.trailingSlPct) {
-        console.log(`[RiskManager] 📉 TRAILING STOP Triggered for ${mint}: Peak +${peakPnL.toFixed(1)}%, Current: ${pnlPct.toFixed(1)}%, Drop: ${trailingDrop.toFixed(1)}% (Threshold: ${pos.trailingSlPct}%)`);
-        await this.triggerExit(pos, 'sl', pnlPct);
+        console.log(`[RiskManager] 📉 TRAILING STOP Triggered for ${mint}: Peak +${peakPnL.toFixed(2)}%, Current: ${grossPnlPct.toFixed(2)}%, Drop: ${trailingDrop.toFixed(2)}% (Threshold: ${pos.trailingSlPct}%)`);
+        await this.triggerExit(pos, 'sl', grossPnlPct);
         return;
       }
     }
 
-    // 3. Static TP / SL checks
-    if (pnlPct >= tpPct) {
-      console.log(`[RiskManager] 🎯 TAKE PROFIT Triggered for ${mint}: PnL = +${pnlPct.toFixed(2)}% (Target: +${tpPct}%)`);
-      await this.triggerExit(pos, 'tp', pnlPct);
-    } else if (pnlPct <= -slPct) {
-      console.log(`[RiskManager] 🛑 STOP LOSS Triggered for ${mint}: PnL = ${pnlPct.toFixed(2)}% (Target: -${slPct}%)`);
-      await this.triggerExit(pos, 'sl', pnlPct);
+    // 3. Static TP / SL checks against gross market price movements
+    if (grossPnlPct >= tpPct) {
+      console.log(`[RiskManager] 🎯 TAKE PROFIT Triggered for ${mint}: Market Price Delta = +${grossPnlPct.toFixed(2)}% (Target: +${tpPct}%)`);
+      await this.triggerExit(pos, 'tp', grossPnlPct);
+    } else if (grossPnlPct <= -slPct) {
+      console.log(`[RiskManager] 🛑 STOP LOSS Triggered for ${mint}: Market Price Delta = ${grossPnlPct.toFixed(2)}% (Target: -${slPct}%)`);
+      await this.triggerExit(pos, 'sl', grossPnlPct);
     }
   }
 
