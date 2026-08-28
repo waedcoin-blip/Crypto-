@@ -1110,6 +1110,35 @@ export const PnLPage = ({
   const bondingCurveStopLossPct = Math.abs(bondingCurveStopLoss);
   const pumpSwapStopLossPct = Math.abs(pumpSwapStopLoss);
   const unknownStopLossPct = Math.abs(unknownStopLoss);
+
+  const [unifyStopLoss, setUnifyStopLoss] = useState(() => {
+    try { return localStorage.getItem('juipter_unify_sl') === 'true'; } catch { return false; }
+  });
+
+  useEffect(() => {
+    localStorage.setItem('juipter_unify_sl', unifyStopLoss.toString());
+  }, [unifyStopLoss]);
+
+  const propagateSlChange = useCallback((value: number, source: 'raydium' | 'bonding' | 'pumpswap' | 'unknown') => {
+    const absVal = -Math.abs(Number(value) || 0);
+    if (unifyStopLoss) {
+      setStopLoss(absVal);
+      setBondingCurveStopLoss(absVal);
+      setPumpSwapStopLoss(absVal);
+      setUnknownStopLoss(absVal);
+    } else {
+      if (source === 'raydium') setStopLoss(absVal);
+      if (source === 'bonding') setBondingCurveStopLoss(absVal);
+      if (source === 'pumpswap') setPumpSwapStopLoss(absVal);
+      if (source === 'unknown') setUnknownStopLoss(absVal);
+    }
+  }, [unifyStopLoss, setStopLoss, setBondingCurveStopLoss, setPumpSwapStopLoss, setUnknownStopLoss]);
+
+  const getEngineSl = useCallback((netSlPct: number): number => {
+    const netAbs = Math.abs(netSlPct);
+    const buffer = slippage || 0;
+    return Math.max(0.5, netAbs - buffer);
+  }, [slippage]);
   
   // Helius Sender (Ultra-Low Latency Broadcast) Configurations
   const [senderEnabled, setSenderEnabled] = useState(() => localStorage.getItem('hd_sender_enabled') === 'true');
@@ -3811,7 +3840,7 @@ const checkTokenCriteria = (mint: string): {
                buyPrice: calcBuyPrice,
                solSpent: newSolSpent,
                tpPct: initialTp,
-               slPct: initialSl,
+               slPct: getEngineSl(initialSl),
                tokenDecimals,
              });
              if (result.txid && result.txid !== 'init-sig') {
@@ -4043,7 +4072,7 @@ const checkTokenCriteria = (mint: string): {
           buyPrice: pos.buyPrice || 0,
           solSpent: pos.solSpent || 0,
           tpPct: targetTp,
-          slPct: targetSl,
+          slPct: getEngineSl(targetSl),
           tokenDecimals: pos.decimals ?? 6,
         });
         if (pos.currentPrice && pos.currentPrice > 0) {
@@ -4099,11 +4128,11 @@ const checkTokenCriteria = (mint: string): {
       };
       positionsRef.current = next;
       useAppStore.getState().updateActivePositions(() => next);
-      positionExitManagerRef.current?.updatePositionTpSl(mint, safeTp, safeSl);
+      positionExitManagerRef.current?.updatePositionTpSl(mint, safeTp, getEngineSl(safeSl));
       return next;
     });
     addLog(`⚙️ Set ${positionsRef.current[mint]?.symbol || mint.slice(0, 6)} TP: +${safeTp}% | SL: -${safeSl}%`, 'info');
-  }, [addLog]);
+  }, [addLog, getEngineSl]);
 
   // Handler to reset per-position TP/SL back to global settings
   const handleResetPositionTpSl = useCallback((mint: string) => {
@@ -4138,11 +4167,11 @@ const checkTokenCriteria = (mint: string): {
       };
       positionsRef.current = next;
       useAppStore.getState().updateActivePositions(() => next);
-      positionExitManagerRef.current?.updatePositionTpSl(mint, defaultTp, Math.abs(defaultSl));
+      positionExitManagerRef.current?.updatePositionTpSl(mint, defaultTp, getEngineSl(Math.abs(defaultSl)));
       return next;
     });
     addLog(`🔄 Reset ${positionsRef.current[mint]?.symbol || mint.slice(0, 6)} TP/SL to Global (TP: +${defaultTp}%, SL: -${Math.abs(defaultSl)}%)`, 'info');
-  }, [bondingCurveTakeProfit, minTakeProfit, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct, stopLossPct, addLog]);
+  }, [bondingCurveTakeProfit, minTakeProfit, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct, stopLossPct, addLog, getEngineSl]);
 
   // Sync active positions and updated TP/SL to PositionExitManager & MasterMonitorService when settings or positions change
   useEffect(() => {
@@ -4195,7 +4224,7 @@ const checkTokenCriteria = (mint: string): {
             buyPrice: pos.buyPrice || 0,
             solSpent: pos.solSpent || 0,
             tpPct: targetTp,
-            slPct: targetSl,
+            slPct: getEngineSl(targetSl),
             tokenDecimals: pos.decimals ?? 6,
           });
           if (pos.currentPrice && pos.currentPrice > 0) {
@@ -4205,7 +4234,7 @@ const checkTokenCriteria = (mint: string): {
             positionExitManagerRef.current.confirmBuy(mint, pos.txid, pos.buySlot || 0);
           }
         } else {
-          positionExitManagerRef.current.updatePositionTpSl(mint, targetTp, targetSl);
+          positionExitManagerRef.current.updatePositionTpSl(mint, targetTp, getEngineSl(targetSl));
           if (pos.currentPrice && pos.currentPrice > 0) {
             positionExitManagerRef.current.onPriceUpdate(mint, pos.currentPrice, Date.now());
           }
@@ -4216,7 +4245,7 @@ const checkTokenCriteria = (mint: string): {
     if (masterMonitorRef.current && activeMints.length > 0) {
       masterMonitorRef.current.startMonitoring(activeMints);
     }
-  }, [positions, isRunning, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct]);
+  }, [positions, isRunning, minTakeProfit, bondingCurveTakeProfit, stopLossPct, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct, getEngineSl]);
 
   const processedAlerts = useRef<Set<string>>(new Set());
   useEffect(() => {
@@ -5581,22 +5610,81 @@ const checkTokenCriteria = (mint: string): {
                   }} className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-2 text-[13px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors" />
                 </div>
               </div>
+              {/* Unified Stop Loss Toggle */}
+              <div className="flex items-center justify-between bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-2 mb-2">
+                <span className="text-[11px] text-[#94a3b8] uppercase font-bold tracking-wider">
+                  🔗 Lock Stop Loss across all venues
+                </span>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input 
+                    type="checkbox" 
+                    checked={unifyStopLoss} 
+                    onChange={(e) => {
+                      const next = e.target.checked;
+                      setUnifyStopLoss(next);
+                      if (next) {
+                        // Immediately sync all venues to the current Raydium value
+                        const master = -Math.abs(stopLossPct || 15);
+                        setStopLoss(master);
+                        setBondingCurveStopLoss(master);
+                        setPumpSwapStopLoss(master);
+                        setUnknownStopLoss(master);
+                      }
+                    }}
+                    className="sr-only peer" 
+                  />
+                  <div className="w-9 h-5 bg-[#1b1c26] border border-[#2d2e3d] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[4px] after:left-[4px] after:bg-[#64748b] peer-checked:after:bg-[#c7f284] after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-[#c7f284]/10 peer-checked:border-[#c7f284]/50"></div>
+                </label>
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                 <div>
-                  <div className="flex justify-between text-[11px] text-[#64748b] mb-1.5 uppercase font-medium"><span>Stop Loss (Raydium)</span><span>%</span></div>
-                  <input type="number" value={stopLossPct} onChange={(e) => setStopLoss(-Math.abs(Number(e.target.value)))} className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-2 text-[13px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors" id="input-sl-raydium" />
+                  <div className="flex justify-between text-[11px] text-[#64748b] mb-1.5 uppercase font-medium">
+                    <span>Stop Loss {unifyStopLoss ? '(All Venues)' : '(Raydium)'}</span><span>%</span>
+                  </div>
+                  <input 
+                    type="number" 
+                    value={stopLossPct} 
+                    onChange={(e) => propagateSlChange(Number(e.target.value), 'raydium')} 
+                    className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-2 text-[13px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors" 
+                    id="input-sl-raydium" 
+                  />
                 </div>
-                <div>
-                  <div className="flex justify-between text-[11px] text-[#64748b] mb-1.5 uppercase font-medium"><span>Stop Loss (Bonding)</span><span>%</span></div>
-                  <input type="number" value={bondingCurveStopLossPct} onChange={(e) => setBondingCurveStopLoss(-Math.abs(Number(e.target.value)))} className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-2 text-[13px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors" id="input-sl-bonding" />
+                <div className={unifyStopLoss ? 'opacity-40 pointer-events-none' : ''}>
+                  <div className="flex justify-between text-[11px] text-[#64748b] mb-1.5 uppercase font-medium">
+                    <span>Stop Loss (Bonding)</span><span>%</span>
+                  </div>
+                  <input 
+                    type="number" 
+                    value={bondingCurveStopLossPct} 
+                    onChange={(e) => propagateSlChange(Number(e.target.value), 'bonding')} 
+                    className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-2 text-[13px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors" 
+                    id="input-sl-bonding" 
+                  />
                 </div>
-                <div>
-                  <div className="flex justify-between text-[11px] text-[#64748b] mb-1.5 uppercase font-medium"><span>Stop Loss (PumpSwap)</span><span>%</span></div>
-                  <input type="number" value={pumpSwapStopLossPct} onChange={(e) => setPumpSwapStopLoss(-Math.abs(Number(e.target.value)))} className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-2 text-[13px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors" id="input-sl-pumpswap" />
+                <div className={unifyStopLoss ? 'opacity-40 pointer-events-none' : ''}>
+                  <div className="flex justify-between text-[11px] text-[#64748b] mb-1.5 uppercase font-medium">
+                    <span>Stop Loss (PumpSwap)</span><span>%</span>
+                  </div>
+                  <input 
+                    type="number" 
+                    value={pumpSwapStopLossPct} 
+                    onChange={(e) => propagateSlChange(Number(e.target.value), 'pumpswap')} 
+                    className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-2 text-[13px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors" 
+                    id="input-sl-pumpswap" 
+                  />
                 </div>
-                <div>
-                  <div className="flex justify-between text-[11px] text-[#64748b] mb-1.5 uppercase font-medium"><span>Stop Loss (Unknown)</span><span>%</span></div>
-                  <input type="number" value={unknownStopLossPct} onChange={(e) => setUnknownStopLoss(-Math.abs(Number(e.target.value)))} className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-2 text-[13px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors" id="input-sl-unknown" />
+                <div className={unifyStopLoss ? 'opacity-40 pointer-events-none' : ''}>
+                  <div className="flex justify-between text-[11px] text-[#64748b] mb-1.5 uppercase font-medium">
+                    <span>Stop Loss (Unknown)</span><span>%</span>
+                  </div>
+                  <input 
+                    type="number" 
+                    value={unknownStopLossPct} 
+                    onChange={(e) => propagateSlChange(Number(e.target.value), 'unknown')} 
+                    className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-2 text-[13px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors" 
+                    id="input-sl-unknown" 
+                  />
                 </div>
               </div>
               <div>
