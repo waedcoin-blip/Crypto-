@@ -7,7 +7,7 @@ import { positionRegistry } from './PositionRegistry';
 import { tokenRegistry } from './TokenRegistry';
 import { tradeHistoryRegistry } from './TradeHistoryRegistry';
 import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
-import { getSolPriceUsd } from '../utils/pnlCalculator';
+import { getSolPriceUsd, calcNetPnl } from '../utils/pnlCalculator';
 import { resolveTokenDecimals } from './PaperTradeExecutor';
 
 export interface ManagedPosition {
@@ -429,6 +429,7 @@ export class RiskManager {
 
   /**
    * Pure PnL percentage calculation without side-effects or mutating buyPrice.
+   * Matches calcNetPnl net calculation to align UI PnL display and execution triggers.
    */
   public calculatePnLPct(pos: ManagedPosition): number {
     const effectiveBuyPrice = pos.buyPrice > 0
@@ -438,6 +439,12 @@ export class RiskManager {
           : 0);
 
     if (effectiveBuyPrice <= 0 || !pos.currentPrice || pos.currentPrice <= 0) return 0;
+
+    const tokenQty = pos.amount > 0 ? pos.amount / (10 ** pos.tokenDecimals) : 0;
+    if (tokenQty > 0 && pos.solSpent > 0) {
+      const netRes = calcNetPnl(pos.currentPrice, tokenQty, pos.solSpent, (pos.slippageBpsTp || 100) / 100);
+      return netRes.netPnlPct;
+    }
 
     return ((pos.currentPrice - effectiveBuyPrice) / effectiveBuyPrice) * 100;
   }

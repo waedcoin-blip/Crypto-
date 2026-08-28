@@ -144,6 +144,7 @@ interface Position {
   decimals?: number;
   tpPct?: number;
   slPct?: number;
+  hasCustomTpSl?: boolean;
   signalEmitted?: boolean;
   entryPriceUsd?: number;
   currentPriceUsd?: number;
@@ -3757,6 +3758,28 @@ const checkTokenCriteria = (mint: string): {
            const newEntry = { signature: result.txid, solSpent: solAmount, amount: tokenAmount, buyPrice: parsedPrice, slot: result.slot };
            const newBuyEntries = existing && existing.buyEntries ? [...existing.buyEntries, newEntry] : [newEntry];
            
+           const stage = detectTokenStage({
+             address: mint,
+             dexId: (tokenMetricsRef.current[mint]?.dexId) || (mint.toLowerCase().endsWith('pump') ? 'pumpfun' : 'raydium'),
+             bondingCurveProgress: tokenMetricsRef.current[mint]?.bondingCurveProgress,
+             isRaydiumListed: tokenMetricsRef.current[mint]?.isRaydiumListed
+           });
+
+           const initialTp = existing?.hasCustomTpSl && typeof existing.tpPct === 'number'
+             ? existing.tpPct
+             : (stage.isBonding ? (configRef.current.bondingCurveTakeProfit || 25) : (configRef.current.minTakeProfit || 25));
+           
+           let initialSl = existing?.hasCustomTpSl && typeof existing.slPct === 'number'
+             ? existing.slPct
+             : (stage.platform === 'PUMP_FUN' || stage.isBonding 
+               ? (configRef.current.bondingCurveStopLossPct || 20) 
+               : stage.platform === 'PUMPSWAP'
+               ? (configRef.current.pumpSwapStopLossPct || 15)
+               : stage.platform === 'UNKNOWN'
+               ? (configRef.current.unknownStopLossPct || 15)
+               : (configRef.current.stopLossPct || 15));
+           initialSl = Math.abs(initialSl);
+
            const next = {
              ...prev,
              [mint]: {
@@ -3770,8 +3793,9 @@ const checkTokenCriteria = (mint: string): {
                txid: result.txid,
                buySlot: result.slot,
                buyEntries: newBuyEntries,
-               tpPct: existing?.tpPct ?? (configRef.current.minTakeProfit || 25),
-               slPct: existing?.slPct ?? (configRef.current.stopLossPct || 15),
+               tpPct: initialTp,
+               slPct: initialSl,
+               hasCustomTpSl: existing?.hasCustomTpSl || false,
                decimals: existing?.decimals ?? tokenDecimals
              }
            };
@@ -3784,8 +3808,8 @@ const checkTokenCriteria = (mint: string): {
                amount: lamportsTotal,
                buyPrice: parsedPrice,
                solSpent: newSolSpent,
-               tpPct: existing?.tpPct ?? (configRef.current.minTakeProfit || 25),
-               slPct: Math.abs(existing?.slPct ?? (configRef.current.stopLossPct || 15)),
+               tpPct: initialTp,
+               slPct: initialSl,
                tokenDecimals,
              });
              if (result.txid && result.txid !== 'init-sig') {
@@ -3996,14 +4020,18 @@ const checkTokenCriteria = (mint: string): {
           bondingCurveProgress: tokenMetricsRef.current[mint]?.bondingCurveProgress,
           isRaydiumListed: tokenMetricsRef.current[mint]?.isRaydiumListed
         });
-        const targetTp = pos.tpPct ?? (stage.isBonding ? (configRef.current.bondingCurveTakeProfit || 25) : (configRef.current.minTakeProfit || 25));
-        let targetSl = pos.slPct ?? (stage.platform === 'PUMP_FUN' || stage.isBonding 
-          ? (configRef.current.bondingCurveStopLossPct || 20) 
-          : stage.platform === 'PUMPSWAP'
-          ? (configRef.current.pumpSwapStopLossPct || 15)
-          : stage.platform === 'UNKNOWN'
-          ? (configRef.current.unknownStopLossPct || 15)
-          : (configRef.current.stopLossPct || 15));
+        const targetTp = (pos.hasCustomTpSl && typeof pos.tpPct === 'number')
+          ? pos.tpPct
+          : (stage.isBonding ? (configRef.current.bondingCurveTakeProfit || 25) : (configRef.current.minTakeProfit || 25));
+        let targetSl = (pos.hasCustomTpSl && typeof pos.slPct === 'number')
+          ? pos.slPct
+          : (stage.platform === 'PUMP_FUN' || stage.isBonding 
+            ? (configRef.current.bondingCurveStopLossPct || 20) 
+            : stage.platform === 'PUMPSWAP'
+            ? (configRef.current.pumpSwapStopLossPct || 15)
+            : stage.platform === 'UNKNOWN'
+            ? (configRef.current.unknownStopLossPct || 15)
+            : (configRef.current.stopLossPct || 15));
         targetSl = Math.abs(targetSl);
 
         const lamportsTotal = pos.amountLamports || (pos.amount > 0 ? Math.floor(pos.amount * Math.pow(10, pos.decimals ?? 6)) : 1000000);
@@ -4050,7 +4078,71 @@ const checkTokenCriteria = (mint: string): {
     };
   }, [isRunning]);
 
-  // Sync active positions and updated TP/SL to PositionExitManager & MasterMonitorService
+  // Handler for custom per-position TP/SL changes
+  const handleUpdatePositionTpSl = useCallback((mint: string, newTp: number, newSl: number) => {
+    const safeTp = Math.max(1, Math.min(10000, Number(newTp) || 25));
+    const safeSl = Math.max(1, Math.min(100, Math.abs(Number(newSl) || 15)));
+
+    setPositions(prev => {
+      const pos = prev[mint];
+      if (!pos) return prev;
+      const next = {
+        ...prev,
+        [mint]: {
+          ...pos,
+          tpPct: safeTp,
+          slPct: safeSl,
+          hasCustomTpSl: true
+        }
+      };
+      positionsRef.current = next;
+      useAppStore.getState().updateActivePositions(() => next);
+      positionExitManagerRef.current?.updatePositionTpSl(mint, safeTp, safeSl);
+      return next;
+    });
+    addLog(`⚙️ Set ${positionsRef.current[mint]?.symbol || mint.slice(0, 6)} TP: +${safeTp}% | SL: -${safeSl}%`, 'info');
+  }, [addLog]);
+
+  // Handler to reset per-position TP/SL back to global settings
+  const handleResetPositionTpSl = useCallback((mint: string) => {
+    const metric = tokenMetricsRef.current[mint];
+    const stage = detectTokenStage({
+      address: mint,
+      dexId: metric?.dexId || (mint.toLowerCase().endsWith('pump') ? 'pumpfun' : 'raydium'),
+      bondingCurveProgress: metric?.bondingCurveProgress,
+      isRaydiumListed: metric?.isRaydiumListed
+    });
+
+    const defaultTp = stage.isBonding ? (bondingCurveTakeProfit || 25) : (minTakeProfit || 25);
+    const defaultSl = stage.platform === 'PUMP_FUN' || stage.isBonding 
+      ? (bondingCurveStopLossPct || 20) 
+      : stage.platform === 'PUMPSWAP'
+      ? (pumpSwapStopLossPct || 15)
+      : stage.platform === 'UNKNOWN'
+      ? (unknownStopLossPct || 15)
+      : (stopLossPct || 15);
+
+    setPositions(prev => {
+      const pos = prev[mint];
+      if (!pos) return prev;
+      const next = {
+        ...prev,
+        [mint]: {
+          ...pos,
+          tpPct: defaultTp,
+          slPct: Math.abs(defaultSl),
+          hasCustomTpSl: false
+        }
+      };
+      positionsRef.current = next;
+      useAppStore.getState().updateActivePositions(() => next);
+      positionExitManagerRef.current?.updatePositionTpSl(mint, defaultTp, Math.abs(defaultSl));
+      return next;
+    });
+    addLog(`🔄 Reset ${positionsRef.current[mint]?.symbol || mint.slice(0, 6)} TP/SL to Global (TP: +${defaultTp}%, SL: -${Math.abs(defaultSl)}%)`, 'info');
+  }, [bondingCurveTakeProfit, minTakeProfit, bondingCurveStopLossPct, pumpSwapStopLossPct, unknownStopLossPct, stopLossPct, addLog]);
+
+  // Sync active positions and updated TP/SL to PositionExitManager & MasterMonitorService when settings or positions change
   useEffect(() => {
     if (!isRunning) return;
 
@@ -4071,15 +4163,26 @@ const checkTokenCriteria = (mint: string): {
           isRaydiumListed: tokenMetricsRef.current[mint]?.isRaydiumListed
         });
 
-        const targetTp = pos.tpPct ?? (stage.isBonding ? (bondingCurveTakeProfit || 25) : (minTakeProfit || 25));
-        let targetSl = pos.slPct ?? (stage.platform === 'PUMP_FUN' || stage.isBonding 
-          ? (bondingCurveStopLossPct || 20) 
-          : stage.platform === 'PUMPSWAP'
-          ? (pumpSwapStopLossPct || 15)
-          : stage.platform === 'UNKNOWN'
-          ? (unknownStopLossPct || 15)
-          : (stopLossPct || 15));
+        const targetTp = (pos.hasCustomTpSl && typeof pos.tpPct === 'number')
+          ? pos.tpPct
+          : (stage.isBonding ? (bondingCurveTakeProfit || 25) : (minTakeProfit || 25));
+        
+        let targetSl = (pos.hasCustomTpSl && typeof pos.slPct === 'number')
+          ? pos.slPct
+          : (stage.platform === 'PUMP_FUN' || stage.isBonding 
+            ? (bondingCurveStopLossPct || 20) 
+            : stage.platform === 'PUMPSWAP'
+            ? (pumpSwapStopLossPct || 15)
+            : stage.platform === 'UNKNOWN'
+            ? (unknownStopLossPct || 15)
+            : (stopLossPct || 15));
         targetSl = Math.abs(targetSl);
+
+        // Also update the position in state if global changed and it wasn't a custom override
+        if (!pos.hasCustomTpSl && (pos.tpPct !== targetTp || pos.slPct !== targetSl)) {
+          pos.tpPct = targetTp;
+          pos.slPct = targetSl;
+        }
 
         const existingPos = positionExitManagerRef.current.getPosition(mint);
         if (!existingPos) {
@@ -6157,15 +6260,10 @@ const checkTokenCriteria = (mint: string): {
                       displayPrice = displayPrice / (getSolPriceUsd() || 150);
                     }
                     const netCalc = calcNetPnl(displayPrice, pos.amount || 0, pos.solSpent || 0, slippage, pos.recoveryMode, !!privateKey);
-                    let netSolIfSold = netCalc.netSol;
-                    let pnlPct = netCalc.netPnlPct / 100;
-                    if (displayPrice === 0 && pos.realNetPnl !== undefined) {
-                      pnlPct = pos.realNetPnl;
-                    }
-                    if (displayPrice === 0 && pos.realNetSol !== undefined) {
-                      netSolIfSold = pos.solSpent + pos.realNetSol;
-                    }
-                    return !isNaN(pnlPct) && isFinite(pnlPct);
+                    const netPnlPct = (displayPrice === 0 && pos.realNetPnl !== undefined) 
+                      ? (pos.realNetPnl > 1 || pos.realNetPnl < -1 ? pos.realNetPnl : pos.realNetPnl * 100) 
+                      : netCalc.netPnlPct;
+                    return !isNaN(netPnlPct) && isFinite(netPnlPct);
                   }).map(([mint, pos]: [string, Position]) => {
                     const token = tokenMetrics[mint];
                     const rawPrice = (token?.priceNative ? parseFloat(String(token.priceNative)) : 0) || pos.currentPrice || pos.buyPrice || 0;
@@ -6175,16 +6273,14 @@ const checkTokenCriteria = (mint: string): {
                       displayPrice = displayPrice / (getSolPriceUsd() || 150);
                     }
                     const netCalc = calcNetPnl(displayPrice, pos.amount || 0, pos.solSpent || 0, slippage, pos.recoveryMode, !!privateKey);
-                    let netSolIfSold = netCalc.netSol;
-                    let pnlPct = netCalc.netPnlPct / 100;
-                    if (displayPrice === 0 && pos.realNetPnl !== undefined) {
-                      pnlPct = pos.realNetPnl;
-                    }
-                    if (displayPrice === 0 && pos.realNetSol !== undefined) {
-                      netSolIfSold = pos.solSpent + pos.realNetSol;
-                    }
+                    const netSolIfSold = netCalc.netSol;
+                    const netPnlPct = (displayPrice === 0 && pos.realNetPnl !== undefined) 
+                      ? (pos.realNetPnl > 1 || pos.realNetPnl < -1 ? pos.realNetPnl : pos.realNetPnl * 100) 
+                      : netCalc.netPnlPct;
+                    const netPnlSol = (displayPrice === 0 && pos.realNetSol !== undefined) ? pos.realNetSol : netCalc.netPnlSol;
+                    const grossPnlPct = netCalc.grossPnlPct;
                     
-                    const isPos = pnlPct >= 0;
+                    const isPos = netPnlPct >= 0;
                     const isStalePos = !!pos.isStale && (!displayPrice || displayPrice === 0);
                     const stage = detectTokenStage({
                       address: mint,
@@ -6192,59 +6288,87 @@ const checkTokenCriteria = (mint: string): {
                       bondingCurveProgress: token?.bondingCurveProgress,
                       isRaydiumListed: token?.isRaydiumListed
                     });
-                    let activeSL = stopLoss;
-                    if (stage.platform === 'PUMP_FUN' || stage.isBonding) {
-                      activeSL = bondingCurveStopLoss;
-                    } else if (stage.platform === 'PUMPSWAP') {
-                      activeSL = pumpSwapStopLoss;
-                    } else if (stage.platform === 'UNKNOWN' || stage.stage === 'UNKNOWN') {
-                      activeSL = unknownStopLoss;
-                    } else {
-                      activeSL = stopLoss;
-                    }
+
+                    const defaultTp = stage.isBonding ? (bondingCurveTakeProfit || 25) : (minTakeProfit || 25);
+                    const defaultSl = stage.platform === 'PUMP_FUN' || stage.isBonding 
+                      ? (bondingCurveStopLossPct || 20) 
+                      : stage.platform === 'PUMPSWAP'
+                      ? (pumpSwapStopLossPct || 15)
+                      : stage.platform === 'UNKNOWN'
+                      ? (unknownStopLossPct || 15)
+                      : (stopLossPct || 15);
+
+                    const activeTp = (pos.hasCustomTpSl && typeof pos.tpPct === 'number') ? pos.tpPct : defaultTp;
+                    const activeSl = (pos.hasCustomTpSl && typeof pos.slPct === 'number') ? Math.abs(pos.slPct) : Math.abs(defaultSl);
+
+                    // Dynamic range calculation for target progress bar
+                    const totalRange = activeTp + activeSl;
+                    const currentPosFromSl = netPnlPct + activeSl;
+                    const progressPct = totalRange > 0 ? Math.max(0, Math.min(100, (currentPosFromSl / totalRange) * 100)) : 50;
+                    const breakevenPct = totalRange > 0 ? Math.max(0, Math.min(100, (activeSl / totalRange) * 100)) : 50;
 
                     return (
-                      <div key={mint} className="bg-[#0a0b14] border border-[#1f212e] rounded-xl p-4 grid grid-cols-2 gap-x-2 gap-y-3">
-                        <div className="col-span-2 flex items-center gap-2 mb-1 flex-wrap">
-                          <div className="w-6 h-6 rounded-full bg-indigo-500 shrink-0"></div>
-                          <div className="font-bold text-[14px] text-white flex items-center gap-1.5 flex-wrap">
-                            {pos.symbol} <span className="text-[#64748b] text-[12px] font-normal hidden sm:inline">/ SOL</span>
-                            
-                            {/* Stage badge */}
-                            {stage.isBonding ? (
-                              <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-orange-500/20 text-orange-400 border border-orange-500/30 whitespace-nowrap">
-                                BONDING {stage.bondingProgress.toFixed(0)}%
-                              </span>
-                            ) : (
-                              <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-blue-500/20 text-blue-400 border border-blue-500/30 whitespace-nowrap">
-                                {stage.platform}
-                              </span>
-                            )}
+                      <div key={mint} className="bg-[#0a0b14] border border-[#1f212e] rounded-xl p-4 flex flex-col gap-3">
+                        {/* Header Row: Token, Badges & Net PnL */}
+                        <div className="flex items-start justify-between gap-2 flex-wrap">
+                          <div className="flex items-center gap-2">
+                            <div className="w-7 h-7 rounded-full bg-gradient-to-tr from-indigo-600 to-indigo-400 flex items-center justify-center text-white text-xs font-black shrink-0">
+                              {pos.symbol.slice(0, 2).toUpperCase()}
+                            </div>
+                            <div>
+                              <div className="font-bold text-[14px] text-white flex items-center gap-1.5 flex-wrap">
+                                <span>{pos.symbol}</span>
+                                <span className="text-[#64748b] text-[11px] font-normal">/ SOL</span>
+                                
+                                {/* Stage badge */}
+                                {stage.isBonding ? (
+                                  <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-orange-500/20 text-orange-400 border border-orange-500/30 whitespace-nowrap">
+                                    BONDING {stage.bondingProgress.toFixed(0)}%
+                                  </span>
+                                ) : (
+                                  <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-blue-500/20 text-blue-400 border border-blue-500/30 whitespace-nowrap">
+                                    {stage.platform}
+                                  </span>
+                                )}
 
-                            {/* Which stop loss is active */}
-                            <span className="text-rose-400 text-[9px] whitespace-nowrap bg-rose-500/10 px-1.5 py-0.5 rounded border border-rose-500/20">
-                              SL: {activeSL}%
-                            </span>
+                                {pos.hasCustomTpSl && (
+                                  <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 whitespace-nowrap">
+                                    CUSTOM TP/SL
+                                  </span>
+                                )}
 
-                            {/* Near migration warning */}
-                            {stage.isNearMigration && (
-                              <span className="text-yellow-400 text-[9px] animate-pulse whitespace-nowrap border border-yellow-400/30 bg-yellow-400/10 px-1.5 py-0.5 rounded">
-                                ⚡ MIGRATING SOON
-                              </span>
-                            )}
+                                {/* Near migration warning */}
+                                {stage.isNearMigration && (
+                                  <span className="text-yellow-400 text-[9px] animate-pulse whitespace-nowrap border border-yellow-400/30 bg-yellow-400/10 px-1.5 py-0.5 rounded">
+                                    ⚡ MIGRATING
+                                  </span>
+                                )}
+                              </div>
+                            </div>
                           </div>
-                          <div className="ml-auto text-right font-mono">
+
+                          {/* Top-Right PnL Box */}
+                          <div className="text-right font-mono ml-auto">
                             {isStalePos ? (
                               <div className="flex flex-col items-end">
                                 <span className="text-amber-500 font-bold text-[13px] animate-pulse">MIGRATING...</span>
                                 <span className="text-[10px] text-[#64748b]">On-Chain Price Processing</span>
                               </div>
                             ) : (
-                              <div className={`text-[14px] font-semibold ${isPos ? 'text-[#c7f284]' : 'text-[#ff4d4d]'}`}>
-                                <div>{isPos ? '+' : ''}{(pnlPct * 100).toFixed(2)}%</div>
-                                <div className="text-[11px] opacity-80">{isPos ? '+' : ''}{Math.abs(netSolIfSold - pos.solSpent).toFixed(4)} SOL</div>
-                                {pnlPct <= -0.50 && (
-                                  <span className="text-[10px] bg-red-950/80 text-rose-400 px-1.5 py-0.5 rounded font-semibold border border-red-500/30 animate-bounce inline-block mt-1 uppercase text-center">
+                              <div className="flex flex-col items-end">
+                                <div className={`text-[15px] font-bold tracking-tight ${isPos ? 'text-[#c7f284]' : 'text-[#ff4d4d]'}`}>
+                                  {isPos ? '+' : ''}{netPnlPct.toFixed(2)}%
+                                </div>
+                                <div className="flex items-center gap-1.5 text-[11px]">
+                                  <span className={`font-semibold ${netPnlSol >= 0 ? 'text-[#c7f284]/90' : 'text-[#ff4d4d]/90'}`}>
+                                    {netPnlSol >= 0 ? '+' : '-'}{Math.abs(netPnlSol).toFixed(4)} SOL
+                                  </span>
+                                  <span className="text-[9px] text-[#64748b] font-normal">
+                                    (Gross: {grossPnlPct >= 0 ? '+' : ''}{grossPnlPct.toFixed(1)}%)
+                                  </span>
+                                </div>
+                                {netPnlPct <= -50 && (
+                                  <span className="text-[9px] bg-red-950/80 text-rose-400 px-1.5 py-0.5 rounded font-semibold border border-red-500/30 animate-bounce inline-block mt-1 uppercase text-center">
                                     🔴 CRITICAL LOSS
                                   </span>
                                 )}
@@ -6252,42 +6376,143 @@ const checkTokenCriteria = (mint: string): {
                             )}
                           </div>
                         </div>
-                        <div>
-                          <div className="text-[#64748b] text-[11px] mb-1 uppercase font-medium">Entry Price</div>
-                          <div className="font-mono text-[14px] font-semibold text-[#e2e8f0]">
-                            {((pos.amount > 0 && pos.solSpent > 0) ? (pos.solSpent / pos.amount) : (pos.buyPrice && pos.buyPrice < 100 ? pos.buyPrice : 0.0001))?.toFixed(8)} SOL
+
+                        {/* Interactive TP & SL Adjustment Bar */}
+                        <div className="bg-[#10111a]/80 border border-[#1f212e] rounded-lg p-2.5 space-y-2">
+                          <div className="flex items-center justify-between text-[11px] gap-2 flex-wrap">
+                            {/* TP Input */}
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-emerald-400 font-bold flex items-center gap-1">
+                                🎯 TP:
+                              </span>
+                              <div className="flex items-center bg-[#0a0b14] border border-emerald-500/30 rounded px-1.5 py-0.5">
+                                <span className="text-emerald-400 text-[10px] font-bold mr-0.5">+</span>
+                                <input
+                                  type="number"
+                                  min="1"
+                                  max="5000"
+                                  step="1"
+                                  value={activeTp}
+                                  onChange={(e) => {
+                                    const val = parseFloat(e.target.value);
+                                    if (!isNaN(val)) {
+                                      handleUpdatePositionTpSl(mint, val, activeSl);
+                                    }
+                                  }}
+                                  className="w-12 bg-transparent text-emerald-300 font-mono text-[11px] font-bold text-center focus:outline-none focus:ring-1 focus:ring-emerald-500 rounded"
+                                />
+                                <span className="text-emerald-400 text-[10px] font-bold ml-0.5">%</span>
+                              </div>
+                            </div>
+
+                            {/* SL Input */}
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-rose-400 font-bold flex items-center gap-1">
+                                🛑 SL:
+                              </span>
+                              <div className="flex items-center bg-[#0a0b14] border border-rose-500/30 rounded px-1.5 py-0.5">
+                                <span className="text-rose-400 text-[10px] font-bold mr-0.5">-</span>
+                                <input
+                                  type="number"
+                                  min="1"
+                                  max="99"
+                                  step="1"
+                                  value={activeSl}
+                                  onChange={(e) => {
+                                    const val = Math.abs(parseFloat(e.target.value));
+                                    if (!isNaN(val)) {
+                                      handleUpdatePositionTpSl(mint, activeTp, val);
+                                    }
+                                  }}
+                                  className="w-10 bg-transparent text-rose-300 font-mono text-[11px] font-bold text-center focus:outline-none focus:ring-1 focus:ring-rose-500 rounded"
+                                />
+                                <span className="text-rose-400 text-[10px] font-bold ml-0.5">%</span>
+                              </div>
+                            </div>
+
+                            {/* Reset Button (shown if custom) */}
+                            {pos.hasCustomTpSl && (
+                              <button
+                                onClick={() => handleResetPositionTpSl(mint)}
+                                className="text-[10px] text-slate-400 hover:text-white bg-[#1a1b26] hover:bg-[#252636] px-2 py-0.5 rounded border border-[#2d2e3d] transition-colors flex items-center gap-1 ml-auto"
+                                title="Reset to global settings"
+                              >
+                                ↺ Reset
+                              </button>
+                            )}
                           </div>
-                          <div className="text-[10px] text-[#64748b] mt-0.5">
-                            {pos.amount?.toLocaleString(undefined, { maximumFractionDigits: 4 })} tokens for {(pos.solSpent || 0).toFixed(4)} SOL
+
+                          {/* Visual Target Range Progress Bar */}
+                          <div className="space-y-1">
+                            <div className="relative w-full h-2 bg-slate-900 rounded-full overflow-hidden border border-slate-800">
+                              {/* Background color gradient: Red to Gray to Green */}
+                              <div 
+                                className="absolute left-0 top-0 bottom-0 bg-rose-500/40" 
+                                style={{ width: `${breakevenPct}%` }} 
+                              />
+                              <div 
+                                className="absolute top-0 bottom-0 bg-emerald-500/40" 
+                                style={{ left: `${breakevenPct}%`, right: 0 }} 
+                              />
+                              {/* Breakeven line (0%) */}
+                              <div 
+                                className="absolute top-0 bottom-0 w-0.5 bg-white/70 z-10" 
+                                style={{ left: `${breakevenPct}%` }}
+                              />
+                              {/* Current PnL Indicator marker */}
+                              <div 
+                                className="absolute top-0 bottom-0 w-2 h-2 rounded-full bg-white shadow-md transform -translate-x-1/2 z-20"
+                                style={{ left: `${progressPct}%` }}
+                              />
+                            </div>
+                            <div className="flex justify-between text-[9px] font-mono text-slate-400">
+                              <span className="text-rose-400">-{activeSl}% (SL)</span>
+                              <span className="text-slate-500">0% Entry</span>
+                              <span className="text-emerald-400">+{activeTp}% (TP)</span>
+                            </div>
                           </div>
                         </div>
-                        <div className="flex justify-between items-center">
+
+                        {/* Price & Cost Grid */}
+                        <div className="grid grid-cols-2 gap-2 text-xs font-mono bg-[#050509]/40 p-2.5 rounded-lg border border-[#1f212e]/50">
                           <div>
-                            <div className="text-[#64748b] text-[11px] mb-1 uppercase font-medium">Current</div>
-                            <div className="font-mono text-[14px] font-semibold text-[#e2e8f0]">
+                            <div className="text-[#64748b] text-[10px] uppercase font-bold tracking-wider mb-0.5">Entry Price</div>
+                            <div className="text-[#e2e8f0] font-semibold text-[12px]">
+                              {entryPriceSol?.toFixed(8)} SOL
+                            </div>
+                            <div className="text-[10px] text-[#64748b] mt-0.5">
+                              Spent: {(pos.solSpent || 0).toFixed(4)} SOL
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-[#64748b] text-[10px] uppercase font-bold tracking-wider mb-0.5">Current Price</div>
+                            <div className="text-[#e2e8f0] font-semibold text-[12px]">
                               {isStalePos ? (
-                                <span className="text-amber-500 font-bold animate-pulse text-[12px]">STALE (Gaping)</span>
+                                <span className="text-amber-500 font-bold animate-pulse text-[11px]">STALE</span>
                               ) : (
                                 `${displayPrice.toFixed(8)} SOL`
                               )}
                             </div>
+                            <div className="text-[10px] text-[#64748b] mt-0.5">
+                              Net Value: {netSolIfSold.toFixed(4)} SOL
+                            </div>
                           </div>
-                          <div className="flex gap-2 w-full">
-                             <button 
-                               onClick={() => executeSell(mint, pos.currentPrice || pos.buyPrice, pnlPct, 'EMERGENCY FORCE EXIT')}
-                               className="flex-1 bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 transition-colors px-3 py-2 rounded-lg text-xs font-black uppercase tracking-widest border border-rose-500/20 group"
-                             >
-                               <span className="flex items-center justify-center gap-2">
-                                  <Square className="w-3 h-3 group-hover:scale-110 transition-transform" />
-                                  Emergency Force Exit
-                               </span>
-                             </button>
-                          </div>
+                        </div>
+
+                        {/* Emergency Force Exit Button */}
+                        <div className="w-full">
+                          <button 
+                            onClick={() => executeSell(mint, displayPrice || pos.buyPrice, netPnlPct, 'EMERGENCY FORCE EXIT')}
+                            className="w-full bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 active:scale-[0.99] transition-all px-3 py-2 rounded-lg text-xs font-black uppercase tracking-wider border border-rose-500/20 flex items-center justify-center gap-2 group shadow-sm"
+                          >
+                            <Square className="w-3.5 h-3.5 group-hover:scale-110 transition-transform text-rose-400" />
+                            <span>Emergency Force Exit</span>
+                          </button>
                         </div>
                         
                         {/* Transaction Ledger for multi-buys */}
                         {pos.buyEntries && pos.buyEntries.length > 0 && (
-                          <div className="col-span-2 mt-1 pt-2 border-t border-[#1f212e]/40">
+                          <div className="mt-0.5 pt-2 border-t border-[#1f212e]/40">
                             <details className="group">
                               <summary className="list-none flex items-center justify-between text-[10px] font-bold text-[#64748b] hover:text-[#94a3b8] cursor-pointer uppercase select-none tracking-wider">
                                 <span className="flex items-center gap-1">🧾 Ledger ({pos.buyEntries.length})</span>
@@ -6323,7 +6548,8 @@ const checkTokenCriteria = (mint: string): {
                           </div>
                         )}
 
-                        <div className="col-span-2 flex justify-between items-center pt-2 border-t border-[#1f212e]/60">
+                        {/* Footer info: Timestamp & DexScreener */}
+                        <div className="flex justify-between items-center pt-2 border-t border-[#1f212e]/60">
                           <div className="text-[#64748b] text-[10px] uppercase font-bold tracking-wider">
                             Buy: <span className="text-[#e2e8f0] ml-1">{new Date(pos.entryTime).toLocaleTimeString()}</span>
                           </div>
