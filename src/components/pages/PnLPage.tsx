@@ -3804,10 +3804,11 @@ const checkTokenCriteria = (mint: string): {
 
            if (positionExitManagerRef.current) {
              const lamportsTotal = passedOutputAmount || (newAmount > 0 ? Math.floor(newAmount * Math.pow(10, tokenDecimals || 6)) : 1000000);
+             const calcBuyPrice = newAmount > 0 ? (newSolSpent / newAmount) : parsedPrice;
              positionExitManagerRef.current.addPosition({
                mint,
                amount: lamportsTotal,
-               buyPrice: parsedPrice,
+               buyPrice: calcBuyPrice,
                solSpent: newSolSpent,
                tpPct: initialTp,
                slPct: initialSl,
