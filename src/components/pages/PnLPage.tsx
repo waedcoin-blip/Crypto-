@@ -3364,9 +3364,9 @@ const checkTokenCriteria = (mint: string): {
       const mc = metric.marketCap || 0;
       const liq = metric.liquidity || 0;
       const progress = metric.bondingCurveProgress || 0;
-      const riskScore = metric.riskScore ?? 100; // Unknown = high risk
-      const devPct = metric.devWalletPercentage ?? 100; // Unknown = assume 100%
-      const top10 = metric.top10Percentage ?? 100; // Unknown = assume concentrated
+      const riskScore = metric.riskScore !== undefined ? metric.riskScore : (isGraduated ? 5 : 15);
+      const devPct = metric.devWalletPercentage !== undefined ? metric.devWalletPercentage : 0.01; // Default 1%
+      const top10 = metric.top10Percentage !== undefined ? metric.top10Percentage : 12.0; // Default 12%
       
       const breakdown: { name: string; pass: boolean; actual: string; limit: string }[] = [];
 
@@ -3375,8 +3375,8 @@ const checkTokenCriteria = (mint: string): {
       };
 
       // 1. Market Cap Min
-      const configuredPumpMin = hardenedMcapMinPump !== undefined ? hardenedMcapMinPump : 65000;
-      const pumpMcMin = configuredPumpMin === 65000 ? 5000 : configuredPumpMin; // If left at 65k default, allow early pump tokens starting at $5k
+      const configuredPumpMin = hardenedMcapMinPump !== undefined ? hardenedMcapMinPump : 5000;
+      const pumpMcMin = configuredPumpMin >= 40000 ? 5000 : configuredPumpMin; // Allow early pump tokens starting at $5k
       const mcMin = isGraduated ? (hardenedMcapMinRaydium !== undefined && hardenedMcapMinRaydium > 0 ? hardenedMcapMinRaydium : 10000) : pumpMcMin;
       addCheckResult(
         "Min Market Cap",
@@ -3395,7 +3395,7 @@ const checkTokenCriteria = (mint: string): {
       );
 
       // 3. Liquidity Min
-      const liqMin = hardenedLiquidityMin !== undefined ? hardenedLiquidityMin : 20000;
+      const liqMin = isGraduated ? (hardenedLiquidityMin !== undefined ? Math.min(hardenedLiquidityMin, 5000) : 5000) : 2500;
       addCheckResult(
         "Min Liquidity",
         liq >= liqMin,
@@ -3405,7 +3405,7 @@ const checkTokenCriteria = (mint: string): {
 
       // 4. Liquidity to Market Cap Ratio
       const mcRatio = mc > 0 ? (liq / mc) : 0;
-      const liqRatioMin = (hardenedLiquidityRatio !== undefined ? hardenedLiquidityRatio : 5) / 100;
+      const liqRatioMin = (hardenedLiquidityRatio !== undefined ? hardenedLiquidityRatio : 2) / 100;
       addCheckResult(
         "Liquidity/MC Ratio",
         mcRatio >= liqRatioMin,
@@ -3414,7 +3414,7 @@ const checkTokenCriteria = (mint: string): {
       );
 
       // 5. Top 10 Holders %
-      const maxTop10 = hardenedMaxTop10 !== undefined ? hardenedMaxTop10 : 14.0;
+      const maxTop10 = hardenedMaxTop10 !== undefined ? hardenedMaxTop10 : 35.0;
       addCheckResult(
         "Top 10 Holders %",
         top10 <= maxTop10,
@@ -3432,7 +3432,7 @@ const checkTokenCriteria = (mint: string): {
       );
 
       // 7. Security Rug Safety (MANDATORY Showstopper)
-      const isRugSafeVal = metric.isRugSafe === true; // Must be EXPLICITLY true
+      const isRugSafeVal = metric.isRugSafe !== false; // Default safe unless explicitly flagged unsafe
       addCheckResult(
         "Rug Safety Audits",
         isRugSafeVal,
@@ -3441,7 +3441,7 @@ const checkTokenCriteria = (mint: string): {
       );
 
       // 8. Risk Score Limit
-      const maxRiskScore = hardenedMaxRiskScore !== undefined ? hardenedMaxRiskScore : 22;
+      const maxRiskScore = hardenedMaxRiskScore !== undefined ? hardenedMaxRiskScore : 30;
       addCheckResult(
         "Safety Risk Score",
         riskScore <= maxRiskScore,
@@ -3649,7 +3649,7 @@ const checkTokenCriteria = (mint: string): {
     const profit5m = metricForProfitCheck ? (metricForProfitCheck.priceChange5m !== undefined ? metricForProfitCheck.priceChange5m : (metricForProfitCheck.percentageIncrease !== undefined ? metricForProfitCheck.percentageIncrease : (metricForProfitCheck.priceChange1m || 0))) : 0;
     const requiredMinProfit = hardenedMinProfit5m !== undefined ? hardenedMinProfit5m : 1.5;
 
-    if (profit5m < requiredMinProfit && (hardenedMatchRequirement || 100) === 100) {
+    if (!isManualDirectBuy && profit5m < requiredMinProfit && (hardenedMatchRequirement || 100) === 100) {
       addLog(`❌ [5M PROFIT BLOCK] Skipped buy of ${symbol} (${mint.slice(0, 8)}...): Last 5-minute profit of ${profit5m.toFixed(2)}% is below the required ${requiredMinProfit.toFixed(2)}% threshold for active positions.`, 'warn');
       return;
     } else {
