@@ -21,6 +21,8 @@ export interface PositionRecord {
   currentPriceSOL: number;
   peakPriceSOL: number;
   highestPnLPct: number;
+  currentPnLSol?: number;
+  currentPnLPct?: number;
   tpPct: number;
   slPct: number;
   trailingSlPct?: number;
@@ -46,7 +48,7 @@ export type PositionRegistryListener = (positions: PositionRecord[]) => void;
  */
 export class PositionRegistry {
   private static instance: PositionRegistry;
-  private positions: Map<string, PositionRecord> = new Map(); // Keyed by position ID (or mintAddress for 1-pos-per-mint)
+  private positions: Map<string, PositionRecord> = new Map(); // Keyed by position ID
   private positionsByMint: Map<string, string> = new Map(); // mintAddress -> positionId (for open positions)
   private listeners: Set<PositionRegistryListener> = new Set();
 
@@ -86,13 +88,17 @@ export class PositionRegistry {
   private persist(): void {
     if (typeof window === 'undefined') return;
     try {
-      const arr = Array.from(this.positions.values()).slice(-100);
+      const arr = Array.from(this.positions.values()).slice(-500);
       localStorage.setItem('app_position_registry', JSON.stringify(arr));
     } catch (e) {
       console.warn('[PositionRegistry] Failed to persist positions:', e);
     }
   }
 
+  /**
+   * Opens a new position or accumulates into an existing open position using
+   * weighted-average cost basis accounting.
+   */
   public openPosition(params: {
     mintAddress: string;
     network: TradingNetwork;
@@ -110,16 +116,42 @@ export class PositionRegistry {
     buySignature?: string;
   }): PositionRecord {
     const mint = params.mintAddress.trim();
+    if (!mint) {
+      throw new Error('INVALID_POSITION_ENTRY: mintAddress is required');
+    }
+    const rawAmount = Math.floor(Math.max(0, params.amountRaw || 0));
+    const solSpent = Math.max(0, params.solSpent || 0);
+    const decimals = params.decimals !== undefined ? params.decimals : 6;
+
     const existingId = this.positionsByMint.get(mint);
     if (existingId) {
       const existing = this.positions.get(existingId);
       if (existing && existing.state !== 'CLOSED') {
-        // Position already exists, update amounts and return
-        if (params.amountRaw > 0) existing.amountRaw = params.amountRaw;
-        if (params.solSpent > 0) existing.solSpent = params.solSpent;
-        if (params.entryPriceSOL > 0) existing.entryPriceSOL = params.entryPriceSOL;
+        // Weighted average cost basis accumulation
+        if (rawAmount > 0 && solSpent > 0) {
+          const prevTotalCost = existing.solSpent;
+          const prevTotalRaw = existing.amountRaw;
+          const newTotalCost = prevTotalCost + solSpent;
+          const newTotalRaw = prevTotalRaw + rawAmount;
+          const newTotalQty = newTotalRaw / (10 ** existing.decimals);
+
+          existing.amountRaw = newTotalRaw;
+          existing.solSpent = newTotalCost;
+          if (newTotalQty > 0) {
+            existing.entryPriceSOL = newTotalCost / newTotalQty;
+          }
+        }
+        if (params.tpPct !== undefined) existing.tpPct = params.tpPct;
+        if (params.slPct !== undefined) existing.slPct = Math.abs(params.slPct);
+        if (params.trailingSlPct !== undefined) existing.trailingSlPct = params.trailingSlPct;
+        if (params.maxHoldTimeMs !== undefined) existing.maxHoldTimeMs = params.maxHoldTimeMs;
+        if (params.slippageBpsTp !== undefined) existing.slippageBpsTp = params.slippageBpsTp;
+        if (params.slippageBpsSl !== undefined) existing.slippageBpsSl = params.slippageBpsSl;
         if (params.orderId && !existing.orderIds.includes(params.orderId)) {
           existing.orderIds.push(params.orderId);
+        }
+        if (existing.state === 'RECOVERY_REQUIRED') {
+          existing.state = 'OPEN';
         }
         existing.updatedAt = Date.now();
         this.persist();
@@ -128,21 +160,33 @@ export class PositionRegistry {
       }
     }
 
+    // Validation for new position
+    const tokenQty = rawAmount / (10 ** decimals);
+    let calculatedEntryPrice = params.entryPriceSOL || 0;
+    if (calculatedEntryPrice <= 0 && solSpent > 0 && tokenQty > 0) {
+      calculatedEntryPrice = solSpent / tokenQty;
+    }
+
+    if (rawAmount <= 0 || calculatedEntryPrice <= 0 || !Number.isFinite(calculatedEntryPrice)) {
+      throw new Error(`INVALID_POSITION_ENTRY: Cannot open position for ${mint} without valid amountRaw > 0 and positive entry price or solSpent.`);
+    }
+
     const posId = `pos_${Date.now()}_${mint.slice(0, 6)}`;
     const now = Date.now();
-    const decimals = params.decimals !== undefined ? params.decimals : 6;
 
     const record: PositionRecord = {
       id: posId,
       mintAddress: mint,
       network: params.network,
-      amountRaw: params.amountRaw,
+      amountRaw: rawAmount,
       decimals,
-      entryPriceSOL: params.entryPriceSOL > 0 ? params.entryPriceSOL : (params.solSpent / (params.amountRaw / (10 ** decimals) || 1)),
-      solSpent: params.solSpent,
-      currentPriceSOL: params.entryPriceSOL,
-      peakPriceSOL: params.entryPriceSOL,
+      entryPriceSOL: calculatedEntryPrice,
+      solSpent,
+      currentPriceSOL: calculatedEntryPrice,
+      peakPriceSOL: calculatedEntryPrice,
       highestPnLPct: 0,
+      currentPnLSol: 0,
+      currentPnLPct: 0,
       tpPct: params.tpPct ?? 25,
       slPct: Math.abs(params.slPct ?? 15),
       trailingSlPct: params.trailingSlPct,
@@ -184,14 +228,21 @@ export class PositionRegistry {
 
   public updatePrice(mintAddress: string, priceSOL: number): void {
     const pos = this.getOpenPositionByMint(mintAddress);
-    if (!pos || pos.state === 'CLOSED') return;
+    if (!pos || pos.state === 'CLOSED' || priceSOL <= 0 || !Number.isFinite(priceSOL)) return;
 
     pos.currentPriceSOL = priceSOL;
-    if (priceSOL > pos.peakPriceSOL) {
+    if (!pos.peakPriceSOL || priceSOL > pos.peakPriceSOL) {
       pos.peakPriceSOL = priceSOL;
     }
 
+    const tokenQty = pos.amountRaw / (10 ** pos.decimals);
+    const currentVal = tokenQty * priceSOL;
+    const pnlSol = currentVal - pos.solSpent;
     const pnlPct = pos.entryPriceSOL > 0 ? ((priceSOL - pos.entryPriceSOL) / pos.entryPriceSOL) * 100 : 0;
+    
+    pos.currentPnLSol = pnlSol;
+    pos.currentPnLPct = pnlPct;
+
     if (pnlPct > pos.highestPnLPct) {
       pos.highestPnLPct = pnlPct;
     }
@@ -220,14 +271,17 @@ export class PositionRegistry {
 
     if (newState === 'CLOSED') {
       pos.closedAt = Date.now();
-      this.positionsByMint.delete(pos.mintAddress);
+      // Only delete from positionsByMint if it is still pointing to this position
+      if (this.positionsByMint.get(pos.mintAddress) === pos.id) {
+        this.positionsByMint.delete(pos.mintAddress);
+      }
     }
 
     this.persist();
     this.notify();
   }
 
-  public closePosition(mintAddress: string, signature?: string, pnlSol?: number, pnlPct?: number): void {
+  public closePosition(mintAddress: string, signature?: string, pnlSol?: number, pnlPct?: number): boolean {
     const pos = this.getOpenPositionByMint(mintAddress);
     if (pos) {
       this.transitionState(pos.id, 'CLOSED', {
@@ -235,7 +289,10 @@ export class PositionRegistry {
         realizedPnLSol: pnlSol,
         realizedPnLPct: pnlPct,
       });
+      return true;
     }
+    console.warn(`[PositionRegistry] Cannot close position: No open position found for mint ${mintAddress}`);
+    return false;
   }
 
   public subscribe(listener: PositionRegistryListener): () => void {

@@ -206,6 +206,42 @@ export class RiskManager {
         existing.state = 'OPEN';
       }
 
+      // Also sync accumulation to PositionRegistry
+      const network = useTradingEnvironmentStore.getState().network || 'paper';
+      const posRecord = positionRegistry.openPosition({
+        mintAddress: params.mint,
+        network,
+        amountRaw: rawAmount,
+        decimals: existing.tokenDecimals,
+        entryPriceSOL: existing.buyPrice,
+        solSpent,
+        tpPct: existing.tpPct,
+        slPct: existing.slPct,
+        trailingSlPct: existing.trailingSlPct,
+        maxHoldTimeMs: existing.maxHoldTimeMs,
+        slippageBpsTp: existing.slippageBpsTp,
+        slippageBpsSl: existing.slippageBpsSl,
+        orderId: params.buyOrderId,
+        buySignature: params.buySignature,
+      });
+
+      // Record BUY trade in TradeHistoryRegistry
+      tradeHistoryRegistry.recordTrade({
+        id: 'BUY_' + params.mint + '_' + Date.now(),
+        orderId: params.buyOrderId,
+        positionId: posRecord.id,
+        mintAddress: params.mint,
+        side: 'BUY',
+        network,
+        amountRaw: rawAmount,
+        amountTokens: tokenQty,
+        solAmount: solSpent,
+        priceSOL: existing.buyPrice,
+        signature: params.buySignature || '',
+        timestamp: Date.now(),
+        status: params.buySignature ? 'CONFIRMED' : 'PENDING',
+      });
+
       console.log(`[RiskManager] Accumulated position for ${params.mint}: Total Raw=${existing.amount}, CostBasis=${existing.solSpent.toFixed(4)} SOL, AvgEntry=${existing.buyPrice.toFixed(8)} SOL`);
       return;
     }

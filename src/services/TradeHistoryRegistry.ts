@@ -23,9 +23,25 @@ export interface HistoricalTrade {
 
 export type TradeHistoryListener = (trades: HistoricalTrade[]) => void;
 
+function isValidTrade(trade: Partial<HistoricalTrade>): boolean {
+  if (!trade || typeof trade !== 'object') return false;
+  if (!trade.id || typeof trade.id !== 'string') return false;
+  if (!trade.mintAddress || typeof trade.mintAddress !== 'string') return false;
+  if (trade.side !== 'BUY' && trade.side !== 'SELL') return false;
+  if (typeof trade.amountRaw !== 'number' || trade.amountRaw < 0 || !Number.isFinite(trade.amountRaw)) return false;
+  if (typeof trade.amountTokens !== 'number' || trade.amountTokens < 0 || !Number.isFinite(trade.amountTokens)) return false;
+  if (typeof trade.solAmount !== 'number' || trade.solAmount < 0 || !Number.isFinite(trade.solAmount)) return false;
+  if (typeof trade.priceSOL !== 'number' || trade.priceSOL < 0 || !Number.isFinite(trade.priceSOL)) return false;
+  if (trade.pnlSol !== undefined && (typeof trade.pnlSol !== 'number' || !Number.isFinite(trade.pnlSol))) return false;
+  if (trade.pnlPct !== undefined && (typeof trade.pnlPct !== 'number' || !Number.isFinite(trade.pnlPct))) return false;
+  if (typeof trade.timestamp !== 'number' || trade.timestamp <= 0 || !Number.isFinite(trade.timestamp)) return false;
+  return true;
+}
+
 /**
  * TradeHistoryRegistry: The authoritative store for completed trades.
  * Decoupled from active open positions and active in-flight orders.
+ * Features deduplication, input validation, and network isolation.
  */
 export class TradeHistoryRegistry {
   private static instance: TradeHistoryRegistry;
@@ -50,7 +66,7 @@ export class TradeHistoryRegistry {
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
-          this.trades = parsed;
+          this.trades = parsed.filter(isValidTrade);
         }
       }
     } catch (e) {
@@ -61,28 +77,70 @@ export class TradeHistoryRegistry {
   private persist(): void {
     if (typeof window === 'undefined') return;
     try {
-      localStorage.setItem('app_trade_history_registry', JSON.stringify(this.trades.slice(-200)));
+      localStorage.setItem('app_trade_history_registry', JSON.stringify(this.trades.slice(0, 500)));
     } catch (e) {
       console.warn('[TradeHistoryRegistry] Failed to persist trades:', e);
     }
   }
 
-  public recordTrade(trade: HistoricalTrade): void {
+  public recordTrade(trade: HistoricalTrade): boolean {
+    if (!isValidTrade(trade)) {
+      console.warn('[TradeHistoryRegistry] Rejected invalid trade:', trade);
+      return false;
+    }
+
+    // Deduplication by ID or non-empty signature or matching orderId + side
+    const existingIdx = this.trades.findIndex(t => {
+      if (t.id === trade.id) return true;
+      if (trade.signature && trade.signature !== '' && trade.signature !== 'exit-tx' && t.signature === trade.signature) {
+        return true;
+      }
+      if (trade.orderId && t.orderId && t.orderId === trade.orderId && t.side === trade.side) {
+        return true;
+      }
+      return false;
+    });
+
+    if (existingIdx !== -1) {
+      const existing = this.trades[existingIdx];
+      // If existing was PENDING and incoming is CONFIRMED, upgrade it
+      if (existing.status === 'PENDING' && trade.status === 'CONFIRMED') {
+        this.trades[existingIdx] = { ...existing, ...trade };
+        this.persist();
+        this.notify();
+        return true;
+      }
+      console.log(`[TradeHistoryRegistry] Duplicate trade ignored (id: ${trade.id}, sig: ${trade.signature})`);
+      return false;
+    }
+
     this.trades.unshift(trade);
-    if (this.trades.length > 200) {
-      this.trades = this.trades.slice(0, 200);
+    if (this.trades.length > 500) {
+      this.trades = this.trades.slice(0, 500);
     }
     this.persist();
     this.notify();
+    return true;
   }
 
-  public updateTrade(idOrSignature: string, updates: Partial<HistoricalTrade>): void {
-    const idx = this.trades.findIndex(t => t.id === idOrSignature || t.signature === idOrSignature || (t.orderId && t.orderId === idOrSignature));
-    if (idx !== -1) {
-      this.trades[idx] = { ...this.trades[idx], ...updates };
-      this.persist();
-      this.notify();
-    }
+  public updateTrade(idOrSignature: string, updates: Partial<HistoricalTrade>): boolean {
+    if (!idOrSignature) return false;
+    const idx = this.trades.findIndex(
+      t => t.id === idOrSignature || t.signature === idOrSignature || (t.orderId && t.orderId === idOrSignature)
+    );
+    if (idx === -1) return false;
+
+    // Validate updates
+    if (updates.amountRaw !== undefined && (typeof updates.amountRaw !== 'number' || updates.amountRaw < 0 || !Number.isFinite(updates.amountRaw))) return false;
+    if (updates.solAmount !== undefined && (typeof updates.solAmount !== 'number' || updates.solAmount < 0 || !Number.isFinite(updates.solAmount))) return false;
+    if (updates.pnlSol !== undefined && (typeof updates.pnlSol !== 'number' || !Number.isFinite(updates.pnlSol))) return false;
+    if (updates.pnlPct !== undefined && (typeof updates.pnlPct !== 'number' || !Number.isFinite(updates.pnlPct))) return false;
+    if (updates.side !== undefined && updates.side !== 'BUY' && updates.side !== 'SELL') return false;
+
+    this.trades[idx] = { ...this.trades[idx], ...updates };
+    this.persist();
+    this.notify();
+    return true;
   }
 
   public getTrades(network?: TradingNetwork): HistoricalTrade[] {

@@ -15,7 +15,7 @@ export interface BalanceState {
   onChainStatus: 'idle' | 'loading' | 'live' | 'stale' | 'error';
   onChainError: string | null;
 
-  // Backward-compatible fields
+  // Backward-compatible fields (kept strictly synchronized)
   solBalance: number | null;
   availableSolBalance: number | null;
   reservedSol: number;
@@ -86,6 +86,7 @@ export const useBalanceStore = create<BalanceState>((set) => ({
       lastUpdated: null,
       status: 'idle',
       error: null,
+      tokenBalances: {}, // Critical: Reset token balances across network switches to prevent cross-network leakage
     }),
 
   setWalletAddress: (walletAddress) =>
@@ -103,6 +104,7 @@ export const useBalanceStore = create<BalanceState>((set) => ({
         lastUpdated: null,
         status: walletAddress ? 'loading' : 'idle',
         error: null,
+        tokenBalances: {}, // Critical: Reset token balances when switching wallets
       };
     }),
 
@@ -117,7 +119,9 @@ export const useBalanceStore = create<BalanceState>((set) => ({
         state.onChainSolBalance === solBalance &&
         state.onChainAvailableSol === newAvail &&
         state.onChainReservedSol === reservedSol &&
-        state.onChainStatus === 'live'
+        state.onChainStatus === 'live' &&
+        state.solBalance === solBalance &&
+        state.availableSolBalance === newAvail
       ) {
         return state;
       }
@@ -148,11 +152,19 @@ export const useBalanceStore = create<BalanceState>((set) => ({
         state.solBalance === solBalance &&
         state.availableSolBalance === newAvail &&
         state.reservedSol === reservedSol &&
-        state.status === 'live'
+        state.status === 'live' &&
+        state.onChainSolBalance === solBalance &&
+        state.onChainAvailableSol === newAvail
       ) {
         return state;
       }
       return {
+        onChainSolBalance: solBalance,
+        onChainReservedSol: reservedSol,
+        onChainAvailableSol: newAvail,
+        onChainLastUpdated: Date.now(),
+        onChainStatus: 'live',
+        onChainError: null,
         solBalance,
         reservedSol,
         availableSolBalance: newAvail,
@@ -191,10 +203,14 @@ export const useBalanceStore = create<BalanceState>((set) => ({
 }));
 
 /**
- * Authoritative trading balance retriever
+ * Authoritative trading balance retriever with network assertion
  */
-export function getTradingBalance(): number {
+export function getTradingBalance(expectedNetwork?: BalanceNetwork): number {
   const state = useBalanceStore.getState();
+
+  if (expectedNetwork && state.network !== expectedNetwork) {
+    throw new Error(`Trading balance requested for network '${expectedNetwork}', but active balanceStore network is '${state.network}'`);
+  }
 
   const avail = state.onChainAvailableSol ?? state.availableSolBalance;
   if (avail === null) {
@@ -211,8 +227,12 @@ export function getTradingBalance(): number {
 /**
  * Asserts sufficient live balance prior to trade execution
  */
-export async function assertTradeBalance(requiredSol: number): Promise<void> {
+export async function assertTradeBalance(requiredSol: number, expectedNetwork?: BalanceNetwork): Promise<void> {
   const state = useBalanceStore.getState();
+
+  if (expectedNetwork && state.network !== expectedNetwork) {
+    throw new Error(`Trade assertion failed: Expected network '${expectedNetwork}', active is '${state.network}'`);
+  }
 
   if (state.onChainStatus !== 'live' && state.status !== 'live') {
     throw new Error('Trading blocked: on-chain wallet balance is not live');
@@ -243,4 +263,3 @@ export function assertExecutionEnvironment(
     throw new Error('BLOCKED: Mainnet execution cannot use Devnet RPC');
   }
 }
-
