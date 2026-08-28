@@ -3375,9 +3375,9 @@ const checkTokenCriteria = (mint: string): {
       };
 
       // 1. Market Cap Min
-      const configuredPumpMin = hardenedMcapMinPump !== undefined ? hardenedMcapMinPump : 5000;
-      const pumpMcMin = configuredPumpMin >= 40000 ? 5000 : configuredPumpMin; // Allow early pump tokens starting at $5k
-      const mcMin = isGraduated ? (hardenedMcapMinRaydium !== undefined && hardenedMcapMinRaydium > 0 ? hardenedMcapMinRaydium : 10000) : pumpMcMin;
+      const mcMin = isGraduated 
+        ? (hardenedMcapMinRaydium !== undefined ? hardenedMcapMinRaydium : 40000) 
+        : (hardenedMcapMinPump !== undefined ? hardenedMcapMinPump : 40000);
       addCheckResult(
         "Min Market Cap",
         mc >= mcMin,
@@ -3386,7 +3386,7 @@ const checkTokenCriteria = (mint: string): {
       );
 
       // 2. Market Cap Max
-      const mcMax = hardenedMcapMax || 2500000;
+      const mcMax = hardenedMcapMax !== undefined ? hardenedMcapMax : 2500000;
       addCheckResult(
         "Max Market Cap",
         mc <= mcMax,
@@ -3395,7 +3395,7 @@ const checkTokenCriteria = (mint: string): {
       );
 
       // 3. Liquidity Min
-      const liqMin = isGraduated ? (hardenedLiquidityMin !== undefined ? Math.min(hardenedLiquidityMin, 5000) : 5000) : 2500;
+      const liqMin = hardenedLiquidityMin !== undefined ? hardenedLiquidityMin : 20000;
       addCheckResult(
         "Min Liquidity",
         liq >= liqMin,
@@ -3405,7 +3405,7 @@ const checkTokenCriteria = (mint: string): {
 
       // 4. Liquidity to Market Cap Ratio
       const mcRatio = mc > 0 ? (liq / mc) : 0;
-      const liqRatioMin = (hardenedLiquidityRatio !== undefined ? hardenedLiquidityRatio : 2) / 100;
+      const liqRatioMin = (hardenedLiquidityRatio !== undefined ? hardenedLiquidityRatio : 5) / 100;
       addCheckResult(
         "Liquidity/MC Ratio",
         mcRatio >= liqRatioMin,
@@ -3414,7 +3414,7 @@ const checkTokenCriteria = (mint: string): {
       );
 
       // 5. Top 10 Holders %
-      const maxTop10 = hardenedMaxTop10 !== undefined ? hardenedMaxTop10 : 35.0;
+      const maxTop10 = hardenedMaxTop10 !== undefined ? hardenedMaxTop10 : 14.0;
       addCheckResult(
         "Top 10 Holders %",
         top10 <= maxTop10,
@@ -3441,7 +3441,7 @@ const checkTokenCriteria = (mint: string): {
       );
 
       // 8. Risk Score Limit
-      const maxRiskScore = hardenedMaxRiskScore !== undefined ? hardenedMaxRiskScore : 30;
+      const maxRiskScore = hardenedMaxRiskScore !== undefined ? hardenedMaxRiskScore : 22;
       addCheckResult(
         "Safety Risk Score",
         riskScore <= maxRiskScore,
