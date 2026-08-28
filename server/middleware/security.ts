@@ -23,8 +23,14 @@ export function isAllowedOrigin(origin: string | undefined): boolean {
     return true;
   }
 
-  if (process.env.APP_URL && origin.startsWith(process.env.APP_URL)) {
-    return true;
+  if (process.env.APP_URL) {
+    try {
+      const originUrl = new URL(origin);
+      const appUrl = new URL(process.env.APP_URL);
+      if (originUrl.origin === appUrl.origin) {
+        return true;
+      }
+    } catch {}
   }
 
   try {

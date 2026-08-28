@@ -221,8 +221,10 @@ export class OrderManager {
     // 1. SIGNAL & Order creation with side-scoped idempotency lock
     const order = this.createOrder(targetMint, side, amount, slippageBps, undefined, currentNetwork, label);
 
-    // 2. Network-bound executor resolution (Not global mutable executor)
-    const executor = executionEngine.getExecutorForNetwork(order.network);
+    // 2. Network-bound executor resolution (use set executor if configured for this network, else executionEngine)
+    const executor = (this.executor && this.executor.mode === order.network)
+      ? this.executor
+      : executionEngine.getExecutorForNetwork(order.network);
 
     try {
       // 3. VALIDATING

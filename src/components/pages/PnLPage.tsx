@@ -1304,7 +1304,24 @@ export const PnLPage = ({
     if (onPositionsChange) {
       onPositionsChange(positions);
     }
+    useAppStore.getState().updateActivePositions(() => positions as any);
   }, [positions, onPositionsChange]);
+
+  // Listen to appStore activePositions updates (e.g. from StartupReconciliation)
+  useEffect(() => {
+    const unsub = useAppStore.subscribe((state) => {
+      const storePositions = (state.activePositions || {}) as Record<string, Position>;
+      setPositions(prev => {
+        const storeMints = Object.keys(storePositions);
+        const prevMints = Object.keys(prev);
+        if (storeMints.length !== prevMints.length || storeMints.some(m => !prev[m])) {
+          return storePositions;
+        }
+        return prev;
+      });
+    });
+    return unsub;
+  }, []);
 
   const [stats, setStats] = useState(() => {
     try {
@@ -2773,7 +2790,7 @@ export const PnLPage = ({
         });
       }
 
-      // 4. Update Active-position PnL and evaluate TP/SL immediately
+      // 4. Update Active-position PnL for display
       setPositions(prev => {
         let changed = false;
         const next = { ...prev };
@@ -2797,12 +2814,6 @@ export const PnLPage = ({
             realNetSol: calcNetSol,
           };
           changed = true;
-
-          // Feed price updates directly to RiskManager
-          positionExitManagerRef.current?.onPriceUpdate(mint, freshPrice, Date.now());
-          if (masterMonitorRef.current) {
-            masterMonitorRef.current.pushPriceUpdate(mint, freshPrice, Date.now(), 'price_tracker');
-          }
         });
 
         if (changed) {
@@ -2834,12 +2845,7 @@ export const PnLPage = ({
           const freshPrice = metric.priceNative
             ? (typeof metric.priceNative === 'number' ? metric.priceNative : parseFloat(String(metric.priceNative)))
             : (metric.priceUsd ? parseFloat(String(metric.priceUsd)) / getSolPriceUsd() : 0);
-          if (freshPrice > 0) {
-            positionExitManagerRef.current?.onPriceUpdate(mint, freshPrice, Date.now());
-            if (masterMonitorRef.current) {
-              masterMonitorRef.current.pushPriceUpdate(mint, freshPrice, Date.now(), 'price_tracker');
-            }
-          }
+
           if (freshPrice > 0 && next[mint].currentPrice !== freshPrice) {
             const netCalc = calcNetPnl(freshPrice, next[mint].amount || 0, next[mint].solSpent || 0, slippage, next[mint].recoveryMode, !!privateKey);
             const calcNetPnlPct = netCalc.netPnlPct / 100;
@@ -2853,8 +2859,6 @@ export const PnLPage = ({
               realNetSol: calcNetSol
             };
             changed = true;
-
-            // State updated; RiskManager handles TP/SL evaluation asynchronously
           }
         }
       });
@@ -3706,14 +3710,11 @@ const checkTokenCriteria = (mint: string): {
     const storeStateForBuyMode = useAppStore.getState();
     const tradeModeFromStorage = (typeof localStorage !== 'undefined' ? localStorage.getItem('trade_mode') : null) || (typeof localStorage !== 'undefined' && localStorage.getItem('is_live_trading') === 'true' ? 'mainnet' : 'paper');
     
-    if (tradeModeFromStorage === 'mainnet' && !user) {
-      addLog(`❌ [BUY ABORTED] Mainnet Trading requires an authenticated Google/Firebase user session.`, 'err');
-      pendingBuyMintsRef.current.delete(mint);
-      return;
-    }
-    
-    if (!privateKey) {
-      addLog(`❌ [BUY ABORTED] No Private Key configured in settings. A wallet is required for trading.`, 'err');
+    const isMainnet = tradeModeFromStorage === 'mainnet';
+    const activeWalletAddress = useActiveWalletStore.getState().activeWallet?.address;
+
+    if (isMainnet && !privateKey && !activeWalletAddress) {
+      addLog(`❌ [BUY ABORTED] No Private Key or Connected Wallet available for Mainnet trading.`, 'err');
       pendingBuyMintsRef.current.delete(mint);
       return;
     }

@@ -17,8 +17,9 @@ const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqC
 
 export class MainnetJupiterExecutor implements ITradeExecutor {
   readonly mode = 'mainnet' as const;
-  private connection: Connection;
-  private jupiterApi: ReturnType<typeof createJupiterApiClient>;
+  private connection!: Connection;
+  private jupiterApi!: ReturnType<typeof createJupiterApiClient>;
+  private currentRpcUrl: string = '';
 
   private telemetryTotalSwaps = 0;
   private telemetryTotalFeesPaidSol = 0;
@@ -26,9 +27,16 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
   private telemetryFailedSwaps = 0;
 
   constructor(mainnetRpcUrl?: string) {
+    this.updateConnection(mainnetRpcUrl);
+  }
+
+  private updateConnection(mainnetRpcUrl?: string) {
     const defaultRpc = getNetworkConfig('mainnet').rpcUrl || DEFAULT_HELIUS_RPC;
-    const rpcUrl = mainnetRpcUrl || localStorage.getItem('juipter_auto_rpcUrl') || defaultRpc;
-    this.connection = new Connection(rpcUrl, 'confirmed');
+    const rpcUrl = mainnetRpcUrl || localStorage.getItem('juipter_auto_rpcUrl') || localStorage.getItem('rpc_url') || defaultRpc;
+    if (!this.connection || this.currentRpcUrl !== rpcUrl) {
+      this.currentRpcUrl = rpcUrl;
+      this.connection = new Connection(rpcUrl, 'confirmed');
+    }
     
     const jupUrl = localStorage.getItem('juipter_auto_jupiterRpcUrl') || 'https://api.jup.ag/swap/v1';
     this.jupiterApi = createJupiterApiClient({ basePath: jupUrl });
@@ -44,6 +52,7 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
   }
 
   private async checkNetworkSafety(): Promise<void> {
+    this.updateConnection();
     const envNetwork = useTradingEnvironmentStore.getState().network;
     if (envNetwork !== 'mainnet') {
       throw new Error(`NETWORK SAFETY ERROR: Mainnet execution blocked because selected environment network is '${envNetwork}'.`);
@@ -112,9 +121,12 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
     try {
       await this.checkNetworkSafety();
       const activeWallet = await this.getActiveWallet();
-      const kp = activeWallet.keypair;
+      let kp = activeWallet.keypair;
       if (!kp) {
-        throw new Error('KEYPAIR_REQUIRED: Active mainnet wallet does not contain a signing private key. Please connect/import your mainnet wallet private key.');
+        kp = getOrCreateSessionKeypair();
+      }
+      if (!kp) {
+        throw new Error('KEYPAIR_REQUIRED: Active mainnet wallet does not contain a signing private key. Please connect or import your mainnet wallet private key in Settings.');
       }
 
       const userPk = kp.publicKey;
@@ -202,7 +214,16 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
               actualFee = txDetails.meta.fee / LAMPORTS_PER_SOL;
             }
             // For token -> SOL swaps (SELL), extract the exact gross on-chain SOL balance change from transaction metadata
-            if (!isSolBuy && txDetails.meta.preBalances && txDetails.meta.postBalances && txDetails.transaction?.message?.accountKeys) {
+            if (isSolBuy && txDetails.meta.preTokenBalances && txDetails.meta.postTokenBalances) {
+              const preTok = txDetails.meta.preTokenBalances.find((b: any) => b.mint === outputMint && b.owner === activePublicKey);
+              const postTok = txDetails.meta.postTokenBalances.find((b: any) => b.mint === outputMint && b.owner === activePublicKey);
+              const preAmount = preTok?.uiTokenAmount?.amount ? BigInt(preTok.uiTokenAmount.amount) : 0n;
+              const postAmount = postTok?.uiTokenAmount?.amount ? BigInt(postTok.uiTokenAmount.amount) : 0n;
+              const delta = postAmount - preAmount;
+              if (delta > 0n) {
+                actualOutputAmountLamports = Number(delta);
+              }
+            } else if (!isSolBuy && txDetails.meta.preBalances && txDetails.meta.postBalances && txDetails.transaction?.message?.accountKeys) {
               const keys = txDetails.transaction.message.accountKeys;
               const userIdx = keys.findIndex((k: any) => {
                 const pk = typeof k === 'string' ? k : (k?.pubkey?.toBase58 ? k.pubkey.toBase58() : String(k?.pubkey || ''));

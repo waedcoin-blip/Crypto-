@@ -97,7 +97,7 @@ export const TradingSettings: React.FC = () => {
     try {
       if (jupiterApiKey && jupiterApiKey !== '••••••••••••••••••••••••••') {
         localStorage.setItem('enc_jupiter_api_key', await encryptData(jupiterApiKey, password));
-        localStorage.setItem('jupiter_api_key', jupiterApiKey);
+        localStorage.removeItem('jupiter_api_key');
       }
       if (privateKey && privateKey !== '••••••••••••••••••••••••••') {
         try {

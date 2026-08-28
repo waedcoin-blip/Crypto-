@@ -20,12 +20,14 @@ export function getTradeCount(
   symbol: string | undefined,
   trades: SniperTrade[],
   positions: Record<string, any>,
-  pendingQueue?: Set<string>
+  pendingQueue?: Set<string>,
+  network?: string
 ): number {
   if (!tokenAddress) return 0;
 
   const normAddr = normalizeAddress(tokenAddress);
   const normSym = normalizeSymbol(symbol);
+  const currentNetwork = network || (typeof localStorage !== 'undefined' ? localStorage.getItem('trade_mode') : null) || 'paper';
 
   // Combine trades from argument AND global store to ensure no trades are missed
   let storeState: any = null;
@@ -39,12 +41,15 @@ export function getTradeCount(
     ...(storeState?.trades || [])
   ];
 
-  // 1. Count completed BUY trades in trades history
+  // 1. Count completed BUY trades in trades history matching current network
   const countedSignatures = new Set<string>();
   let completedBuys = 0;
 
   for (const t of allTradesList) {
     if (!t || t.type !== 'BUY') continue;
+
+    const tradeNet = (t as any).network || (t as any).mode || (t.id?.startsWith('SIM') || t.signature?.startsWith('SIM') ? 'paper' : 'mainnet');
+    if (tradeNet !== currentNetwork) continue;
 
     // Avoid double counting same trade signature/id if present in multiple lists
     const uniqueKey = t.id || t.signature || `${t.address}-${t.timestamp}`;
@@ -62,7 +67,7 @@ export function getTradeCount(
     }
   }
 
-  // 2. Count active position
+  // 2. Count active position matching current network
   let isActive = 0;
   const activePositionsMap = {
     ...(positions || {}),
@@ -72,6 +77,10 @@ export function getTradeCount(
   for (const [key, pos] of Object.entries(activePositionsMap)) {
     if (!pos) continue;
     const p = pos as any;
+
+    const posNet = p.network || p.mode || (key.toLowerCase().startsWith('sim') || p.mint?.toLowerCase().startsWith('sim') ? 'paper' : 'mainnet');
+    if (posNet !== currentNetwork) continue;
+
     const pAddr = normalizeAddress(key || p?.address || p?.mint);
     const pSym = normalizeSymbol(p?.symbol);
 

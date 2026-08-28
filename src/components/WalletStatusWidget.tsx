@@ -91,9 +91,11 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
   const activeAddress = activeWallet?.address || null;
   const isSessionActive = activeWallet?.source === 'session';
 
+  const envNetwork = useTradingEnvironmentStore(state => state.network) || 'paper';
+
   // Synchronize phantom connect/disconnect to the ActiveWalletStore
   useEffect(() => {
-    const targetNetwork = 'mainnet';
+    const targetNetwork = envNetwork;
     if (publicKey) {
       if (activeWallet?.address !== publicKey.toBase58() || activeWallet?.network !== targetNetwork) {
          switchActiveWallet({
@@ -115,7 +117,7 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
        // If activeWallet already has a restored session keypair, sync it back to sessionWallet
        setSessionWallet(activeWallet.keypair);
     }
-  }, [publicKey, sessionWallet, activeWallet?.address, activeWallet?.network, activeWallet?.keypair, setSessionWallet, switchActiveWallet]);
+  }, [publicKey, sessionWallet, activeWallet?.address, activeWallet?.network, activeWallet?.keypair, envNetwork, setSessionWallet, switchActiveWallet]);
 
   // WalletBalanceService polling for active address
   useEffect(() => {
