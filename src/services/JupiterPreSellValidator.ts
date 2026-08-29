@@ -100,7 +100,8 @@ export class JupiterPreSellValidator {
         undefined, // minTargetProfitPct
         undefined, // currentPnLPercent
         false, // restrictIntermediateTokens
-        false // onlyDirectRoutes
+        false, // onlyDirectRoutes
+        slippageBps // Pass requested slippage explicitly
       );
     } catch (err: any) {
       return baseFailure(`Jupiter API quote exception: ${err?.message || String(err)}`);
@@ -129,12 +130,10 @@ export class JupiterPreSellValidator {
       return baseFailure(`Price impact (${priceImpactPct.toFixed(2)}%) exceeds safety threshold (${maxImpactThreshold}%).`);
     }
 
-    // 4. CALCULATE REALIZABLE EXECUTABLE P&L
+    // 4. CALCULATE REALIZABLE EXECUTABLE P&L (without hardcoded artificial fees)
     let executablePnlPct = 0;
     if (costBasisSol > 0) {
-      const estimatedFeeSol = 0.002;
-      const netSolOut = Math.max(0, outAmountSol - estimatedFeeSol);
-      executablePnlPct = ((netSolOut - costBasisSol) / costBasisSol) * 100;
+      executablePnlPct = ((outAmountSol - costBasisSol) / costBasisSol) * 100;
     }
 
     // 5. PROFITABILITY & SIGNAL CONFLICT CHECKS

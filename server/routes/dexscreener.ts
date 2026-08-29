@@ -164,6 +164,12 @@ router.get('/tokens/trending', asyncHandler(async (req, res) => {
         })
       );
 
+      // 🟠 Fail closed if all discovery feeds failed
+      const fulfilledResponses = responses.filter(r => r.status === 'fulfilled');
+      if (fulfilledResponses.length === 0) {
+        throw new Error('All discovery feeds are unavailable (DEXScreener profile APIs unreachable).');
+      }
+
       for (const result of responses) {
         if (result.status !== 'fulfilled') continue;
 
@@ -193,8 +199,9 @@ router.get('/tokens/trending', asyncHandler(async (req, res) => {
 
       const mints = Array.from(discovered.keys());
 
+      // Valid feeds responded, but no tokens in latest batch
       if (mints.length === 0) {
-        return { pairs: [] };
+        return { schemaVersion: '2.0.0', pairs: [], discoveredAt: Date.now(), failed: false };
       }
 
       // DexScreener supports batches of up to 30 token addresses.

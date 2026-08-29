@@ -4,6 +4,7 @@ import { Connection } from '@solana/web3.js';
 import { jupiterPreSellValidator } from '../../services/JupiterPreSellValidator';
 import { pingJupiterApi } from '../../services/jupiterService';
 import { marketDataManager } from '../../services/marketDataManager';
+import { telemetryService, TelemetrySpan } from '../../services/telemetryService';
 
 export const SystemCheckPage = ({
   rpcUrl
@@ -54,6 +55,7 @@ export const SystemCheckPage = ({
     setResults({
       rpcUrl: { status: 'testing', details: '' },
       masterMonitorRpc: { status: 'testing', details: '' },
+      jupiterPreSell: { status: 'testing', details: '' },
       laserstream: { status: 'testing', details: '' },
       dexscreener: { status: 'testing', details: '' },
     });

@@ -21,6 +21,7 @@ export interface PaperPosition {
 interface PaperWalletData {
   solBalance: number;
   tokenBalances: Record<string, number>;
+  tokenAccounts?: Record<string, boolean>;
   positions: Record<string, PaperPosition>;
   address: string;
 }
@@ -30,6 +31,8 @@ interface PaperWalletState extends PaperWalletData {
   adjustSolBalance: (delta: number) => void;
   setTokenBalance: (mint: string, balance: number) => void;
   adjustTokenBalance: (mint: string, delta: number) => void;
+  hasTokenAccount: (mint: string) => boolean;
+  createTokenAccount: (mint: string) => void;
   recordBuyPosition: (mint: string, tokenQuantity: number, totalCostSol: number) => void;
   recordSellPosition: (mint: string, tokenQuantity: number, proceedsSol?: number) => void;
   getPosition: (mint: string) => PaperPosition | undefined;
@@ -43,6 +46,7 @@ function loadInitialData(): PaperWalletData {
     return {
       solBalance: DEFAULT_INITIAL_SOL,
       tokenBalances: {},
+      tokenAccounts: {},
       positions: {},
       address: DEFAULT_PAPER_TRADING_ADDRESS,
     };
@@ -55,6 +59,7 @@ function loadInitialData(): PaperWalletData {
       return {
         solBalance: typeof parsed.solBalance === 'number' ? parsed.solBalance : DEFAULT_INITIAL_SOL,
         tokenBalances: parsed.tokenBalances && typeof parsed.tokenBalances === 'object' ? parsed.tokenBalances : {},
+        tokenAccounts: parsed.tokenAccounts && typeof parsed.tokenAccounts === 'object' ? parsed.tokenAccounts : {},
         positions: parsed.positions && typeof parsed.positions === 'object' ? parsed.positions : {},
         address: DEFAULT_PAPER_TRADING_ADDRESS,
       };
@@ -66,6 +71,7 @@ function loadInitialData(): PaperWalletData {
   return {
     solBalance: DEFAULT_INITIAL_SOL,
     tokenBalances: {},
+    tokenAccounts: {},
     positions: {},
     address: DEFAULT_PAPER_TRADING_ADDRESS,
   };
@@ -77,6 +83,7 @@ function persistData(data: PaperWalletData): void {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       solBalance: data.solBalance,
       tokenBalances: data.tokenBalances,
+      tokenAccounts: data.tokenAccounts,
       positions: data.positions,
     }));
   } catch (e) {
@@ -125,6 +132,10 @@ export const usePaperWalletStore = create<PaperWalletState>((set, get) => {
     setTokenBalance: (mint, balance) => {
       const clamped = Math.max(0, balance);
       const nextTokens = { ...get().tokenBalances, [mint]: clamped <= DUST_THRESHOLD ? 0 : clamped };
+      const nextTokenAccounts = { ...(get().tokenAccounts || {}) };
+      if (clamped > DUST_THRESHOLD) {
+        nextTokenAccounts[mint] = true;
+      }
       const nextPositions = { ...get().positions };
       if (clamped <= DUST_THRESHOLD && nextPositions[mint]) {
         nextPositions[mint] = {
@@ -134,8 +145,8 @@ export const usePaperWalletStore = create<PaperWalletState>((set, get) => {
           lastUpdatedAt: Date.now(),
         };
       }
-      set({ tokenBalances: nextTokens, positions: nextPositions });
-      persistData({ ...get(), tokenBalances: nextTokens, positions: nextPositions });
+      set({ tokenBalances: nextTokens, tokenAccounts: nextTokenAccounts, positions: nextPositions });
+      persistData({ ...get(), tokenBalances: nextTokens, tokenAccounts: nextTokenAccounts, positions: nextPositions });
       sync();
     },
 
@@ -143,6 +154,10 @@ export const usePaperWalletStore = create<PaperWalletState>((set, get) => {
       const current = get().tokenBalances[mint] || 0;
       const next = Math.max(0, current + delta);
       const nextTokens = { ...get().tokenBalances, [mint]: next <= DUST_THRESHOLD ? 0 : next };
+      const nextTokenAccounts = { ...(get().tokenAccounts || {}) };
+      if (next > DUST_THRESHOLD) {
+        nextTokenAccounts[mint] = true;
+      }
       const nextPositions = { ...get().positions };
       if (next <= DUST_THRESHOLD && nextPositions[mint]) {
         nextPositions[mint] = {
@@ -152,9 +167,19 @@ export const usePaperWalletStore = create<PaperWalletState>((set, get) => {
           lastUpdatedAt: Date.now(),
         };
       }
-      set({ tokenBalances: nextTokens, positions: nextPositions });
-      persistData({ ...get(), tokenBalances: nextTokens, positions: nextPositions });
+      set({ tokenBalances: nextTokens, tokenAccounts: nextTokenAccounts, positions: nextPositions });
+      persistData({ ...get(), tokenBalances: nextTokens, tokenAccounts: nextTokenAccounts, positions: nextPositions });
       sync();
+    },
+
+    hasTokenAccount: (mint: string) => {
+      return Boolean(get().tokenAccounts?.[mint] || (get().tokenBalances[mint] || 0) > 0);
+    },
+
+    createTokenAccount: (mint: string) => {
+      const nextTokenAccounts = { ...(get().tokenAccounts || {}), [mint]: true };
+      set({ tokenAccounts: nextTokenAccounts });
+      persistData({ ...get(), tokenAccounts: nextTokenAccounts });
     },
 
     recordBuyPosition: (mint, tokenQuantity, totalCostSol) => {
@@ -190,9 +215,10 @@ export const usePaperWalletStore = create<PaperWalletState>((set, get) => {
       }
 
       const nextTokens = { ...get().tokenBalances, [mint]: updatedPos.quantity };
+      const nextTokenAccounts = { ...(get().tokenAccounts || {}), [mint]: true };
       const nextPositions = { ...get().positions, [mint]: updatedPos };
-      set({ tokenBalances: nextTokens, positions: nextPositions });
-      persistData({ ...get(), tokenBalances: nextTokens, positions: nextPositions });
+      set({ tokenBalances: nextTokens, tokenAccounts: nextTokenAccounts, positions: nextPositions });
+      persistData({ ...get(), tokenBalances: nextTokens, tokenAccounts: nextTokenAccounts, positions: nextPositions });
       sync();
     },
 
@@ -259,6 +285,7 @@ export const usePaperWalletStore = create<PaperWalletState>((set, get) => {
       const resetState: PaperWalletData = {
         solBalance: initialSol,
         tokenBalances: {},
+        tokenAccounts: {},
         positions: {},
         address: DEFAULT_PAPER_TRADING_ADDRESS,
       };

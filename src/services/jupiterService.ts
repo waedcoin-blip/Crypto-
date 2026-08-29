@@ -346,7 +346,8 @@ export const getJupiterQuote = async (
   minTargetProfitPct?: number,
   currentPnLPercent?: number,
   restrictIntermediateTokens?: boolean,
-  onlyDirectRoutes?: boolean
+  onlyDirectRoutes?: boolean,
+  customSlippageBps?: number
 ): Promise<QuoteResponse | null> => {
   const isValidSolanaAddress = (addr: string) => {
     if (!addr) return false;
@@ -359,7 +360,9 @@ export const getJupiterQuote = async (
   }
   if (inputMint === outputMint) return null;
 
-  const determinedSlippage = calculateDynamicSlippageBps(liquidityUsd, currentPnLPercent);
+  const determinedSlippage = (customSlippageBps !== undefined && customSlippageBps > 0)
+    ? customSlippageBps
+    : calculateDynamicSlippageBps(liquidityUsd, currentPnLPercent);
 
   // ── LIVE PATH ─────────────────────────────────────────────────────────────
   useAppStore.getState().addJupiterLog({
@@ -442,9 +445,7 @@ export const getJupiterQuote = async (
     if (initialBuyCostSol !== undefined && minTargetProfitPct !== undefined) {
       const expectedLamportsOut = BigInt(quote.outAmount);
       const expectedSolOut = Number(expectedLamportsOut) / 1_000_000_000;
-      const estimatedFeesSol = 0.002;
-      const cleanReturn = expectedSolOut - estimatedFeesSol;
-      const trueNetProfitPct = ((cleanReturn - initialBuyCostSol) / initialBuyCostSol) * 100;
+      const trueNetProfitPct = ((expectedSolOut - initialBuyCostSol) / initialBuyCostSol) * 100;
       if (trueNetProfitPct <= minTargetProfitPct) {
         console.warn(`[QUOTE REJECTED]: Net P&L (${trueNetProfitPct.toFixed(2)}%) below target (${minTargetProfitPct}%)`);
         return null;

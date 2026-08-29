@@ -464,40 +464,50 @@ export class RiskManager {
     // REFERENCE PRICE AUTHORITY RULES:
     // 1. Position is negative: use DexScreener as reference price.
     // 2. Position is positive: use Jupiter as reference price.
-    // 3. When switching negative -> positive: switch to Jupiter.
-    // 4. When switching positive -> negative: switch to DexScreener.
-    // 5. Never let a non-authoritative source overwrite current PnL price.
+    // 3. When switching negative -> positive: ONLY allow if confirmed by 'jupiter'.
+    // 4. When switching positive -> negative: ONLY allow if confirmed by current authority 'jupiter'.
+    // 5. Never let a non-authoritative bad price from an external source flip PnL authority.
 
     let isAuthoritative = false;
 
     if (!pos.isPnLPositive) {
       // Position is currently NEGATIVE (authoritative reference source: 'dexscreener')
       if (candidateIsPositive) {
-        // Switch negative -> positive: switch authority to 'jupiter'
-        pos.isPnLPositive = true;
-        pos.activePriceSource = 'jupiter';
-        isAuthoritative = true;
-        console.log(`[RiskManager] 🔄 Position ${mint.slice(0, 6)} switched NEGATIVE -> POSITIVE (+${candidatePnLPct.toFixed(2)}%). Reference source set to JUPITER.`);
+        // Only switch negative -> positive if the update originates from authoritative Jupiter
+        if (normalizedSource === 'jupiter') {
+          pos.isPnLPositive = true;
+          pos.activePriceSource = 'jupiter';
+          isAuthoritative = true;
+          console.log(`[RiskManager] 🔄 Position ${mint.slice(0, 6)} switched NEGATIVE -> POSITIVE (+${candidatePnLPct.toFixed(2)}%). Reference source set to JUPITER.`);
+        } else {
+          // Non-authoritative candidate positive price is rejected until confirmed by Jupiter
+          isAuthoritative = false;
+        }
       } else if (normalizedSource === 'dexscreener') {
         // Still negative, update comes from authoritative source 'dexscreener'
         isAuthoritative = true;
       } else {
-        // Non-authoritative update (e.g. Jupiter sending negative update while position is negative)
+        // Non-authoritative update (e.g. unverified source)
         isAuthoritative = false;
       }
     } else {
       // Position is currently POSITIVE (authoritative reference source: 'jupiter')
       if (!candidateIsPositive) {
-        // Switch positive -> negative: switch authority to 'dexscreener'
-        pos.isPnLPositive = false;
-        pos.activePriceSource = 'dexscreener';
-        isAuthoritative = true;
-        console.log(`[RiskManager] 🔄 Position ${mint.slice(0, 6)} switched POSITIVE -> NEGATIVE (${candidatePnLPct.toFixed(2)}%). Reference source set to DEXSCREENER.`);
+        // Only switch positive -> negative if the update originates from current authority 'jupiter'
+        if (normalizedSource === 'jupiter') {
+          pos.isPnLPositive = false;
+          pos.activePriceSource = 'dexscreener';
+          isAuthoritative = true;
+          console.log(`[RiskManager] 🔄 Position ${mint.slice(0, 6)} switched POSITIVE -> NEGATIVE (${candidatePnLPct.toFixed(2)}%). Reference source set to DEXSCREENER.`);
+        } else {
+          // Non-authoritative bad price (e.g. DexScreener temporary dip) CANNOT flip a positive Jupiter position!
+          isAuthoritative = false;
+        }
       } else if (normalizedSource === 'jupiter') {
         // Still positive, update comes from authoritative source 'jupiter'
         isAuthoritative = true;
       } else {
-        // Non-authoritative update (e.g. DexScreener sending positive update while position is positive)
+        // Non-authoritative update
         isAuthoritative = false;
       }
     }

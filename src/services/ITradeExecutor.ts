@@ -1,6 +1,24 @@
 // src/services/ITradeExecutor.ts
 import { QuoteGetRequest, QuoteResponse } from '@jup-ag/api';
 
+export type ExecutionFailureClassification =
+  | 'quote_failure'
+  | 'slippage_failure'
+  | 'transaction_failure'
+  | 'receipt_failure';
+
+export class ExecutionError extends Error {
+  classification: ExecutionFailureClassification;
+  details?: any;
+
+  constructor(classification: ExecutionFailureClassification, message: string, details?: any) {
+    super(message);
+    this.name = 'ExecutionError';
+    this.classification = classification;
+    this.details = details;
+  }
+}
+
 export interface SwapResult {
   signature: string;
   inputMint: string;
@@ -14,6 +32,7 @@ export interface SwapResult {
   method: 'jito' | 'helius' | 'rpc';
   simulated?: boolean;
   error?: string;
+  failureClassification?: ExecutionFailureClassification;
 }
 
 export interface ITradeExecutor {

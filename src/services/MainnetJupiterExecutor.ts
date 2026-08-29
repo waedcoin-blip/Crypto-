@@ -1,5 +1,6 @@
 // src/services/MainnetJupiterExecutor.ts
-import { ITradeExecutor, SwapResult, ExecutorTelemetry } from './ITradeExecutor';
+import { ITradeExecutor, SwapResult, ExecutorTelemetry, ExecutionError, ExecutionFailureClassification } from './ITradeExecutor';
+import { JupiterTransactionReplay, classifyExecutionError } from './JupiterTransactionReplay';
 import { QuoteGetRequest, QuoteResponse, createJupiterApiClient } from '@jup-ag/api';
 import { Connection, LAMPORTS_PER_SOL, PublicKey, VersionedTransaction } from '@solana/web3.js';
 import { DEFAULT_HELIUS_RPC } from '../constants/solana';
@@ -25,6 +26,7 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
   private telemetryTotalFeesPaidSol = 0;
   private telemetryLandingTimeTotalMs = 0;
   private telemetryFailedSwaps = 0;
+  private lastFailureReason?: string;
 
   constructor(mainnetRpcUrl?: string) {
     this.updateConnection(mainnetRpcUrl);
@@ -69,43 +71,39 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
   }
 
   private validateQuoteSafety(quote: QuoteResponse, inputAmount: number, slippageBps: number): void {
-    if (inputAmount <= 0 || !isFinite(inputAmount)) {
-      throw new Error(`INVALID_SWAP_AMOUNT: Amount must be positive and finite (got: ${inputAmount}).`);
-    }
-    if (slippageBps > 1000) {
-      throw new Error(`EXCESSIVE_SLIPPAGE: Slippage BPS ${slippageBps} exceeds maximum allowable limit of 1000 (10%).`);
-    }
-    if (!quote) {
-      throw new Error('QUOTE_SAFETY_ERROR: Jupiter returned empty quote.');
-    }
-    if (!quote.outAmount || BigInt(quote.outAmount) <= 0n) {
-      throw new Error('QUOTE_SAFETY_ERROR: Jupiter returned zero or negative output amount.');
-    }
-    if (!quote.routePlan || quote.routePlan.length === 0) {
-      throw new Error('QUOTE_SAFETY_ERROR: Jupiter returned no executable routes.');
-    }
-    const impact = parseFloat(String(quote.priceImpactPct || '0')) * 100;
-    if (impact > 10.0) {
-      throw new Error(`QUOTE_SAFETY_ERROR: Excessive price impact (${impact.toFixed(2)}%) exceeds safety threshold of 10.0%.`);
-    }
+    JupiterTransactionReplay.validateInitialQuote({
+      quote,
+      inputAmount,
+      slippageBps,
+      maxPriceImpactPct: 10.0,
+    });
   }
 
   private async getActiveWallet() {
     await this.checkNetworkSafety();
     const wallet = useActiveWalletStore.getState().activeWallet;
-    if (!wallet) throw new Error('No active wallet selected for Mainnet trading');
+    if (!wallet) throw new ExecutionError('transaction_failure', 'No active wallet selected for Mainnet trading');
     return wallet;
   }
 
   private getActivePublicKey(): string {
     const pk = this.publicKey;
-    if (!pk) throw new Error('Active wallet has no valid address');
+    if (!pk) throw new ExecutionError('transaction_failure', 'Active wallet has no valid address');
     return pk;
   }
 
   async getQuote(params: QuoteGetRequest): Promise<QuoteResponse> {
     await this.checkNetworkSafety();
-    return this.jupiterApi.quoteGet(params);
+    try {
+      const quote = await this.jupiterApi.quoteGet(params);
+      if (!quote) {
+        throw new ExecutionError('quote_failure', 'Jupiter returned empty quote.');
+      }
+      return quote;
+    } catch (err: any) {
+      const classification = classifyExecutionError(err);
+      throw new ExecutionError(classification, `Jupiter getQuote failed: ${err.message || String(err)}`);
+    }
   }
 
   async swap(
@@ -121,16 +119,24 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
     try {
       await this.checkNetworkSafety();
       const activeWallet = await this.getActiveWallet();
-      let kp = activeWallet.keypair;
+      
+      // 🔴 Mainnet wallet/keypair identity enforcement: No automatic/generated signer for real trades
+      const kp = activeWallet.keypair;
       if (!kp) {
-        kp = getOrCreateSessionKeypair();
-      }
-      if (!kp) {
-        throw new Error('KEYPAIR_REQUIRED: Active mainnet wallet does not contain a signing private key. Please connect or import your mainnet wallet private key in Settings.');
+        throw new ExecutionError(
+          'transaction_failure',
+          'KEYPAIR_REQUIRED: Active mainnet wallet does not contain a signing private key. Real mainnet trades require an explicit private key imported in Settings. Automatic key generation is disabled.'
+        );
       }
 
-      const userPk = kp.publicKey;
-      const activePublicKey = userPk.toBase58();
+      const activePublicKey = kp.publicKey.toBase58();
+      if (activeWallet.address && activeWallet.address !== activePublicKey) {
+        throw new ExecutionError(
+          'transaction_failure',
+          `KEYPAIR_IDENTITY_MISMATCH: Keypair public key (${activePublicKey.slice(0, 8)}...) does not match active wallet address (${activeWallet.address.slice(0, 8)}...). Execution aborted.`
+        );
+      }
+
       const isSolBuy = inputMint === 'So11111111111111111111111111111111111111112';
 
       await assertTradeBalance(isSolBuy ? amount / LAMPORTS_PER_SOL + 0.005 : 0.005);
@@ -138,7 +144,10 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
       if (!isSolBuy) {
         const tokenBalance = await this.getTokenBalance(inputMint);
         if (tokenBalance < amount) {
-          throw new Error(`Insufficient token balance for exit (Available: ${tokenBalance}, Required: ${amount})`);
+          throw new ExecutionError(
+            'transaction_failure',
+            `Insufficient token balance for exit (Available: ${tokenBalance}, Required: ${amount})`
+          );
         }
       }
 
@@ -153,44 +162,60 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
 
       this.validateQuoteSafety(quote, amount, slippageBps);
 
-      const outAmountNum = Number(quote.outAmount);
-
       // Post swap request with properly formatted prioritizationFeeLamports object
-      const swapBuild = await this.jupiterApi.swapPost({
-        swapRequest: {
-          quoteResponse: quote,
-          userPublicKey: activePublicKey,
-          dynamicComputeUnitLimit: true,
-          prioritizationFeeLamports: {
-            priorityLevelWithMaxLamports: {
-              priorityLevel: 'medium',
-              maxLamports: 100000,
-              global: false,
-            },
-          } as any,
-        },
-      });
+      let swapBuild;
+      try {
+        swapBuild = await this.jupiterApi.swapPost({
+          swapRequest: {
+            quoteResponse: quote,
+            userPublicKey: activePublicKey,
+            dynamicComputeUnitLimit: true,
+            prioritizationFeeLamports: {
+              priorityLevelWithMaxLamports: {
+                priorityLevel: 'medium',
+                maxLamports: 100000,
+                global: false,
+              },
+            } as any,
+          },
+        });
+      } catch (postErr: any) {
+        throw new ExecutionError('transaction_failure', `Jupiter swapPost failed: ${postErr?.message || String(postErr)}`);
+      }
 
       const txBuf = Buffer.from(swapBuild.swapTransaction, 'base64');
       const tx = VersionedTransaction.deserialize(txBuf);
       tx.sign([kp]);
 
-      const sig = await this.connection.sendRawTransaction(tx.serialize(), {
-        skipPreflight: false,
-        maxRetries: 3,
-      });
+      let sig: string;
+      try {
+        sig = await this.connection.sendRawTransaction(tx.serialize(), {
+          skipPreflight: false,
+          maxRetries: 3,
+        });
+      } catch (sendErr: any) {
+        throw new ExecutionError('transaction_failure', `Send raw transaction failed: ${sendErr?.message || String(sendErr)}`);
+      }
 
-      const confirmation = await this.connection.confirmTransaction(
-        {
-          signature: sig,
-          blockhash: tx.message.recentBlockhash,
-          lastValidBlockHeight: swapBuild.lastValidBlockHeight || (await this.connection.getLatestBlockhash()).lastValidBlockHeight,
-        },
-        'confirmed'
-      );
+      let confirmation;
+      try {
+        confirmation = await this.connection.confirmTransaction(
+          {
+            signature: sig,
+            blockhash: tx.message.recentBlockhash,
+            lastValidBlockHeight: swapBuild.lastValidBlockHeight || (await this.connection.getLatestBlockhash()).lastValidBlockHeight,
+          },
+          'confirmed'
+        );
+      } catch (confErr: any) {
+        throw new ExecutionError('transaction_failure', `Transaction confirmation RPC call failed: ${confErr?.message || String(confErr)}`);
+      }
 
       if (confirmation.value.err) {
-        throw new Error(`Mainnet transaction confirmation failed: ${JSON.stringify(confirmation.value.err)}`);
+        throw new ExecutionError(
+          'transaction_failure',
+          `Mainnet transaction confirmation failed on-chain: ${JSON.stringify(confirmation.value.err)}`
+        );
       }
 
       const slot = confirmation.context.slot;
@@ -200,51 +225,43 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
 
       const landingTimeMs = Date.now() - start;
 
-      // Query actual transaction fee and on-chain balance deltas from confirmed transaction metadata with retries
+      // 🔴 Strict on-chain confirmed proceeds parsing: No fake Jupiter-quote fallback for confirmed sell proceeds
       let actualFee = 0.000005;
-      let actualOutputAmountLamports = outAmountNum;
-      for (let attempt = 0; attempt < 4; attempt++) {
+      let actualOutputAmountLamports = 0;
+      let verifiedReceipt = false;
+
+      for (let attempt = 0; attempt < 5; attempt++) {
         try {
           const txDetails = await this.connection.getParsedTransaction(sig, {
             commitment: 'confirmed',
             maxSupportedTransactionVersion: 0,
           });
           if (txDetails?.meta) {
-            if (txDetails.meta.fee !== undefined) {
-              actualFee = txDetails.meta.fee / LAMPORTS_PER_SOL;
-            }
-            // For token -> SOL swaps (SELL), extract the exact gross on-chain SOL balance change from transaction metadata
-            if (isSolBuy && txDetails.meta.preTokenBalances && txDetails.meta.postTokenBalances) {
-              const preTok = txDetails.meta.preTokenBalances.find((b: any) => b.mint === outputMint && b.owner === activePublicKey);
-              const postTok = txDetails.meta.postTokenBalances.find((b: any) => b.mint === outputMint && b.owner === activePublicKey);
-              const preAmount = preTok?.uiTokenAmount?.amount ? BigInt(preTok.uiTokenAmount.amount) : 0n;
-              const postAmount = postTok?.uiTokenAmount?.amount ? BigInt(postTok.uiTokenAmount.amount) : 0n;
-              const delta = postAmount - preAmount;
-              if (delta > 0n) {
-                actualOutputAmountLamports = Number(delta);
-              }
-            } else if (!isSolBuy && txDetails.meta.preBalances && txDetails.meta.postBalances && txDetails.transaction?.message?.accountKeys) {
-              const keys = txDetails.transaction.message.accountKeys;
-              const userIdx = keys.findIndex((k: any) => {
-                const pk = typeof k === 'string' ? k : (k?.pubkey?.toBase58 ? k.pubkey.toBase58() : String(k?.pubkey || ''));
-                return pk === activePublicKey;
-              });
-              if (userIdx !== -1 && txDetails.meta.preBalances[userIdx] !== undefined && txDetails.meta.postBalances[userIdx] !== undefined) {
-                const preBal = txDetails.meta.preBalances[userIdx];
-                const postBal = txDetails.meta.postBalances[userIdx];
-                const feeLamports = (userIdx === 0 && txDetails.meta.fee) ? txDetails.meta.fee : 0;
-                const grossLamports = postBal - preBal + feeLamports;
-                // Only accept account delta if it is within 20% of quote output to exclude rent refunds
-                if (grossLamports > 0 && outAmountNum > 0 && Math.abs(grossLamports - outAmountNum) / outAmountNum <= 0.20) {
-                  actualOutputAmountLamports = grossLamports;
-                }
-              }
-            }
+            const receipt = JupiterTransactionReplay.verifyConfirmedReceipt({
+              txDetails,
+              userPublicKey: activePublicKey,
+              inputMint,
+              outputMint,
+              isSolBuy,
+            });
+            actualFee = receipt.actualFeeSol;
+            actualOutputAmountLamports = receipt.actualOutputAmount;
+            verifiedReceipt = true;
             break;
           }
         } catch (fErr) {
-          await new Promise((r) => setTimeout(r, 500));
+          if (attempt === 4) {
+            throw fErr;
+          }
+          await new Promise((r) => setTimeout(r, 400));
         }
+      }
+
+      if (!verifiedReceipt || actualOutputAmountLamports <= 0) {
+        throw new ExecutionError(
+          'receipt_failure',
+          'Confirmed receipt verification failed: Unable to extract on-chain balance deltas.'
+        );
       }
 
       this.telemetryTotalFeesPaidSol += actualFee;
@@ -268,9 +285,11 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
         method: 'rpc',
       };
     } catch (err: any) {
+      const classification = classifyExecutionError(err);
       this.telemetryFailedSwaps++;
-      console.error('[MainnetJupiterExecutor] Swap failed:', err);
-      throw new Error(`Mainnet Jupiter swap execution failed: ${err.message || String(err)}`);
+      this.lastFailureReason = `[${classification}] ${err.message || String(err)}`;
+      console.error(`[MainnetJupiterExecutor] [${classification}] Swap failed:`, err);
+      throw new ExecutionError(classification, `Mainnet Jupiter swap execution failed: ${err.message || String(err)}`);
     }
   }
 
@@ -342,8 +361,23 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
 
   async hasTokenAccount(mint: string): Promise<boolean> {
     if (!this.publicKey) return false;
-    const balance = await this.getTokenBalance(mint);
-    return balance > 0;
+    const ownerPk = new PublicKey(this.publicKey);
+    const mintPk = new PublicKey(mint);
+
+    const [splAccounts, t22Accounts] = await Promise.all([
+      this.connection.getParsedTokenAccountsByOwner(
+        ownerPk,
+        { mint: mintPk, programId: TOKEN_PROGRAM_ID },
+        'confirmed'
+      ).catch(() => ({ value: [] })),
+      this.connection.getParsedTokenAccountsByOwner(
+        ownerPk,
+        { mint: mintPk, programId: TOKEN_2022_PROGRAM_ID },
+        'confirmed'
+      ).catch(() => ({ value: [] })),
+    ]);
+
+    return splAccounts.value.length > 0 || t22Accounts.value.length > 0;
   }
 
   private async syncStoreBalances(activePublicKey: string, targetMint?: string): Promise<void> {
@@ -391,11 +425,13 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
   }
 
   getTelemetry(): ExecutorTelemetry {
+    const totalAttempted = this.telemetryTotalSwaps + this.telemetryFailedSwaps;
     return {
       totalSwaps: this.telemetryTotalSwaps,
       totalFeesPaidSol: this.telemetryTotalFeesPaidSol,
       avgLandingTimeMs: this.telemetryTotalSwaps > 0 ? this.telemetryLandingTimeTotalMs / this.telemetryTotalSwaps : 0,
-      failureRate: this.telemetryTotalSwaps > 0 ? this.telemetryFailedSwaps / this.telemetryTotalSwaps : 0,
+      failureRate: totalAttempted > 0 ? this.telemetryFailedSwaps / totalAttempted : 0,
+      lastFailure: this.lastFailureReason,
     };
   }
 }
