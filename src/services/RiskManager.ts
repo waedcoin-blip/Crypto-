@@ -693,15 +693,12 @@ export class RiskManager {
       const slippageBps = side === 'tp' ? (pos.slippageBpsTp || 250) : (pos.slippageBpsSl || 1000);
       const label = side === 'tp' ? 'exit_tp' : 'exit_sl';
 
-      // Always sync to true raw balance in integer base units
+      // Always sync to true raw balance in integer base units (getTokenBalance already returns RAW base units)
       if (typeof this.executor.getTokenBalance === 'function') {
         try {
-          const liveTokens = await this.executor.getTokenBalance(mint);
-          if (liveTokens > 0) {
-            const rawLive = Math.floor(liveTokens * (10 ** pos.tokenDecimals));
-            if (rawLive > 0) {
-              pos.amount = rawLive;
-            }
+          const liveRawTokens = await this.executor.getTokenBalance(mint);
+          if (liveRawTokens > 0) {
+            pos.amount = Math.floor(liveRawTokens);
           }
         } catch {}
       }
