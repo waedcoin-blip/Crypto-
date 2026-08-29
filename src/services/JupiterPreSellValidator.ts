@@ -12,6 +12,8 @@ export interface PreSellValidationParams {
   slippageBps?: number;
   costBasisSol?: number;
   currentMarketPriceSol?: number;
+  targetTpPct?: number;
+  targetSlPct?: number;
   label?: 'exit_tp' | 'exit_sl' | 'MANUAL' | 'EMERGENCY' | 'FORCE_EXIT' | string;
 }
 
@@ -52,7 +54,7 @@ export class JupiterPreSellValidator {
     params: PreSellValidationParams
   ): Promise<PreSellValidationResult> {
     const startTime = Date.now();
-    const { mint, rawAmount, slippageBps = 250, costBasisSol = 0, label = 'exit_tp' } = params;
+    const { mint, rawAmount, slippageBps = 250, costBasisSol = 0, targetTpPct, targetSlPct, label = 'exit_tp' } = params;
 
     const baseFailure = (reason: string): PreSellValidationResult => {
       const result: PreSellValidationResult = {
@@ -138,22 +140,41 @@ export class JupiterPreSellValidator {
 
     // 5. PROFITABILITY & SIGNAL CONFLICT CHECKS
     if (costBasisSol > 0) {
-      // Conflict Case A: Negative exit signal triggered, but Jupiter quote shows net profit
-      if ((label === 'exit_sl' || label?.includes('SL')) && executablePnlPct >= 0) {
-        return baseFailure(
-          `Conflicting negative exit signal (${label}) conflicts with PROFITABLE Jupiter executable quote (+${executablePnlPct.toFixed(2)}%). Aborting sell for position revalidation.`
-        );
+      // Conflict Case A: Negative exit signal triggered, but Jupiter quote shows net profit or has not reached SL threshold
+      if (label === 'exit_sl' || label?.includes('SL')) {
+        if (executablePnlPct >= 0) {
+          return baseFailure(
+            `Conflicting negative exit signal (${label}) conflicts with PROFITABLE Jupiter executable quote (+${executablePnlPct.toFixed(2)}%). Aborting sell for position revalidation.`
+          );
+        }
+        if (targetSlPct !== undefined && targetSlPct > 0) {
+          const requiredLossThreshold = -Math.abs(targetSlPct);
+          if (executablePnlPct > requiredLossThreshold) {
+            return baseFailure(
+              `Stop-Loss candidate triggered on market price, but Jupiter executable quote loss (${executablePnlPct.toFixed(2)}%) has not breached configured SL threshold (${requiredLossThreshold.toFixed(2)}%). Aborting sell.`
+            );
+          }
+        }
       }
 
-      // Conflict Case B: Take profit signal triggered, but Jupiter quote yields loss
-      if ((label === 'exit_tp' || label?.includes('TP')) && executablePnlPct < 0) {
-        return baseFailure(
-          `Take-Profit candidate triggered on market price, but Jupiter executable SELL quote yields net loss (${executablePnlPct.toFixed(2)}%). Aborting sell.`
-        );
+      // Conflict Case B: Take profit signal triggered, but Jupiter quote yields loss or is below target TP
+      if (label === 'exit_tp' || label?.includes('TP')) {
+        if (executablePnlPct < 0) {
+          return baseFailure(
+            `Take-Profit candidate triggered on market price, but Jupiter executable SELL quote yields net loss (${executablePnlPct.toFixed(2)}%). Aborting sell.`
+          );
+        }
+        if (targetTpPct !== undefined && targetTpPct > 0) {
+          if (executablePnlPct < targetTpPct) {
+            return baseFailure(
+              `Take-Profit candidate triggered on market price, but Jupiter executable quote PnL (${executablePnlPct.toFixed(2)}%) is below target TP threshold (+${targetTpPct.toFixed(2)}%). Aborting sell.`
+            );
+          }
+        }
       }
 
       // Anomaly Check: Extreme loss discrepancy
-      if (executablePnlPct < -80) {
+      if (executablePnlPct < -95) {
         return baseFailure(
           `Anomalous Jupiter quote detected (${executablePnlPct.toFixed(2)}% loss). Refusing to manufacture anomalous loss.`
         );

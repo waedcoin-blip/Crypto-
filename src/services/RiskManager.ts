@@ -576,6 +576,8 @@ export class RiskManager {
       slippageBps,
       costBasisSol: pos.solSpent,
       currentMarketPriceSol: pos.currentPrice,
+      targetTpPct: candidateReason === 'tp' ? tpPct : undefined,
+      targetSlPct: candidateReason === 'sl' ? slPct : undefined,
       label,
     });
 

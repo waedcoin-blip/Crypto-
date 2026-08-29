@@ -14,6 +14,7 @@ import {
 import { tokenRegistry } from './TokenRegistry';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { getNetworkConfig } from '../config/network';
+import { getJupiterQuote } from './jupiterService';
 
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 
@@ -95,35 +96,7 @@ export async function resolveTokenDecimalsAsync(tokenMint: string): Promise<numb
     // ignore
   }
 
-  // 4. Query DexScreener
-  try {
-    const resp = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${cleanMint}`);
-    if (resp.ok) {
-      const data = await resp.json();
-      if (data && data.pairs && data.pairs.length > 0) {
-        const sortedPairs = [...data.pairs].sort((a: any, b: any) => {
-          const liqA = Number(a.liquidity?.usd || 0);
-          const liqB = Number(b.liquidity?.usd || 0);
-          return liqB - liqA;
-        });
-        const bestPair = sortedPairs[0];
-        const isBase = bestPair.baseToken?.address === cleanMint || bestPair.baseToken?.mint === cleanMint;
-        const discoveredDecimals = isBase ? bestPair.baseToken?.decimals : bestPair.quoteToken?.decimals;
-        if (typeof discoveredDecimals === 'number' && discoveredDecimals >= 0 && discoveredDecimals <= 18) {
-          tokenRegistry.registerOrUpdate({
-            mintAddress: cleanMint,
-            decimals: discoveredDecimals,
-            symbol: isBase ? (bestPair.baseToken?.symbol || 'UNKNOWN') : (bestPair.quoteToken?.symbol || 'UNKNOWN'),
-          });
-          return discoveredDecimals;
-        }
-      }
-    }
-  } catch (fetchErr) {
-    console.warn(`[PaperTradeExecutor] DexScreener decimal lookup failed for ${cleanMint}:`, fetchErr);
-  }
-  
-  // 5. Standard fallback to 6 (standard SPL token decimals on Solana)
+  // 4. Standard fallback to 6 (standard SPL token decimals on Solana)
   const defaultDecimals = 6;
   tokenRegistry.registerOrUpdate({ mintAddress: cleanMint, decimals: defaultDecimals });
   return defaultDecimals;
@@ -132,87 +105,42 @@ export async function resolveTokenDecimalsAsync(tokenMint: string): Promise<numb
 export async function resolveTokenPriceInSol(tokenMint: string): Promise<number | null> {
   if (isSolMint(tokenMint)) return 1;
 
-  const solUsd = getSolPriceUsd() || 150;
-
-  // 1. Check AppStore state for tokenMetrics
+  // 1. Query Jupiter Price API (Source-of-truth price feed)
   try {
-    const store = useAppStore.getState();
-    const metric = store?.tokenMetrics?.[tokenMint];
-    if (metric) {
-      if (typeof metric.priceUsd === 'number' && metric.priceUsd > 0) {
-        return metric.priceUsd / solUsd;
+    const customApiKey = localStorage.getItem('jupiter_auto_apiKey') || localStorage.getItem('juipter_auto_apiKey') || '';
+    const headers: Record<string, string> = { 'Accept': 'application/json' };
+    if (customApiKey && !customApiKey.startsWith('http')) {
+      headers['x-api-key'] = customApiKey;
+    }
+
+    const priceRes = await fetch(`/api/jup/price?ids=${tokenMint}&vsToken=${WSOL_MINT}`, { headers });
+    if (priceRes.ok) {
+      const priceJson = await priceRes.json();
+      const entry = priceJson?.data?.[tokenMint];
+      if (entry && typeof entry.price === 'number' && entry.price > 0) {
+        return entry.price;
       }
-      if (typeof (metric as any).priceUsd === 'string' && parseFloat((metric as any).priceUsd) > 0) {
-        return parseFloat((metric as any).priceUsd) / solUsd;
-      }
-      // If priceNative exists and is reasonable, check if quote is SOL
-      const quoteSymbol = (metric as any).quoteToken || (metric as any).quoteSymbol;
-      if (quoteSymbol === 'SOL' || quoteSymbol === 'WSOL' || quoteSymbol === SOL_MINT || quoteSymbol === WSOL_MINT) {
-        if (typeof metric.priceNative === 'number' && metric.priceNative > 0) {
-          return metric.priceNative;
-        }
+      if (entry && typeof entry.price === 'string' && parseFloat(entry.price) > 0) {
+        return parseFloat(entry.price);
       }
     }
   } catch (e) {
-    // Ignore store access error
+    // Ignore and fallback to Jupiter quote
   }
 
-  // 2. Fetch directly from DexScreener API with liquidity/volume ranking
+  // 2. Query Jupiter Quote API directly (1 whole token test quote)
   try {
-    const resp = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${tokenMint}`);
-    if (resp.ok) {
-      const data = await resp.json();
-      if (data && data.pairs && data.pairs.length > 0) {
-        // Filter for active Solana pairs and sort by highest liquidity, then volume
-        const solanaPairs = data.pairs.filter((p: any) => p.chainId === 'solana');
-        const candidatePairs = solanaPairs.length > 0 ? solanaPairs : data.pairs;
-        
-        const sorted = [...candidatePairs].sort((a: any, b: any) => {
-          const liqA = Number(a.liquidity?.usd || 0);
-          const liqB = Number(b.liquidity?.usd || 0);
-          if (liqB !== liqA) return liqB - liqA;
-          const volA = Number(a.volume?.h24 || 0);
-          const volB = Number(b.volume?.h24 || 0);
-          return volB - volA;
-        });
-
-        const bestPair = sorted[0];
-        const isQuoteSol =
-          bestPair.quoteToken?.symbol === 'SOL' ||
-          bestPair.quoteToken?.address === SOL_MINT ||
-          bestPair.quoteToken?.address === WSOL_MINT;
-
-        if (isQuoteSol && bestPair.priceNative && parseFloat(bestPair.priceNative) > 0) {
-          const priceSol = parseFloat(bestPair.priceNative);
-          const isBase = bestPair.baseToken?.address === tokenMint || bestPair.baseToken?.mint === tokenMint;
-          const decimals = isBase ? bestPair.baseToken?.decimals : bestPair.quoteToken?.decimals;
-          if (typeof decimals === 'number') {
-            tokenRegistry.registerOrUpdate({
-              mintAddress: tokenMint,
-              symbol: bestPair.baseToken?.symbol || 'UNKNOWN',
-              decimals,
-            });
-          }
-          return priceSol;
-        }
-
-        if (bestPair.priceUsd && parseFloat(bestPair.priceUsd) > 0) {
-          const priceInSol = parseFloat(bestPair.priceUsd) / solUsd;
-          const isBase = bestPair.baseToken?.address === tokenMint || bestPair.baseToken?.mint === tokenMint;
-          const decimals = isBase ? bestPair.baseToken?.decimals : bestPair.quoteToken?.decimals;
-          if (typeof decimals === 'number') {
-            tokenRegistry.registerOrUpdate({
-              mintAddress: tokenMint,
-              symbol: bestPair.baseToken?.symbol || 'UNKNOWN',
-              decimals,
-            });
-          }
-          return priceInSol;
-        }
+    const decimals = tokenRegistry.get(tokenMint)?.decimals || 6;
+    const testAmount = Math.floor(10 ** decimals);
+    const quote = await getJupiterQuote(tokenMint, WSOL_MINT, testAmount);
+    if (quote && quote.outAmount) {
+      const solOut = Number(quote.outAmount) / 1e9;
+      if (solOut > 0) {
+        return solOut;
       }
     }
   } catch (e) {
-    console.warn(`[PaperTradeExecutor] DexScreener price lookup failed for ${tokenMint}:`, e);
+    // Quote failed
   }
 
   return null;
