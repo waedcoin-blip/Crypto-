@@ -20,7 +20,7 @@ export interface TokenPrice {
   pairAddress?: string;
   dexId?: string;
   updatedAt: number;
-  source?: 'dexscreener' | 'jupiter' | 'simulation' | 'failed';
+  source?: 'dexscreener' | 'jupiter' | 'simulation' | 'failed' | 'rpc_ws' | 'price_tracker';
   isStale?: boolean;
   error?: string;
   rawPair?: any;

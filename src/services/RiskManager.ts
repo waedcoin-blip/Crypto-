@@ -32,8 +32,7 @@ export interface ManagedPosition {
   createdAt: number;
   lastPriceUpdate?: number;
   pendingSince?: number;
-  activePriceSource?: 'dexscreener' | 'jupiter';
-  isPnLPositive?: boolean;
+  activePriceSource?: 'dexscreener' | 'jupiter' | 'rpc_ws' | 'price_tracker';
 }
 
 export interface RiskConfig {
@@ -274,8 +273,6 @@ export class RiskManager {
     const initialPnL = calculatedBuyPrice > 0 && initialPrice > 0
       ? ((initialPrice - calculatedBuyPrice) / calculatedBuyPrice) * 100
       : 0;
-    const isPnLPositive = initialPnL >= 0;
-    const activePriceSource: 'dexscreener' | 'jupiter' = isPnLPositive ? 'jupiter' : 'dexscreener';
 
     const pos: ManagedPosition = {
       mint: params.mint,
@@ -295,8 +292,7 @@ export class RiskManager {
       state: params.buySignature ? 'OPEN' : 'PENDING_BUY',
       buySignature: params.buySignature,
       createdAt: Date.now(),
-      activePriceSource,
-      isPnLPositive,
+      activePriceSource: 'dexscreener',
     };
 
     this.positions.set(params.mint, pos);
@@ -412,6 +408,13 @@ export class RiskManager {
   /**
    * Price update handler with currency verification, source authority tracking, and dynamic conversion.
    */
+  /**
+   * Price update handler with currency verification, source propagation, and instant TP/SL evaluation.
+   * Architecture: Fresh valid market price -> TP/SL evaluator -> Jupiter executable pre-sell validation -> exit.
+   * Both Jupiter and DexScreener (and RPC/WS & price tracker) prices update the trigger engine.
+   * The system does NOT decide whether a price is valid based on whether it is profitable or losing.
+   * Stale market-data responses are rejected.
+   */
   public onPriceUpdate(
     mint: string,
     rawPrice: number,
@@ -422,14 +425,14 @@ export class RiskManager {
     const pos = this.positions.get(mint);
     if (!pos || pos.state === 'CLOSED' || !rawPrice || !Number.isFinite(rawPrice) || rawPrice <= 0) return;
 
-    // Monotonic timestamp guard: Reject older or duplicate timestamps
-    if (pos.lastPriceUpdate && timestamp <= pos.lastPriceUpdate) {
+    // Stale timestamp guard: Reject updates older than 5 seconds (stale market data)
+    const now = Date.now();
+    if (timestamp < now - 5000) {
       return;
     }
 
-    // Stale timestamp guard: Reject updates older than 5 seconds
-    const now = Date.now();
-    if (timestamp < now - 5000) {
+    // Monotonic timestamp guard: Reject older timestamps for this position
+    if (pos.lastPriceUpdate && timestamp < pos.lastPriceUpdate) {
       return;
     }
 
@@ -441,84 +444,10 @@ export class RiskManager {
 
     if (priceInSol <= 0 || !Number.isFinite(priceInSol)) return;
 
-    const effectiveBuyPrice = pos.buyPrice > 0
-      ? pos.buyPrice
-      : (pos.amount > 0 && pos.solSpent > 0
-          ? pos.solSpent / (pos.amount / (10 ** pos.tokenDecimals))
-          : 0);
-
-    const candidatePnLPct = effectiveBuyPrice > 0
-      ? ((priceInSol - effectiveBuyPrice) / effectiveBuyPrice) * 100
-      : 0;
-
-    const candidateIsPositive = candidatePnLPct >= 0;
-    const normalizedSource: 'dexscreener' | 'jupiter' = source === 'jupiter' ? 'jupiter' : 'dexscreener';
-
-    // Initialize position state if unassigned
-    if (pos.isPnLPositive === undefined) {
-      const currentPnL = this.calculateGrossPnLPct(pos);
-      pos.isPnLPositive = currentPnL >= 0;
-      pos.activePriceSource = pos.isPnLPositive ? 'jupiter' : 'dexscreener';
-    }
-
-    // REFERENCE PRICE AUTHORITY RULES:
-    // 1. Position is negative: use DexScreener as reference price.
-    // 2. Position is positive: use Jupiter as reference price.
-    // 3. When switching negative -> positive: ONLY allow if confirmed by 'jupiter'.
-    // 4. When switching positive -> negative: ONLY allow if confirmed by current authority 'jupiter'.
-    // 5. Never let a non-authoritative bad price from an external source flip PnL authority.
-
-    let isAuthoritative = false;
-
-    if (!pos.isPnLPositive) {
-      // Position is currently NEGATIVE (authoritative reference source: 'dexscreener')
-      if (candidateIsPositive) {
-        // Only switch negative -> positive if the update originates from authoritative Jupiter
-        if (normalizedSource === 'jupiter') {
-          pos.isPnLPositive = true;
-          pos.activePriceSource = 'jupiter';
-          isAuthoritative = true;
-          console.log(`[RiskManager] 🔄 Position ${mint.slice(0, 6)} switched NEGATIVE -> POSITIVE (+${candidatePnLPct.toFixed(2)}%). Reference source set to JUPITER.`);
-        } else {
-          // Non-authoritative candidate positive price is rejected until confirmed by Jupiter
-          isAuthoritative = false;
-        }
-      } else if (normalizedSource === 'dexscreener') {
-        // Still negative, update comes from authoritative source 'dexscreener'
-        isAuthoritative = true;
-      } else {
-        // Non-authoritative update (e.g. unverified source)
-        isAuthoritative = false;
-      }
-    } else {
-      // Position is currently POSITIVE (authoritative reference source: 'jupiter')
-      if (!candidateIsPositive) {
-        // Only switch positive -> negative if the update originates from current authority 'jupiter'
-        if (normalizedSource === 'jupiter') {
-          pos.isPnLPositive = false;
-          pos.activePriceSource = 'dexscreener';
-          isAuthoritative = true;
-          console.log(`[RiskManager] 🔄 Position ${mint.slice(0, 6)} switched POSITIVE -> NEGATIVE (${candidatePnLPct.toFixed(2)}%). Reference source set to DEXSCREENER.`);
-        } else {
-          // Non-authoritative bad price (e.g. DexScreener temporary dip) CANNOT flip a positive Jupiter position!
-          isAuthoritative = false;
-        }
-      } else if (normalizedSource === 'jupiter') {
-        // Still positive, update comes from authoritative source 'jupiter'
-        isAuthoritative = true;
-      } else {
-        // Non-authoritative update
-        isAuthoritative = false;
-      }
-    }
-
-    if (!isAuthoritative) {
-      // Reject non-authoritative update without overwriting current PnL price
-      return;
-    }
-
+    // Direct update: set fresh market price and track source origin
     pos.currentPrice = priceInSol;
     pos.lastPriceUpdate = timestamp;
+    pos.activePriceSource = source;
 
     if (!pos.peakPrice || priceInSol > pos.peakPrice) {
       pos.peakPrice = priceInSol;
@@ -533,6 +462,7 @@ export class RiskManager {
     tokenRegistry.updatePrice(mint, priceInSol);
     positionRegistry.updatePrice(mint, priceInSol);
 
+    // Instant TP/SL evaluation pipeline upon fresh market price arrival
     if (this.isRunning && pos.state === 'OPEN') {
       void this.evaluatePosition(pos);
     }
@@ -651,8 +581,7 @@ export class RiskManager {
 
     if (!validationResult.isValid) {
       if (validationResult.reason?.includes('conflicts with PROFITABLE Jupiter')) {
-        // Revalidate: switch state to positive and set Jupiter as reference authority
-        pos.isPnLPositive = true;
+        // Revalidate: set Jupiter as active price source and update current price
         pos.activePriceSource = 'jupiter';
         if (validationResult.outAmountSol > 0) {
           const tokenQty = pos.amount > 0 ? pos.amount / (10 ** pos.tokenDecimals) : 0;

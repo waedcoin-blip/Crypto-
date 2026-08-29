@@ -2788,9 +2788,9 @@ export const PnLPage = ({
       let hasMetricUpdates = false;
 
       priceMap.forEach((tokenPrice, mint) => {
-        if (!tokenPrice) return;
+        if (!tokenPrice || tokenPrice.isStale || tokenPrice.source === 'failed') return;
         const freshPrice = tokenPrice.priceNative || (tokenPrice.priceUsd ? tokenPrice.priceUsd / getSolPriceUsd() : 0);
-        if (freshPrice <= 0) return;
+        if (freshPrice <= 0 || !Number.isFinite(freshPrice)) return;
 
         // 1. Central token metrics update
         updatedMetrics[mint] = {
@@ -2801,8 +2801,11 @@ export const PnLPage = ({
         };
         hasMetricUpdates = true;
 
-        // 2. PositionExitManager direct update
-        const mappedSource = tokenPrice.source === 'jupiter' ? 'jupiter' : 'dexscreener';
+        // 2. PositionExitManager direct update with source propagation
+        const mappedSource: 'dexscreener' | 'jupiter' | 'rpc_ws' | 'price_tracker' =
+          tokenPrice.source === 'jupiter' ? 'jupiter' :
+          tokenPrice.source === 'rpc_ws' ? 'rpc_ws' :
+          tokenPrice.source === 'price_tracker' ? 'price_tracker' : 'dexscreener';
         positionExitManagerRef.current?.onPriceUpdate(mint, freshPrice, now, 'SOL', mappedSource);
 
         // 3. MasterMonitor direct update
@@ -4230,7 +4233,7 @@ const checkTokenCriteria = (mint: string): {
             tokenDecimals: pos.decimals ?? 6,
           });
           if (pos.currentPrice && pos.currentPrice > 0) {
-            positionExitManagerRef.current.onPriceUpdate(mint, pos.currentPrice, Date.now(), 'SOL', (pos as any).activePriceSource || (pos.currentPrice >= (pos.buyPrice || 0) ? 'jupiter' : 'dexscreener'));
+            positionExitManagerRef.current.onPriceUpdate(mint, pos.currentPrice, Date.now(), 'SOL', (pos as any).activePriceSource || 'dexscreener');
           }
           if (pos.txid && pos.txid !== 'init-sig') {
             positionExitManagerRef.current.confirmBuy(mint, pos.txid, pos.buySlot || 0);
@@ -4238,7 +4241,7 @@ const checkTokenCriteria = (mint: string): {
         } else {
           positionExitManagerRef.current.updatePositionTpSl(mint, targetTp, Math.abs(targetSl));
           if (pos.currentPrice && pos.currentPrice > 0) {
-            positionExitManagerRef.current.onPriceUpdate(mint, pos.currentPrice, Date.now(), 'SOL', (pos as any).activePriceSource || (pos.currentPrice >= (pos.buyPrice || 0) ? 'jupiter' : 'dexscreener'));
+            positionExitManagerRef.current.onPriceUpdate(mint, pos.currentPrice, Date.now(), 'SOL', (pos as any).activePriceSource || 'dexscreener');
           }
         }
       }
@@ -4537,7 +4540,7 @@ const checkTokenCriteria = (mint: string): {
           if (p && p.price !== undefined) {
             const newPrice = typeof p.price === 'number' ? p.price : parseFloat(p.price);
             if (newPrice > 0) {
-              positionExitManagerRef.current?.onPriceUpdate(m, newPrice, Date.now());
+              positionExitManagerRef.current?.onPriceUpdate(m, newPrice, Date.now(), 'SOL', 'price_tracker');
               if (masterMonitorRef.current) {
                 masterMonitorRef.current.pushPriceUpdate(m, newPrice, Date.now(), 'price_tracker');
               }

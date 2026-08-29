@@ -88,6 +88,13 @@ export class MasterMonitorService {
   public pushPriceUpdate(rawMint: string, priceNative: number, timestamp = Date.now(), source: TokenPriceUpdate['source'] = 'jupiter'): void {
     if (!rawMint || priceNative <= 0) return;
     const mint = rawMint.includes(':') ? rawMint.split(':')[1] : rawMint;
+    
+    const now = Date.now();
+    // Do not accept or forward stale price updates (older than 5s)
+    if (timestamp < now - 5000) {
+      return;
+    }
+
     this.subscribedMints.add(mint);
     
     this.priceEngine.set(mint, {
@@ -97,7 +104,7 @@ export class MasterMonitorService {
       updatedAt: timestamp,
     });
 
-    // 🔥 INSTANT DIRECT PATH: Price update -> Exit Manager (<1ms evaluation)
+    // 🔥 INSTANT DIRECT PATH: Fresh valid market price -> Exit Manager (TP/SL evaluator -> Jupiter pre-sell validation -> exit)
     this.exitManager.onPriceUpdate(mint, priceNative, timestamp, 'SOL', source);
   }
 

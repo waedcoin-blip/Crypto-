@@ -12,6 +12,7 @@
     "replay:captured": "node scripts/replay-captured-fixture.mjs",
     "test:jupiter-replay": "node scripts/jupiter-transaction-replay-test.mjs && node scripts/fixture-replay-test.mjs",
     "test:parity": "node scripts/execution-parity-test.mjs",
+    "test:tpsl-pipeline": "node scripts/tpsl-evaluation-pipeline-test.mjs",
     "clean": "rm -rf dist",
     "postinstall": "node scripts/patch-bigint-buffer.cjs",
     "lint": "tsc --noEmit"
