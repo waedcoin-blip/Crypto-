@@ -14,6 +14,7 @@
     "test:parity": "node scripts/execution-parity-test.mjs",
     "test:tpsl-pipeline": "node scripts/tpsl-evaluation-pipeline-test.mjs",
     "test:tp-sl-raw-balance": "node scripts/tp-sl-raw-balance-regression-test.mjs",
+    "test:single-exit-authority": "node scripts/single-exit-authority-regression-test.mjs",
     "clean": "rm -rf dist",
     "postinstall": "node scripts/patch-bigint-buffer.cjs",
     "lint": "tsc --noEmit"

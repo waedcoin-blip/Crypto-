@@ -62,6 +62,7 @@ import { rpcHealthManager } from './services/rpcHealthManager';
 import { masterMonitorHealthManager } from './services/MasterMonitorHealthManager';
 import { syncManager } from './services/SyncService';
 import { orderManager } from './services/OrderManager';
+import { positionExitManager } from './services/PositionExitManager';
 import { resolveTokenDecimals } from './services/PaperTradeExecutor';
 import { StartupReconciliation } from './services/StartupReconciliation';
 
@@ -72,7 +73,6 @@ import {
   getJupiterQuote, 
   getLatestBlockhashWithFallback, pollSignatureStatus,
   getTokenBalanceRaw, 
-  processActiveTrackingFrame, 
   verifyHardenedScannerCriteria,
   rpcPool,
   AdvancedTokenMetrics,
@@ -1214,76 +1214,19 @@ function App() {
           const netPnlResult = calcNetPnl(currentPriceSol, posTokensQty, realCostBasis, state.slippage, position.recoveryMode, true);
           const currentPnLPct = netPnlResult.netPnlPct;
 
-          const actPos = {
-            tokenAddress: token.address,
-            currentTokenBalance: BigInt(amountLamports),
-            entryCostSol: realCostBasis,
-            initialMoonbagSize: BigInt(position.initialMoonbagSizeStr || '0'),
-            currentStage: position.currentStage || PositionStage.RECOVER_CAPITAL,
-            symbol: token.symbol,
-            isManualSellTriggered: position.isManualSellTriggered,
-            currentPriceSol: currentPriceSol,
-            currentPnLPct: currentPnLPct
-          };
-
-          // ── TRIPLE STOP LOSS ROUTING ──────────────────────────────────────────
-          const stage = detectTokenStage({
-            address:              tokenAddress,
-            dexId:                token?.dexId,
-            bondingCurveProgress: token?.bondingCurveProgress,
-            isRaydiumListed:      token?.isRaydiumListed
-          });
-
-          let baseSL = typeof state.stopLoss === 'number' ? state.stopLoss : -30;
-          const userGlobalSL = typeof state.stopLoss === 'number' ? state.stopLoss : -15;
-          if (stage.platform === 'PUMP_FUN' || stage.isBonding) {
-            baseSL = typeof state.bondingCurveStopLoss === 'number' ? state.bondingCurveStopLoss : userGlobalSL;
-          } else if (stage.platform === 'PUMPSWAP') {
-            baseSL = typeof state.pumpSwapStopLoss === 'number' ? state.pumpSwapStopLoss : userGlobalSL;
-          } else if (stage.platform === 'UNKNOWN' || stage.stage === 'UNKNOWN') {
-            baseSL = typeof state.unknownStopLoss === 'number' ? state.unknownStopLoss : userGlobalSL;
+          // ── SINGLE EXIT AUTHORITY: Forward fresh price observation to RiskManager ──
+          // Market price → RiskManager → TP/SL decision → Jupiter pre-sell validation → OrderManager → execution
+          // The App-level monitoring loop no longer submits automatic sells directly.
+          if (currentPriceSol > 0) {
+            positionExitManager.onPriceUpdate(tokenAddress, currentPriceSol, Date.now(), 'SOL', 'price_tracker');
           }
-          baseSL = position.slPct !== undefined ? position.slPct : baseSL;
-          baseSL = -Math.abs(baseSL);
 
-          // ── TRAILING STOP LOSS: lock in gains as price rises ────────────────
-          // If price has rallied >20%, trail stop loss to protect profits
-          // e.g. up 50% → stop at 35%; up 100% → stop at 75%
-          // Track peak PnL in position metadata
+          // Track peak PnL in position metadata for display purposes
           if (!position.peakPnLPct || currentPnLPct > position.peakPnLPct) {
             setActivePositions(prev => ({
               ...prev,
               [token.address]: { ...prev[token.address], peakPnLPct: currentPnLPct }
             }));
-          }
-
-          const peakPnL = position.peakPnLPct || 0;
-          
-          const trailingSL = peakPnL > 20 ? peakPnL - 15 : baseSL;
-          const effectiveSL = Math.max(baseSL, trailingSL); // never looser than base SL
-
-          let activeTakeProfit = position.tpPct ?? (stage.isBonding 
-            ? (typeof state.bondingCurveTakeProfit === 'number' ? state.bondingCurveTakeProfit : 25) 
-            : (state.moonbagStrategy ? (position.soldPartial ? state.maxTakeProfit : state.minTakeProfit) : state.minTakeProfit));
-            
-          const trackingVerdict = await processActiveTrackingFrame(
-            connection,
-            actPos,
-            token.liquidity || 0,
-            walletAddress,
-            { 
-              takeProfit: activeTakeProfit, 
-              stopLoss: effectiveSL
-            }
-          );
-
-          const isDirectTp = currentPnLPct >= activeTakeProfit;
-          const isDirectSl = currentPnLPct <= effectiveSL;
-
-          if (trackingVerdict.shouldExit || isDirectTp || isDirectSl || position.isManualSellTriggered) {
-            const exitReason = isDirectTp ? 'TAKE PROFIT' : (isDirectSl ? (effectiveSL !== baseSL ? 'TRAILING SL' : 'STOP LOSS') : (trackingVerdict.reason || 'EXIT'));
-            console.log(`[EXIT BY ENGINE] (LIVE): ${token.symbol} clearing. Reason: ${exitReason} (PnL: ${currentPnLPct.toFixed(2)}%)`);
-            fns.current.executeAutoSell(tokenAddress, token.symbol, trackingVerdict.quote);
           }
         }
       }
