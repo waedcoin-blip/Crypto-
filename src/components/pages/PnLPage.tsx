@@ -3454,14 +3454,16 @@ const checkTokenCriteria = (mint: string): {
       // 10. Token Age limits (applies to ALL tokens)
       const now = Date.now();
       const createdAtRaw = metric.pairCreatedAt;
-      const discoveredAtRaw = metric.discoveredAt;
       const normCreatedAt = createdAtRaw ? (createdAtRaw < 1000000000000 ? createdAtRaw * 1000 : createdAtRaw) : null;
-      const normDiscoveredAt = discoveredAtRaw ? (discoveredAtRaw < 1000000000000 ? discoveredAtRaw * 1000 : discoveredAtRaw) : null;
-      const tokenTime = normCreatedAt || normDiscoveredAt || now;
-      const tokenAgeMin = (now - tokenTime) / 60000;
-
       const minAg = hardenedMinAge !== undefined ? hardenedMinAge : 0;
       const maxAg = hardenedMaxAge !== undefined ? hardenedMaxAge : 120;
+
+      if (!normCreatedAt || normCreatedAt <= 0) {
+        addCheckResult("Token Age (Minutes)", false, "UNKNOWN", `${minAg}m - ${maxAg}m`);
+        return { pass: false, reason: "Token creation time cannot be established. Reason: TOKEN_AGE_UNKNOWN", breakdown };
+      }
+
+      const tokenAgeMin = (now - normCreatedAt) / 60000;
       const isAgeValid = tokenAgeMin >= minAg && tokenAgeMin <= maxAg;
 
       addCheckResult(
@@ -3589,6 +3591,7 @@ const checkTokenCriteria = (mint: string): {
               liquidity: liquidityUsd,
               volume24h,
               discoveredAt: Date.now(),
+              pairCreatedAt: bestPair.pairCreatedAt ? Number(bestPair.pairCreatedAt) : undefined,
               lastUpdated: Date.now(),
               buyCount: bestPair.txns?.h24?.buys || 0,
               sellCount: bestPair.txns?.h24?.sells || 0,
@@ -3617,6 +3620,54 @@ const checkTokenCriteria = (mint: string): {
       } catch (e) {
         console.warn("Failed to auto-fetch token metrics for hardened criteria check:", e);
       }
+    }
+
+    // HARD ENTRY GATE: Token Min Age & Max Age check for automated/rebuy/telemetry/system trades
+    if (!isManualDirectBuy) {
+      const userMinAge = configRef.current.hardenedMinAge !== undefined ? configRef.current.hardenedMinAge : 0;
+      const userMaxAge = configRef.current.hardenedMaxAge !== undefined ? configRef.current.hardenedMaxAge : 120;
+
+      // 1. Establish actual creation time from token metrics or monitored tokens
+      let rawCreatedAt = tokenMetricsRef.current[mint]?.pairCreatedAt || monitoredTokensRef.current.get(mint)?.pairCreatedAt;
+
+      // 2. If creation time missing, attempt fetch from DexScreener pair metadata
+      if (!rawCreatedAt || rawCreatedAt <= 0) {
+        try {
+          const res = await fetch(`${DEXSCREENER}/tokens/${mint}`);
+          if (res.ok) {
+            const data = await res.json();
+            if (data && data.pairs && data.pairs.length > 0) {
+              const bestPair = data.pairs[0];
+              if (bestPair.pairCreatedAt) {
+                rawCreatedAt = Number(bestPair.pairCreatedAt);
+                if (tokenMetricsRef.current[mint]) {
+                  tokenMetricsRef.current[mint].pairCreatedAt = rawCreatedAt;
+                }
+              }
+            }
+          }
+        } catch (e) {
+          console.warn("Failed to fetch token creation time for hard age gate:", e);
+        }
+      }
+
+      // 3. If creation time STILL cannot be established -> BUY BLOCKED (TOKEN_AGE_UNKNOWN)
+      if (!rawCreatedAt || rawCreatedAt <= 0 || isNaN(rawCreatedAt)) {
+        addLog(`❌ [TOKEN AGE BLOCK] Skipped buy of ${symbol} (${mint.slice(0, 8)}...): Token creation time cannot be established. Reason: TOKEN_AGE_UNKNOWN`, 'warn');
+        return;
+      }
+
+      // 4. Calculate current age in minutes (normalize timestamp if in seconds)
+      const normCreatedAt = rawCreatedAt < 1000000000000 ? rawCreatedAt * 1000 : rawCreatedAt;
+      const ageMinutes = (Date.now() - normCreatedAt) / 60000;
+
+      // 5. Evaluate age >= user Min Age AND age <= user Max Age
+      if (ageMinutes < userMinAge || ageMinutes > userMaxAge) {
+        addLog(`❌ [TOKEN AGE BLOCK] Skipped buy of ${symbol} (${mint.slice(0, 8)}...): Token age: ${ageMinutes.toFixed(1)}m. Allowed: ${userMinAge}m–${userMaxAge}m. Reason: TOKEN_AGE_OUT_OF_RANGE`, 'warn');
+        return;
+      }
+
+      addLog(`✅ [TOKEN AGE PASS] ${symbol} age: ${ageMinutes.toFixed(1)}m is within allowed range (${userMinAge}m–${userMaxAge}m)`, 'info');
     }
 
     // Criteria Validation handled by the single scanner (checkAndTrade)

@@ -3132,11 +3132,10 @@ function App() {
 
                 const createdAtRaw = updated.pairCreatedAt || security.security?.pairCreatedAt;
                 const normCreatedAt = createdAtRaw ? (createdAtRaw < 1000000000000 ? createdAtRaw * 1000 : createdAtRaw) : null;
-                const tokenTime = normCreatedAt || updated.discoveredAt || now;
-                const tokenAgeMin = (now - tokenTime) / 60000;
                 const minAge = latestState.current.hardenedMinAge ?? 0;
                 const maxAge = latestState.current.hardenedMaxAge ?? 120;
-                const isAgeValid = tokenAgeMin >= minAge && tokenAgeMin <= maxAge;
+                const tokenAgeMin = normCreatedAt && normCreatedAt > 0 ? (now - normCreatedAt) / 60000 : -1;
+                const isAgeValid = tokenAgeMin >= 0 && tokenAgeMin >= minAge && tokenAgeMin <= maxAge;
 
                 const isMassiveStrength = hasHighProgress && 
                                           isHealthyPool &&
