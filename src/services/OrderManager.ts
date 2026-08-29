@@ -1,5 +1,6 @@
 // src/services/OrderManager.ts
 import { SwapResult, ITradeExecutor } from './ITradeExecutor';
+import type { QuoteResponse } from '@jup-ag/api';
 import { executionEngine } from './ExecutionEngine';
 import { TradingNetwork, getNetworkConfig } from '../config/network';
 import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';

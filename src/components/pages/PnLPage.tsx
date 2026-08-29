@@ -3537,6 +3537,93 @@ const checkTokenCriteria = (mint: string): {
 
     return { pass: false, reason: "Missing token metrics or metadata required for hardened criteria evaluation." };
   };
+
+  const calculateCandidateScore = (mint: string, metricOverride?: any): number => {
+    const metric = metricOverride || tokenMetricsRef.current[mint];
+    if (!metric) return 0;
+
+    const { tradeBonding } = configRef.current;
+    const stage = detectTokenStage({
+      address: mint,
+      dexId: metric.dexId,
+      bondingCurveProgress: metric.bondingCurveProgress,
+      isRaydiumListed: metric.isRaydiumListed,
+    });
+
+    const isBonding = stage.isBonding || (metric.bondingCurveProgress !== undefined && metric.bondingCurveProgress > 0 && metric.bondingCurveProgress < 99.5);
+    const progress = metric.bondingCurveProgress || 0;
+
+    let basePriority = 1000;
+    let bondingBonus = 0;
+
+    if (tradeBonding) {
+      if (isBonding) {
+        basePriority = 10000;
+        // Late-bonding zone (~80% - 99.4%) gets highest preference due to stronger migration potential
+        if (progress >= 80 && progress <= 99.4) {
+          const lateZoneProgressRatio = (progress - 80) / (99.4 - 80); // 0.0 to 1.0
+          bondingBonus = 2000 + lateZoneProgressRatio * 1500; // 2000 to 3500 points
+        } else if (progress < 80) {
+          bondingBonus = (progress / 80) * 1500; // 0 to 1500 points
+        } else {
+          bondingBonus = 2500; // > 99.4% (near or in migration)
+        }
+      } else {
+        // Graduated Raydium token gets lower base priority so it cannot outrank a good bonding token merely because its market cap is larger
+        basePriority = 1000;
+      }
+    } else {
+      // Standard priority when Trade Bonding is disabled
+      basePriority = 5000;
+    }
+
+    // 1. Recent Momentum Score
+    const momentumPct = metric.priceChange5m ?? metric.percentageIncrease ?? metric.priceChange1m ?? 0;
+    const momentumScore = Math.min(1500, Math.max(-500, momentumPct * 30));
+
+    // 2. Buy / Sell Pressure Score
+    const buys30s = metric.buyCount30s ?? metric.recentBuys30s ?? 0;
+    const sells30s = metric.sellCount30s ?? metric.recentSells30s ?? 0;
+    const buysTotal = metric.buyCount ?? buys30s;
+    const sellsTotal = metric.sellCount ?? sells30s;
+
+    const buySellRatio = sellsTotal > 0 ? (buysTotal / sellsTotal) : (buysTotal > 0 ? 3 : 1);
+    const pressureScore = Math.min(1000, Math.max(0, (buySellRatio - 1) * 300)) + Math.min(500, buys30s * 50);
+
+    // 3. Liquidity Score
+    const liqUsd = metric.liquidity || 0;
+    const liquidityScore = Math.min(1000, (liqUsd / 10000) * 150);
+
+    // 4. Risk Score (lower risk score = higher safety bonus)
+    const risk = metric.riskScore ?? 50;
+    const riskScoreBonus = Math.max(0, (100 - risk) * 8);
+
+    return basePriority + bondingBonus + momentumScore + pressureScore + liquidityScore + riskScoreBonus;
+  };
+
+  const calculateFallbackCandidateScore = (mint: string, metricOverride?: any): number => {
+    const metric = metricOverride || tokenMetricsRef.current[mint];
+    if (!metric) return 0;
+
+    const check = checkTokenCriteria(mint);
+    let passedCount = 0;
+    if (check.breakdown) {
+      passedCount = check.breakdown.filter(c => c.pass).length;
+    } else {
+      const mc = metric.marketCap || 0;
+      const liq = metric.liquidity || 0;
+      const isGraduated = !mint.toLowerCase().endsWith('pump');
+      const mcMin = isGraduated ? (configRef.current.hardenedMcapMinRaydium || 0) : (configRef.current.hardenedMcapMinPump || 0);
+      const mcMax = configRef.current.hardenedMcapMax || 999999999;
+      if (mc >= mcMin && mc <= mcMax) passedCount++;
+      if (liq >= (configRef.current.hardenedLiquidityMin || 20000)) passedCount++;
+      if (metric.isRugSafe === true) passedCount++;
+      if ((metric.riskScore ?? 100) <= (configRef.current.hardenedMaxRiskScore || 22)) passedCount++;
+    }
+
+    const baseCandidateScore = calculateCandidateScore(mint, metric);
+    return (passedCount * 2000) + baseCandidateScore;
+  };
   
   const _executeBuyInternal = async (mint: string, symbol: string, price: any, solAmount: number, isManualDirectBuy = false) => {
     const { maxPositions, privateKey, slippage } = configRef.current;
@@ -4501,35 +4588,15 @@ const checkTokenCriteria = (mint: string): {
              }
              return isPass;
            }
-         ).sort((a: any, b: any) => (b[1].marketCap || 0) - (a[1].marketCap || 0));
+         ).sort((a: any, b: any) => calculateCandidateScore(b[0], b[1]) - calculateCandidateScore(a[0], a[1]));
 
          pipelineCountersRef.current.buyCandidates += scannerTokens.length;
 
          if (scannerTokens.length === 0 && Object.keys(tokenMetricsRef.current).length > 0) {
-            // Sort nontraded candidates by criteria pass rates so we present the closest qualifiers first
+            // Sort nontraded candidates by criteria pass rates and candidate priority score (favoring bonding tokens)
             const candidates = Object.entries(tokenMetricsRef.current)
               .filter(([mint]) => !activeMints.includes(mint) && !blacklistedMints.includes(mint))
-              .sort((a: any, b: any) => {
-                const getPassedCount = (m: string) => {
-                  const metric = tokenMetricsRef.current[m];
-                  if (!metric) return 0;
-                  let score = 0;
-                  const mc = metric.marketCap || 0;
-                  const liq = metric.liquidity || 0;
-                  const progress = metric.bondingCurveProgress || 0;
-                  const isGraduated = !m.toLowerCase().endsWith('pump');
-                  const mcMin = isGraduated ? (hardenedMcapMinRaydium || 0) : (hardenedMcapMinPump || 0);
-                  const mcMax = hardenedMcapMax || 999999999;
-                  if (mc >= mcMin && mc <= mcMax) score++;
-                  if (liq >= (hardenedLiquidityMin || 20000)) score++;
-                  if (metric.isRugSafe === true) score++;
-                  if ((metric.riskScore ?? 100) <= (hardenedMaxRiskScore || 22)) score++;
-                  const profit5mCheck = metric.priceChange5m !== undefined ? metric.priceChange5m : (metric.percentageIncrease !== undefined ? metric.percentageIncrease : (metric.priceChange1m || 0));
-                  if (profit5mCheck >= (hardenedMinProfit5m || 0)) score++;
-                  return score;
-                };
-                return getPassedCount(b[0]) - getPassedCount(a[0]);
-              });
+              .sort((a: any, b: any) => calculateFallbackCandidateScore(b[0], b[1]) - calculateFallbackCandidateScore(a[0], a[1]));
 
             if (candidates.length > 0) {
                // Periodic scannable logging check
@@ -6943,28 +7010,7 @@ const checkTokenCriteria = (mint: string): {
                   });
                   const candidates = Object.entries(tokenMetricsRef.current)
                     .filter(([mint]) => !activeMints.includes(mint) && !blacklistedMints.includes(mint))
-                    .sort((a: any, b: any) => {
-                      const getPassedCount = (m: string) => {
-                        const metric = tokenMetricsRef.current[m];
-                        if (!metric) return 0;
-                        let score = 0;
-                        const mc = metric.marketCap || 0;
-                        const liq = metric.liquidity || 0;
-                        const progress = metric.bondingCurveProgress || 0;
-                        const isGraduated = !m.toLowerCase().endsWith('pump');
-                        const mcMin = isGraduated ? (hardenedMcapMinRaydium || 0) : (hardenedMcapMinPump || 0);
-                        const mcMax = hardenedMcapMax || 999999999;
-                        
-                        if (mc >= mcMin && mc <= mcMax) score++;
-                        if (liq >= (hardenedLiquidityMin || 20000)) score++;
-                        if (metric.isRugSafe === true) score++;
-                        if ((metric.riskScore ?? 100) <= (hardenedMaxRiskScore || 22)) score++;
-                        const profit5mCheck = metric.priceChange5m !== undefined ? metric.priceChange5m : (metric.percentageIncrease !== undefined ? metric.percentageIncrease : (metric.priceChange1m || 0));
-                        if (profit5mCheck >= (hardenedMinProfit5m || 0)) score++;
-                        return score;
-                      };
-                      return getPassedCount(b[0]) - getPassedCount(a[0]);
-                    })
+                    .sort((a: any, b: any) => calculateFallbackCandidateScore(b[0], b[1]) - calculateFallbackCandidateScore(a[0], a[1]))
                     .slice(0, 10);
 
                   if (candidates.length === 0) {

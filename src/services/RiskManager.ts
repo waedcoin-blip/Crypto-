@@ -1,5 +1,6 @@
 // src/services/RiskManager.ts
 import { ITradeExecutor } from './ITradeExecutor';
+import type { QuoteResponse } from '@jup-ag/api';
 import { executionEngine } from './ExecutionEngine';
 import { orderManager } from './OrderManager';
 import { walletBalanceService } from './WalletBalanceService';
