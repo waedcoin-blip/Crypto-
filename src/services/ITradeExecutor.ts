@@ -46,7 +46,8 @@ export interface ITradeExecutor {
     outputMint: string,
     amount: number,
     slippageBps: number,
-    label?: 'entry' | 'exit_tp' | 'exit_sl'
+    label?: 'entry' | 'exit_tp' | 'exit_sl',
+    preValidatedQuote?: QuoteResponse | null
   ): Promise<SwapResult>;
 
   getSolBalance(): Promise<number>;

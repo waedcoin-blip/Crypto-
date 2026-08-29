@@ -111,7 +111,8 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
     outputMint: string,
     amount: number,
     slippageBps: number,
-    label: 'entry' | 'exit_tp' | 'exit_sl' = 'entry'
+    label: 'entry' | 'exit_tp' | 'exit_sl' = 'entry',
+    preValidatedQuote?: QuoteResponse | null
   ): Promise<SwapResult> {
     const start = Date.now();
     this.telemetryTotalSwaps++;
@@ -151,8 +152,8 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
         }
       }
 
-      // Fetch fresh quote from Mainnet Jupiter API
-      const quote = await this.getQuote({
+      // Reuse preValidatedQuote if provided, otherwise fetch fresh quote from Mainnet Jupiter API
+      const quote = preValidatedQuote || await this.getQuote({
         inputMint,
         outputMint,
         amount,
@@ -160,9 +161,11 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
         restrictIntermediateTokens: true,
       });
 
-      this.validateQuoteSafety(quote, amount, slippageBps);
+      if (!preValidatedQuote) {
+        this.validateQuoteSafety(quote, amount, slippageBps);
+      }
 
-      // Post swap request with properly formatted prioritizationFeeLamports object
+      // Post swap request requesting high priority with capped priority fee of 500,000 lamports
       let swapBuild;
       try {
         swapBuild = await this.jupiterApi.swapPost({
@@ -172,8 +175,8 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
             dynamicComputeUnitLimit: true,
             prioritizationFeeLamports: {
               priorityLevelWithMaxLamports: {
-                priorityLevel: 'medium',
-                maxLamports: 100000,
+                priorityLevel: 'high',
+                maxLamports: 500000,
                 global: false,
               },
             } as any,
@@ -221,7 +224,8 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
       const slot = confirmation.context.slot;
       const targetMint = isSolBuy ? outputMint : inputMint;
 
-      await this.syncStoreBalances(activePublicKey, targetMint);
+      // Non-blocking balance synchronization
+      this.syncStoreBalances(activePublicKey, targetMint).catch(e => console.warn('[MainnetJupiterExecutor] syncStoreBalances non-blocking error:', e));
 
       const landingTimeMs = Date.now() - start;
 

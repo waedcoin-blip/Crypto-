@@ -49,9 +49,10 @@ export class TradeManager {
     outputMint: string,
     amount: number,
     slippageBps: number,
-    label: 'entry' | 'exit_tp' | 'exit_sl' = 'entry'
+    label: 'entry' | 'exit_tp' | 'exit_sl' = 'entry',
+    preValidatedQuote?: QuoteResponse | null
   ): Promise<SwapResult> {
-    return orderManager.executeOrder(inputMint, outputMint, amount, slippageBps, label);
+    return orderManager.executeOrder(inputMint, outputMint, amount, slippageBps, label, preValidatedQuote);
   }
 
   batchSwap(...args: Parameters<ITradeExecutor['batchSwap']>) {

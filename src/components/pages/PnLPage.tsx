@@ -4623,7 +4623,7 @@ const checkTokenCriteria = (mint: string): {
     if (isRunning) {
       botIntervalRef.current = window.setInterval(() => {
         checkAndTrade();
-      }, 1000);
+      }, 500);
       uptimeIntervalRef.current = window.setInterval(updateUptime, 1000);
     } else {
       if (botIntervalRef.current) clearInterval(botIntervalRef.current);

@@ -80,6 +80,7 @@ export class RiskManager {
   private static instance: RiskManager;
   private positions: Map<string, ManagedPosition> = new Map();
   private exitingMints: Set<string> = new Set();
+  private evaluatingMints: Set<string> = new Set();
   private isEvaluatingLoop: boolean = false;
   private executor: ITradeExecutor;
   private config: RiskConfig;
@@ -432,8 +433,13 @@ export class RiskManager {
     const currentPriority = SOURCE_PRIORITY[pos.activePriceSource || 'jupiter'] || 1;
     const incomingPriority = SOURCE_PRIORITY[source] || 1;
 
-    // Source authority rule: Reject lower-authority sources (e.g. DexScreener) when position is on a higher-authority feed (< 10s old)
-    if (incomingPriority < currentPriority && pos.lastPriceUpdate && (now - pos.lastPriceUpdate) < 10000) {
+    // Source authority rule: Reject lower-authority sources (e.g. price_tracker, DexScreener) when position is on a higher-authority feed (< 30s old)
+    if (incomingPriority < currentPriority && pos.lastPriceUpdate && (now - pos.lastPriceUpdate) < 30000) {
+      return;
+    }
+
+    // Active-position price authority remains Jupiter: Slower price_tracker stream is strictly blocked from overriding active Jupiter TP/SL path
+    if (source === 'price_tracker' && pos.activePriceSource === 'jupiter' && pos.lastPriceUpdate && (now - pos.lastPriceUpdate) < 30000) {
       return;
     }
 
@@ -529,106 +535,111 @@ export class RiskManager {
 
   private async evaluatePosition(pos: ManagedPosition): Promise<void> {
     const mint = pos.mint;
-    if (this.exitingMints.has(mint) || pos.state !== 'OPEN') {
+    if (this.evaluatingMints.has(mint) || this.exitingMints.has(mint) || pos.state !== 'OPEN') {
       return;
     }
 
-    const effectiveBuyPrice = pos.buyPrice > 0
-      ? pos.buyPrice
-      : (pos.amount > 0 && pos.solSpent > 0
-          ? pos.solSpent / (pos.amount / (10 ** pos.tokenDecimals))
-          : 0);
+    this.evaluatingMints.add(mint);
+    try {
+      const effectiveBuyPrice = pos.buyPrice > 0
+        ? pos.buyPrice
+        : (pos.amount > 0 && pos.solSpent > 0
+            ? pos.solSpent / (pos.amount / (10 ** pos.tokenDecimals))
+            : 0);
 
-    if (effectiveBuyPrice <= 0 || !pos.currentPrice || pos.currentPrice <= 0) {
-      return;
-    }
-
-    const now = Date.now();
-    const grossPnlPct = this.calculateGrossPnLPct(pos);
-    const tpPct = pos.tpPct ?? this.config.tpPct;
-    const slPct = Math.abs(pos.slPct ?? this.config.slPct);
-
-    // Initialization protection: Within 1.5 seconds of creation, skip SL if price delta is negligible
-    if (now - pos.createdAt < 1500 && grossPnlPct > -0.1) {
-      return;
-    }
-
-    let candidateReason: 'tp' | 'sl' | null = null;
-    let exitType: 'TAKE_PROFIT' | 'STOP_LOSS' | 'TRAILING_STOP' | 'MAX_HOLD' = 'TAKE_PROFIT';
-
-    // 1. Max hold time check
-    if (pos.maxHoldTimeMs && pos.maxHoldTimeMs > 0 && pos.createdAt > 0 && (now - pos.createdAt >= pos.maxHoldTimeMs)) {
-      candidateReason = 'sl';
-      exitType = 'MAX_HOLD';
-    } else {
-      // 2. Trailing stop check (evaluates trailing drop from peak gross market PnL)
-      const peakPnL = pos.highestPnLPct ?? grossPnlPct;
-      if (pos.trailingSlPct && pos.trailingSlPct > 0 && peakPnL > 0 && (peakPnL - grossPnlPct >= pos.trailingSlPct)) {
-        candidateReason = 'sl';
-        exitType = 'TRAILING_STOP';
-      } else if (grossPnlPct >= tpPct) {
-        candidateReason = 'tp';
-        exitType = 'TAKE_PROFIT';
-      } else if (grossPnlPct <= -slPct) {
-        candidateReason = 'sl';
-        exitType = 'STOP_LOSS';
+      if (effectiveBuyPrice <= 0 || !pos.currentPrice || pos.currentPrice <= 0) {
+        return;
       }
-    }
 
-    if (!candidateReason) return;
+      const now = Date.now();
+      const grossPnlPct = this.calculateGrossPnLPct(pos);
+      const tpPct = pos.tpPct ?? this.config.tpPct;
+      const slPct = Math.abs(pos.slPct ?? this.config.slPct);
 
-    // Perform Executable Pre-Sell Validation STRICTLY & ONLY by Jupiter
-    const label = candidateReason === 'tp' ? 'exit_tp' : 'exit_sl';
-    const slippageBps = candidateReason === 'tp' ? (pos.slippageBpsTp || 250) : (pos.slippageBpsSl || 1000);
+      // Initialization protection: Within 1.5 seconds of creation, skip SL if price delta is negligible
+      if (now - pos.createdAt < 1500 && grossPnlPct > -0.1) {
+        return;
+      }
 
-    const validationResult = await jupiterPreSellValidator.validatePreSell({
-      mint: pos.mint,
-      rawAmount: pos.amount,
-      totalPositionAmount: pos.amount,
-      slippageBps,
-      costBasisSol: pos.solSpent,
-      currentMarketPriceSol: pos.currentPrice,
-      targetTpPct: candidateReason === 'tp' ? tpPct : undefined,
-      targetSlPct: candidateReason === 'sl' ? slPct : undefined,
-      label,
-    });
+      let candidateReason: 'tp' | 'sl' | null = null;
+      let exitType: 'TAKE_PROFIT' | 'STOP_LOSS' | 'TRAILING_STOP' | 'MAX_HOLD' = 'TAKE_PROFIT';
 
-    if (!validationResult.isValid) {
-      if (validationResult.reason?.includes('conflicts with PROFITABLE Jupiter')) {
-        // Revalidate: set Jupiter as active price source and update current price
-        pos.activePriceSource = 'jupiter';
-        if (validationResult.outAmountSol > 0) {
-          const tokenQty = pos.amount > 0 ? pos.amount / (10 ** pos.tokenDecimals) : 0;
-          const quotePriceSol = tokenQty > 0 ? validationResult.outAmountSol / tokenQty : pos.currentPrice;
-          pos.currentPrice = quotePriceSol;
-          pos.lastPriceUpdate = Date.now();
-          tokenRegistry.updatePrice(mint, quotePriceSol);
-          positionRegistry.updatePrice(mint, quotePriceSol);
+      // 1. Max hold time check
+      if (pos.maxHoldTimeMs && pos.maxHoldTimeMs > 0 && pos.createdAt > 0 && (now - pos.createdAt >= pos.maxHoldTimeMs)) {
+        candidateReason = 'sl';
+        exitType = 'MAX_HOLD';
+      } else {
+        // 2. Trailing stop check (evaluates trailing drop from peak gross market PnL)
+        const peakPnL = pos.highestPnLPct ?? grossPnlPct;
+        if (pos.trailingSlPct && pos.trailingSlPct > 0 && peakPnL > 0 && (peakPnL - grossPnlPct >= pos.trailingSlPct)) {
+          candidateReason = 'sl';
+          exitType = 'TRAILING_STOP';
+        } else if (grossPnlPct >= tpPct) {
+          candidateReason = 'tp';
+          exitType = 'TAKE_PROFIT';
+        } else if (grossPnlPct <= -slPct) {
+          candidateReason = 'sl';
+          exitType = 'STOP_LOSS';
         }
       }
-      console.warn(`[RiskManager] ⛔ Pre-Sell Validation failed by Jupiter for ${mint}: ${validationResult.reason}`);
-      return;
+
+      if (!candidateReason) return;
+
+      // Perform Executable Pre-Sell Validation STRICTLY & ONLY by Jupiter
+      const label = candidateReason === 'tp' ? 'exit_tp' : 'exit_sl';
+      const slippageBps = candidateReason === 'tp' ? (pos.slippageBpsTp || 250) : (pos.slippageBpsSl || 1000);
+
+      const validationResult = await jupiterPreSellValidator.validatePreSell({
+        mint: pos.mint,
+        rawAmount: pos.amount,
+        totalPositionAmount: pos.amount,
+        slippageBps,
+        costBasisSol: pos.solSpent,
+        currentMarketPriceSol: pos.currentPrice,
+        targetTpPct: candidateReason === 'tp' ? tpPct : undefined,
+        targetSlPct: candidateReason === 'sl' ? slPct : undefined,
+        label,
+      });
+
+      if (!validationResult.isValid) {
+        if (validationResult.reason?.includes('conflicts with PROFITABLE Jupiter')) {
+          // Revalidate: set Jupiter as active price source and update current price
+          pos.activePriceSource = 'jupiter';
+          if (validationResult.outAmountSol > 0) {
+            const tokenQty = pos.amount > 0 ? pos.amount / (10 ** pos.tokenDecimals) : 0;
+            const quotePriceSol = tokenQty > 0 ? validationResult.outAmountSol / tokenQty : pos.currentPrice;
+            pos.currentPrice = quotePriceSol;
+            pos.lastPriceUpdate = Date.now();
+            tokenRegistry.updatePrice(mint, quotePriceSol);
+            positionRegistry.updatePrice(mint, quotePriceSol);
+          }
+        }
+        console.warn(`[RiskManager] ⛔ Pre-Sell Validation failed by Jupiter for ${mint}: ${validationResult.reason}`);
+        return;
+      }
+
+      const executableSolOut = validationResult.outAmountSol;
+      const executablePnlPct = validationResult.executablePnlPct;
+      const tokenQty = pos.amount > 0 ? pos.amount / (10 ** pos.tokenDecimals) : 0;
+      const quotePriceSol = tokenQty > 0 && executableSolOut > 0 ? executableSolOut / tokenQty : pos.currentPrice;
+
+      console.log(
+        `[RiskManager] ⚡ Authorizing ${exitType} exit for ${mint} via Jupiter Pre-Sell Validation: Market PnL = ${grossPnlPct.toFixed(2)}%, ` +
+        `Jupiter Executable PnL = ${executablePnlPct.toFixed(2)}%`
+      );
+
+      await this.triggerExit(pos, candidateReason, {
+        exitType,
+        triggerPriceSol: pos.currentPrice,
+        triggerPnLPct: grossPnlPct,
+        quotePriceSol,
+        quotePnlPct: executablePnlPct,
+        configuredTpPct: tpPct,
+        configuredSlPct: slPct,
+      }, validationResult.quote);
+    } finally {
+      this.evaluatingMints.delete(mint);
     }
-
-    const executableSolOut = validationResult.outAmountSol;
-    const executablePnlPct = validationResult.executablePnlPct;
-    const tokenQty = pos.amount > 0 ? pos.amount / (10 ** pos.tokenDecimals) : 0;
-    const quotePriceSol = tokenQty > 0 && executableSolOut > 0 ? executableSolOut / tokenQty : pos.currentPrice;
-
-    console.log(
-      `[RiskManager] ⚡ Authorizing ${exitType} exit for ${mint} via Jupiter Pre-Sell Validation: Market PnL = ${grossPnlPct.toFixed(2)}%, ` +
-      `Jupiter Executable PnL = ${executablePnlPct.toFixed(2)}%`
-    );
-
-    await this.triggerExit(pos, candidateReason, {
-      exitType,
-      triggerPriceSol: pos.currentPrice,
-      triggerPnLPct: grossPnlPct,
-      quotePriceSol,
-      quotePnlPct: executablePnlPct,
-      configuredTpPct: tpPct,
-      configuredSlPct: slPct,
-    });
   }
 
   /**
@@ -678,13 +689,14 @@ export class RiskManager {
       quotePnlPct: validationResult.executablePnlPct,
       configuredTpPct: pos.tpPct,
       configuredSlPct: pos.slPct,
-    });
+    }, validationResult.quote);
   }
 
   public async triggerExit(
     pos: ManagedPosition,
     side: 'tp' | 'sl',
-    telemetryOrPnl?: number | ExitTelemetryOptions
+    telemetryOrPnl?: number | ExitTelemetryOptions,
+    preValidatedQuote?: QuoteResponse | null
   ): Promise<void> {
     const mint = pos.mint;
     if (this.exitingMints.has(mint) || pos.state === 'CLOSING' || pos.state === 'CLOSED') return;
@@ -708,16 +720,6 @@ export class RiskManager {
       const slippageBps = side === 'tp' ? (pos.slippageBpsTp || 250) : (pos.slippageBpsSl || 1000);
       const label = side === 'tp' ? 'exit_tp' : 'exit_sl';
 
-      // Always sync to true raw balance in integer base units (getTokenBalance already returns RAW base units)
-      if (typeof this.executor.getTokenBalance === 'function') {
-        try {
-          const liveRawTokens = await this.executor.getTokenBalance(mint);
-          if (liveRawTokens > 0) {
-            pos.amount = Math.floor(liveRawTokens);
-          }
-        } catch {}
-      }
-
       console.log(`[RiskManager] ⚡ Executing ${side.toUpperCase()} exit swap for ${mint} (Amount Raw: ${pos.amount})`);
 
       // Route execution through OrderManager & ExecutionEngine
@@ -726,7 +728,8 @@ export class RiskManager {
         'So11111111111111111111111111111111111111112',
         pos.amount,
         slippageBps,
-        label
+        label,
+        preValidatedQuote
       );
 
       // Compute actual net SOL received and actual realized PnL
@@ -770,7 +773,8 @@ export class RiskManager {
         },
       });
 
-      await walletBalanceService.verifyTokenBalanceCleared(mint);
+      // Non-blocking balance clearance check
+      walletBalanceService.verifyTokenBalanceCleared(mint).catch(() => {});
 
       // Successfully finished all operations - now close and remove position
       pos.state = 'CLOSED';

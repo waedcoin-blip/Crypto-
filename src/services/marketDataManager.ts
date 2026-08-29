@@ -49,8 +49,8 @@ export interface MarketDataStats {
 export type PriorityTier = 'trading' | 'activePosition' | 'wallet' | 'discovery' | 'ui';
 
 export const MARKET_DATA_POLICY: Record<PriorityTier, { ttlMs: number; maxAgeMs: number }> = {
-  trading: { ttlMs: 1000, maxAgeMs: 3000 },
-  activePosition: { ttlMs: 750, maxAgeMs: 2000 },
+  trading: { ttlMs: 500, maxAgeMs: 1500 },
+  activePosition: { ttlMs: 250, maxAgeMs: 500 },
   wallet: { ttlMs: 5000, maxAgeMs: 15000 },
   discovery: { ttlMs: 15000, maxAgeMs: 60000 },
   ui: { ttlMs: 5000, maxAgeMs: 30000 },

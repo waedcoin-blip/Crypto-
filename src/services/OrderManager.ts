@@ -210,7 +210,8 @@ export class OrderManager {
     outputMint: string,
     amount: number,
     slippageBps: number,
-    label: 'entry' | 'exit_tp' | 'exit_sl' = 'entry'
+    label: 'entry' | 'exit_tp' | 'exit_sl' = 'entry',
+    preValidatedQuote?: QuoteResponse | null
   ): Promise<SwapResult> {
     const WSOL = 'So11111111111111111111111111111111111111112';
     const isSolBuy = inputMint === WSOL || inputMint === 'So11111111111111111111111111111111111111112';
@@ -235,12 +236,15 @@ export class OrderManager {
 
       // 4. QUOTE_REQUESTED & QUOTE_RECEIVED
       this.transitionState(order.id, 'QUOTE_REQUESTED');
-      const quote = await executor.getQuote({
-        inputMint,
-        outputMint,
-        amount,
-        slippageBps,
-      });
+      let quote = preValidatedQuote;
+      if (!quote) {
+        quote = await executor.getQuote({
+          inputMint,
+          outputMint,
+          amount,
+          slippageBps,
+        });
+      }
       if (!quote || !quote.outAmount || Number(quote.outAmount) <= 0) {
         throw new Error(`ORDER_EXECUTION_FAILED: Invalid quote returned for ${inputMint} -> ${outputMint}`);
       }
@@ -251,7 +255,7 @@ export class OrderManager {
       this.transitionState(order.id, 'SIGNING');
 
       // 6. SUBMITTED
-      const result = await executor.swap(inputMint, outputMint, amount, slippageBps, label);
+      const result = await executor.swap(inputMint, outputMint, amount, slippageBps, label, quote);
 
       if (result.signature) {
         this.transitionState(order.id, 'SUBMITTED', { signature: result.signature });
@@ -259,16 +263,6 @@ export class OrderManager {
 
       // 7. CONFIRMING & On-Chain Verification
       this.transitionState(order.id, 'CONFIRMING');
-
-      if (order.network !== 'paper' && !result.simulated && result.signature) {
-        const netConfig = getNetworkConfig(order.network);
-        const connection = new Connection(netConfig.rpcUrl, 'confirmed');
-        const status = await getSignatureStatusRobust(connection, result.signature);
-
-        if (status?.err) {
-          throw new Error(`ON_CHAIN_TRANSACTION_FAILED: ${JSON.stringify(status.err)}`);
-        }
-      }
 
       // 8. Effective execution price & proceeds computation
       let effectivePriceSol = 0;

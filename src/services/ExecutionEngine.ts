@@ -90,11 +90,12 @@ export class ExecutionEngine implements ITradeExecutor {
     outputMint: string,
     amount: number,
     slippageBps: number,
-    label: 'entry' | 'exit_tp' | 'exit_sl' = 'entry'
+    label: 'entry' | 'exit_tp' | 'exit_sl' = 'entry',
+    preValidatedQuote?: QuoteResponse | null
   ): Promise<SwapResult> {
     // Atomically lock session for the duration of this swap
     const { executor } = this.resolveSession();
-    return executor.swap(inputMint, outputMint, amount, slippageBps, label);
+    return executor.swap(inputMint, outputMint, amount, slippageBps, label, preValidatedQuote);
   }
 
   async batchSwap(

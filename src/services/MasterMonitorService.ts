@@ -143,8 +143,8 @@ export class MasterMonitorService {
     // Initial poll
     pollBatch();
 
-    // Single fast unified ticker for ALL active tokens (2000ms)
-    this.batchInterval = setInterval(pollBatch, 2000);
+    // Single fast unified ticker for ALL active tokens (500ms)
+    this.batchInterval = setInterval(pollBatch, 500);
   }
 
   private setupWsSubscriptions(): void {
@@ -175,7 +175,7 @@ export class MasterMonitorService {
   private async triggerInstantPriceCheck(mint: string, _slot?: number): Promise<void> {
     const now = Date.now();
     const lastTime = this.lastCheckTime.get(mint) || 0;
-    if (now - lastTime < 750) return;
+    if (now - lastTime < 250) return;
     this.lastCheckTime.set(mint, now);
     try {
       const res = await fetch(`https://api.jup.ag/price/v2?ids=${encodeURIComponent(mint)}`).catch(() => null);

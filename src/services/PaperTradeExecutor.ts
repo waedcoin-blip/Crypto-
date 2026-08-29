@@ -229,7 +229,8 @@ export class PaperTradeExecutor implements ITradeExecutor {
     outputMint: string,
     amount: number,
     slippageBps: number,
-    label: 'entry' | 'exit_tp' | 'exit_sl' = 'entry'
+    label: 'entry' | 'exit_tp' | 'exit_sl' = 'entry',
+    preValidatedQuote?: QuoteResponse | null
   ): Promise<SwapResult> {
     const startTime = Date.now();
     try {
@@ -272,7 +273,7 @@ export class PaperTradeExecutor implements ITradeExecutor {
         }
 
         // Pre-fetch quote and validate safety
-        const initialQuote = await this.getQuote({ inputMint, outputMint, amount: inputLamports, slippageBps });
+        const initialQuote = preValidatedQuote || await this.getQuote({ inputMint, outputMint, amount: inputLamports, slippageBps });
         this.validateQuoteSafety(initialQuote, inputLamports, slippageBps);
 
         // Simulated execution delay
@@ -339,7 +340,7 @@ export class PaperTradeExecutor implements ITradeExecutor {
         }
 
         // Pre-fetch quote and validate safety
-        const initialQuote = await this.getQuote({ inputMint, outputMint, amount: rawInputTokens, slippageBps });
+        const initialQuote = preValidatedQuote || await this.getQuote({ inputMint, outputMint, amount: rawInputTokens, slippageBps });
         this.validateQuoteSafety(initialQuote, rawInputTokens, slippageBps);
 
         // Simulated execution delay
