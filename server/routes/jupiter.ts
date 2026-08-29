@@ -95,7 +95,7 @@ router.get('/price', asyncHandler(async (req, res) => {
   const ids = validateRequiredString(req.query.ids, 'ids');
   const vsToken = req.query.vsToken as string | undefined;
   const apiKey = (req.headers['x-api-key'] as string) || undefined;
-  const cacheKey = `${ids}-${vsToken || 'no-vs'}-${apiKey || 'no-key'}-${req.query.t || ''}`;
+  const cacheKey = `${ids}-${vsToken || 'no-vs'}-${apiKey || 'no-key'}`;
 
   const data = await priceCache.fetch(cacheKey, async () => {
     const idList = ids.split(',').map((id) => id.trim());
@@ -166,7 +166,7 @@ router.get('/quote', asyncHandler(async (req, res) => {
     .filter(([k]) => k !== 'baseUrl' && k !== 't' && k !== 'inputMint' && k !== 'outputMint' && k !== 'amount' && k !== 'slippageBps')
     .map(([k, v]) => `${k}:${v}`)
     .join('-');
-  const cacheKey = `${inputMint}-${outputMint}-${amount}-${slippageBps}-${baseUrl}-${extraKeys}-${req.query.t || ''}`;
+  const cacheKey = `${inputMint}-${outputMint}-${amount}-${slippageBps}-${baseUrl}-${extraKeys}`;
 
   const quoteResult = await quoteCache.fetch(cacheKey, async () => {
     jupiterLogger.debug({ inputMint, outputMint, amount }, 'Jupiter Quote Proxy Request');

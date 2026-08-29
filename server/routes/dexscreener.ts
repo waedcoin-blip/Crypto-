@@ -260,9 +260,7 @@ router.get('/tokens/trending', asyncHandler(async (req, res) => {
       const ranked = Array.from(uniquePairs.values())
         .filter((pair) => {
           const liquidity = Number(pair.liquidity?.usd || 0);
-          const volume5m = Number(pair.volume?.m5 || 0);
-
-          return liquidity >= 1000 || volume5m >= 500;
+          return liquidity >= 0; // Allow all new Solana pairs through to client-side scanner evaluation
         })
         .sort((a, b) => {
           const score = (pair: any) => {
@@ -282,7 +280,7 @@ router.get('/tokens/trending', asyncHandler(async (req, res) => {
 
       return {
         schemaVersion: '2.0.0',
-        pairs: ranked.slice(0, 100),
+        pairs: ranked.slice(0, 250),
         discoveredAt: Date.now(),
       };
     });

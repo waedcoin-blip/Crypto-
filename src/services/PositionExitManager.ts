@@ -43,7 +43,7 @@ export class PositionExitManager {
     currentPrice: number,
     timestamp?: number,
     quoteCurrency: 'SOL' | 'USD' = 'SOL',
-    source: 'dexscreener' | 'jupiter' | 'rpc_ws' | 'price_tracker' = 'dexscreener'
+    source: 'dexscreener' | 'jupiter' | 'rpc_ws' | 'price_tracker' = 'jupiter'
   ): void {
     this.delegate.onPriceUpdate(mint, currentPrice, timestamp, quoteCurrency, source);
   }

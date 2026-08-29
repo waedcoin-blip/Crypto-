@@ -292,7 +292,7 @@ export class RiskManager {
       state: params.buySignature ? 'OPEN' : 'PENDING_BUY',
       buySignature: params.buySignature,
       createdAt: Date.now(),
-      activePriceSource: 'dexscreener',
+      activePriceSource: 'jupiter',
     };
 
     this.positions.set(params.mint, pos);
@@ -420,13 +420,24 @@ export class RiskManager {
     rawPrice: number,
     timestamp: number = Date.now(),
     quoteCurrency: 'SOL' | 'USD' = 'SOL',
-    source: 'dexscreener' | 'jupiter' | 'rpc_ws' | 'price_tracker' = 'dexscreener'
+    source: 'dexscreener' | 'jupiter' | 'rpc_ws' | 'price_tracker' = 'jupiter'
   ): void {
     const pos = this.positions.get(mint);
     if (!pos || pos.state === 'CLOSED' || !rawPrice || !Number.isFinite(rawPrice) || rawPrice <= 0) return;
 
-    // Stale timestamp guard: Reject updates older than 5 seconds (stale market data)
     const now = Date.now();
+
+    // Source priority hierarchy: jupiter (4) > rpc_ws (3) > price_tracker (2) > dexscreener (1)
+    const SOURCE_PRIORITY: Record<string, number> = { jupiter: 4, rpc_ws: 3, price_tracker: 2, dexscreener: 1 };
+    const currentPriority = SOURCE_PRIORITY[pos.activePriceSource || 'jupiter'] || 1;
+    const incomingPriority = SOURCE_PRIORITY[source] || 1;
+
+    // Source authority rule: Reject lower-authority sources (e.g. DexScreener) when position is on a higher-authority feed (< 10s old)
+    if (incomingPriority < currentPriority && pos.lastPriceUpdate && (now - pos.lastPriceUpdate) < 10000) {
+      return;
+    }
+
+    // Stale timestamp guard: Reject updates older than 5 seconds (stale market data)
     if (timestamp < now - 5000) {
       return;
     }
@@ -573,6 +584,7 @@ export class RiskManager {
     const validationResult = await jupiterPreSellValidator.validatePreSell({
       mint: pos.mint,
       rawAmount: pos.amount,
+      totalPositionAmount: pos.amount,
       slippageBps,
       costBasisSol: pos.solSpent,
       currentMarketPriceSol: pos.currentPrice,
@@ -645,6 +657,7 @@ export class RiskManager {
     const validationResult = await jupiterPreSellValidator.validatePreSell({
       mint: pos.mint,
       rawAmount: pos.amount,
+      totalPositionAmount: pos.amount,
       slippageBps: side === 'tp' ? (pos.slippageBpsTp || 250) : (pos.slippageBpsSl || 1000),
       costBasisSol: pos.solSpent,
       currentMarketPriceSol: pos.currentPrice,

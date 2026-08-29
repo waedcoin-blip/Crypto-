@@ -202,8 +202,27 @@ export class JupiterTransactionReplay {
       }
     } else {
       // SPL Token -> SOL
-      // Output: SOL balance delta for user
-      if (txDetails.meta.preBalances && txDetails.meta.postBalances && txDetails.transaction?.message?.accountKeys) {
+      const WSOL_MINT = 'So11111111111111111111111111111111111111112';
+      // 1. Check WSOL token balance delta
+      if (txDetails.meta?.preTokenBalances && txDetails.meta?.postTokenBalances) {
+        const preWsol = txDetails.meta.preTokenBalances.find(
+          (b: any) => b.mint === WSOL_MINT && b.owner === userPublicKey
+        );
+        const postWsol = txDetails.meta.postTokenBalances.find(
+          (b: any) => b.mint === WSOL_MINT && b.owner === userPublicKey
+        );
+        const preAmount = preWsol?.uiTokenAmount?.amount ? BigInt(preWsol.uiTokenAmount.amount) : 0n;
+        const postAmount = postWsol?.uiTokenAmount?.amount ? BigInt(postWsol.uiTokenAmount.amount) : 0n;
+        const wsolDelta = postAmount - preAmount;
+
+        if (wsolDelta > 0n) {
+          actualOutputAmount = Number(wsolDelta);
+          verified = true;
+        }
+      }
+
+      // 2. If WSOL unwrapped or native SOL transferred, calculate native SOL balance delta
+      if (!verified && txDetails.meta?.preBalances && txDetails.meta?.postBalances && txDetails.transaction?.message?.accountKeys) {
         const keys = txDetails.transaction.message.accountKeys;
         const userIdx = keys.findIndex((k: any) => {
           const pk = typeof k === 'string' ? k : (k?.pubkey?.toBase58 ? k.pubkey.toBase58() : String(k?.pubkey || ''));

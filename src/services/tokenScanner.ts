@@ -230,7 +230,8 @@ export class TokenScanner {
         // Skip excluded mints
         if (this.criteria.excludedMints.has(token.address)) continue;
 
-        this.scannedCache.set(token.address, now);
+        // Candidate re-check TTL: 10s for initial candidates, 60s once accepted
+        this.scannedCache.set(token.address, now - (CACHE_TTL_MS - 10000));
         candidates.push(token);
       }
 

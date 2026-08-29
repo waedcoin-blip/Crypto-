@@ -9,6 +9,7 @@ const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 export interface PreSellValidationParams {
   mint: string;
   rawAmount: number; // Integer base units
+  totalPositionAmount?: number; // Total integer base units in position (if partial)
   slippageBps?: number;
   costBasisSol?: number;
   currentMarketPriceSol?: number;
@@ -54,7 +55,13 @@ export class JupiterPreSellValidator {
     params: PreSellValidationParams
   ): Promise<PreSellValidationResult> {
     const startTime = Date.now();
-    const { mint, rawAmount, slippageBps = 250, costBasisSol = 0, targetTpPct, targetSlPct, label = 'exit_tp' } = params;
+    const { mint, rawAmount, totalPositionAmount, slippageBps = 250, costBasisSol = 0, targetTpPct, targetSlPct, label = 'exit_tp' } = params;
+
+    // Proportional cost basis calculation if selling a partial amount
+    let effectiveCostBasisSol = costBasisSol;
+    if (totalPositionAmount && totalPositionAmount > 0 && rawAmount > 0 && rawAmount < totalPositionAmount) {
+      effectiveCostBasisSol = costBasisSol * (rawAmount / totalPositionAmount);
+    }
 
     const baseFailure = (reason: string): PreSellValidationResult => {
       const result: PreSellValidationResult = {
@@ -134,12 +141,12 @@ export class JupiterPreSellValidator {
 
     // 4. CALCULATE REALIZABLE EXECUTABLE P&L (without hardcoded artificial fees)
     let executablePnlPct = 0;
-    if (costBasisSol > 0) {
-      executablePnlPct = ((outAmountSol - costBasisSol) / costBasisSol) * 100;
+    if (effectiveCostBasisSol > 0) {
+      executablePnlPct = ((outAmountSol - effectiveCostBasisSol) / effectiveCostBasisSol) * 100;
     }
 
     // 5. PROFITABILITY & SIGNAL CONFLICT CHECKS
-    if (costBasisSol > 0) {
+    if (effectiveCostBasisSol > 0) {
       // Conflict Case A: Negative exit signal triggered, but Jupiter quote shows net profit or has not reached SL threshold
       if (label === 'exit_sl' || label?.includes('SL')) {
         if (executablePnlPct >= 0) {

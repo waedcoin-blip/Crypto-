@@ -383,7 +383,6 @@ export const getJupiterQuote = async (
       outputMint,
       amount: String(Math.floor(amount)),
       slippageBps: String(determinedSlippage),
-      t: String(Date.now())
     });
     if (baseUrlParam) queryParams.set('baseUrl', baseUrlParam);
     if (restrictIntermediateTokens) queryParams.set('restrictIntermediateTokens', 'true');

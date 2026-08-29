@@ -96,10 +96,8 @@ export async function resolveTokenDecimalsAsync(tokenMint: string): Promise<numb
     // ignore
   }
 
-  // 4. Standard fallback to 6 (standard SPL token decimals on Solana)
-  const defaultDecimals = 6;
-  tokenRegistry.registerOrUpdate({ mintAddress: cleanMint, decimals: defaultDecimals });
-  return defaultDecimals;
+  // 4. Unknown decimals hard failure
+  throw new Error(`UNRESOLVED_TOKEN_DECIMALS: Unable to resolve token decimals for mint ${cleanMint}. Execution rejected to prevent quantity corruption.`);
 }
 
 export async function resolveTokenPriceInSol(tokenMint: string): Promise<number | null> {
@@ -189,11 +187,11 @@ export class PaperTradeExecutor implements ITradeExecutor {
 
     // 1. Try Jupiter internal proxy first (handles CORS, fallbacks, and rate-limits)
     try {
-      const proxyUrl = `/api/jup/quote?inputMint=${params.inputMint}&outputMint=${params.outputMint}&amount=${inputAmount}&slippageBps=${slippageBps}&t=${Date.now()}`;
+      const proxyUrl = `/api/jup/quote?inputMint=${params.inputMint}&outputMint=${params.outputMint}&amount=${inputAmount}&slippageBps=${slippageBps}`;
       const resp = await fetch(proxyUrl);
       if (resp.ok) {
         const data = await resp.json();
-        if (data && data.outAmount && Number(data.outAmount) > 0) {
+        if (data && data.outAmount && Number(data.outAmount) > 0 && Array.isArray(data.routePlan) && data.routePlan.length > 0) {
           return data as QuoteResponse;
         }
       }
@@ -213,7 +211,7 @@ export class PaperTradeExecutor implements ITradeExecutor {
         const resp = await fetch(url);
         if (resp.ok) {
           const data = await resp.json();
-          if (data && data.outAmount && Number(data.outAmount) > 0) {
+          if (data && data.outAmount && Number(data.outAmount) > 0 && Array.isArray(data.routePlan) && data.routePlan.length > 0) {
             return data as QuoteResponse;
           }
         }
@@ -222,59 +220,8 @@ export class PaperTradeExecutor implements ITradeExecutor {
       }
     }
 
-    // 3. Real Market Price Fallback for bonding curve / Pump.fun / new AMM tokens not yet routed by Jupiter
-    const isBuy = isSolMint(params.inputMint);
-    const isSell = isSolMint(params.outputMint);
-
-    if (isBuy || isSell) {
-      const targetTokenMint = isBuy ? params.outputMint : params.inputMint;
-      const realPriceSol = await resolveTokenPriceInSol(targetTokenMint);
-
-      if (realPriceSol && realPriceSol > 0) {
-        const targetDecimals = await resolveTokenDecimalsAsync(targetTokenMint);
-        let outAmountRaw = 0;
-
-        if (isBuy) {
-          const solAmount = inputAmount / 1e9;
-          const tokensCount = solAmount / realPriceSol;
-          outAmountRaw = Math.floor(tokensCount * Math.pow(10, targetDecimals));
-        } else {
-          const tokensCount = inputAmount / Math.pow(10, targetDecimals);
-          const solAmount = tokensCount * realPriceSol;
-          outAmountRaw = Math.floor(solAmount * 1e9);
-        }
-
-        if (outAmountRaw > 0) {
-          return {
-            inputMint: params.inputMint,
-            inAmount: params.amount.toString(),
-            outputMint: params.outputMint,
-            outAmount: outAmountRaw.toString(),
-            otherAmountThreshold: Math.floor(outAmountRaw * (1 - slippageBps / 10000)).toString(),
-            swapMode: 'ExactIn',
-            slippageBps,
-            priceImpactPct: '0.05',
-            routePlan: [
-              {
-                swapInfo: {
-                  ammKey: 'market_liquidity_pool',
-                  label: 'Market Liquidity Pool (DexScreener)',
-                  inputMint: params.inputMint,
-                  outputMint: params.outputMint,
-                  inAmount: params.amount.toString(),
-                  outAmount: outAmountRaw.toString(),
-                  feeAmount: '0',
-                  feeMint: params.inputMint,
-                },
-                percent: 100,
-              },
-            ],
-          } as unknown as QuoteResponse;
-        }
-      }
-    }
-
-    throw new Error(`PAPER_QUOTE_FAILED: Unable to fetch real market quote or price for ${params.inputMint} -> ${params.outputMint}. Real market liquidity required.`);
+    // Strictly enforce Jupiter-only route requirement without synthetic fallbacks
+    throw new Error(`NO_JUPITER_ROUTE: Unable to fetch executable Jupiter route for ${params.inputMint} -> ${params.outputMint}. Real Jupiter liquidity required.`);
   }
 
   async swap(

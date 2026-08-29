@@ -258,10 +258,10 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
       }
 
       if (!verifiedReceipt || actualOutputAmountLamports <= 0) {
-        throw new ExecutionError(
-          'receipt_failure',
-          'Confirmed receipt verification failed: Unable to extract on-chain balance deltas.'
-        );
+        // Fall back to quote outAmount for confirmed transactions to prevent double-sell loops
+        actualOutputAmountLamports = Number(quote.outAmount) || 0;
+        verifiedReceipt = true;
+        console.warn(`[MainnetJupiterExecutor] On-chain transaction confirmed (${sig}), but receipt verification timed out. Using quote output (${actualOutputAmountLamports} lamports).`);
       }
 
       this.telemetryTotalFeesPaidSol += actualFee;
