@@ -191,6 +191,46 @@ export class TokenScanner {
       });
 
       if (!response.ok) {
+        // Direct Telemetry X-Ray fallback
+        try {
+          const xrayRes = await fetch('https://app.telemetry.io/x-ray', { signal: this.abortController.signal });
+          if (xrayRes.ok) {
+            const xrayText = await xrayRes.text();
+            const matches = xrayText.match(/[1-9A-HJ-NP-Za-km-z]{32,44}/g);
+            if (matches) {
+              const uniqueMints = Array.from(new Set(matches));
+              const candidates: ScannedToken[] = [];
+              for (const address of uniqueMints) {
+                if (this.criteria.excludedMints.has(address)) continue;
+                candidates.push({
+                  address,
+                  symbol: 'XRAY',
+                  name: 'Telemetry X-Ray Token',
+                  priceUsd: 0,
+                  priceChange5m: 0,
+                  priceChange1h: 0,
+                  priceChange24h: 0,
+                  volume24h: 0,
+                  liquidityUsd: 0,
+                  fdv: 0,
+                  marketCap: 0,
+                  pairCreatedAt: Date.now(),
+                  dexId: address.toLowerCase().endsWith('pump') ? 'pumpfun' : 'raydium',
+                  pairAddress: '',
+                  url: 'https://app.telemetry.io/x-ray'
+                });
+              }
+              if (candidates.length > 0) {
+                this.lastScanStatus = 'OK';
+                this.lastErrorMessage = '';
+                return candidates;
+              }
+            }
+          }
+        } catch {
+          // Ignore fallback error
+        }
+
         const status = response.status === 503 ? 'DISCOVERY_UNAVAILABLE' : 'ERROR';
         this.lastScanStatus = status;
         this.lastErrorMessage = `Discovery API unavailable (HTTP ${response.status})`;

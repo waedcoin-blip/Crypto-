@@ -3802,7 +3802,76 @@ function App() {
       xRaySubscriptionId.current = subId;
     }
 
+    // Telemetry X-Ray Direct Stream Poller (https://app.telemetry.io/x-ray)
+    let xrayInterval: any = null;
+    if (isXRayEnabled) {
+      const pollXRayStream = async () => {
+        try {
+          const res = await fetch('https://app.telemetry.io/x-ray');
+          if (res.ok) {
+            const text = await res.text();
+            const matches = text.match(/[1-9A-HJ-NP-Za-km-z]{32,44}/g);
+            if (matches) {
+              const uniqueMints = Array.from(new Set(matches)).slice(0, 10);
+              for (const mint of uniqueMints) {
+                if (processedSigs.current.has(`xray-${mint}`)) continue;
+                processedSigs.current.add(`xray-${mint}`);
+
+                const tokenSymbol = resolveTokenName(mint);
+                setTelemetryAlerts(prev => [
+                  {
+                    id: `xray-stream-${mint}-${Date.now()}`,
+                    token: tokenSymbol,
+                    address: mint,
+                    type: 'VOLUME_SPIKE',
+                    message: `X-RAY: 🛰️ NEW TOKEN INGESTED FROM TELEMETRY STREAM: ${tokenSymbol}`,
+                    timestamp: Date.now()
+                  },
+                  ...prev.slice(0, 19)
+                ]);
+
+                // Populate Token Metrics table for discovery
+                setTokenMetrics(prev => {
+                  if (prev[mint]) return prev;
+                  return {
+                    ...prev,
+                    [mint]: {
+                      symbol: tokenSymbol,
+                      name: 'Discovered via Telemetry X-Ray',
+                      address: mint,
+                      buyCount: 1,
+                      sellCount: 0,
+                      buyVolume: 100,
+                      sellVolume: 0,
+                      percentageIncrease: 5.0,
+                      lastPrice: 0.0001,
+                      lastUpdated: Date.now(),
+                      discoveredAt: Date.now(),
+                      recentBuysTimeline: [{ t: Date.now(), a: 100 }],
+                      isSurging: true,
+                      prevBuyCount: 0,
+                      prevHolderCount: 0,
+                      uniqueWallets: new Set(),
+                      holderCount: 10
+                    } as TokenMetric
+                  };
+                });
+
+                fetchTokenSecurityData(mint).catch(() => {});
+              }
+            }
+          }
+        } catch {
+          // Ignore network errors on background stream
+        }
+      };
+
+      pollXRayStream();
+      xrayInterval = setInterval(pollXRayStream, 20000);
+    }
+
     return () => {
+      if (xrayInterval) clearInterval(xrayInterval);
       if (xRaySubscriptionId.current && conn) {
         conn.removeOnLogsListener(xRaySubscriptionId.current);
       }

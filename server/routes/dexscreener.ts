@@ -132,6 +132,7 @@ router.get('/tokens/trending', asyncHandler(async (req, res) => {
       const discoveryEndpoints = [
         'https://api.dexscreener.com/token-profiles/latest/v1',
         'https://api.dexscreener.com/token-profiles/recent-updates/v1',
+        'https://app.telemetry.io/x-ray',
       ];
 
       const discovered = new Map<string, any>();
@@ -143,8 +144,8 @@ router.get('/tokens/trending', asyncHandler(async (req, res) => {
             url,
             {
               headers: {
-                'User-Agent': 'Mozilla/5.0',
-                'Accept': 'application/json',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'application/json, text/html, */*',
               },
             },
             2,
@@ -155,12 +156,32 @@ router.get('/tokens/trending', asyncHandler(async (req, res) => {
             throw new Error(`${url}: HTTP ${response.status}`);
           }
 
-          const json = JSON.parse(text);
+          let items: any[] = [];
+          try {
+            const json = JSON.parse(text);
+            if (Array.isArray(json)) {
+              items = json;
+            } else if (Array.isArray(json?.data)) {
+              items = json.data;
+            } else if (Array.isArray(json?.tokens)) {
+              items = json.tokens;
+            } else if (Array.isArray(json?.items)) {
+              items = json.items;
+            } else if (Array.isArray(json?.profiles)) {
+              items = json.profiles;
+            } else if (Array.isArray(json?.xrayTokens)) {
+              items = json.xrayTokens;
+            }
+          } catch {
+            // Regex extract Base58 Solana addresses if feed returns HTML/text
+            const matches = text.match(/[1-9A-HJ-NP-Za-km-z]{32,44}/g);
+            if (matches) {
+              const uniqueMints = Array.from(new Set(matches));
+              items = uniqueMints.map(addr => ({ tokenAddress: addr, chainId: 'solana', source: 'telemetry-xray' }));
+            }
+          }
 
-          if (Array.isArray(json)) return json;
-          if (Array.isArray(json?.data)) return json.data;
-
-          return [];
+          return items;
         })
       );
 
@@ -390,6 +411,7 @@ router.get('/token-profiles', asyncHandler(async (req, res) => {
       const endpoints = [
         'https://api.dexscreener.com/token-profiles/latest/v1',
         'https://api.dexscreener.com/token-profiles/recent-updates/v1',
+        'https://app.telemetry.io/x-ray',
         'https://api.dexscreener.com/community-takeovers/latest/v1',
         'https://api.dexscreener.com/ads/latest/v1',
         'https://api.dexscreener.com/token-boosts/latest/v1',
@@ -405,6 +427,7 @@ router.get('/token-profiles', asyncHandler(async (req, res) => {
             {
               headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'application/json, text/html, */*',
               },
             },
             3,
@@ -416,19 +439,30 @@ router.get('/token-profiles', asyncHandler(async (req, res) => {
             continue;
           }
 
-          const json = JSON.parse(text);
           let items: any[] = [];
-
-          if (Array.isArray(json)) {
-            items = json;
-          } else if (json?.data && Array.isArray(json.data)) {
-            items = json.data;
-          } else if (json && typeof json === 'object') {
-            for (const key of Object.keys(json)) {
-              if (Array.isArray(json[key])) {
-                items = json[key];
-                break;
+          try {
+            const json = JSON.parse(text);
+            if (Array.isArray(json)) {
+              items = json;
+            } else if (json?.data && Array.isArray(json.data)) {
+              items = json.data;
+            } else if (json?.tokens && Array.isArray(json.tokens)) {
+              items = json.tokens;
+            } else if (json?.items && Array.isArray(json.items)) {
+              items = json.items;
+            } else if (json && typeof json === 'object') {
+              for (const key of Object.keys(json)) {
+                if (Array.isArray(json[key])) {
+                  items = json[key];
+                  break;
+                }
               }
+            }
+          } catch {
+            const matches = text.match(/[1-9A-HJ-NP-Za-km-z]{32,44}/g);
+            if (matches) {
+              const uniqueMints = Array.from(new Set(matches));
+              items = uniqueMints.map(addr => ({ tokenAddress: addr, chainId: 'solana', source: 'telemetry-xray' }));
             }
           }
 

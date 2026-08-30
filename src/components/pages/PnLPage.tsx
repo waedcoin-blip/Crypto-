@@ -4994,6 +4994,34 @@ const checkTokenCriteria = (mint: string): {
           }
         }
 
+        // Attempt 3: Telemetry X-Ray direct discovery feed (https://app.telemetry.io/x-ray)
+        if (!fetchedSuccessfully) {
+          try {
+            addLog(`🛰️ [TELEMETRY X-RAY] Querying live X-Ray token stream (app.telemetry.io/x-ray)...`, 'info');
+            const xrayRes = await fetch('https://app.telemetry.io/x-ray');
+            if (xrayRes.ok) {
+              const xrayText = await xrayRes.text();
+              const matches = xrayText.match(/[1-9A-HJ-NP-Za-km-z]{32,44}/g);
+              if (matches) {
+                const uniqueMints = Array.from(new Set(matches));
+                const xrayProfiles = uniqueMints.map(addr => ({
+                  tokenAddress: addr,
+                  chainId: 'solana',
+                  description: 'Discovered via Telemetry X-Ray Stream',
+                  url: 'https://app.telemetry.io/x-ray'
+                }));
+                if (xrayProfiles.length > 0) {
+                  profiles = xrayProfiles;
+                  fetchedSuccessfully = true;
+                  addLog(`✨ [TELEMETRY X-RAY] Ingested ${xrayProfiles.length} new tokens directly from Telemetry X-Ray stream!`, 'success');
+                }
+              }
+            }
+          } catch (xrayErr: any) {
+            addLog(`⚠️ [TELEMETRY X-RAY] X-Ray direct stream query error: ${xrayErr.message}`, 'warn');
+          }
+        }
+
         // If both failed, or returned empty, run the simulator stable fallback
         if (!fetchedSuccessfully || profiles.length === 0) {
           addLog(`ℹ️ [DEXSCREENER ENGINE] Live streams temporarily unavailable. Activating high-fidelity simulator.`, 'info');
