@@ -189,6 +189,8 @@ export const criteriaSchema = z.object({
   version: z.coerce.number().optional(),
 }).passthrough();
 
+let isAdminDbFunctional = true;
+
 export class CriteriaService extends EventEmitter {
   private static instance: CriteriaService;
   // User ID -> Criteria State
@@ -211,7 +213,7 @@ export class CriteriaService extends EventEmitter {
 
   public async fetchCriteriaFromFirestore(userId: string, idToken: string): Promise<AuthoritativeCriteriaState> {
     // 1. Try Admin SDK if initialized and functional
-    if (adminDb) {
+    if (adminDb && isAdminDbFunctional) {
       try {
         const docRef = adminDb.doc(`settings/${userId}`);
         const docSnap = await docRef.get();
@@ -240,7 +242,8 @@ export class CriteriaService extends EventEmitter {
           return state;
         }
       } catch (adminErr: any) {
-        logger.warn({ err: adminErr.message, userId }, 'Admin SDK getDoc failed, attempting authenticated REST fallback');
+        isAdminDbFunctional = false;
+        // Admin SDK failed (likely due to missing credentials in AI Studio env), fallback to REST
       }
     }
 
@@ -319,7 +322,7 @@ export class CriteriaService extends EventEmitter {
     const { userId: payloadUserId, source: payloadSource, updatedAt: _clientUpdatedAt, version: _clientVersion, ...criteriaUpdates } = validated;
 
     // 3. ATOMIC TRANSACTIONS VIA ADMIN SDK
-    if (adminDb) {
+    if (adminDb && isAdminDbFunctional) {
       try {
         const docRef = adminDb.doc(`settings/${userId}`);
         const resultState = await adminDb.runTransaction(async (transaction) => {
@@ -405,7 +408,8 @@ export class CriteriaService extends EventEmitter {
         if (adminErr.message?.startsWith('Conflict:')) {
           throw adminErr; // Propagate 409 conflict directly
         }
-        logger.warn({ err: adminErr.message, userId }, 'Admin SDK transaction failed, falling back to REST precondition execution');
+        isAdminDbFunctional = false;
+        // Admin SDK failed, fallback to REST
       }
     }
 
