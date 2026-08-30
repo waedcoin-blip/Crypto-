@@ -34,6 +34,7 @@ import { SyncStatusBadge } from '../SyncStatusBadge';
 import { useBalanceStore } from '../../store/balanceStore';
 import { useTradingEnvironmentStore } from '../../store/tradingEnvironmentStore';
 import { walletBalanceService } from '../../services/WalletBalanceService';
+import { resolveTokenDecimals } from '../../services/PaperTradeExecutor';
 
 import { DEFAULT_HELIUS_RPC, DEFAULT_HELIUS_WS, HELIUS_API_KEY, SOL_MINT, USDC_MINT } from '../../constants/solana';
 
@@ -2808,8 +2809,8 @@ export const PnLPage = ({
           tokenPrice.source === 'price_tracker' ? 'price_tracker' : 'dexscreener';
         positionExitManagerRef.current?.onPriceUpdate(mint, freshPrice, now, 'SOL', mappedSource);
 
-        // 3. MasterMonitor direct update
-        masterMonitorRef.current?.pushPriceUpdate(mint, freshPrice, now, 'price_tracker');
+        // 3. MasterMonitor direct update with mapped source authority
+        masterMonitorRef.current?.pushPriceUpdate(mint, freshPrice, now, mappedSource);
       });
 
       if (hasMetricUpdates) {
@@ -4081,11 +4082,13 @@ const checkTokenCriteria = (mint: string): {
     const symbol = pos?.symbol || mint.slice(0, 6);
     if (positionExitManagerRef.current) {
       addLog(`🚨 Delegating exit request for ${symbol} to RiskManager (${reason})...`, 'info');
-      const amountLamports = pos?.amountLamports || (pos?.amount ? Math.floor(pos.amount * (pos.decimals ? Math.pow(10, pos.decimals) : 1e6)) : undefined);
+      const decimals = pos?.decimals ?? resolveTokenDecimals(mint);
+      const amountLamports = pos?.amountLamports || (pos?.amount ? Math.floor(pos.amount * Math.pow(10, decimals)) : undefined);
       await positionExitManagerRef.current.requestExit(mint, reason, amountLamports, pos?.solSpent);
     } else {
       addLog(`🚨 Requesting exit for ${symbol} via RiskManager (${reason})...`, 'sell');
-      const amountLamports = pos?.amountLamports || (pos?.amount ? Math.floor(pos.amount * (pos.decimals ? Math.pow(10, pos.decimals) : 1e6)) : undefined);
+      const decimals = pos?.decimals ?? resolveTokenDecimals(mint);
+      const amountLamports = pos?.amountLamports || (pos?.amount ? Math.floor(pos.amount * Math.pow(10, decimals)) : undefined);
       await positionExitManager.requestExit(mint, reason, amountLamports, pos?.solSpent);
     }
   };
@@ -4360,15 +4363,16 @@ const checkTokenCriteria = (mint: string): {
 
         const existingPos = positionExitManagerRef.current.getPosition(mint);
         if (!existingPos) {
-          const lamportsTotal = pos.amountLamports || Math.floor((pos.amount || 0) * (pos.decimals ? Math.pow(10, pos.decimals) : 1e6));
+          const tokenDecimals = pos.decimals ?? resolveTokenDecimals(mint);
+          const lamportsTotal = pos.amountLamports || Math.floor((pos.amount || 0) * Math.pow(10, tokenDecimals));
           positionExitManagerRef.current.addPosition({
             mint,
-            amount: lamportsTotal > 0 ? lamportsTotal : 1000000,
+            amount: lamportsTotal > 0 ? lamportsTotal : Math.pow(10, tokenDecimals),
             buyPrice: pos.buyPrice || 0,
             solSpent: pos.solSpent || 0,
             tpPct: targetTp,
             slPct: Math.abs(targetSl),
-            tokenDecimals: pos.decimals ?? 6,
+            tokenDecimals,
           });
           if (pos.currentPrice && pos.currentPrice > 0) {
             positionExitManagerRef.current.onPriceUpdate(mint, pos.currentPrice, Date.now(), 'SOL', (pos as any).activePriceSource || 'dexscreener');

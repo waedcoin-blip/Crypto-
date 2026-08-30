@@ -1218,7 +1218,7 @@ function App() {
           // Market price → RiskManager → TP/SL decision → Jupiter pre-sell validation → OrderManager → execution
           // The App-level monitoring loop no longer submits automatic sells directly.
           if (currentPriceSol > 0) {
-            positionExitManager.onPriceUpdate(tokenAddress, currentPriceSol, Date.now(), 'SOL', 'price_tracker');
+            positionExitManager.onPriceUpdate(tokenAddress, currentPriceSol, Date.now(), 'SOL', 'jupiter');
           }
 
           // Track peak PnL in position metadata for display purposes
@@ -1908,11 +1908,13 @@ function App() {
         if (position.amountLamports && position.amountLamports > 0) {
           sellRawAmount = position.amountLamports;
         } else if (position.amount && position.amount > 0) {
-          sellRawAmount = Math.floor(position.amount * (position.decimals ? Math.pow(10, position.decimals) : 1e6));
+          const decimals = position.decimals ?? resolveTokenDecimals(tokenAddress);
+          sellRawAmount = Math.floor(position.amount * Math.pow(10, decimals));
         } else {
           const storeTokenBal = useBalanceStore.getState().tokenBalances[tokenAddress];
           if (storeTokenBal && storeTokenBal > 0) {
-            sellRawAmount = Math.floor(storeTokenBal * 1e6);
+            const decimals = position.decimals ?? resolveTokenDecimals(tokenAddress);
+            sellRawAmount = Math.floor(storeTokenBal * Math.pow(10, decimals));
           }
         }
       }

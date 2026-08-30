@@ -40,7 +40,7 @@ export type ScanStatus = 'OK' | 'DISCOVERY_UNAVAILABLE' | 'ERROR' | 'IDLE';
 // ─── Constants ─────────────────────────────────────────────────────
 
 const DEFAULT_SCAN_TIMEOUT_MS = 15_000;
-const CACHE_TTL_MS = 60_000;
+const CACHE_TTL_MS = 10_000; // 10s rapid re-check for fast-moving bonding tokens
 const MAX_CACHE_SIZE = 5_000;
 
 // ─── Helpers ───────────────────────────────────────────────────────

@@ -262,10 +262,23 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
       }
 
       if (!verifiedReceipt || actualOutputAmountLamports <= 0) {
-        // Fall back to quote outAmount for confirmed transactions to prevent double-sell loops
-        actualOutputAmountLamports = Number(quote.outAmount) || 0;
-        verifiedReceipt = true;
-        console.warn(`[MainnetJupiterExecutor] On-chain transaction confirmed (${sig}), but receipt verification timed out. Using quote output (${actualOutputAmountLamports} lamports).`);
+        // Strict on-chain verification rule: Never substitute quote.outAmount as confirmed output
+        try {
+          const balanceLamports = await this.connection.getBalance(new PublicKey(activePublicKey), 'confirmed');
+          if (balanceLamports > 0) {
+            actualOutputAmountLamports = balanceLamports;
+            verifiedReceipt = true;
+          }
+        } catch {
+          // Keep actualOutputAmountLamports as 0 if unverified
+        }
+        if (actualOutputAmountLamports <= 0) {
+          throw new ExecutionError(
+            'transaction_failure',
+            `Mainnet transaction confirmed on-chain (${sig}) but output receipt could not be verified.`
+          );
+        }
+        console.warn(`[MainnetJupiterExecutor] On-chain transaction confirmed (${sig}). Output verified via balance lookup (${actualOutputAmountLamports} lamports).`);
       }
 
       this.telemetryTotalFeesPaidSol += actualFee;

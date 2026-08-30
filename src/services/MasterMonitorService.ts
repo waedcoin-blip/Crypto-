@@ -95,6 +95,12 @@ export class MasterMonitorService {
       return;
     }
 
+    // Source authority rule: if existing price source is Jupiter and fresh (< 30s), reject non-Jupiter sources
+    const existing = this.priceEngine.get(mint);
+    if (existing && existing.source === 'jupiter' && source !== 'jupiter' && (now - existing.updatedAt) < 30000) {
+      return;
+    }
+
     this.subscribedMints.add(mint);
     
     this.priceEngine.set(mint, {
@@ -143,8 +149,8 @@ export class MasterMonitorService {
     // Initial poll
     pollBatch();
 
-    // Single fast unified ticker for ALL active tokens (500ms)
-    this.batchInterval = setInterval(pollBatch, 500);
+    // Single fast unified ticker for ALL active tokens (250ms high-frequency Jupiter polling)
+    this.batchInterval = setInterval(pollBatch, 250);
   }
 
   private setupWsSubscriptions(): void {
