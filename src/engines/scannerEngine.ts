@@ -2,6 +2,7 @@ import { eventBus } from './eventBus';
 import { useAppStore } from '../store/appStore';
 import { walletIntelligence } from './walletIntelligence';
 import { riskAnalyzer } from './riskAnalyzerEngine';
+import { highFrequencyBuyDetector } from './highFrequencyBuyDetector';
 
 /**
  * Scanner Engine
@@ -15,6 +16,17 @@ export class ScannerEngine {
       trades.forEach((trade) => {
           // 1. Analyze Wallet activity
           walletIntelligence.analyzeTrade(trade);
+
+          // 1.5 Analyze High Frequency Buys
+          highFrequencyBuyDetector.analyzeTrade({
+            tokenAddress: trade.tokenAddress,
+            token: trade.token,
+            type: trade.type || (trade.isBuy ? 'buy' : 'sell'),
+            amount: trade.amount,
+            priceSol: trade.priceSol,
+            timestamp: trade.timestamp || Date.now(),
+            maker: trade.maker
+          });
 
           // 2. Discover new token logic
           if (trade.isNewDiscovery) {

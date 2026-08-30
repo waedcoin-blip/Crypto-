@@ -6,6 +6,24 @@ export type AppEvents = {
   NEW_TOKEN: { tokenAddress: string, symbol: string, data: any };
   PUMPFUN_MIGRATION: { tokenAddress: string, symbol: string };
   VOLUME_SPIKE: { tokenAddress: string, symbol: string, volume: number };
+  HIGH_FREQUENCY_BUY: {
+    tokenAddress: string;
+    symbol: string;
+    confidenceScore: number;
+    metrics: {
+      buys1s: number;
+      buys3s: number;
+      buys5s: number;
+      buys10s: number;
+      uniqueWallets: number;
+      buyToSellRatio: number;
+      acceleration: number;
+      maxRepeatedBuys: number;
+      coordinatedClusters: number;
+      buyVolumeSol: number;
+    };
+    timestamp: number;
+  };
   
   // Wallet Intelligence Events
   WHALE_BUY: { tokenAddress: string, symbol: string, amount: number, wallet: string };

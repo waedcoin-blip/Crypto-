@@ -5,3 +5,4 @@ export * from './riskAnalyzerEngine';
 export * from './scannerEngine';
 export * from './MultiLayerValidationEngine';
 export * from './telemetryMapper';
+export * from './highFrequencyBuyDetector';

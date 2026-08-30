@@ -42,4 +42,15 @@ export function startAlertManager() {
       timestamp: Date.now()
     });
   });
+
+  eventBus.on('HIGH_FREQUENCY_BUY', (payload) => {
+    useAppStore.getState().addTelemetryAlert({
+      id: `hfb-${Date.now()}-${Math.random()}`,
+      token: payload.symbol,
+      address: payload.tokenAddress,
+      type: 'VOLUME_SPIKE', // Map to an existing alert type or update types if needed
+      message: `X-RAY: ⚡ High-Frequency Buy burst on ${payload.symbol} [Score: ${payload.confidenceScore}, ${payload.metrics.buys5s} buys/5s, ${payload.metrics.uniqueWallets} wallets]`,
+      timestamp: Date.now()
+    });
+  });
 }
