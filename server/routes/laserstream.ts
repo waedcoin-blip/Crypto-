@@ -30,6 +30,25 @@ let currentOptions: LaserStreamOptions = {
   programAddresses: [],
 };
 
+// ─── Wire Watchdog Handlers ───
+// FIX: The watchdog stores these but never used them. Wire them here or in LaserstreamIngestion.
+laserStreamWatchdog.setReconnectHandler(async (fromSlot) => {
+  laserLogger.warn({ fromSlot }, 'Watchdog triggered reconnect');
+  try {
+    await stopLaserStream();
+    await startLaserStream(currentOptions, broadcastToClients);
+    laserLogger.info({ fromSlot }, 'Watchdog reconnect completed');
+  } catch (err) {
+    laserLogger.error({ error: err, fromSlot }, 'Watchdog reconnect failed');
+    throw err; // Let watchdog reset isReconnecting
+  }
+});
+
+laserStreamWatchdog.setHealthCheckHandler(async () => {
+  // Optional: implement deep health probe (e.g., ping Helius RPC)
+  laserLogger.debug('Watchdog health check tick');
+});
+
 // ─── Watchdog State Listener for Real-time SSE Broadcast ───
 laserStreamWatchdog.onStateChange((status, telemetry) => {
   broadcastToClients({
@@ -41,7 +60,7 @@ laserStreamWatchdog.onStateChange((status, telemetry) => {
     activeEndpoint: getActiveLaserStreamEndpoint(),
     network: currentOptions.network || 'mainnet',
     telemetry,
-  } as any);
+  } as SseEvent);
 });
 
 // ─── SSE Heartbeat ───
@@ -67,7 +86,6 @@ const heartbeatInterval = setInterval(() => {
     }
   });
 
-  // Remove dead clients
   if (deadClients.length > 0) {
     for (let i = clients.length - 1; i >= 0; i--) {
       if (deadClients.includes(clients[i].id)) {
@@ -78,11 +96,18 @@ const heartbeatInterval = setInterval(() => {
   }
 }, 10000);
 
+// FIX: Clean up heartbeat on graceful shutdown to avoid dangling timers in tests/PM2
+const cleanupHeartbeat = () => {
+  clearInterval(heartbeatInterval);
+};
+process.on('SIGINT', cleanupHeartbeat);
+process.on('SIGTERM', cleanupHeartbeat);
+
 // ─── Broadcast helper ───
 export function broadcastToClients(event: SseEvent): void {
   const dataString = JSON.stringify(event);
   const deadClients: string[] = [];
-  
+
   clients.forEach((client) => {
     try {
       client.res.write(`data: ${dataString}\n\n`);
@@ -130,7 +155,12 @@ router.get('/status', (req, res) => {
 // GET /api/laserstream/health
 router.get('/health', (req, res) => {
   const telemetry = getLaserStreamTelemetry();
-  const isHealthy = telemetry.status === 'connected' || telemetry.status === 'degraded' || telemetry.status === 'replaying' || telemetry.status === 'fallback' || telemetry.status === 'simulated';
+  const isHealthy =
+    telemetry.status === 'connected' ||
+    telemetry.status === 'degraded' ||
+    telemetry.status === 'replaying' ||
+    telemetry.status === 'fallback' ||
+    telemetry.status === 'simulated';
   res.status(isHealthy ? 200 : 503).json({
     status: telemetry.status,
     healthy: isHealthy,
@@ -156,7 +186,11 @@ router.post('/config', asyncHandler(async (req, res) => {
 
   const parsed = ConfigSchema.safeParse(req.body);
   if (!parsed.success) {
-    return res.status(400).json({ success: false, message: 'Invalid config payload', errors: parsed.error.issues });
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid config payload',
+      errors: parsed.error.issues,
+    });
   }
 
   const { enabled, apiKey, network, endpoint, programAddresses, customWsUrl } = parsed.data;
@@ -193,23 +227,25 @@ router.post('/config', asyncHandler(async (req, res) => {
   } else {
     await stopLaserStream();
     isActive = false;
+    // FIX: Reset watchdog so stale metrics don't persist across restarts
+    laserStreamWatchdog.reset(true);
     laserLogger.info('LaserStream stopped');
   }
 
-  const status = getSafeStatus();
-
+  // FIX: Broadcast the *watchdog's actual status* instead of a synthetic isActive string
+  const telemetry = getLaserStreamTelemetry();
   broadcastToClients({
     type: 'STATUS',
-    status: isActive ? 'connected' : 'disconnected',
+    status: telemetry.status,
     laserstreamActive: isActive,
     isFallback: isLaserStreamUsingFallback(),
     isSimulated: isLaserStreamSimulated(),
     activeEndpoint: getActiveLaserStreamEndpoint(),
     network: currentOptions.network || 'mainnet',
-    telemetry: getLaserStreamTelemetry(),
-  } as any);
+    telemetry,
+  } as SseEvent);
 
-  res.json(status);
+  res.json(getSafeStatus());
 }));
 
 const MAX_SSE_CLIENTS = 100;
@@ -241,15 +277,18 @@ router.get('/stream', (req, res) => {
   clients.push(client);
   laserLogger.info({ clientId, total: clients.length }, 'SSE client connected');
 
-  // Send initial status
+  // FIX: Send initial status from watchdog, not synthetic isActive boolean
+  const telemetry = getLaserStreamTelemetry();
   res.write(
     `data: ${JSON.stringify({
       type: 'STATUS',
-      status: isActive ? 'connected' : 'disconnected',
+      status: telemetry.status,
       laserstreamActive: isActive,
       isFallback: isLaserStreamUsingFallback(),
       isSimulated: isLaserStreamSimulated(),
       activeEndpoint: getActiveLaserStreamEndpoint(),
+      network: currentOptions.network || 'mainnet',
+      telemetry,
     })}\n\n`
   );
   if (typeof (res as any).flush === 'function') {
