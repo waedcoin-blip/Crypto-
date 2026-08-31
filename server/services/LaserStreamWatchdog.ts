@@ -18,6 +18,8 @@ export interface WatchdogConfig {
   checkIntervalMs: number;
   /** How long lastProcessingDurationMs remains relevant before being treated as stale */
   processingLagStaleMs: number;
+  /** How long before lack of server updates marks the connection as stale */
+  activityStaleMs: number;
 }
 
 export type ReconnectHandler = (fromSlot: number) => Promise<void> | void;
