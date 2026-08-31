@@ -20,6 +20,7 @@ import fs from 'fs';
 import tls from 'tls';
 import { URL } from 'url';
 import WebSocket from 'ws';
+import bs58 from 'bs58';
 import { logger, laserLogger } from '../utils/logger.js';
 import { config } from '../config/index.js';
 import { laserStreamWatchdog } from '../services/LaserStreamWatchdog.js';
@@ -463,6 +464,19 @@ function stopWorkerProcess(): void {
   state.childProcess = null;
 }
 
+export function toBase58Signature(sig: any): string {
+  if (!sig) return '';
+  if (typeof sig === 'string') return sig;
+  if (Buffer.isBuffer(sig) || sig instanceof Uint8Array || Array.isArray(sig)) {
+    try {
+      return bs58.encode(Uint8Array.from(sig));
+    } catch {
+      return Buffer.from(sig).toString('hex');
+    }
+  }
+  return String(sig);
+}
+
 // ─── Worker Entry Point (Isolated Process) ───
 export async function runLaserstreamWorker(): Promise<void> {
   laserLogger.info('LaserStream worker process started');
@@ -490,12 +504,6 @@ export async function runLaserstreamWorker(): Promise<void> {
         failed: false,
       },
     },
-    accounts: {
-      'tracked-token-accounts': {
-        account: [],
-        owner: ['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'],
-      },
-    },
   };
 
   try {
@@ -505,16 +513,18 @@ export async function runLaserstreamWorker(): Promise<void> {
       (updatePayload) => {
         if (updatePayload.transaction) {
           const txData = updatePayload.transaction;
-          const signature = txData.transaction?.signatures?.[0];
-          const slot = updatePayload.slot;
+          const rawSig =
+            txData.transaction?.signatures?.[0] ||
+            txData.transaction?.signature ||
+            txData.signatures?.[0] ||
+            (txData as any).signature;
+          const signature = toBase58Signature(rawSig);
+          const slot = Number(updatePayload.slot || txData.slot || 0);
 
           const standardEvent = {
             type: 'ON_CHAIN_TX',
             slot,
-            signature:
-              signature && typeof signature === 'string'
-                ? signature
-                : Buffer.from(signature as any).toString('hex'),
+            signature,
             rawPayload: { slot, signature, transaction: txData },
             isFallback: false,
             isSimulated: false,
@@ -562,13 +572,15 @@ export async function runLaserstreamWorker(): Promise<void> {
 }
 
 // FIX: Export a helper so your server entry point can start the worker when forked
-export function maybeRunLaserstreamWorker(): void {
+export function maybeRunLaserstreamWorker(): boolean {
   if (process.env.IS_LASERSTREAM_WORKER === 'true') {
     runLaserstreamWorker().catch((err) => {
       laserLogger.error({ error: err }, 'LaserStream worker failed');
       process.exit(1);
     });
+    return true;
   }
+  return false;
 }
 
 // ─── Main Stream Start ───
@@ -664,7 +676,9 @@ export async function startLaserStream(
       }
     }
 
-    const execArgv = scriptPath.endsWith('.ts') ? ['--import', 'tsx'] : [];
+    const execArgv = scriptPath.endsWith('.ts')
+      ? (process.execArgv.length > 0 ? process.execArgv : ['--import', 'tsx'])
+      : [];
 
     state.childProcess = fork(scriptPath, [], {
       execArgv,

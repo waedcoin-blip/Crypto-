@@ -72,6 +72,9 @@ process.on("unhandledRejection", (reason: any) => {
 });
 
 async function startServer() {
+  if (process.env.IS_LASERSTREAM_WORKER === 'true' || process.env.IS_TRADING_WORKER === 'true') {
+    return null;
+  }
   const app = express();
   
   // Trust proxy for rate limiter to get correct req.ip
