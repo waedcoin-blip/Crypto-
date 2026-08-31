@@ -49,15 +49,31 @@ export interface RpcProbeResult {
 
 export type LaserStreamNetwork = 'mainnet';
 export type LaserStreamMode = 'grpc' | 'websocket' | 'simulation';
-export type LaserStreamHealthStatus = 'disabled' | 'connecting' | 'connected' | 'stalled' | 'error' | 'fallback' | 'simulated';
+export type LaserStreamHealthStatus =
+  | 'connected'
+  | 'degraded'
+  | 'stale'
+  | 'disconnected'
+  | 'replaying'
+  | 'connecting'
+  | 'disabled'
+  | 'fallback'
+  | 'simulated';
 
 export interface LaserStreamTelemetry {
   transportConnected: boolean;
   status: LaserStreamHealthStatus;
   lastHeartbeatAt: number | null;
   lastEventAt: number | null;
-  lastSlot: number | null;
+  lastReceivedSlot: number;
+  lastProcessedSlot: number;
+  slotLag: number;
+  processingLagMs: number;
+  queueDepth: number;
+  isReplaying: boolean;
+  replayFromSlot: number | null;
   eventsReceived: number;
+  eventsProcessed: number;
   reconnectCount: number;
   network: LaserStreamNetwork;
   endpoint: string | null;

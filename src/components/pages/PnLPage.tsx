@@ -1142,10 +1142,31 @@ export const PnLPage = ({
   const [laserstreamEnabled, setLaserstreamEnabled] = useState(true);
   const [laserstreamApiKey, setLaserstreamApiKey] = useState(HELIUS_API_KEY);
   const [laserstreamEndpoint, setLaserstreamEndpoint] = useState('auto');
-  const [laserstreamStatus, setLaserstreamStatus] = useState<'connected'|'disconnected'|'connecting'|'stalled'>('disconnected');
+  const [laserstreamStatus, setLaserstreamStatus] = useState<
+    'connected' | 'degraded' | 'stale' | 'disconnected' | 'replaying' | 'connecting'
+  >('disconnected');
   const [laserstreamIsFallback, setLaserstreamIsFallback] = useState(false);
   const [laserstreamIsSimulated, setLaserstreamIsSimulated] = useState(false);
   const [laserstreamActiveEndpoint, setLaserstreamActiveEndpoint] = useState<string | null>(null);
+  const [laserstreamSlotMetrics, setLaserstreamSlotMetrics] = useState<{
+    lastReceivedSlot: number;
+    lastProcessedSlot: number;
+    slotLag: number;
+    processingLagMs: number;
+    lastEventMs: number;
+    queueDepth: number;
+    isReplaying: boolean;
+    replayFromSlot: number | null;
+  }>({
+    lastReceivedSlot: 0,
+    lastProcessedSlot: 0,
+    slotLag: 0,
+    processingLagMs: 0,
+    lastEventMs: 0,
+    queueDepth: 0,
+    isReplaying: false,
+    replayFromSlot: null,
+  });
 
   // DexScreener Engine Configurations
   const [dexScreenerEnabled, setDexScreenerEnabled] = useState(true);
@@ -2144,10 +2165,6 @@ export const PnLPage = ({
 
     let eventSource: EventSource | null = null;
     let reconnectTimeout: number | null = null;
-    let telemetryWatchdog: number | null = null;
-    let lastTransportMessageAt = 0;
-    let lastDataEventAt = 0;
-    let lastHeartbeatAt = 0;
     let lastObservedSlot = 0;
 
     const recordAndDedupe = (key: string): boolean => {
@@ -2160,40 +2177,7 @@ export const PnLPage = ({
       return true;
     };
 
-    const TELEMETRY_TRANSPORT_TIMEOUT_MS = 15000;
-    const TELEMETRY_DATA_TIMEOUT_MS = 10000;
-    const TELEMETRY_HEARTBEAT_TIMEOUT_MS = 15000;
-
-    telemetryWatchdog = window.setInterval(() => {
-      const now = Date.now();
-
-      const transportFresh =
-        lastTransportMessageAt > 0 &&
-        now - lastTransportMessageAt <= TELEMETRY_TRANSPORT_TIMEOUT_MS;
-
-      const heartbeatFresh =
-        lastHeartbeatAt > 0 &&
-        now - lastHeartbeatAt <= TELEMETRY_HEARTBEAT_TIMEOUT_MS;
-
-      const dataFresh =
-        lastDataEventAt > 0 &&
-        now - lastDataEventAt <= TELEMETRY_DATA_TIMEOUT_MS;
-
-      if (!transportFresh || !heartbeatFresh) {
-        setLaserstreamStatus('disconnected');
-        return;
-      }
-
-      if (!dataFresh) {
-        setLaserstreamStatus('stalled');
-        return;
-      }
-
-      setLaserstreamStatus('connected');
-    }, 2000);
-
     const connectSSE = () => {
-      console.log("🔗 Connecting to server-side Helius LaserStream stream...");
       eventSource = new EventSource('/api/laserstream/stream');
 
       eventSource.onopen = () => {
@@ -2201,32 +2185,39 @@ export const PnLPage = ({
       };
 
       eventSource.onerror = (err) => {
-        console.warn("LaserStream SSE connection status:", err);
         if (eventSource && eventSource.readyState === EventSource.CLOSED) {
           setLaserstreamStatus('disconnected');
           reconnectTimeout = window.setTimeout(() => {
             connectSSE();
-          }, 2000);
+          }, 3000);
         }
       };
 
       eventSource.onmessage = (event) => {
-        const receivedAt = Date.now();
         try {
           const data = JSON.parse(event.data);
-          lastTransportMessageAt = receivedAt;
 
-          if (data.type === 'HEARTBEAT') {
-            lastHeartbeatAt = receivedAt;
-            return;
-          }
-
-          if (data.type === 'STATUS') {
-            if (data.laserstreamActive || data.status === 'connected') {
-              setLaserstreamIsFallback(!!data.isFallback);
-              setLaserstreamIsSimulated(!!data.isSimulated);
-              setLaserstreamActiveEndpoint(data.activeEndpoint || null);
+          if (data.type === 'HEARTBEAT' || data.type === 'STATUS') {
+            if (data.telemetry) {
+              const t = data.telemetry;
+              setLaserstreamStatus(t.status || 'connected');
+              setLaserstreamSlotMetrics({
+                lastReceivedSlot: t.lastReceivedSlot || 0,
+                lastProcessedSlot: t.lastProcessedSlot || 0,
+                slotLag: t.slotLag || 0,
+                processingLagMs: t.processingLagMs || 0,
+                lastEventMs: t.lastEventAt ? Math.max(0, Date.now() - t.lastEventAt) : 0,
+                queueDepth: t.queueDepth || 0,
+                isReplaying: !!t.isReplaying,
+                replayFromSlot: t.replayFromSlot || null,
+              });
+            } else if (data.status) {
+              setLaserstreamStatus(data.status);
             }
+
+            if (data.isFallback !== undefined) setLaserstreamIsFallback(!!data.isFallback);
+            if (data.isSimulated !== undefined) setLaserstreamIsSimulated(!!data.isSimulated);
+            if (data.activeEndpoint) setLaserstreamActiveEndpoint(data.activeEndpoint);
             return;
           }
 
@@ -2237,14 +2228,18 @@ export const PnLPage = ({
               return;
             }
 
-            // Reject old/out-of-order blockchain events
-            if (slot < lastObservedSlot) {
-              return;
+            // Keep track of observed slots without discarding valid out-of-order block batches
+            if (slot > lastObservedSlot) {
+              lastObservedSlot = slot;
             }
 
-            lastObservedSlot = slot;
-            lastDataEventAt = receivedAt;
-            setLaserstreamStatus('connected');
+            setLaserstreamSlotMetrics((prev) => ({
+              ...prev,
+              lastReceivedSlot: Math.max(prev.lastReceivedSlot, slot),
+              lastProcessedSlot: Math.max(prev.lastProcessedSlot, slot),
+              slotLag: 0,
+              lastEventMs: 0,
+            }));
 
             const signature = data.signature;
             const isFallback = !!data.isFallback;
@@ -2284,7 +2279,6 @@ export const PnLPage = ({
 
     return () => {
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
-      if (telemetryWatchdog) clearInterval(telemetryWatchdog);
       if (eventSource) {
         eventSource.close();
       }
@@ -5399,19 +5393,22 @@ const checkTokenCriteria = (mint: string): {
                     <span className="text-[11px] text-[#94a3b8] uppercase font-bold tracking-wider flex items-center gap-1.5">
                       <span>⚡</span> Helius LaserStream Ingest
                     </span>
-                    <span className="text-[9px] text-[#64748b]">Ultra-low latency direct gRPC feed</span>
+                    <span className="text-[9px] text-[#64748b]">Ultra-low latency direct gRPC feed with automatic replay</span>
                   </div>
                   <div className="flex items-center gap-2">
                     {laserstreamEnabled && (
                       <div className="flex items-center gap-1.5">
                         <span className={`text-[8px] font-mono font-bold uppercase rounded px-1.5 py-0.5 ${
                           laserstreamStatus === 'connected' ? 'bg-[#c7f284]/15 text-[#c7f284] border border-[#c7f284]/30' :
-                          laserstreamStatus === 'connecting' || laserstreamStatus === 'stalled' ? 'bg-amber-400/15 text-amber-300 border border-amber-400/30' :
+                          laserstreamStatus === 'degraded' ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30 animate-pulse' :
+                          laserstreamStatus === 'replaying' ? 'bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 animate-pulse' :
+                          laserstreamStatus === 'stale' ? 'bg-yellow-500/15 text-yellow-300 border border-yellow-500/30' :
+                          laserstreamStatus === 'connecting' ? 'bg-slate-500/15 text-slate-300 border border-slate-500/30' :
                           'bg-rose-500/15 text-rose-300 border border-rose-500/30'
                         }`}>
                           {laserstreamStatus}
                         </span>
-                        {laserstreamStatus === 'connected' && (
+                        {(laserstreamStatus === 'connected' || laserstreamStatus === 'degraded') && (
                           <span className={`text-[8px] font-mono font-bold uppercase rounded px-1.5 py-0.5 ${
                             laserstreamIsSimulated ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30' :
                             laserstreamIsFallback ? 'bg-sky-400/15 text-sky-400 border border-sky-400/30' : 
@@ -5439,6 +5436,52 @@ const checkTokenCriteria = (mint: string): {
 
                 {laserstreamEnabled && (
                   <div className="space-y-3 mt-3 bg-[#08080f]/50 border border-[#1f212e]/80 rounded-xl p-3 transition-all">
+                    {/* Real-time Slot & Queue Telemetry Ribbon */}
+                    <div className="grid grid-cols-4 gap-1.5 bg-[#0d0e17] border border-[#1f212e] rounded-lg p-2 text-center font-mono">
+                      <div className="flex flex-col">
+                        <span className="text-[8px] text-[#64748b] uppercase">Slot</span>
+                        <span className="text-[10px] text-white font-bold truncate">
+                          {laserstreamSlotMetrics.lastReceivedSlot > 0 ? laserstreamSlotMetrics.lastReceivedSlot.toLocaleString() : '---'}
+                        </span>
+                      </div>
+                      <div className="flex flex-col">
+                        <span className="text-[8px] text-[#64748b] uppercase">Slot Lag</span>
+                        <span className={`text-[10px] font-bold ${laserstreamSlotMetrics.slotLag > 5 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                          {laserstreamSlotMetrics.slotLag} slots
+                        </span>
+                      </div>
+                      <div className="flex flex-col">
+                        <span className="text-[8px] text-[#64748b] uppercase">Queue</span>
+                        <span className={`text-[10px] font-bold ${laserstreamSlotMetrics.queueDepth > 20 ? 'text-amber-400' : 'text-[#94a3b8]'}`}>
+                          {laserstreamSlotMetrics.queueDepth}
+                        </span>
+                      </div>
+                      <div className="flex flex-col">
+                        <span className="text-[8px] text-[#64748b] uppercase">Replay</span>
+                        <span className={`text-[10px] font-bold ${laserstreamSlotMetrics.isReplaying ? 'text-cyan-400' : 'text-[#64748b]'}`}>
+                          {laserstreamSlotMetrics.isReplaying ? 'ACTIVE' : 'NO'}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Degraded / Replaying Informational Banner */}
+                    {laserstreamStatus === 'degraded' && (
+                      <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg px-2.5 py-1.5 text-[10px] text-amber-300 flex items-center gap-2">
+                        <span>🟠</span>
+                        <span>
+                          Processing lag ({laserstreamSlotMetrics.processingLagMs}ms) or queue depth ({laserstreamSlotMetrics.queueDepth}) elevated. Streaming continues without dropping events.
+                        </span>
+                      </div>
+                    )}
+                    {laserstreamStatus === 'replaying' && (
+                      <div className="bg-cyan-500/10 border border-cyan-500/30 rounded-lg px-2.5 py-1.5 text-[10px] text-cyan-300 flex items-center gap-2">
+                        <span>🔵</span>
+                        <span>
+                          Replaying historical slots {laserstreamSlotMetrics.replayFromSlot ? `from ${laserstreamSlotMetrics.replayFromSlot.toLocaleString()}` : ''} to catch up with chain tip.
+                        </span>
+                      </div>
+                    )}
+
                     <div>
                       <div className="flex justify-between text-[10px] text-[#64748b] mb-1 uppercase font-medium">
                         <span>LaserStream API Key</span>

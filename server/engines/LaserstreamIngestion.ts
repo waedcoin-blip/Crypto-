@@ -1,14 +1,16 @@
 /**
- * Helius LaserStream Engine - Network-Aware & Resilient
+ * Helius LaserStream Engine - Network-Aware, Slot-Monitored & Resilient
  * 
  * Features:
  * - Network-aware configuration (Devnet vs Mainnet)
  * - Yellowstone/LaserStream gRPC streaming via worker process isolation
+ * - Automatic replay and slot tracking via Helius Laserstream SDK
+ * - Dedicated Async Event Processor to prevent Node.js handler backpressure
+ * - Slot-based freshness tracking and Watchdog health evaluation
  * - Network-matched High-Speed WebSocket fallback (Devnet & Mainnet)
- * - Generation / Session-ID guarded reconnect lifecycle (prevents duplicate streams)
- * - In-memory LRU signature deduplication (prevents duplicate trading triggers)
- * - Differentiated Transport Health vs Event Activity (no false-positive silence watchdog kills)
- * - Transparent error reporting with rate-limiting (no blind log suppression)
+ * - Generation / Session-ID guarded reconnect lifecycle
+ * - In-memory LRU signature deduplication
+ * - Clear separation of Transport Health vs Ingestion vs Processing vs Telemetry
  */
 import { subscribe, CommitmentLevel, type LaserstreamConfig, type SubscribeRequest, shutdownAllStreams } from 'helius-laserstream';
 import { fork } from 'child_process';
@@ -20,6 +22,7 @@ import { URL } from 'url';
 import WebSocket from 'ws';
 import { logger, laserLogger } from '../utils/logger.js';
 import { config } from '../config/index.js';
+import { laserStreamWatchdog } from '../services/LaserStreamWatchdog.js';
 import type {
   LaserStreamOptions,
   LaserStreamStatus,
@@ -50,10 +53,9 @@ export const DEFAULT_NETWORK_PROGRAMS: Record<LaserStreamNetwork, string[]> = {
   ],
 };
 
-const HEALTH_CHECK_INTERVAL = 15_000;  // 15s
 const SIMULATION_INTERVAL = 2_000;     // 2s
 const HUB_PROBE_TIMEOUT = 2_500;       // 2.5s
-const MAX_RECONNECT_ATTEMPTS = 3;
+const MAX_RECONNECT_ATTEMPTS = 5;
 
 // ─── LRU Deduplication Cache ───
 class DeduplicationCache {
@@ -93,7 +95,59 @@ class DeduplicationCache {
 
 export const signatureDeduplicator = new DeduplicationCache(10_000, 300_000);
 
-// ─── State ───
+// ─── Async Non-Blocking Event Processor ───
+class AsyncEventProcessor {
+  private queue: { event: SseEvent; callback: (event: SseEvent) => void }[] = [];
+  private isProcessing = false;
+  private maxQueueSize = 5_000;
+
+  enqueue(event: SseEvent, callback: (event: SseEvent) => void): void {
+    if (this.queue.length >= this.maxQueueSize) {
+      this.queue.shift(); // Evict oldest to avoid memory leaks during extreme backpressure
+    }
+    this.queue.push({ event, callback });
+    laserStreamWatchdog.setQueueDepth(this.queue.length);
+    this.drain();
+  }
+
+  private async drain(): Promise<void> {
+    if (this.isProcessing) return;
+    this.isProcessing = true;
+
+    while (this.queue.length > 0) {
+      const item = this.queue.shift();
+      laserStreamWatchdog.setQueueDepth(this.queue.length);
+      if (!item) break;
+
+      const startTime = Date.now();
+      try {
+        item.callback(item.event);
+      } catch (err) {
+        laserLogger.error({ error: err }, 'Error in async event processor callback');
+      } finally {
+        const slot = Number(item.event.slot || 0);
+        const duration = Date.now() - startTime;
+        laserStreamWatchdog.recordProcessedEvent(slot, duration);
+      }
+
+      // Yield event loop periodically under heavy batch processing
+      if (this.queue.length % 20 === 0 && this.queue.length > 0) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    }
+
+    this.isProcessing = false;
+  }
+
+  clear(): void {
+    this.queue = [];
+    laserStreamWatchdog.setQueueDepth(0);
+  }
+}
+
+const asyncEventProcessor = new AsyncEventProcessor();
+
+// ─── Stream State ───
 interface StreamState {
   currentSessionId: number;
   activeSubscription: { cancel(): void; unsubscribe(): void } | null;
@@ -101,7 +155,6 @@ interface StreamState {
   fallbackRawWs: WebSocket | null;
   fallbackPingInterval: ReturnType<typeof setInterval> | null;
   fallbackReconnectTimer: ReturnType<typeof setTimeout> | null;
-  healthCheckTimer: ReturnType<typeof setInterval> | null;
   simulationTimer: ReturnType<typeof setInterval> | null;
   
   // Status flags
@@ -110,16 +163,8 @@ interface StreamState {
   isSimulated: boolean;
   network: LaserStreamNetwork;
   mode: LaserStreamMode;
-  status: LaserStreamHealthStatus;
   activeEndpoint: string | null;
-  
-  // Telemetry metrics
-  lastHeartbeatTime: number | null;
-  lastEventTime: number | null;
-  lastSlot: number | null;
-  eventsReceived: number;
-  reconnectCount: number;
-  errorMessage: string | null;
+  currentOptions: LaserStreamOptions | null;
   fallbackBackoffMs: number;
 }
 
@@ -130,7 +175,6 @@ const state: StreamState = {
   fallbackRawWs: null,
   fallbackPingInterval: null,
   fallbackReconnectTimer: null,
-  healthCheckTimer: null,
   simulationTimer: null,
 
   transportConnected: false,
@@ -138,15 +182,8 @@ const state: StreamState = {
   isSimulated: false,
   network: 'mainnet',
   mode: 'simulation',
-  status: 'disabled',
   activeEndpoint: null,
-
-  lastHeartbeatTime: null,
-  lastEventTime: null,
-  lastSlot: null,
-  eventsReceived: 0,
-  reconnectCount: 0,
-  errorMessage: null,
+  currentOptions: null,
   fallbackBackoffMs: 3_000,
 };
 
@@ -155,20 +192,27 @@ export function isLaserStreamUsingFallback(): boolean { return state.isUsingFall
 export function isLaserStreamSimulated(): boolean { return state.isSimulated; }
 export function getActiveLaserStreamEndpoint(): string | null { return state.activeEndpoint; }
 export function getLaserStreamTelemetry(): LaserStreamTelemetry {
-  return {
-    transportConnected: state.transportConnected,
-    status: state.status,
-    lastHeartbeatAt: state.lastHeartbeatTime,
-    lastEventAt: state.lastEventTime,
-    lastSlot: state.lastSlot,
-    eventsReceived: state.eventsReceived,
-    reconnectCount: state.reconnectCount,
-    network: state.network,
-    endpoint: state.activeEndpoint,
-    mode: state.mode,
-    errorMessage: state.errorMessage,
-  };
+  return laserStreamWatchdog.getMetrics();
 }
+
+// ─── Watchdog Wiring ───
+laserStreamWatchdog.setHealthCheckHandler(async () => {
+  laserLogger.debug('Watchdog health check requested for LaserStream');
+  if (state.fallbackRawWs && state.fallbackRawWs.readyState === WebSocket.OPEN) {
+    try { state.fallbackRawWs.ping(); } catch {}
+  }
+});
+
+laserStreamWatchdog.setReconnectHandler(async (fromSlot: number) => {
+  if (!state.currentOptions) return;
+  laserLogger.info({ fromSlot }, 'Watchdog requesting LaserStream reconnect with historical replay');
+  laserStreamWatchdog.recordReconnect();
+  laserStreamWatchdog.setReplaying(true, fromSlot);
+  // Restart stream preserving slot state
+  startLaserStream(state.currentOptions, (event) => {
+    // Event callback will be bound in routes
+  });
+});
 
 // ─── Helpers ───
 export function getHeliusWsUrl(network: LaserStreamNetwork = 'mainnet', apiKey = '', customWsUrl?: string): string {
@@ -276,12 +320,10 @@ export function startSimulationStream(
   state.isUsingFallback = false;
   state.network = network;
   state.mode = 'simulation';
-  state.status = 'simulated';
   state.activeEndpoint = `local-sandbox-${network}`;
   state.transportConnected = true;
-  state.lastEventTime = Date.now();
-  state.errorMessage = null;
 
+  laserStreamWatchdog.setTransportState(true, state.activeEndpoint, false, true, 'simulation', network);
   laserLogger.info({ network }, 'Initializing LaserStream local simulation feed');
 
   let currentSlot = 274_152_000;
@@ -296,9 +338,7 @@ export function startSimulationStream(
     const dedupeKey = `${network}:${currentSlot}:${signature}`;
     if (!signatureDeduplicator.add(dedupeKey)) return;
 
-    state.lastSlot = currentSlot;
-    state.lastEventTime = Date.now();
-    state.eventsReceived++;
+    laserStreamWatchdog.recordReceivedEvent(currentSlot);
 
     const event: SseEvent = {
       type: 'ON_CHAIN_TX',
@@ -315,7 +355,7 @@ export function startSimulationStream(
       network: state.network,
     };
 
-    eventBusCallback(event);
+    asyncEventProcessor.enqueue(event, eventBusCallback);
   }, SIMULATION_INTERVAL);
 }
 
@@ -389,34 +429,6 @@ async function getFastestRegionalHub(
   return fastest.url;
 }
 
-// ─── Health Watchdog ───
-function startHealthWatchdog(): void {
-  if (state.healthCheckTimer) clearInterval(state.healthCheckTimer);
-
-  state.healthCheckTimer = setInterval(() => {
-    // Note: Do NOT fake lastHeartbeatTime here. Actual transport activity updates it.
-
-    // Differentiate transport health from event stream silence
-    if (state.transportConnected) {
-      const timeSinceLastEvent = state.lastEventTime ? Date.now() - state.lastEventTime : Infinity;
-      if (timeSinceLastEvent > 10_000) {
-        state.status = 'stalled';
-      } else {
-        state.status = state.isSimulated ? 'simulated' : state.isUsingFallback ? 'fallback' : 'connected';
-      }
-    } else {
-      state.status = 'error';
-    }
-  }, HEALTH_CHECK_INTERVAL);
-}
-
-function stopHealthWatchdog(): void {
-  if (state.healthCheckTimer) {
-    clearInterval(state.healthCheckTimer);
-    state.healthCheckTimer = null;
-  }
-}
-
 // ─── Worker Process Management ───
 function stopWorkerProcess(): void {
   if (!state.childProcess) return;
@@ -437,7 +449,7 @@ function stopWorkerProcess(): void {
   state.childProcess = null;
 }
 
-// ─── Worker Entry Point ───
+// ─── Worker Entry Point (Isolated Process) ───
 export async function runLaserstreamWorker(): Promise<void> {
   laserLogger.info('LaserStream worker process started');
 
@@ -447,10 +459,12 @@ export async function runLaserstreamWorker(): Promise<void> {
   const programs = options.programAddresses || [];
   const network = options.network || 'mainnet';
 
+  // Enable SDK-level automatic replay and reconnect
   const laserConfig: LaserstreamConfig = {
     apiKey,
     endpoint,
     maxReconnectAttempts: MAX_RECONNECT_ATTEMPTS,
+    replay: true,
   };
 
   const subscriptionRequest: SubscribeRequest = {
@@ -546,14 +560,14 @@ export async function startLaserStream(
     ? options.programAddresses
     : DEFAULT_NETWORK_PROGRAMS[network];
 
+  state.currentOptions = options;
   state.network = network;
-  state.status = 'connecting';
-  state.errorMessage = null;
 
   // Stop previous stream components cleanly
   stopFallbackWebSocket();
   stopWorkerProcess();
   stopSimulationStream();
+  asyncEventProcessor.clear();
 
   // If free key or developer mode without valid key, route to network-matched WebSocket or simulation
   if (isFreeOrDefaultKey(apiKey)) {
@@ -561,7 +575,6 @@ export async function startLaserStream(
     state.isUsingFallback = true;
     state.mode = 'websocket';
     await startFallbackWebSocket(programs, eventBusCallback, apiKey, network, options.customWsUrl, sessionId);
-    startHealthWatchdog();
     return null;
   }
 
@@ -576,7 +589,6 @@ export async function startLaserStream(
       state.isUsingFallback = true;
       state.mode = 'websocket';
       await startFallbackWebSocket(programs, eventBusCallback, apiKey, network, options.customWsUrl, sessionId);
-      startHealthWatchdog();
       return null;
     }
   }
@@ -587,8 +599,8 @@ export async function startLaserStream(
   state.mode = 'grpc';
   state.activeEndpoint = endpoint;
   state.transportConnected = false;
-  state.lastEventTime = Date.now();
 
+  laserStreamWatchdog.setTransportState(false, endpoint, false, false, 'grpc', network);
   laserLogger.info({ endpoint, network, programFilters: programs.length }, 'Starting Helius LaserStream gRPC');
 
   // Handle fallback with session guard
@@ -597,7 +609,7 @@ export async function startLaserStream(
     if (state.isUsingFallback) return;
 
     stopWorkerProcess();
-    state.errorMessage = errorMsg || null;
+    laserStreamWatchdog.recordError(errorMsg || null);
 
     if (!isPlanError(errorMsg) && endpoint && (!options.endpoint || options.endpoint === 'auto')) {
       failedHubs.add(endpoint);
@@ -657,31 +669,31 @@ export async function startLaserStream(
 
       if (msg.type === 'EVENT' && msg.event) {
         const signature = msg.event.signature;
-        const slot = msg.event.slot;
+        const slot = Number(msg.event.slot || 0);
 
         if (signature) {
-          const dedupeKey = `${network}:${slot || 0}:${signature}`;
+          const dedupeKey = `${network}:${slot}:${signature}`;
           if (!signatureDeduplicator.add(dedupeKey)) return;
         }
 
         state.transportConnected = true;
-        state.status = 'connected';
-        state.lastEventTime = Date.now();
-        state.lastSlot = slot || state.lastSlot;
-        state.eventsReceived++;
+        laserStreamWatchdog.setTransportState(true, state.activeEndpoint, false, false, 'grpc', network);
+        laserStreamWatchdog.recordReceivedEvent(slot);
+
         msg.event.endpoint = state.activeEndpoint;
         msg.event.network = network;
 
-        eventBusCallback(msg.event);
+        // Route through async non-blocking event processor
+        asyncEventProcessor.enqueue(msg.event, eventBusCallback);
       } else if (msg.type === 'ERROR') {
         const errStr = msg.error || msg.errDetails || 'gRPC worker stream error';
-        state.errorMessage = errStr;
+        laserStreamWatchdog.recordError(errStr);
         laserLogger.warn({ error: errStr, endpoint }, 'gRPC worker reported stream error');
         handleFallback(errStr);
       } else if (msg.type === 'READY') {
         state.transportConnected = true;
-        state.status = 'connected';
-        state.errorMessage = null;
+        laserStreamWatchdog.setTransportState(true, state.activeEndpoint, false, false, 'grpc', network);
+        laserStreamWatchdog.recordError(null);
         laserLogger.info({ endpoint, network }, 'LaserStream gRPC connection established');
       }
     });
@@ -689,13 +701,12 @@ export async function startLaserStream(
     state.childProcess.on('exit', (code: number | null, signal: string | null) => {
       if (state.currentSessionId !== sessionId) return;
       state.transportConnected = false;
+      laserStreamWatchdog.setTransportState(false, state.activeEndpoint, false, false, 'grpc', network);
       laserLogger.info({ code, signal }, 'LaserStream worker process exited');
       if (!state.isUsingFallback && !state.isSimulated) {
         handleFallback('Worker process exited unexpectedly');
       }
     });
-
-    startHealthWatchdog();
 
     state.activeSubscription = {
       cancel: () => stopWorkerProcess(),
@@ -707,7 +718,6 @@ export async function startLaserStream(
     const msg = error instanceof Error ? error.message : String(error);
     laserLogger.error({ error: msg }, 'Failed to spawn LaserStream worker process');
     handleFallback(msg);
-    startHealthWatchdog();
     return null;
   }
 }
@@ -728,7 +738,6 @@ export async function startFallbackWebSocket(
   state.isUsingFallback = true;
   state.network = network;
   state.mode = 'websocket';
-  state.status = 'connecting';
 
   try {
     const wsUrl = getHeliusWsUrl(network, apiKey, customWsUrl);
@@ -745,10 +754,9 @@ export async function startFallbackWebSocket(
       }
 
       state.transportConnected = true;
-      state.status = 'fallback';
-      state.lastEventTime = Date.now();
       state.fallbackBackoffMs = 3_000;
-      state.errorMessage = null;
+      laserStreamWatchdog.setTransportState(true, wsUrl, true, false, 'websocket', network);
+      laserStreamWatchdog.recordError(null);
 
       laserLogger.info({ network }, 'WebSocket stream connected to Helius endpoint');
 
@@ -758,6 +766,7 @@ export async function startFallbackWebSocket(
         if (ws.readyState === WebSocket.OPEN) {
           try {
             ws.ping();
+            laserStreamWatchdog.recordHeartbeat();
           } catch {
             // Ignore
           }
@@ -782,21 +791,19 @@ export async function startFallbackWebSocket(
     ws.on('message', (data: WebSocket.Data) => {
       if (state.currentSessionId !== sessionId) return;
 
-      state.lastEventTime = Date.now();
       try {
         const parsed = JSON.parse(data.toString());
         if (parsed.method === 'logsNotification' && parsed.params?.result?.value) {
           const val = parsed.params.result.value;
           const ctx = parsed.params.result.context || {};
           const signature = val.signature;
-          const slot = ctx.slot || 0;
+          const slot = Number(ctx.slot || 0);
 
           if (signature) {
             const dedupeKey = `${network}:${slot}:${signature}`;
             if (!signatureDeduplicator.add(dedupeKey)) return;
 
-            state.lastSlot = slot;
-            state.eventsReceived++;
+            laserStreamWatchdog.recordReceivedEvent(slot);
 
             const event: SseEvent = {
               type: 'ON_CHAIN_TX',
@@ -813,7 +820,7 @@ export async function startFallbackWebSocket(
               network,
             };
 
-            eventBusCallback(event);
+            asyncEventProcessor.enqueue(event, eventBusCallback);
           }
         }
       } catch {
@@ -824,7 +831,7 @@ export async function startFallbackWebSocket(
     ws.on('error', (wsErr) => {
       if (state.currentSessionId !== sessionId) return;
       const errMsg = wsErr?.message || String(wsErr);
-      state.errorMessage = errMsg;
+      laserStreamWatchdog.recordError(errMsg);
 
       if (errMsg.includes('429') || errMsg.includes('Too Many Requests')) {
         laserLogger.warn({ error: errMsg, network }, 'WebSocket rate limited (429), backing off reconnect');
@@ -838,13 +845,15 @@ export async function startFallbackWebSocket(
       if (state.currentSessionId !== sessionId) return;
 
       state.transportConnected = false;
+      laserStreamWatchdog.setTransportState(false, state.activeEndpoint, true, false, 'websocket', network);
+
       if (state.fallbackPingInterval) {
         clearInterval(state.fallbackPingInterval);
         state.fallbackPingInterval = null;
       }
 
       if (state.isUsingFallback && !state.isSimulated) {
-        state.reconnectCount++;
+        laserStreamWatchdog.recordReconnect();
         const backoff = state.fallbackBackoffMs;
         state.fallbackBackoffMs = Math.min(60_000, backoff * 1.5);
         laserLogger.info({ network, backoffSec: Math.round(backoff / 1000) }, 'WebSocket closed, scheduling reconnect');
@@ -862,7 +871,8 @@ export async function startFallbackWebSocket(
 
     state.transportConnected = false;
     const msg = err instanceof Error ? err.message : String(err);
-    state.errorMessage = msg;
+    laserStreamWatchdog.recordError(msg);
+    laserStreamWatchdog.setTransportState(false, state.activeEndpoint, true, false, 'websocket', network);
     laserLogger.error({ error: msg, network }, 'WebSocket connection initialization failed');
 
     const backoff = state.fallbackBackoffMs;
@@ -906,16 +916,17 @@ export async function stopLaserStream(): Promise<void> {
   state.currentSessionId++;
   stopFallbackWebSocket();
   stopWorkerProcess();
-  stopHealthWatchdog();
   stopSimulationStream();
+  asyncEventProcessor.clear();
 
   state.transportConnected = false;
   state.isUsingFallback = false;
   state.isSimulated = false;
-  state.status = 'disabled';
   state.activeEndpoint = null;
   state.activeSubscription = null;
-  state.errorMessage = null;
+  state.currentOptions = null;
+
+  laserStreamWatchdog.reset(true);
 
   try {
     shutdownAllStreams();

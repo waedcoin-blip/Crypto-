@@ -16,6 +16,7 @@ import {
   getActiveLaserStreamEndpoint,
   getLaserStreamTelemetry,
 } from '../engines/LaserstreamIngestion.js';
+import { laserStreamWatchdog } from '../services/LaserStreamWatchdog.js';
 
 const router = Router();
 
@@ -28,6 +29,20 @@ let currentOptions: LaserStreamOptions = {
   network: 'mainnet',
   programAddresses: [],
 };
+
+// ─── Watchdog State Listener for Real-time SSE Broadcast ───
+laserStreamWatchdog.onStateChange((status, telemetry) => {
+  broadcastToClients({
+    type: 'STATUS',
+    status,
+    laserstreamActive: isActive,
+    isFallback: isLaserStreamUsingFallback(),
+    isSimulated: isLaserStreamSimulated(),
+    activeEndpoint: getActiveLaserStreamEndpoint(),
+    network: currentOptions.network || 'mainnet',
+    telemetry,
+  } as any);
+});
 
 // ─── SSE Heartbeat ───
 const heartbeatInterval = setInterval(() => {
@@ -110,6 +125,18 @@ function getSafeStatus(): LaserStreamStatus {
 // GET /api/laserstream/status
 router.get('/status', (req, res) => {
   res.json(getSafeStatus());
+});
+
+// GET /api/laserstream/health
+router.get('/health', (req, res) => {
+  const telemetry = getLaserStreamTelemetry();
+  const isHealthy = telemetry.status === 'connected' || telemetry.status === 'degraded' || telemetry.status === 'replaying' || telemetry.status === 'fallback' || telemetry.status === 'simulated';
+  res.status(isHealthy ? 200 : 503).json({
+    status: telemetry.status,
+    healthy: isHealthy,
+    active: isActive,
+    telemetry,
+  });
 });
 
 const ConfigSchema = z.object({
