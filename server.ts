@@ -36,8 +36,11 @@ dotenv.config();
 
 import { securityHeaders, corsMiddleware, apiRateLimiter, requestLogger } from "./server/middleware/security.js";
 import { globalErrorHandler } from "./server/middleware/errorHandler.js";
-import { runLaserstreamWorker } from "./server/engines/LaserstreamIngestion.js";
+import { runLaserstreamWorker, maybeRunLaserstreamWorker } from "./server/engines/LaserstreamIngestion.js";
 import { config } from "./server/config/index.js";
+
+// If launched as LaserStream background worker, run worker logic directly
+maybeRunLaserstreamWorker();
 
 // Import Route Handlers
 import healthRouter from "./server/routes/health.js";

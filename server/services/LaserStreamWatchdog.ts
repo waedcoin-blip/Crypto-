@@ -90,7 +90,6 @@ class LaserStreamWatchdog {
     }
     this.eventsReceived++;
 
-    // If replaying and caught up to tip, mark replay complete
     if (
       this.isReplaying &&
       this.lastProcessedSlot > 0 &&

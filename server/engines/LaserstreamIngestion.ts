@@ -1,6 +1,6 @@
 /**
  * Helius LaserStream Engine - Network-Aware, Slot-Monitored & Resilient
- * 
+ *
  * Features:
  * - Network-aware configuration (Devnet vs Mainnet)
  * - Yellowstone/LaserStream gRPC streaming via worker process isolation
@@ -156,7 +156,7 @@ interface StreamState {
   fallbackPingInterval: ReturnType<typeof setInterval> | null;
   fallbackReconnectTimer: ReturnType<typeof setTimeout> | null;
   simulationTimer: ReturnType<typeof setInterval> | null;
-  
+
   // Status flags
   transportConnected: boolean;
   isUsingFallback: boolean;
@@ -166,6 +166,8 @@ interface StreamState {
   activeEndpoint: string | null;
   currentOptions: LaserStreamOptions | null;
   fallbackBackoffMs: number;
+  // FIX: Preserve the original event bus callback for reconnects
+  eventBusCallback: ((event: SseEvent) => void) | null;
 }
 
 const state: StreamState = {
@@ -185,6 +187,7 @@ const state: StreamState = {
   activeEndpoint: null,
   currentOptions: null,
   fallbackBackoffMs: 3_000,
+  eventBusCallback: null,
 };
 
 // ─── Getters ───
@@ -208,10 +211,20 @@ laserStreamWatchdog.setReconnectHandler(async (fromSlot: number) => {
   laserLogger.info({ fromSlot }, 'Watchdog requesting LaserStream reconnect with historical replay');
   laserStreamWatchdog.recordReconnect();
   laserStreamWatchdog.setReplaying(true, fromSlot);
-  // Restart stream preserving slot state
-  startLaserStream(state.currentOptions, (event) => {
-    // Event callback will be bound in routes
-  });
+
+  // FIX: Preserve original callback instead of creating a no-op
+  const cb = state.eventBusCallback;
+  if (!cb) {
+    laserLogger.warn('No event bus callback available for reconnect');
+    return;
+  }
+
+  try {
+    await startLaserStream(state.currentOptions, cb);
+  } catch (err) {
+    laserLogger.error({ error: err, fromSlot }, 'Watchdog reconnect failed');
+    throw err;
+  }
 });
 
 // ─── Helpers ───
@@ -322,6 +335,7 @@ export function startSimulationStream(
   state.mode = 'simulation';
   state.activeEndpoint = `local-sandbox-${network}`;
   state.transportConnected = true;
+  state.eventBusCallback = eventBusCallback;
 
   laserStreamWatchdog.setTransportState(true, state.activeEndpoint, false, true, 'simulation', network);
   laserLogger.info({ network }, 'Initializing LaserStream local simulation feed');
@@ -403,7 +417,7 @@ async function getFastestRegionalHub(
 ): Promise<string | null> {
   const candidateHubs = (LASERSTREAM_ENDPOINTS[network] || LASERSTREAM_ENDPOINTS.mainnet)
     .filter((h) => !excludeHubs.has(h));
-  
+
   if (candidateHubs.length === 0) return null;
 
   laserLogger.info({ network, candidates: candidateHubs.length }, 'Probing regional LaserStream hubs for fastest response');
@@ -547,6 +561,16 @@ export async function runLaserstreamWorker(): Promise<void> {
   }
 }
 
+// FIX: Export a helper so your server entry point can start the worker when forked
+export function maybeRunLaserstreamWorker(): void {
+  if (process.env.IS_LASERSTREAM_WORKER === 'true') {
+    runLaserstreamWorker().catch((err) => {
+      laserLogger.error({ error: err }, 'LaserStream worker failed');
+      process.exit(1);
+    });
+  }
+}
+
 // ─── Main Stream Start ───
 export async function startLaserStream(
   options: LaserStreamOptions,
@@ -562,6 +586,7 @@ export async function startLaserStream(
 
   state.currentOptions = options;
   state.network = network;
+  state.eventBusCallback = eventBusCallback; // FIX: Preserve for reconnects
 
   // Stop previous stream components cleanly
   stopFallbackWebSocket();
@@ -604,7 +629,7 @@ export async function startLaserStream(
   laserLogger.info({ endpoint, network, programFilters: programs.length }, 'Starting Helius LaserStream gRPC');
 
   // Handle fallback with session guard
-  const handleFallback = (errorMsg?: string) => {
+  const handleFallback = async (errorMsg?: string) => {
     if (state.currentSessionId !== sessionId) return;
     if (state.isUsingFallback) return;
 
@@ -616,7 +641,7 @@ export async function startLaserStream(
       const totalHubs = (LASERSTREAM_ENDPOINTS[network] || LASERSTREAM_ENDPOINTS.mainnet).length;
       if (failedHubs.size < totalHubs) {
         laserLogger.info({ failedHub: endpoint, remaining: totalHubs - failedHubs.size }, 'Regional hub failed, attempting failover');
-        startLaserStream(options, eventBusCallback, failedHubs);
+        await startLaserStream(options, eventBusCallback, failedHubs);
         return;
       }
     }
@@ -624,7 +649,7 @@ export async function startLaserStream(
     state.isUsingFallback = true;
     state.mode = 'websocket';
     laserLogger.info({ network, error: errorMsg }, 'Switching to network-matched High-Speed WebSocket stream');
-    startFallbackWebSocket(programs, eventBusCallback, apiKey, network, options.customWsUrl, sessionId);
+    await startFallbackWebSocket(programs, eventBusCallback, apiKey, network, options.customWsUrl, sessionId);
   };
 
   // Spawn worker process with session tracking
@@ -717,7 +742,7 @@ export async function startLaserStream(
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);
     laserLogger.error({ error: msg }, 'Failed to spawn LaserStream worker process');
-    handleFallback(msg);
+    await handleFallback(msg);
     return null;
   }
 }
@@ -925,6 +950,7 @@ export async function stopLaserStream(): Promise<void> {
   state.activeEndpoint = null;
   state.activeSubscription = null;
   state.currentOptions = null;
+  state.eventBusCallback = null;
 
   laserStreamWatchdog.reset(true);
 
