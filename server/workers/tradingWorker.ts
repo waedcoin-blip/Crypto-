@@ -2,11 +2,12 @@
 import dotenv from 'dotenv';
 import { reconcileDatabaseWithMainnet } from './StartupReconciliationWorker.js';
 import { tradingMonitorWorker } from './TradingMonitorWorker.js';
-import { runLaserstreamWorker } from '../engines/LaserstreamIngestion.js';
+import { startLaserStream } from '../engines/LaserstreamIngestion.js';
 import { startWorkerHeartbeat } from '../services/WorkerHeartbeat.js';
 import { criteriaRepository } from '../repositories/CriteriaRepository.js';
 import { getLaserStreamTelemetry } from '../engines/LaserstreamIngestion.js';
 import { workerStateRepository } from '../repositories/WorkerStateRepository.js';
+import { config } from '../config/index.js';
 
 dotenv.config({ path: '.env.local' });
 dotenv.config();
@@ -44,15 +45,24 @@ async function main() {
   await reconcileDatabaseWithMainnet();
   console.log('[TRADING WORKER] Startup reconciliation completed.');
 
-  // 4. Start LaserStream gRPC / Telemetry ingestion
+  // 5. Start LaserStream gRPC Ingestion
   try {
-    runLaserstreamWorker().catch(e => console.warn('[TRADING WORKER] Laserstream worker error:', e));
-    console.log('[TRADING WORKER] Laserstream gRPC ingestion initiated.');
+    if (config.HELIUS_API_KEY) {
+      await startLaserStream(
+        { apiKey: config.HELIUS_API_KEY, network: 'mainnet' },
+        (event) => {
+          // On-chain transaction ingested
+        }
+      );
+      console.log('[TRADING WORKER] LaserStream in-process gRPC ingestion initiated.');
+    } else {
+      console.log('[TRADING WORKER] No HELIUS_API_KEY configured for LaserStream.');
+    }
   } catch (e) {
-    console.warn('[TRADING WORKER] Laserstream start warning:', e);
+    console.warn('[TRADING WORKER] LaserStream start warning:', e);
   }
 
-  // 5. Start position monitor loop
+  // 6. Start position monitor loop
   await tradingMonitorWorker.start();
   console.log('[TRADING WORKER] Position monitor loop started.');
 

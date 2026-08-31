@@ -25,7 +25,7 @@
         "express-rate-limit": "^8.6.0",
         "firebase": "^12.12.1",
         "firebase-admin": "^14.2.0",
-        "helius-laserstream": "^0.3.2",
+        "helius-laserstream": "^0.8.4",
         "helmet": "^8.3.0",
         "lucide-react": "^0.546.0",
         "mitt": "^3.0.1",
@@ -1358,19 +1358,19 @@
 
     "hasown": ["hasown@2.0.3", "", { "dependencies": { "function-bind": "^1.1.2" } }, "sha512-ej4AhfhfL2Q2zpMmLo7U1Uv9+PyhIZpgQLGT1F9miIGmiCJIoCgSmczFdrc97mWT4kVY72KA+WnnhJ5pghSvSg=="],
 
-    "helius-laserstream": ["helius-laserstream@0.3.2", "", { "dependencies": { "laserstream-core-proto-js": "^9.0.2", "lz4js": "^0.2.0", "protobufjs": "^7.5.3" }, "optionalDependencies": { "helius-laserstream-darwin-arm64": "0.3.1", "helius-laserstream-darwin-x64": "0.3.1", "helius-laserstream-linux-arm64-gnu": "0.3.1", "helius-laserstream-linux-arm64-musl": "0.3.1", "helius-laserstream-linux-x64-gnu": "0.3.1", "helius-laserstream-linux-x64-musl": "0.3.1" }, "os": [ "linux", "darwin", ], "cpu": [ "x64", "arm64", ] }, "sha512-r9zU8VGYfLJ74wLq1tmuMQ3WsLod2CsVrNXFJ3UKvpijgjr2hgZJpBB6UQq52MrdCxg+Lhivlc3A8RAZ+AN72Q=="],
+    "helius-laserstream": ["helius-laserstream@0.8.4", "", { "dependencies": { "laserstream-core-proto-js": "^9.0.2", "lz4js": "^0.2.0", "protobufjs": "^7.5.3" }, "optionalDependencies": { "helius-laserstream-darwin-arm64": "0.8.4", "helius-laserstream-darwin-x64": "0.8.4", "helius-laserstream-linux-arm64-gnu": "0.8.4", "helius-laserstream-linux-arm64-musl": "0.8.4", "helius-laserstream-linux-x64-gnu": "0.8.4", "helius-laserstream-linux-x64-musl": "0.8.4" }, "os": [ "linux", "darwin", ], "cpu": [ "x64", "arm64", ] }, "sha512-ncW+C1Sg1MAVfVAocyilmJL/j9nTlG0nsckW/ng/PWrMTh/QgxVLCkBgH8G3Nhnf8JBJQcCwhXXQ9pabkGl5Cg=="],
 
-    "helius-laserstream-darwin-arm64": ["helius-laserstream-darwin-arm64@0.3.1", "", { "os": "darwin", "cpu": "arm64" }, "sha512-rK7URH+2AhpCTTEB8TIwIW94Bdtt4gqVRzSvPZ5CuqeyyKy5A4ils+d0lSUZIYFT/WtmXnt+NCo8S4jWVx3oAQ=="],
+    "helius-laserstream-darwin-arm64": ["helius-laserstream-darwin-arm64@0.8.4", "", { "os": "darwin", "cpu": "arm64" }, "sha512-vAEzSjjL0AWzWZ3MwXtJmJLd+J6wZVsu9IJsEaSAVw0UmDir8d2cSHH2sg+UmqP0lxYPfv9ZNCFXXYF6eHRk5g=="],
 
-    "helius-laserstream-darwin-x64": ["helius-laserstream-darwin-x64@0.3.1", "", { "os": "darwin", "cpu": "x64" }, "sha512-xpzqghlRHu/kXHM/7vhjlVhxe/q/zwz4W2GvdrcdOilzHefpBtchD+XusIIMpfQDQXgKXvq5v1Nd1NbIfb1EgA=="],
+    "helius-laserstream-darwin-x64": ["helius-laserstream-darwin-x64@0.8.4", "", { "os": "darwin", "cpu": "x64" }, "sha512-K4UEGzUR6IIHcQat4JnxglKYVywV/THTYYkVSmsLTMQZ9nIULn1tPuJOOYzh/xIl5hpqFl7EgVcUG2svXe6y6g=="],
 
-    "helius-laserstream-linux-arm64-gnu": ["helius-laserstream-linux-arm64-gnu@0.3.1", "", { "os": "linux", "cpu": "arm64" }, "sha512-LBwQM5dnUrXlUQij0GrHxvXZZCb9LnTsmcYp6AUUAyr85WZBCFVaNRB4pyyDewS2DvSqj9Kd6OIZ71fyVBEkRA=="],
+    "helius-laserstream-linux-arm64-gnu": ["helius-laserstream-linux-arm64-gnu@0.8.4", "", { "os": "linux", "cpu": "arm64" }, "sha512-xRKMYjgdvotfutwEy5MLuX6osFHrEIVk0i/Cq+/txiKe3P0CUtIXmNF4fdlyTaLxThWAiyJm1hQxPtikSBVzng=="],
 
-    "helius-laserstream-linux-arm64-musl": ["helius-laserstream-linux-arm64-musl@0.3.1", "", { "os": "linux", "cpu": "arm64" }, "sha512-dKJq61O19k+V0ErtT9rjPFnZ8sA+L/d1qw+3qu9QkhzVlJY5Gg4m186Q+gH4/EFdJibDZITUaF3e004lYDfvrQ=="],
+    "helius-laserstream-linux-arm64-musl": ["helius-laserstream-linux-arm64-musl@0.8.4", "", { "os": "linux", "cpu": "arm64" }, "sha512-B6jZOWx2WEHEFLteEBeuqz39RELxnUPAXkrcN3yolQyGLJAjzbdwn3KEqDhyn7plMNj0TrsrCt8U+TQJp9YYkA=="],
 
-    "helius-laserstream-linux-x64-gnu": ["helius-laserstream-linux-x64-gnu@0.3.1", "", { "os": "linux", "cpu": "x64" }, "sha512-PhBAZJo2MOPFFR3iHaBTVL1nAY0DAUSKVDbqhc9t1hnNaA/+fcoren6JO1pKAilxGaFsI+9XEmtMYSHxixvQFw=="],
+    "helius-laserstream-linux-x64-gnu": ["helius-laserstream-linux-x64-gnu@0.8.4", "", { "os": "linux", "cpu": "x64" }, "sha512-5gp55Khlodz366FRk3ST6syLTVquOoCErulpoaaNvkVbewnN6dHRTF0lD/K4kDhKNGtZGIGIr/mn2EaKtiM6xQ=="],
 
-    "helius-laserstream-linux-x64-musl": ["helius-laserstream-linux-x64-musl@0.3.1", "", { "os": "linux", "cpu": "x64" }, "sha512-0s5EZ5epcudgnNU22xAEoeLELP0A+w0GeHVJp7IfvTdYkWdc/IWZCGAWoEQ5ErAH8kJxALyRXLwXYZculd/rag=="],
+    "helius-laserstream-linux-x64-musl": ["helius-laserstream-linux-x64-musl@0.8.4", "", { "os": "linux", "cpu": "x64" }, "sha512-qabCwBYbCYa9EA0WojcPw1wA+vkkxOd+2rN/qGz3ubhfNHOXrOKuryodgSOH6YX3TtxetSEYsNCUe9PGDzBt0g=="],
 
     "helmet": ["helmet@8.3.0", "", {}, "sha512-Qgpiaws3Sm30Av8Eah6sjMCZZwjlBu+E68rhpCWBshY1lb09HtLwj5GviX0OyQIn+ulUS0iX0AxN5n3tLZzz1w=="],
 

@@ -2109,36 +2109,25 @@ export const PnLPage = ({
             apiKey: laserstreamApiKey,
             network: tradingNetwork,
             endpoint: laserstreamEndpoint,
-            customWsUrl: externalSettings.customWsUrl,
             programAddresses: defaultPrograms,
           })
         });
         
         let data: any = { success: false };
         if (res.ok) {
-           const contentType = res.headers.get("content-type");
-           if (contentType && contentType.includes("application/json")) {
-               data = await res.json();
-           } else {
-               // Vercel deployment without backend, fallback to client-side websocket
-               const wsHost = 'mainnet.helius-rpc.com';
-               data = { success: true, active: laserstreamEnabled, isFallback: true, isSimulated: false, activeEndpoint: `WebSocket (Vercel Fallback: ${wsHost})` };
-           }
-        } else {
-           const wsHost = 'mainnet.helius-rpc.com';
-           data = { success: true, active: laserstreamEnabled, isFallback: true, isSimulated: false, activeEndpoint: `WebSocket (Fallback: ${wsHost})` };
+          const contentType = res.headers.get("content-type");
+          if (contentType && contentType.includes("application/json")) {
+            data = await res.json();
+          }
         }
 
-        if (data.success && data.active) {
-          setLaserstreamStatus('connected');
-          setLaserstreamIsFallback(!!data.isFallback);
-          setLaserstreamIsSimulated(!!data.isSimulated);
+        if (data.active) {
+          const telStatus = data.telemetry?.status || 'connected';
+          setLaserstreamStatus(telStatus);
+          setLaserstreamIsFallback(false);
+          setLaserstreamIsSimulated(false);
           setLaserstreamActiveEndpoint(data.activeEndpoint || null);
-          if (data.isSimulated) {
-            // Silently active sandbox loop without spamming system logs
-          } else if (data.isFallback) {
-            addLog(`ℹ️ Helius Geyser Plan Limitation: Automatically routed ${tradingNetwork.toUpperCase()} feed through High-Speed WebSockets fallback.`, 'info');
-          } else {
+          if (telStatus === 'connected') {
             addLog(`Helius LaserStream gRPC channel active (${tradingNetwork.toUpperCase()}). Connected via regional hub: ${data.activeEndpoint || 'Auto'}`, 'success');
           }
         } else {
@@ -2147,7 +2136,7 @@ export const PnLPage = ({
           setLaserstreamIsSimulated(false);
           setLaserstreamActiveEndpoint(null);
           if (laserstreamEnabled) {
-            addLog(`Helius LaserStream disabled or not configured.`, 'info');
+            addLog(`Helius LaserStream disabled or disconnected.`, 'info');
           }
         }
       } catch (err: any) {
@@ -5419,12 +5408,8 @@ const checkTokenCriteria = (mint: string): {
                            laserstreamStatus.toUpperCase()}
                         </span>
                         {(laserstreamStatus === 'connected' || laserstreamStatus === 'degraded') && (
-                          <span className={`text-[8px] font-mono font-bold uppercase rounded px-1.5 py-0.5 ${
-                            laserstreamIsSimulated ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30' :
-                            laserstreamIsFallback ? 'bg-sky-400/15 text-sky-400 border border-sky-400/30' : 
-                            'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
-                          }`}>
-                            {laserstreamIsSimulated ? 'Local Stream' : laserstreamIsFallback ? 'WS Fallback' : 'gRPC Geyser'}
+                          <span className="text-[8px] font-mono font-bold uppercase rounded px-1.5 py-0.5 bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                            gRPC Geyser
                           </span>
                         )}
                         {laserstreamStatus === 'connected' && (

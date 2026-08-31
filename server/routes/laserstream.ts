@@ -158,9 +158,7 @@ router.get('/health', (req, res) => {
   const isHealthy =
     telemetry.status === 'connected' ||
     telemetry.status === 'degraded' ||
-    telemetry.status === 'replaying' ||
-    telemetry.status === 'fallback' ||
-    telemetry.status === 'simulated';
+    telemetry.status === 'replaying';
   res.status(isHealthy ? 200 : 503).json({
     status: telemetry.status,
     healthy: isHealthy,
@@ -175,7 +173,6 @@ const ConfigSchema = z.object({
   network: z.enum(['mainnet']).optional(),
   endpoint: z.string().optional(),
   programAddresses: z.array(z.string()).max(10).optional(),
-  customWsUrl: z.string().url().optional().or(z.literal('')),
 });
 
 // POST /api/laserstream/config
@@ -193,31 +190,14 @@ router.post('/config', asyncHandler(async (req, res) => {
     });
   }
 
-  const { enabled, apiKey, network, endpoint, programAddresses, customWsUrl } = parsed.data;
+  const { enabled, apiKey, network, endpoint, programAddresses } = parsed.data;
 
   currentOptions = {
     apiKey: apiKey !== undefined ? apiKey : currentOptions.apiKey,
     network: network || currentOptions.network || 'mainnet',
     endpoint: endpoint || currentOptions.endpoint || 'auto',
     programAddresses: programAddresses || currentOptions.programAddresses,
-    customWsUrl: customWsUrl !== undefined ? customWsUrl : currentOptions.customWsUrl,
   };
-
-  // Vercel doesn't support long-lived processes
-  if (config.IS_VERCEL) {
-    const wsHost = 'mainnet.helius-rpc.com';
-    return res.json({
-      success: true,
-      active: enabled,
-      network: currentOptions.network,
-      options: { ...currentOptions, apiKey: currentOptions.apiKey ? '***' : '' },
-      clientsCount: 0,
-      isFallback: true,
-      isSimulated: false,
-      activeEndpoint: `WebSocket (Vercel Fallback: ${wsHost})`,
-      telemetry: getLaserStreamTelemetry(),
-    });
-  }
 
   if (enabled) {
     await stopLaserStream();
@@ -227,19 +207,17 @@ router.post('/config', asyncHandler(async (req, res) => {
   } else {
     await stopLaserStream();
     isActive = false;
-    // FIX: Reset watchdog so stale metrics don't persist across restarts
     laserStreamWatchdog.reset(true);
     laserLogger.info('LaserStream stopped');
   }
 
-  // FIX: Broadcast the *watchdog's actual status* instead of a synthetic isActive string
   const telemetry = getLaserStreamTelemetry();
   broadcastToClients({
     type: 'STATUS',
     status: telemetry.status,
     laserstreamActive: isActive,
-    isFallback: isLaserStreamUsingFallback(),
-    isSimulated: isLaserStreamSimulated(),
+    isFallback: false,
+    isSimulated: false,
     activeEndpoint: getActiveLaserStreamEndpoint(),
     network: currentOptions.network || 'mainnet',
     telemetry,

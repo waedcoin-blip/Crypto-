@@ -45,8 +45,6 @@ class LaserStreamWatchdog {
   private replayFromSlot: number | null = null;
 
   private transportConnected = false;
-  private isFallback = false;
-  private isSimulated = false;
   private network: LaserStreamNetwork = 'mainnet';
   private mode: LaserStreamMode = 'grpc';
   private activeEndpoint: string | null = null;
@@ -116,7 +114,7 @@ class LaserStreamWatchdog {
       this.lastProcessingDurationMs = Math.max(0, processingTimeMs);
     }
 
-    // FIX: Guard against false-positive when slots are still 0 at startup
+    // Guard against false-positive when slots are still 0 at startup
     if (
       this.isReplaying &&
       this.lastProcessedSlot > 0 &&
@@ -142,15 +140,11 @@ class LaserStreamWatchdog {
   public setTransportState(
     connected: boolean,
     endpoint: string | null = null,
-    isFallback = false,
-    isSimulated = false,
     mode: LaserStreamMode = 'grpc',
     network: LaserStreamNetwork = 'mainnet'
   ): void {
     this.transportConnected = connected;
     this.activeEndpoint = endpoint;
-    this.isFallback = isFallback;
-    this.isSimulated = isSimulated;
     this.mode = mode;
     this.network = network;
 
@@ -173,6 +167,9 @@ class LaserStreamWatchdog {
 
   public recordError(errorMessage: string | null): void {
     this.errorMessage = errorMessage;
+    if (errorMessage && this.status === 'connected') {
+      this.evaluateHealth();
+    }
   }
 
   public recordReconnect(): void {
@@ -191,7 +188,6 @@ class LaserStreamWatchdog {
     const slotLag = Math.max(0, this.lastReceivedSlot - this.lastProcessedSlot);
     const now = Date.now();
 
-    // FIX: Treat processingLagMs as stale if we haven't processed recently
     const isProcessingLagStale =
       this.lastProcessedAt === 0 ||
       now - this.lastProcessedAt > this.config.processingLagStaleMs;
@@ -234,7 +230,7 @@ class LaserStreamWatchdog {
       return 'disabled';
     }
 
-    const metrics = this.getMetrics(); // uses stale-safe processingLagMs
+    const metrics = this.getMetrics();
     const slotLag = metrics.slotLag;
     const processingLagMs = metrics.processingLagMs;
 
@@ -251,11 +247,7 @@ class LaserStreamWatchdog {
     ) {
       newStatus = 'degraded';
     } else {
-      newStatus = this.isSimulated
-        ? 'simulated'
-        : this.isFallback
-          ? 'fallback'
-          : 'connected';
+      newStatus = 'connected';
     }
 
     if (newStatus !== previousStatus) {

@@ -124,9 +124,7 @@ router.get('/trading', asyncHandler(async (req, res) => {
   const laserHealthy = !laser.transportConnected || (
     laser.status === 'connected' ||
     laser.status === 'degraded' ||
-    laser.status === 'replaying' ||
-    laser.status === 'fallback' ||
-    laser.status === 'simulated'
+    laser.status === 'replaying'
   );
 
   const recoveryPositions = positionRepository.getOpenPositions().filter(p => p.state === 'RECOVERY_REQUIRED');

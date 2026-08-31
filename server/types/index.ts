@@ -48,7 +48,7 @@ export interface RpcProbeResult {
 }
 
 export type LaserStreamNetwork = 'mainnet';
-export type LaserStreamMode = 'grpc' | 'websocket' | 'simulation';
+export type LaserStreamMode = 'grpc' | 'disabled';
 export type LaserStreamHealthStatus =
   | 'connected'
   | 'degraded'
@@ -56,9 +56,7 @@ export type LaserStreamHealthStatus =
   | 'disconnected'
   | 'replaying'
   | 'connecting'
-  | 'disabled'
-  | 'fallback'
-  | 'simulated';
+  | 'disabled';
 
 export interface LaserStreamTelemetry {
   transportConnected: boolean;
