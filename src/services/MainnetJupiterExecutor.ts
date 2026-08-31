@@ -112,7 +112,7 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
     outputMint: string,
     amount: number,
     slippageBps: number,
-    label: 'entry' | 'exit_tp' | 'exit_sl' = 'entry',
+    label: 'entry' | 'exit_tp' | 'exit_sl' | 'MAX_HOLD' | 'MANUAL' | 'FORCE_EXIT' | string = 'entry',
     preValidatedQuote?: QuoteResponse | null
   ): Promise<SwapResult> {
     const start = Date.now();

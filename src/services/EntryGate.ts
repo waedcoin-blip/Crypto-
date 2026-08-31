@@ -163,16 +163,17 @@ export class EntryGate {
 
     // Balance check
     const buyAmountSol = appState.buyAmountSol || 0.1;
-    const isLive = useTradingEnvironmentStore.getState().network === 'mainnet';
-    if (!isLive) {
-      try {
-        const paperBal = getTradingBalance('paper');
-        if (paperBal < buyAmountSol) {
-          return { allowed: false, reason: 'INSUFFICIENT_PAPER_BALANCE' };
-        }
-      } catch {
-        // Balance unavailable
+    const network = useTradingEnvironmentStore.getState().network;
+    try {
+      const balance = getTradingBalance(network);
+      // Ensure we reserve a bit for fees (e.g. 0.005 SOL)
+      const requiredSol = buyAmountSol + 0.005;
+      if (balance < requiredSol) {
+        return { allowed: false, reason: `INSUFFICIENT_${network.toUpperCase()}_BALANCE` };
       }
+    } catch {
+      // Balance unavailable or network mismatch
+      return { allowed: false, reason: 'BALANCE_UNAVAILABLE' };
     }
 
     return { allowed: true, reason: 'OK', buyAmountSol };

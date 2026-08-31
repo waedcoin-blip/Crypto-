@@ -58,20 +58,8 @@ router.get('/positions', asyncHandler(async (req, res) => {
   });
 }));
 
-// POST /api/trading/positions
-router.post('/positions', asyncHandler(async (req, res) => {
-  const positionData = req.body;
-  if (!positionData || !positionData.id) {
-    res.status(400).json({ status: 'error', message: 'Missing position id' });
-    return;
-  }
-  const updated = positionRepository.upsertPosition(positionData);
-  res.json({
-    status: 'success',
-    position: updated,
-    timestamp: Date.now(),
-  });
-}));
+// POST /api/trading/positions removed as it should be server-internal
+// POST /api/trading/trades removed as it should be server-internal
 
 // GET /api/trading/orders
 router.get('/orders', asyncHandler(async (req, res) => {
@@ -93,20 +81,7 @@ router.get('/trades', asyncHandler(async (req, res) => {
   });
 }));
 
-// POST /api/trading/trades
-router.post('/trades', asyncHandler(async (req, res) => {
-  const tradeData = req.body;
-  if (!tradeData || !tradeData.id) {
-    res.status(400).json({ status: 'error', message: 'Missing trade id' });
-    return;
-  }
-  const updated = tradeRepository.addTrade(tradeData);
-  res.json({
-    status: 'success',
-    trade: updated,
-    timestamp: Date.now(),
-  });
-}));
+
 
 // GET /api/trading/status
 router.get('/status', asyncHandler(async (req, res) => {

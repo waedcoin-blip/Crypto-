@@ -714,12 +714,12 @@ export const processActiveTrackingFrame = async (
 
     if (quote && expectedSolOut > 0) {
       netPnL = ((expectedSolOut - dynamicFeesSol - realEntryCost) / realEntryCost) * 100;
-    } else if (position.currentPriceSol && position.currentPriceSol > 0 && position.currentTokenBalance) {
-      const grossSol = Number(position.currentTokenBalance) * position.currentPriceSol / 1e6;
-      netPnL = ((grossSol - dynamicFeesSol - realEntryCost) / realEntryCost) * 100;
     } else if (position.currentPnLPct !== undefined) {
+      // Fallback 1: If we have a previously calculated PnL, use it.
+      // We do not want to use raw balance with a hardcoded 1e6 denominator here.
       netPnL = position.currentPnLPct;
     } else {
+      // If we don't have a valid quote and we don't have a recent PnL, fail-close and refuse to evaluate.
       return { shouldExit: false };
     }
 

@@ -48,6 +48,7 @@ import telegramRouter from "./server/routes/telegram.js";
 import laserstreamRouter from "./server/routes/laserstream.js";
 import criteriaRouter from "./server/routes/criteria.js";
 import tradingRouter from "./server/routes/trading.js";
+import { requireAuth } from "./server/middleware/auth.js";
 
 // Process level crash guard
 process.on("uncaughtException", (err: any) => {
@@ -95,7 +96,7 @@ async function startServer() {
   app.use("/api/telegram", telegramRouter);
   app.use("/api/laserstream", laserstreamRouter);
   app.use("/api/criteria", criteriaRouter);
-  app.use("/api/trading", tradingRouter);
+  app.use("/api/trading", requireAuth, tradingRouter);
 
   // API Catch-all 404 Handler
   app.all("/api/*", (req, res) => {

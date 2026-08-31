@@ -42,19 +42,11 @@ export function isAllowedOrigin(origin: string | undefined): boolean {
       return true;
     }
 
-    // Cloud Run and Google AI Studio container/preview hostnames
+    // AI Studio / Google container specific framing
     if (
-      host.endsWith('.run.app') ||
-      host.endsWith('.googleusercontent.com') ||
-      host.endsWith('.aistudio.google.com') ||
       host === 'ai.studio' ||
-      host.endsWith('.ai.studio') ||
-      host.endsWith('.web.app') ||
-      host.endsWith('.firebaseapp.com') ||
-      host.endsWith('.vercel.app') ||
-      host.endsWith('.onrender.com') ||
-      host.endsWith('.render.com') ||
-      host.endsWith('.netlify.app')
+      host === 'aistudio.google.com' ||
+      host.endsWith('.aistudio.google.com') // Required for dynamic preview framing
     ) {
       return true;
     }

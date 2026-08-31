@@ -46,7 +46,7 @@ export interface ITradeExecutor {
     outputMint: string,
     amount: number,
     slippageBps: number,
-    label?: 'entry' | 'exit_tp' | 'exit_sl',
+    label?: 'entry' | 'exit_tp' | 'exit_sl' | 'MAX_HOLD' | 'MANUAL' | 'FORCE_EXIT' | string,
     preValidatedQuote?: QuoteResponse | null
   ): Promise<SwapResult>;
 
@@ -60,7 +60,7 @@ export interface ITradeExecutor {
       outputMint: string;
       amount: number;
       slippageBps: number;
-      label?: 'entry' | 'exit_tp' | 'exit_sl';
+      label?: 'entry' | 'exit_tp' | 'exit_sl' | 'MAX_HOLD' | 'MANUAL' | 'FORCE_EXIT' | string;
     }>
   ): Promise<SwapResult[]>;
 

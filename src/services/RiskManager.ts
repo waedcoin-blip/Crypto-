@@ -586,9 +586,11 @@ export class RiskManager {
         slippageBps,
         costBasisSol: pos.solSpent,
         currentMarketPriceSol: pos.currentPrice,
-        targetTpPct: candidateReason === 'tp' ? tpPct : undefined,
-        targetSlPct: candidateReason === 'sl' ? slPct : undefined,
-        label,
+        // Disable target checking if this is a MAX_HOLD force exit. 
+        // We just want whatever the current market price yields.
+        targetTpPct: exitType === 'MAX_HOLD' ? undefined : (candidateReason === 'tp' ? tpPct : undefined),
+        targetSlPct: exitType === 'MAX_HOLD' ? undefined : (candidateReason === 'sl' ? slPct : undefined),
+        label: exitType === 'MAX_HOLD' ? 'MAX_HOLD' : label,
       });
 
       if (!validationResult.isValid) {
