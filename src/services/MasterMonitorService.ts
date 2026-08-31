@@ -148,8 +148,8 @@ export class MasterMonitorService {
     // Initial poll
     pollBatch();
 
-    // Single fast unified ticker for ALL active tokens (250ms high-frequency Jupiter polling)
-    this.batchInterval = setInterval(pollBatch, 250);
+    // Controlled ticker for active tokens (1000ms polling combined with WebSocket onLogs events)
+    this.batchInterval = setInterval(pollBatch, 1000);
   }
 
   private setupWsSubscriptions(): void {

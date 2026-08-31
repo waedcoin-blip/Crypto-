@@ -191,16 +191,17 @@ export class WalletBalanceService {
 
   /**
    * Fetch raw on-chain SPL token account balance for a specific mint across all accounts (SPL Token & Token-2022).
-   * Throws on RPC error so callers NEVER interpret RPC failure as zero balance.
+   * Uses BigInt precision to prevent floating-point / Number overflow on high-decimal or high-supply tokens.
    */
-  async getTokenBalance(mint: string, walletAddress?: string): Promise<number> {
+  async getTokenBalanceRaw(mint: string, walletAddress?: string): Promise<bigint> {
     if (this.network === 'paper') {
       const { usePaperWalletStore } = await import('../store/paperWalletStore');
-      return usePaperWalletStore.getState().tokenBalances[mint] || 0;
+      const bal = usePaperWalletStore.getState().tokenBalances[mint] || 0;
+      return BigInt(Math.floor(bal));
     }
 
     const address = walletAddress || useActiveWalletStore.getState().activeWallet?.address;
-    if (!address) return 0;
+    if (!address) return 0n;
 
     if (!this.connection) {
       const config = getNetworkConfig(this.network);
@@ -209,21 +210,28 @@ export class WalletBalanceService {
     const owner = new PublicKey(address);
     const mintPk = new PublicKey(mint);
 
-    // Fetch parsed token accounts for target mint (covers both legacy SPL and Token-2022)
     const accounts = await this.connection.getParsedTokenAccountsByOwner(
       owner,
       { mint: mintPk },
       'confirmed'
     );
 
-    let totalRawAmount = 0;
+    let totalRawAmount = 0n;
     for (const account of accounts.value) {
       const amountStr = account.account.data.parsed?.info?.tokenAmount?.amount;
       if (amountStr) {
-        totalRawAmount += Number(amountStr);
+        totalRawAmount += BigInt(amountStr);
       }
     }
     return totalRawAmount;
+  }
+
+  /**
+   * Fetch raw on-chain SPL token account balance as number for backwards compatibility.
+   */
+  async getTokenBalance(mint: string, walletAddress?: string): Promise<number> {
+    const raw = await this.getTokenBalanceRaw(mint, walletAddress);
+    return Number(raw);
   }
 }
 

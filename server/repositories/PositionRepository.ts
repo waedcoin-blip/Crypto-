@@ -75,6 +75,20 @@ export class PositionRepository {
     return Array.from(this.positions.values()).filter(p => p.state !== 'CLOSED');
   }
 
+  public countActivePositions(network?: string): number {
+    return Array.from(this.positions.values()).filter(p => {
+      if (p.state === 'CLOSED') return false;
+      if (network && p.network !== network) return false;
+      return true;
+    }).length;
+  }
+
+  public canOpenPosition(maxPositions: number, network?: string): boolean {
+    if (maxPositions <= 0) return true;
+    const currentCount = this.countActivePositions(network);
+    return currentCount < maxPositions;
+  }
+
   public getPosition(id: string): PositionRecord | undefined {
     return this.positions.get(id);
   }

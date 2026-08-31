@@ -142,8 +142,8 @@ export class OrderManager {
     label?: 'entry' | 'exit_tp' | 'exit_sl'
   ): Order {
     const net = network || useTradingEnvironmentStore.getState().network || 'paper';
-    // Key is scoped by network + side + mint, allowing simultaneous entry/exit management
-    const key = `${net}_${side}_${mint}`;
+    // Strict execution lock scoped by network + mint to prevent simultaneous BUY + SELL on the same asset
+    const key = `${net}_${mint}`;
     const existingActiveId = this.activeOrdersByNetworkSideMint.get(key);
 
     if (existingActiveId) {
@@ -203,7 +203,7 @@ export class OrderManager {
 
     if (['CONFIRMED', 'FAILED', 'RECOVERY_REQUIRED', 'CANCELLED'].includes(newState)) {
       const net = order.network || 'paper';
-      const key = `${net}_${order.side}_${order.mint}`;
+      const key = `${net}_${order.mint}`;
       if (this.activeOrdersByNetworkSideMint.get(key) === orderId) {
         this.activeOrdersByNetworkSideMint.delete(key);
       }
@@ -232,13 +232,16 @@ export class OrderManager {
     const side = isSolBuy ? 'buy' : 'sell';
     const currentNetwork = useTradingEnvironmentStore.getState().network || 'paper';
 
-    // 1. SIGNAL & Order creation with side-scoped idempotency lock
+    // 1. SIGNAL & Order creation with network+mint idempotency lock
     const order = this.createOrder(targetMint, side, amount, slippageBps, undefined, currentNetwork, label);
 
     // 2. Network-bound executor resolution (use set executor if configured for this network, else executionEngine)
     const executor = (this.executor && this.executor.mode === order.network)
       ? this.executor
       : executionEngine.getExecutorForNetwork(order.network);
+
+    let submittedSignature: string | undefined;
+    let confirmedOnChain = false;
 
     try {
       // 3. VALIDATING
@@ -271,11 +274,13 @@ export class OrderManager {
       const result = await executor.swap(inputMint, outputMint, amount, slippageBps, label, quote);
 
       if (result.signature) {
+        submittedSignature = result.signature;
         this.transitionState(order.id, 'SUBMITTED', { signature: result.signature });
       }
 
       // 7. CONFIRMING & On-Chain Verification
       this.transitionState(order.id, 'CONFIRMING');
+      confirmedOnChain = true;
 
       // 8. Effective execution price & proceeds computation
       let effectivePriceSol = 0;
@@ -320,9 +325,16 @@ export class OrderManager {
       return result;
     } catch (err: any) {
       const errorMsg = err?.message || String(err);
-      this.transitionState(order.id, 'FAILED', {
-        error: errorMsg,
-      });
+      if (confirmedOnChain || submittedSignature) {
+        this.transitionState(order.id, 'RECOVERY_REQUIRED', {
+          signature: submittedSignature,
+          error: errorMsg,
+        });
+      } else {
+        this.transitionState(order.id, 'FAILED', {
+          error: errorMsg,
+        });
+      }
       throw err;
     }
   }

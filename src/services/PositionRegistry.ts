@@ -294,6 +294,15 @@ export class PositionRegistry {
     return false;
   }
 
+  public updatePositionState(mintAddress: string, newState: PositionState): boolean {
+    const pos = this.getOpenPositionByMint(mintAddress);
+    if (pos) {
+      this.transitionState(pos.id, newState);
+      return true;
+    }
+    return false;
+  }
+
   public subscribe(listener: PositionRegistryListener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);

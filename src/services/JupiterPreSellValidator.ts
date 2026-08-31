@@ -223,6 +223,42 @@ export class JupiterPreSellValidator {
       validatedAt: Date.now(),
     };
   }
+
+  /**
+   * Asserts that a pre-sell validation quote is still fresh (<= 1000ms old) and matches
+   * the exact target mint, output mint, and token amount.
+   */
+  public assertQuoteFreshness(
+    validatedResult: PreSellValidationResult,
+    expectedInputMint: string,
+    expectedOutputMint: string,
+    expectedRawAmount: number | bigint,
+    maxAgeMs = 1000
+  ): { fresh: boolean; reason?: string } {
+    if (!validatedResult || !validatedResult.isValid) {
+      return { fresh: false, reason: 'PRE_SELL_QUOTE_INVALID' };
+    }
+
+    const ageMs = Date.now() - (validatedResult.validatedAt || 0);
+    if (ageMs > maxAgeMs) {
+      return { fresh: false, reason: `PRE_SELL_QUOTE_STALE (${ageMs}ms > ${maxAgeMs}ms limit)` };
+    }
+
+    if (validatedResult.inputMint !== expectedInputMint) {
+      return { fresh: false, reason: `INPUT_MINT_MISMATCH: ${validatedResult.inputMint} !== ${expectedInputMint}` };
+    }
+
+    if (validatedResult.outputMint !== expectedOutputMint) {
+      return { fresh: false, reason: `OUTPUT_MINT_MISMATCH: ${validatedResult.outputMint} !== ${expectedOutputMint}` };
+    }
+
+    const numExpectedAmount = typeof expectedRawAmount === 'bigint' ? Number(expectedRawAmount) : expectedRawAmount;
+    if (Math.abs(validatedResult.rawAmount - numExpectedAmount) > 1) {
+      return { fresh: false, reason: `RAW_AMOUNT_MISMATCH: quote=${validatedResult.rawAmount} expected=${numExpectedAmount}` };
+    }
+
+    return { fresh: true };
+  }
 }
 
 export const jupiterPreSellValidator = JupiterPreSellValidator.getInstance();

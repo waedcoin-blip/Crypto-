@@ -778,6 +778,20 @@ export class RiskManager {
       const errMsg = err?.message || String(err);
       console.error(`[RiskManager] ❌ Exit error for ${mint}:`, err);
       
+      if (
+        err?.code === 'receipt_failure' ||
+        errMsg.includes('receipt_failure') ||
+        errMsg.includes('confirmed on-chain') ||
+        errMsg.includes('RECOVERY_REQUIRED')
+      ) {
+        pos.state = 'RECOVERY_REQUIRED';
+        positionRegistry.updatePositionState(mint, 'RECOVERY_REQUIRED');
+        console.error(
+          `[RECOVERY REQUIRED] Transaction for ${mint} is confirmed on-chain, but receipt reconciliation failed. Position marked RECOVERY_REQUIRED. Automatic re-execution halted.`
+        );
+        return;
+      }
+
       // Rollback position state to OPEN so next evaluation tick or retry can execute safely
       this.exitingMints.delete(mint);
       pos.state = 'OPEN';
