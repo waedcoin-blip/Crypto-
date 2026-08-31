@@ -8,9 +8,9 @@ async function runTests() {
   laserStreamWatchdog.reset(false); // Reset to 'connecting' instead of 'disabled'
   laserStreamWatchdog.start();
   
-  // Initial state should be disconnected if transport is not connected
+  // Initial state should be connecting if transport is not connected but we just started
   laserStreamWatchdog.setTransportState(false, 'auto', 'grpc', 'mainnet');
-  assert.strictEqual(laserStreamWatchdog.getMetrics().status, 'disconnected', 'Should be disconnected initially');
+  assert.strictEqual(laserStreamWatchdog.getMetrics().status, 'connecting', 'Should be connecting initially');
 
   // Should NOT be connected just because startLaserStream was called
   // Connection requires ping/pong/slot/transaction

@@ -162,6 +162,12 @@ class LaserStreamWatchdog {
     this.evaluateHealth();
   }
 
+  public setDisconnected(): void {
+    this.status = "disconnected";
+    this.transportConnected = false;
+    this.evaluateHealth();
+  }
+
   public setReplaying(replaying: boolean, fromSlot: number | null = null): void {
     this.isReplaying = replaying;
     this.replayFromSlot = fromSlot;
@@ -255,7 +261,8 @@ class LaserStreamWatchdog {
     let newStatus: LaserStreamHealthStatus;
 
     if (!this.transportConnected) {
-      newStatus = 'disconnected';
+      // If we are explicitly connecting and haven't failed, stay connecting
+      newStatus = this.status === 'connecting' ? 'connecting' : 'disconnected';
     } else if (this.isReplaying) {
       newStatus = 'replaying';
     } else if (

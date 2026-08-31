@@ -445,6 +445,7 @@ export async function startLaserStream(
   state.activeEndpoint = endpoint;
   state.transportConnected = false;
 
+  laserStreamWatchdog.reset(false); // Set watchdog to connecting state
   laserStreamWatchdog.setTransportState(false, endpoint, 'grpc', network);
   laserLogger.info(
     { endpoint, network, programFilters: programs.length },
@@ -527,7 +528,7 @@ export async function startLaserStream(
 
         // Immediate disconnect on any stream error
         state.transportConnected = false;
-        laserStreamWatchdog.setTransportState(false, state.activeEndpoint, 'grpc', network);
+        laserStreamWatchdog.setDisconnected();
       }
     );
 
@@ -544,7 +545,7 @@ export async function startLaserStream(
     );
     state.transportConnected = false;
     laserStreamWatchdog.recordError(parsed.userActionableMessage);
-    laserStreamWatchdog.setTransportState(false, endpoint, 'grpc', network);
+    laserStreamWatchdog.setDisconnected();
     return null;
   }
 }
