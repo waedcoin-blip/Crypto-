@@ -20,7 +20,7 @@ export interface OrderRecord {
   position_id?: string;
   mint: string;
   side: 'buy' | 'sell';
-  amount_raw: number;
+  amount_raw: number | string;
   slippageBps?: number;
   label?: string;
   network?: string;

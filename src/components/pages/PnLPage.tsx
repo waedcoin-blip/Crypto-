@@ -1157,6 +1157,8 @@ export const PnLPage = ({
     queueDepth: number;
     isReplaying: boolean;
     replayFromSlot: number | null;
+    ingestionState?: 'active' | 'idle' | 'replaying';
+    connectedAt?: number | null;
   }>({
     lastReceivedSlot: 0,
     lastProcessedSlot: 0,
@@ -1166,6 +1168,8 @@ export const PnLPage = ({
     queueDepth: 0,
     isReplaying: false,
     replayFromSlot: null,
+    ingestionState: 'idle',
+    connectedAt: null,
   });
 
   // DexScreener Engine Configurations
@@ -2210,6 +2214,8 @@ export const PnLPage = ({
                 queueDepth: t.queueDepth || 0,
                 isReplaying: !!t.isReplaying,
                 replayFromSlot: t.replayFromSlot || null,
+                ingestionState: t.ingestionState || (t.isReplaying ? 'replaying' : 'idle'),
+                connectedAt: t.connectedAt || null,
               });
             } else if (data.status) {
               setLaserstreamStatus(data.status);
@@ -5406,7 +5412,11 @@ const checkTokenCriteria = (mint: string): {
                           laserstreamStatus === 'connecting' ? 'bg-slate-500/15 text-slate-300 border border-slate-500/30' :
                           'bg-rose-500/15 text-rose-300 border border-rose-500/30'
                         }`}>
-                          {laserstreamStatus}
+                          {laserstreamStatus === 'connected' ? '🟢 CONNECTED' :
+                           laserstreamStatus === 'degraded' ? '🟠 DEGRADED' :
+                           laserstreamStatus === 'replaying' ? '🔵 REPLAYING' :
+                           laserstreamStatus === 'disconnected' ? '🔴 DISCONNECTED' :
+                           laserstreamStatus.toUpperCase()}
                         </span>
                         {(laserstreamStatus === 'connected' || laserstreamStatus === 'degraded') && (
                           <span className={`text-[8px] font-mono font-bold uppercase rounded px-1.5 py-0.5 ${
@@ -5415,6 +5425,14 @@ const checkTokenCriteria = (mint: string): {
                             'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
                           }`}>
                             {laserstreamIsSimulated ? 'Local Stream' : laserstreamIsFallback ? 'WS Fallback' : 'gRPC Geyser'}
+                          </span>
+                        )}
+                        {laserstreamStatus === 'connected' && (
+                          <span className={`text-[8px] font-mono font-bold uppercase rounded px-1.5 py-0.5 ${
+                            laserstreamSlotMetrics.ingestionState === 'active' ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30' :
+                            'bg-slate-500/15 text-slate-300 border border-slate-500/30'
+                          }`}>
+                            {laserstreamSlotMetrics.ingestionState === 'active' ? 'Active' : 'Idle'}
                           </span>
                         )}
                       </div>
@@ -5437,17 +5455,23 @@ const checkTokenCriteria = (mint: string): {
                 {laserstreamEnabled && (
                   <div className="space-y-3 mt-3 bg-[#08080f]/50 border border-[#1f212e]/80 rounded-xl p-3 transition-all">
                     {/* Real-time Slot & Queue Telemetry Ribbon */}
-                    <div className="grid grid-cols-4 gap-1.5 bg-[#0d0e17] border border-[#1f212e] rounded-lg p-2 text-center font-mono">
+                    <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5 bg-[#0d0e17] border border-[#1f212e] rounded-lg p-2 text-center font-mono">
                       <div className="flex flex-col">
-                        <span className="text-[8px] text-[#64748b] uppercase">Slot</span>
+                        <span className="text-[8px] text-[#64748b] uppercase">Recv Slot</span>
                         <span className="text-[10px] text-white font-bold truncate">
                           {laserstreamSlotMetrics.lastReceivedSlot > 0 ? laserstreamSlotMetrics.lastReceivedSlot.toLocaleString() : '---'}
                         </span>
                       </div>
                       <div className="flex flex-col">
+                        <span className="text-[8px] text-[#64748b] uppercase">Proc Slot</span>
+                        <span className="text-[10px] text-slate-300 font-bold truncate">
+                          {laserstreamSlotMetrics.lastProcessedSlot > 0 ? laserstreamSlotMetrics.lastProcessedSlot.toLocaleString() : '---'}
+                        </span>
+                      </div>
+                      <div className="flex flex-col">
                         <span className="text-[8px] text-[#64748b] uppercase">Slot Lag</span>
                         <span className={`text-[10px] font-bold ${laserstreamSlotMetrics.slotLag > 5 ? 'text-amber-400' : 'text-emerald-400'}`}>
-                          {laserstreamSlotMetrics.slotLag} slots
+                          {laserstreamSlotMetrics.slotLag}
                         </span>
                       </div>
                       <div className="flex flex-col">
@@ -5457,9 +5481,15 @@ const checkTokenCriteria = (mint: string): {
                         </span>
                       </div>
                       <div className="flex flex-col">
-                        <span className="text-[8px] text-[#64748b] uppercase">Replay</span>
-                        <span className={`text-[10px] font-bold ${laserstreamSlotMetrics.isReplaying ? 'text-cyan-400' : 'text-[#64748b]'}`}>
-                          {laserstreamSlotMetrics.isReplaying ? 'ACTIVE' : 'NO'}
+                        <span className="text-[8px] text-[#64748b] uppercase">Processing</span>
+                        <span className={`text-[10px] font-bold ${laserstreamSlotMetrics.processingLagMs > 100 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                          {laserstreamSlotMetrics.processingLagMs}ms
+                        </span>
+                      </div>
+                      <div className="flex flex-col">
+                        <span className="text-[8px] text-[#64748b] uppercase">Ingestion</span>
+                        <span className={`text-[10px] font-bold ${laserstreamSlotMetrics.isReplaying ? 'text-cyan-400' : laserstreamSlotMetrics.ingestionState === 'active' ? 'text-emerald-400' : 'text-[#64748b]'}`}>
+                          {laserstreamSlotMetrics.isReplaying ? 'REPLAY' : laserstreamSlotMetrics.ingestionState === 'active' ? 'ACTIVE' : 'IDLE'}
                         </span>
                       </div>
                     </div>

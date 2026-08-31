@@ -62,7 +62,9 @@ export type LaserStreamHealthStatus =
 
 export interface LaserStreamTelemetry {
   transportConnected: boolean;
+  connectedAt?: number | null;
   status: LaserStreamHealthStatus;
+  ingestionState?: 'active' | 'idle' | 'replaying';
   lastHeartbeatAt: number | null;
   lastEventAt: number | null;
   lastReceivedSlot: number;

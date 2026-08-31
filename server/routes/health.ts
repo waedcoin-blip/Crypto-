@@ -9,6 +9,7 @@ import { asyncHandler } from '../middleware/errorHandler.js';
 import type { HealthCheck } from '../types/index.js';
 
 import { workerStateRepository } from '../repositories/WorkerStateRepository.js';
+import { getLaserStreamTelemetry } from '../engines/LaserstreamIngestion.js';
 
 const router = Router();
 
@@ -20,6 +21,7 @@ router.get('/ping', (req, res) => {
 router.get('/', asyncHandler(async (req, res) => {
   const checks: Record<string, string> = {};
   const workerState = workerStateRepository.getWorkerState('trading');
+  const laser = getLaserStreamTelemetry();
 
   const now = Date.now();
   const workerHeartbeatAgeMs = workerState ? now - workerState.lastHeartbeat : Infinity;
@@ -86,6 +88,16 @@ router.get('/', asyncHandler(async (req, res) => {
     web: 'healthy',
     tradingWorker: isWorkerHealthy ? 'healthy' : 'unhealthy',
     lastWorkerHeartbeat: workerState?.lastHeartbeat || 0,
+    laserstream: {
+      status: laser.status,
+      transportConnected: laser.transportConnected,
+      slotLag: laser.slotLag,
+      queueDepth: laser.queueDepth,
+      lastReceivedSlot: laser.lastReceivedSlot,
+      lastProcessedSlot: laser.lastProcessedSlot,
+      processingDurationMs: laser.processingLagMs,
+      ingestionState: laser.ingestionState || 'idle',
+    },
     monitor: isWorkerHealthy ? 'healthy' : 'degraded',
     execution: 'healthy',
     reconciliation: 'healthy',
@@ -108,16 +120,35 @@ router.get('/trading', asyncHandler(async (req, res) => {
   const { positionRepository } = await import('../repositories/PositionRepository.js');
   const { orderRepository } = await import('../repositories/OrderRepository.js');
 
+  const laser = getLaserStreamTelemetry();
+  const laserHealthy = !laser.transportConnected || (
+    laser.status === 'connected' ||
+    laser.status === 'degraded' ||
+    laser.status === 'replaying' ||
+    laser.status === 'fallback' ||
+    laser.status === 'simulated'
+  );
+
   const recoveryPositions = positionRepository.getOpenPositions().filter(p => p.state === 'RECOVERY_REQUIRED');
   const recoveryOrders = orderRepository.getOrders().filter(o => o.state === 'RECOVERY_REQUIRED');
 
-  const isHealthy = isHeartbeatFresh && recoveryPositions.length === 0 && recoveryOrders.length === 0;
+  const isHealthy = isHeartbeatFresh && laserHealthy && recoveryPositions.length === 0 && recoveryOrders.length === 0;
 
   const payload = {
     healthy: isHealthy,
     status: isHealthy ? 'healthy' : 'unhealthy',
     workerHeartbeatAgeMs,
     workerStatus: workerState?.status || 'STOPPED',
+    laserstream: {
+      status: laser.status,
+      transportConnected: laser.transportConnected,
+      lastReceivedSlot: laser.lastReceivedSlot,
+      lastProcessedSlot: laser.lastProcessedSlot,
+      slotLag: laser.slotLag,
+      queueDepth: laser.queueDepth,
+      processingDurationMs: laser.processingLagMs,
+      ingestionState: laser.ingestionState || 'idle',
+    },
     recoveryPositionsCount: recoveryPositions.length,
     recoveryOrdersCount: recoveryOrders.length,
     timestamp: new Date().toISOString(),

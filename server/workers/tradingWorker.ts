@@ -5,6 +5,8 @@ import { tradingMonitorWorker } from './TradingMonitorWorker.js';
 import { runLaserstreamWorker } from '../engines/LaserstreamIngestion.js';
 import { startWorkerHeartbeat } from '../services/WorkerHeartbeat.js';
 import { criteriaRepository } from '../repositories/CriteriaRepository.js';
+import { getLaserStreamTelemetry } from '../engines/LaserstreamIngestion.js';
+import { workerStateRepository } from '../repositories/WorkerStateRepository.js';
 
 dotenv.config({ path: '.env.local' });
 dotenv.config();
@@ -20,7 +22,25 @@ async function main() {
   startWorkerHeartbeat('trading', 3000);
   console.log('[TRADING WORKER] Worker heartbeat active.');
 
-  // 3. Startup reconciliation
+  // 3. Telemetry synchronizer loop
+  setInterval(async () => {
+    try {
+      const telemetry = getLaserStreamTelemetry();
+      await workerStateRepository.updateMetadata('trading', {
+        laserstreamStatus: telemetry.status,
+        lastReceivedSlot: telemetry.lastReceivedSlot,
+        lastProcessedSlot: telemetry.lastProcessedSlot,
+        slotLag: telemetry.slotLag,
+        queueDepth: telemetry.queueDepth,
+        transportConnected: telemetry.transportConnected,
+        lastEventAt: telemetry.lastEventAt,
+      });
+    } catch (err) {
+      // Non-blocking telemetry sync error guard
+    }
+  }, 3000);
+
+  // 4. Startup reconciliation
   await reconcileDatabaseWithMainnet();
   console.log('[TRADING WORKER] Startup reconciliation completed.');
 

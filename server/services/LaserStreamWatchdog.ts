@@ -3,8 +3,8 @@
  * 
  * Provides:
  * 1. Slot-based freshness checks (lastReceivedSlot, lastProcessedSlot, slotLag)
- * 2. Multi-tier health states (CONNECTED, DEGRADED, STALE, DISCONNECTED, REPLAYING)
- * 3. Separate transport, ingestion, processing, and telemetry boundaries
+ * 2. Accurate processing duration tracking (lastProcessingDurationMs)
+ * 3. Separation of Transport vs Ingestion (Idle/Active) vs Processing vs Telemetry
  * 4. Queue backpressure monitoring and replay coordination
  */
 
@@ -12,8 +12,6 @@ import { laserLogger } from '../utils/logger.js';
 import type { LaserStreamHealthStatus, LaserStreamTelemetry, LaserStreamMode, LaserStreamNetwork } from '../types/index.js';
 
 export interface WatchdogConfig {
-  staleMs: number;
-  disconnectedMs: number;
   degradedQueueThreshold: number;
   degradedProcessingLagMs: number;
   degradedSlotLag: number;
@@ -26,8 +24,6 @@ export type StateChangeHandler = (status: LaserStreamHealthStatus, metrics: Lase
 
 class LaserStreamWatchdog {
   private config: WatchdogConfig = {
-    staleMs: 5000,
-    disconnectedMs: 15000,
     degradedQueueThreshold: 50,
     degradedProcessingLagMs: 1500,
     degradedSlotLag: 15,
@@ -39,6 +35,8 @@ class LaserStreamWatchdog {
   private lastEventAt = 0;
   private lastHeartbeatAt = 0;
   private lastProcessedAt = 0;
+  private lastProcessingDurationMs = 0;
+  private connectedAt = 0;
   private queueDepth = 0;
   private isReplaying = false;
   private replayFromSlot: number | null = null;
@@ -105,6 +103,10 @@ class LaserStreamWatchdog {
     }
     this.eventsProcessed++;
 
+    if (typeof processingTimeMs === 'number') {
+      this.lastProcessingDurationMs = Math.max(0, processingTimeMs);
+    }
+
     if (this.isReplaying && (this.lastReceivedSlot - this.lastProcessedSlot) <= 2) {
       this.isReplaying = false;
       this.replayFromSlot = null;
@@ -136,9 +138,11 @@ class LaserStreamWatchdog {
 
     if (connected) {
       this.isReconnecting = false;
-      if (this.lastEventAt === 0) {
-        this.lastEventAt = Date.now();
+      if (this.connectedAt === 0) {
+        this.connectedAt = Date.now();
       }
+    } else {
+      this.connectedAt = 0;
     }
     this.evaluateHealth();
   }
@@ -168,13 +172,17 @@ class LaserStreamWatchdog {
   public getMetrics(): LaserStreamTelemetry {
     const slotLag = Math.max(0, this.lastReceivedSlot - this.lastProcessedSlot);
     const now = Date.now();
-    const processingLagMs = this.lastEventAt > 0 && this.lastProcessedAt > 0
-      ? Math.max(0, this.lastEventAt - this.lastProcessedAt)
-      : 0;
+    const processingLagMs = this.lastProcessingDurationMs;
+
+    const ingestionState: 'active' | 'idle' | 'replaying' = 
+      this.isReplaying ? 'replaying' :
+      (this.lastEventAt > 0 && (now - this.lastEventAt <= 10_000)) ? 'active' : 'idle';
 
     return {
       transportConnected: this.transportConnected,
+      connectedAt: this.connectedAt || null,
       status: this.status,
+      ingestionState,
       lastHeartbeatAt: this.lastHeartbeatAt || null,
       lastEventAt: this.lastEventAt || null,
       lastReceivedSlot: this.lastReceivedSlot,
@@ -195,33 +203,19 @@ class LaserStreamWatchdog {
   }
 
   public evaluateHealth(): LaserStreamHealthStatus {
-    const now = Date.now();
     const previousStatus = this.status;
 
     if (!this.transportConnected && this.status === 'disabled') {
       return 'disabled';
     }
 
-    const age = this.lastEventAt > 0 ? now - this.lastEventAt : Infinity;
     const slotLag = Math.max(0, this.lastReceivedSlot - this.lastProcessedSlot);
-    const processingLagMs = this.lastEventAt > 0 && this.lastProcessedAt > 0
-      ? Math.max(0, this.lastEventAt - this.lastProcessedAt)
-      : 0;
+    const processingLagMs = this.lastProcessingDurationMs;
 
     let newStatus: LaserStreamHealthStatus;
 
-    if (!this.transportConnected || age > this.config.disconnectedMs) {
+    if (!this.transportConnected) {
       newStatus = 'disconnected';
-      if (!this.isReconnecting && this.reconnectHandler && this.transportConnected) {
-        this.isReconnecting = true;
-        laserLogger.warn(
-          { age, disconnectedThreshold: this.config.disconnectedMs, resumeSlot: this.lastProcessedSlot },
-          'LaserStream stream exceeded disconnection threshold, triggering recovery with replay'
-        );
-        Promise.resolve(this.reconnectHandler(this.lastProcessedSlot)).catch((err) => {
-          laserLogger.error({ error: err }, 'Watchdog reconnect handler failed');
-        });
-      }
     } else if (this.isReplaying) {
       newStatus = 'replaying';
     } else if (
@@ -230,11 +224,6 @@ class LaserStreamWatchdog {
       slotLag >= this.config.degradedSlotLag
     ) {
       newStatus = 'degraded';
-    } else if (age > this.config.staleMs) {
-      newStatus = 'stale';
-      if (this.healthCheckHandler) {
-        Promise.resolve(this.healthCheckHandler()).catch(() => {});
-      }
     } else {
       newStatus = this.isSimulated ? 'simulated' : this.isFallback ? 'fallback' : 'connected';
     }
@@ -274,6 +263,8 @@ class LaserStreamWatchdog {
     this.lastEventAt = 0;
     this.lastHeartbeatAt = 0;
     this.lastProcessedAt = 0;
+    this.lastProcessingDurationMs = 0;
+    this.connectedAt = 0;
     this.queueDepth = 0;
     this.isReplaying = false;
     this.replayFromSlot = null;

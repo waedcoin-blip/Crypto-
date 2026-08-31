@@ -14,7 +14,7 @@ export interface PositionRecord {
   id: string;
   mintAddress: string;
   network: string;
-  amountRaw: number;
+  amountRaw: number | string;
   decimals: number;
   entryPriceSOL: number;
   solSpent: number;

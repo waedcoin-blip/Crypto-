@@ -39,8 +39,22 @@ export class WorkerStateRepository {
   }
 
   public async heartbeat(data: { worker: string; status: 'RUNNING' | 'STOPPED' | 'ERROR'; lastHeartbeat: number; metadata?: Record<string, any> }): Promise<void> {
-    this.states.set(data.worker, data);
+    const existing = this.states.get(data.worker);
+    this.states.set(data.worker, {
+      ...existing,
+      ...data,
+      metadata: { ...(existing?.metadata || {}), ...(data.metadata || {}) },
+    });
     this.save();
+  }
+
+  public async updateMetadata(worker: string, metadata: Record<string, any>): Promise<void> {
+    const existing = this.states.get(worker);
+    if (existing) {
+      existing.metadata = { ...(existing.metadata || {}), ...metadata };
+      this.states.set(worker, existing);
+      this.save();
+    }
   }
 
   public getWorkerState(worker: string = 'trading'): WorkerState | undefined {
