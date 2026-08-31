@@ -176,76 +176,37 @@ if (OriginalWebSocket) {
   (window as any).WebSocket = CustomWebSocket;
 }
 
-// Override global fetch to intercept requests to RPC nodes
-const originalFetch = window.fetch;
-window.fetch = async (...args) => {
-  let url = '';
-  if (typeof args[0] === 'string') {
-    url = args[0];
-  } else if (args[0] instanceof URL) {
-    url = args[0].toString();
-  } else if (args[0] && typeof args[0] === 'object' && 'url' in (args[0] as any)) {
-    url = (args[0] as Request).url;
+import { getPrimaryRpc } from './services/rpcRouting';
+
+export function getExecutionRpc(): string {
+  const rpc = getPrimaryRpc('execution');
+
+  if (!rpc) {
+    throw new Error('EXECUTION_RPC_UNAVAILABLE');
   }
 
-  // 1. Check if request belongs to Master Monitor
-  const masterRpc1 = (localStorage.getItem('master_monitor_rpc') || '').trim().replace(/\/$/, '');
-  const masterRpc2 = (localStorage.getItem('master_monitor_rpc2') || '').trim().replace(/\/$/, '');
+  return rpc;
+}
 
-  if (masterRpc1 && (url.startsWith(masterRpc1) || (masterRpc2 && url.startsWith(masterRpc2)))) {
-    // If master backup exists, load balance between master nodes only
-    if (masterRpc1 && masterRpc2) {
-      const masterUrls = [masterRpc1, masterRpc2];
-      const selectedMaster = masterUrls[masterCounter % masterUrls.length];
-      masterCounter++;
-      const targetMaster = url.startsWith(masterRpc1) ? masterRpc1 : masterRpc2;
-      const newUrl = url.replace(targetMaster, selectedMaster);
+export function getMonitorRpc(): string {
+  const rpc = getPrimaryRpc('monitor');
 
-      if (typeof args[0] === 'string') {
-        return originalFetch(newUrl, args[1]);
-      } else if (args[0] instanceof URL) {
-        return originalFetch(new URL(newUrl), args[1]);
-      } else if (args[0] && typeof args[0] === 'object' && 'url' in (args[0] as any)) {
-        try {
-          const newReq = new Request(newUrl, args[0] as Request);
-          return originalFetch(newReq, args[1]);
-        } catch {
-          return originalFetch(args[0], args[1]);
-        }
-      }
-    }
-    // Isolated Master Monitor request — bypass execution load balancer
-    return originalFetch(args[0], args[1]);
+  if (!rpc) {
+    throw new Error('MONITOR_RPC_UNAVAILABLE');
   }
 
-  // 2. Load balancing logic for Execution RPC URLs
-  if (RPC_URLS.length > 1 && url) {
-    const rpc1 = RPC_URLS[0].replace(/\/$/, '');
-    const rpc2 = RPC_URLS[1].replace(/\/$/, '');
-    
-    if (url.startsWith(rpc1) || url.startsWith(rpc2)) {
-      const selectedRpc = RPC_URLS[rpcCounter % RPC_URLS.length].replace(/\/$/, '');
-      rpcCounter++;
-      const targetRpc = url.startsWith(rpc1) ? rpc1 : rpc2;
-      const newUrl = url.replace(targetRpc, selectedRpc);
+  return rpc;
+}
 
-      if (typeof args[0] === 'string') {
-        return originalFetch(newUrl, args[1]);
-      } else if (args[0] instanceof URL) {
-        return originalFetch(new URL(newUrl), args[1]);
-      } else if (args[0] && typeof args[0] === 'object' && 'url' in (args[0] as any)) {
-        try {
-          const newReq = new Request(newUrl, args[0] as Request);
-          return originalFetch(newReq, args[1]);
-        } catch {
-          return originalFetch(args[0], args[1]);
-        }
-      }
-    }
+export function getSearchRpc(): string {
+  const rpc = getPrimaryRpc('search');
+
+  if (!rpc) {
+    throw new Error('SEARCH_RPC_UNAVAILABLE');
   }
 
-  return originalFetch(args[0], args[1]);
-};
+  return rpc;
+}
 
 function Root() {
   const network = WalletAdapterNetwork.Mainnet;

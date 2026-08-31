@@ -33,7 +33,7 @@ export interface ManagedPosition {
   createdAt: number;
   lastPriceUpdate?: number;
   pendingSince?: number;
-  activePriceSource?: 'dexscreener' | 'jupiter' | 'rpc_ws' | 'price_tracker';
+  activePriceSource?: 'jupiter';
 }
 
 export interface RiskConfig {
@@ -422,27 +422,13 @@ export class RiskManager {
     rawPrice: number,
     timestamp: number = Date.now(),
     quoteCurrency: 'SOL' | 'USD' = 'SOL',
-    source: 'dexscreener' | 'jupiter' | 'rpc_ws' | 'price_tracker' = 'jupiter'
+    source: 'jupiter' = 'jupiter'
   ): void {
+    if (source !== 'jupiter') return;
     const pos = this.positions.get(mint);
     if (!pos || pos.state === 'CLOSED' || !rawPrice || !Number.isFinite(rawPrice) || rawPrice <= 0) return;
 
     const now = Date.now();
-
-    // Source priority hierarchy: jupiter (4) > rpc_ws (3) > price_tracker (2) > dexscreener (1)
-    const SOURCE_PRIORITY: Record<string, number> = { jupiter: 4, rpc_ws: 3, price_tracker: 2, dexscreener: 1 };
-    const currentPriority = SOURCE_PRIORITY[pos.activePriceSource || 'jupiter'] || 1;
-    const incomingPriority = SOURCE_PRIORITY[source] || 1;
-
-    // Source authority rule: Reject lower-authority sources (e.g. price_tracker, DexScreener) when position is on a higher-authority feed (< 30s old)
-    if (incomingPriority < currentPriority && pos.lastPriceUpdate && (now - pos.lastPriceUpdate) < 30000) {
-      return;
-    }
-
-    // Active-position price authority remains Jupiter: Slower price_tracker stream is strictly blocked from overriding active Jupiter TP/SL path
-    if (source === 'price_tracker' && pos.activePriceSource === 'jupiter' && pos.lastPriceUpdate && (now - pos.lastPriceUpdate) < 30000) {
-      return;
-    }
 
     // Stale timestamp guard: Reject updates older than 5 seconds (stale market data)
     if (timestamp < now - 5000) {

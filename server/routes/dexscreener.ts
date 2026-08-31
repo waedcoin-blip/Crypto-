@@ -132,7 +132,6 @@ router.get('/tokens/trending', asyncHandler(async (req, res) => {
       const discoveryEndpoints = [
         'https://api.dexscreener.com/token-profiles/latest/v1',
         'https://api.dexscreener.com/token-profiles/recent-updates/v1',
-        'https://app.telemetry.io/x-ray',
       ];
 
       const discovered = new Map<string, any>();
@@ -389,11 +388,9 @@ router.get('/tokens/:mint', asyncHandler(async (req, res) => {
           }
         }
       } catch (chunkErr: any) {
-        dexLogger.warn({ chunk: ids, errDetails: chunkErr.message }, 'Chunk fetch failed, using simulation');
+        dexLogger.warn({ chunk: ids, errDetails: chunkErr.message }, 'Chunk fetch failed for tokens');
         for (const m of chunk) {
-          const fallback = generateSimulatedPair(m);
-          pairs.push(fallback);
-          tokenCache.set(m, { schemaVersion: '1.0.0', pairs: [fallback] });
+          tokenCache.set(m, { schemaVersion: '1.0.0', pairs: [] });
         }
       }
     }
@@ -411,7 +408,6 @@ router.get('/token-profiles', asyncHandler(async (req, res) => {
       const endpoints = [
         'https://api.dexscreener.com/token-profiles/latest/v1',
         'https://api.dexscreener.com/token-profiles/recent-updates/v1',
-        'https://app.telemetry.io/x-ray',
         'https://api.dexscreener.com/community-takeovers/latest/v1',
         'https://api.dexscreener.com/ads/latest/v1',
         'https://api.dexscreener.com/token-boosts/latest/v1',
@@ -420,8 +416,8 @@ router.get('/token-profiles', asyncHandler(async (req, res) => {
 
       const allItems: any[] = [];
 
-      for (const url of endpoints) {
-        try {
+      const results = await Promise.allSettled(
+        endpoints.map(async (url) => {
           const { response, text } = await fetchWithRetry(
             url,
             {
@@ -436,7 +432,7 @@ router.get('/token-profiles', asyncHandler(async (req, res) => {
 
           if (!response.ok) {
             dexLogger.warn({ url, status: response.status }, 'Endpoint returned error');
-            continue;
+            return [];
           }
 
           let items: any[] = [];
@@ -465,11 +461,13 @@ router.get('/token-profiles', asyncHandler(async (req, res) => {
               items = uniqueMints.map(addr => ({ tokenAddress: addr, chainId: 'solana', source: 'telemetry-xray' }));
             }
           }
+          return items;
+        })
+      );
 
-          allItems.push(...items);
-          await new Promise((resolve) => setTimeout(resolve, 1000)); // Rate limit delay
-        } catch (err: any) {
-          dexLogger.error({ url, errDetails: err.message }, 'Profile endpoint error');
+      for (const res of results) {
+        if (res.status === 'fulfilled' && Array.isArray(res.value)) {
+          allItems.push(...res.value);
         }
       }
 
@@ -511,24 +509,7 @@ router.get('/token-profiles', asyncHandler(async (req, res) => {
     const cached = profilesCache.get('global-token-profiles');
     if (cached) return res.json(cached.data);
 
-    // Simulation fallback
-    const simulated = TRENDING_MINTS.map((m) => {
-      const tok = getDeterministicTokenInfo(m);
-      return {
-        tokenAddress: m,
-        chainId: 'solana',
-        url: `https://dexscreener.com/solana/${m}`,
-        icon: tok.imageUrl,
-        header: `Discover ${tok.name}!`,
-        description: `The ultimate memecoin of 2026. Join the ${tok.symbol} movement!`,
-        links: [
-          { type: 'website', label: 'Website', url: 'https://example.com' },
-          { type: 'twitter', label: 'Twitter', url: 'https://twitter.com' },
-        ],
-      };
-    });
-
-    res.json(simulated);
+    res.json([]);
   }
 }));
 
@@ -558,8 +539,7 @@ router.get('/token-pairs/:mint', asyncHandler(async (req, res) => {
     const cached = pairsCache.get(mint);
     if (cached) return res.json(cached.data);
 
-    const pairs = mint.split(',').map((m) => generateSimulatedPair(m.trim())).filter(Boolean);
-    res.json({ schemaVersion: '1.0.0', pairs });
+    res.json({ schemaVersion: '1.0.0', pairs: [] });
   }
 }));
 

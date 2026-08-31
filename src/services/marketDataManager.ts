@@ -287,27 +287,19 @@ export class MarketDataManager {
               expiresAt: now + policy.ttlMs,
             });
           }
-          // Mark missing chunk mints with fallback / empty entries so we don't spam
+          // Mark missing chunk mints with empty unavailable entries so we don't serve old cached prices
           for (const m of chunkMints) {
             if (!result.has(m)) {
-              const cached = this.cache.get(m);
-              if (cached) {
-                result.set(m, {
-                  ...cached.price,
-                  isStale: true,
-                });
-              } else {
-                result.set(m, {
-                  mint: m,
-                  priceUsd: null,
-                  priceNative: null,
-                  priceChange24h: 0,
-                  updatedAt: now,
-                  source: 'failed',
-                  isStale: true,
-                  error: 'Market data unavailable',
-                });
-              }
+              result.set(m, {
+                mint: m,
+                priceUsd: null,
+                priceNative: null,
+                priceChange24h: 0,
+                updatedAt: 0,
+                source: 'failed',
+                isStale: true,
+                error: 'Market data unavailable',
+              });
             }
           }
         } else {
@@ -464,28 +456,19 @@ export class MarketDataManager {
   private getFallbackPrices(mints: string[]): Map<string, TokenPrice> {
     this.stats.fallbacks++;
     const result = new Map<string, TokenPrice>();
-    const now = Date.now();
 
     for (const mint of mints) {
-      const cached = this.cache.get(mint);
-      if (cached) {
-        result.set(mint, {
-          ...cached.price,
-          isStale: true,
-        });
-      } else {
-        const fallbackPrice: TokenPrice = {
-          mint,
-          priceUsd: null,
-          priceNative: null,
-          priceChange24h: 0,
-          updatedAt: now,
-          source: 'failed',
-          isStale: true, // CRITICAL: mark as stale so exit engine skips it
-          error: 'Market data unavailable',
-        };
-        result.set(mint, fallbackPrice);
-      }
+      const fallbackPrice: TokenPrice = {
+        mint,
+        priceUsd: null,
+        priceNative: null,
+        priceChange24h: 0,
+        updatedAt: 0,
+        source: 'failed',
+        isStale: true,
+        error: 'Market data unavailable',
+      };
+      result.set(mint, fallbackPrice);
     }
     return result;
   }

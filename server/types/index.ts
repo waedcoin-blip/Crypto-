@@ -98,6 +98,7 @@ export interface SseEvent {
   isFallback?: boolean;
   isSimulated?: boolean;
   endpoint?: string | null;
+  observationTimestamp?: number;
   [key: string]: unknown;
 }
 

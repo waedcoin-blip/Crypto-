@@ -183,17 +183,15 @@ export class JupiterTransactionReplay {
 
     if (isSolBuy) {
       // SOL -> SPL Token
-      // Output: SPL Token delta for user
+      // Sum output token deltas across ALL token accounts owned by user
       if (txDetails.meta.preTokenBalances && txDetails.meta.postTokenBalances) {
-        const preTok = txDetails.meta.preTokenBalances.find(
-          (b: any) => b.mint === outputMint && b.owner === userPublicKey
-        );
-        const postTok = txDetails.meta.postTokenBalances.find(
-          (b: any) => b.mint === outputMint && b.owner === userPublicKey
-        );
-        const preAmount = preTok?.uiTokenAmount?.amount ? BigInt(preTok.uiTokenAmount.amount) : 0n;
-        const postAmount = postTok?.uiTokenAmount?.amount ? BigInt(postTok.uiTokenAmount.amount) : 0n;
-        const delta = postAmount - preAmount;
+        const preSum = txDetails.meta.preTokenBalances
+          .filter((b: any) => b.mint === outputMint && b.owner === userPublicKey)
+          .reduce((sum: bigint, b: any) => sum + (b.uiTokenAmount?.amount ? BigInt(b.uiTokenAmount.amount) : 0n), 0n);
+        const postSum = txDetails.meta.postTokenBalances
+          .filter((b: any) => b.mint === outputMint && b.owner === userPublicKey)
+          .reduce((sum: bigint, b: any) => sum + (b.uiTokenAmount?.amount ? BigInt(b.uiTokenAmount.amount) : 0n), 0n);
+        const delta = postSum - preSum;
 
         if (delta > 0n) {
           actualOutputAmount = Number(delta);
@@ -203,17 +201,15 @@ export class JupiterTransactionReplay {
     } else {
       // SPL Token -> SOL
       const WSOL_MINT = 'So11111111111111111111111111111111111111112';
-      // 1. Check WSOL token balance delta
+      // 1. Check WSOL token balance delta across all user accounts
       if (txDetails.meta?.preTokenBalances && txDetails.meta?.postTokenBalances) {
-        const preWsol = txDetails.meta.preTokenBalances.find(
-          (b: any) => b.mint === WSOL_MINT && b.owner === userPublicKey
-        );
-        const postWsol = txDetails.meta.postTokenBalances.find(
-          (b: any) => b.mint === WSOL_MINT && b.owner === userPublicKey
-        );
-        const preAmount = preWsol?.uiTokenAmount?.amount ? BigInt(preWsol.uiTokenAmount.amount) : 0n;
-        const postAmount = postWsol?.uiTokenAmount?.amount ? BigInt(postWsol.uiTokenAmount.amount) : 0n;
-        const wsolDelta = postAmount - preAmount;
+        const preWsol = txDetails.meta.preTokenBalances
+          .filter((b: any) => b.mint === WSOL_MINT && b.owner === userPublicKey)
+          .reduce((sum: bigint, b: any) => sum + (b.uiTokenAmount?.amount ? BigInt(b.uiTokenAmount.amount) : 0n), 0n);
+        const postWsol = txDetails.meta.postTokenBalances
+          .filter((b: any) => b.mint === WSOL_MINT && b.owner === userPublicKey)
+          .reduce((sum: bigint, b: any) => sum + (b.uiTokenAmount?.amount ? BigInt(b.uiTokenAmount.amount) : 0n), 0n);
+        const wsolDelta = postWsol - preWsol;
 
         if (wsolDelta > 0n) {
           actualOutputAmount = Number(wsolDelta);

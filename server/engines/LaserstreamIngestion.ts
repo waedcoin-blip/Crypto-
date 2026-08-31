@@ -394,12 +394,12 @@ function startHealthWatchdog(): void {
   if (state.healthCheckTimer) clearInterval(state.healthCheckTimer);
 
   state.healthCheckTimer = setInterval(() => {
-    state.lastHeartbeatTime = Date.now();
+    // Note: Do NOT fake lastHeartbeatTime here. Actual transport activity updates it.
 
     // Differentiate transport health from event stream silence
     if (state.transportConnected) {
       const timeSinceLastEvent = state.lastEventTime ? Date.now() - state.lastEventTime : Infinity;
-      if (timeSinceLastEvent > 60_000) {
+      if (timeSinceLastEvent > 10_000) {
         state.status = 'stalled';
       } else {
         state.status = state.isSimulated ? 'simulated' : state.isUsingFallback ? 'fallback' : 'connected';

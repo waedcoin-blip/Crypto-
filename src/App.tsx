@@ -65,6 +65,7 @@ import { orderManager } from './services/OrderManager';
 import { positionExitManager } from './services/PositionExitManager';
 import { resolveTokenDecimals } from './services/PaperTradeExecutor';
 import { StartupReconciliation } from './services/StartupReconciliation';
+import { entryGate } from './services/EntryGate';
 
 
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
@@ -2036,7 +2037,25 @@ function App() {
 
   const executeAutoTrade = async (tokenAddress: string, symbol: string) => {
     if (tokenAddress === 'So11111111111111111111111111111111111111112') return;
-    if (!autoSniperEnabled) return;
+
+    // Route through central EntryGate authority
+    const metric = tokenMetrics[tokenAddress];
+    const validation = entryGate.validateEntry({
+      address: tokenAddress,
+      symbol,
+      pairCreatedAt: metric?.pairCreatedAt || metric?.discoveredAt,
+      liquidityUsd: metric?.liquidity,
+      devWalletOwnershipPct: metric?.devWalletPercentage,
+      top10HoldersPct: metric?.top10Percentage,
+      riskScore: metric?.riskScore,
+      isSellable: metric?.isRugSafe,
+      dexId: metric?.dexId,
+    });
+
+    if (!validation.allowed) {
+      console.log(`[ENTRY GATE BLOCK] Trade for ${symbol} rejected: ${validation.reason}`);
+      return;
+    }
 
     // LATENCY GUARD CHECK
     if (enableLatencyGuard && rpcLatency !== null && (rpcLatency < hardenedMinLatency || rpcLatency > hardenedMaxLatency)) {
@@ -2049,6 +2068,7 @@ function App() {
     
     if (pendingTrades.current.has(tokenAddress)) return;
     pendingTrades.current.add(tokenAddress);
+    entryGate.markEntryPending(tokenAddress);
     
     // Trade frequency guard: Max 1 trade per token
     const hasTradedBefore = latestState.current.mySniperTrades.some(t => t.address === tokenAddress);
@@ -2076,7 +2096,6 @@ function App() {
     }
 
     let actualBuyAmountSol = buyAmountSol;
-    const metric = tokenMetrics[tokenAddress];
     if (metric && (((metric.dexId?.includes('pump') && !metric.dexId?.toLowerCase().includes('pumpswap')) || (tokenAddress || '').endsWith('pump')))) {
        const poolLiquidityUsd = metric.liquidity || 0;
        const safeMaxBuyUsd = poolLiquidityUsd * 0.0025;
@@ -2698,13 +2717,15 @@ function App() {
                }
              }
            } catch(e) {
-             // Fallback estimate if fetch fails (e.g., SOL = ~$150)
-             priceNative = priceUsd / 150.0;
+             const solUsd = getSolPriceUsd();
+             if (solUsd > 0) {
+               priceNative = priceUsd / solUsd;
+             } else {
+               priceNative = 0;
+             }
            }
         }
 
-        // Bonding Curve Progress Simulation (Pump.fun specific)
-        // Formula: (1,073,000,000 - Current Virtual Token Reserves) / 793,100,000 * 100
         let bondingCurveProgress = undefined;
         const isGraduatedLocal = !(mint || '').toLowerCase().endsWith('pump');
         if (isGraduatedLocal) {
@@ -2714,8 +2735,6 @@ function App() {
             const virtualTokenReserves = Math.sqrt(32190000000 / priceNative);
             const calculatedProgress = ((1073000000 - virtualTokenReserves) / 793100000) * 100;
             bondingCurveProgress = Math.min(99.9, Math.max(0, calculatedProgress));
-          } else {
-            bondingCurveProgress = Math.min(99, (marketCap / 65000) * 100);
           }
         }
 
@@ -2724,22 +2743,21 @@ function App() {
         const symbol = pair.baseToken?.symbol || "TOKEN";
         const category = categorizeToken(symbol, mint);
         
-        // Logical derivation of safety (approximate for demo/UI)
-        const isBurned = pair.liquidity?.base > 0; // Simple heuristic
-        const devPct = Math.random() * 5; 
-        const top10Pct = 8 + Math.random() * 10;
-        const holders = 50 + Math.floor(Math.random() * 500);
+        // Strict deterministic security derivation (No synthetic Math.random)
+        const isBurned = pair.liquidity?.base > 0;
+        const devPct = pair.info?.devPercentage ?? 0; 
+        const top10Pct = pair.info?.top10Percentage ?? 0;
+        const holders = pair.info?.holders ?? 0;
         const volMcRatio = marketCap > 0 ? volume24h / marketCap : 0;
 
-        // Security Analysis - prioritized as requested
         const warnings: string[] = [];
         
-        // 1. Not Sellable (Simulation of honeypot detection)
-        const isSellable = Math.random() > 0.05; // 5% chance of being un-sellable for simulation
+        // 1. Sellability check
+        const isSellable = pair.priceUsd ? parseFloat(pair.priceUsd) > 0 : true;
         if (!isSellable) warnings.push("NOT SELLABLE");
         
-        // 2. Not Verified
-        const isVerified = Math.random() > 0.3; // 30% chance not verified
+        // 2. Verification check
+        const isVerified = Boolean(pair.pairAddress && pair.baseToken?.address);
         if (!isVerified) warnings.push("NOT VERIFIED");
         
         // 3. Low Liquidity
@@ -2751,14 +2769,13 @@ function App() {
         if (!isOrganic) warnings.push("LOW ORGANIC ACTIVITY");
         
         // 5. New Listing
-        const isNewListing = (Date.now() - pairCreatedAt) < 86400000; // Last 24h
+        const isNewListing = pairCreatedAt > 0 ? (Date.now() - pairCreatedAt) < 86400000 : false;
         if (isNewListing) warnings.push("NEW LISTING");
         
         // 6. High Single Ownership
         const highSingleOwnership = top10Pct > 40;
         if (highSingleOwnership) warnings.push("HIGH SINGLE OWNERSHIP");
         
-        // Calculate a composite risk score (0-100, lower is safer)
         let riskScore = 0;
         if (!isSellable) riskScore += 50;
         if (!isVerified) riskScore += 15;
@@ -2771,27 +2788,23 @@ function App() {
         const maxAllowedRisk = latestState.current?.hardenedMaxRiskScore || 22;
         const isRugSafe = riskScore <= maxAllowedRisk && isSellable && !hasLowLiquidity;
 
-        const mintAuthorityRevoked = true;
-        const freezeAuthorityRevoked = true;
-        const metadataImmutable = true;
+        // On-chain authority flags: Default to false/undefined if unverified on-chain rather than hardcoding true
+        const mintAuthorityRevoked = pair.info?.mintAuthorityRevoked ?? false;
+        const freezeAuthorityRevoked = pair.info?.freezeAuthorityRevoked ?? false;
+        const metadataImmutable = pair.info?.metadataImmutable ?? false;
         
-        // Social Intelligence Simulation (Attention Economy 2026)
-        const socialMentionsGrowth = Math.random() * 150; // up to 150% growth
-        const socialSentiment = 30 + Math.random() * 70;
-        const isAiAgentControlled = category === 'AI_MEME' || (category === 'AI' && Math.random() > 0.5);
-        
-        // Bot Risk detection logic: High count of low-effort repetitive comments
-        const botRisk = (Math.random() > 0.8 || (category === 'MEME' && Math.random() > 0.6)) ? 'HIGH' : 
-                        (Math.random() > 0.5) ? 'MEDIUM' : 'LOW';
-        
-        const narrativeScore = (socialMentionsGrowth / 1.5) + (socialSentiment / 2);
+        const socialMentionsGrowth = 0;
+        const socialSentiment = 50;
+        const isAiAgentControlled = category === 'AI_MEME' || category === 'AI';
+        const botRisk = 'LOW';
+        const narrativeScore = 50;
 
         const marketCapActual = marketCap;
         const volumeActual = volume24h;
         const priceUsdActual = priceUsd;
         
         const liquidityRatio = marketCapActual > 0 ? (liquidity / marketCapActual) * 100 : 0;
-        const holderGrowthHr = 2 + Math.random() * 10;
+        const holderGrowthHr = 0;
         const devPctActual = devPct;
         const top10PctActual = top10Pct;
 
@@ -3804,76 +3817,7 @@ function App() {
       xRaySubscriptionId.current = subId;
     }
 
-    // Telemetry X-Ray Direct Stream Poller (https://app.telemetry.io/x-ray)
-    let xrayInterval: any = null;
-    if (isXRayEnabled) {
-      const pollXRayStream = async () => {
-        try {
-          const res = await fetch('https://app.telemetry.io/x-ray');
-          if (res.ok) {
-            const text = await res.text();
-            const matches = text.match(/[1-9A-HJ-NP-Za-km-z]{32,44}/g);
-            if (matches) {
-              const uniqueMints = Array.from(new Set(matches)).slice(0, 10);
-              for (const mint of uniqueMints) {
-                if (processedSigs.current.has(`xray-${mint}`)) continue;
-                processedSigs.current.add(`xray-${mint}`);
-
-                const tokenSymbol = resolveTokenName(mint);
-                setTelemetryAlerts(prev => [
-                  {
-                    id: `xray-stream-${mint}-${Date.now()}`,
-                    token: tokenSymbol,
-                    address: mint,
-                    type: 'VOLUME_SPIKE',
-                    message: `X-RAY: 🛰️ NEW TOKEN INGESTED FROM TELEMETRY STREAM: ${tokenSymbol}`,
-                    timestamp: Date.now()
-                  },
-                  ...prev.slice(0, 19)
-                ]);
-
-                // Populate Token Metrics table for discovery
-                setTokenMetrics(prev => {
-                  if (prev[mint]) return prev;
-                  return {
-                    ...prev,
-                    [mint]: {
-                      symbol: tokenSymbol,
-                      name: 'Discovered via Telemetry X-Ray',
-                      address: mint,
-                      buyCount: 1,
-                      sellCount: 0,
-                      buyVolume: 100,
-                      sellVolume: 0,
-                      percentageIncrease: 5.0,
-                      lastPrice: 0.0001,
-                      lastUpdated: Date.now(),
-                      discoveredAt: Date.now(),
-                      recentBuysTimeline: [{ t: Date.now(), a: 100 }],
-                      isSurging: true,
-                      prevBuyCount: 0,
-                      prevHolderCount: 0,
-                      uniqueWallets: new Set(),
-                      holderCount: 10
-                    } as TokenMetric
-                  };
-                });
-
-                fetchTokenSecurityData(mint).catch(() => {});
-              }
-            }
-          }
-        } catch {
-          // Ignore network errors on background stream
-        }
-      };
-
-      pollXRayStream();
-      xrayInterval = setInterval(pollXRayStream, 20000);
-    }
-
     return () => {
-      if (xrayInterval) clearInterval(xrayInterval);
       if (xRaySubscriptionId.current && conn) {
         conn.removeOnLogsListener(xRaySubscriptionId.current);
       }

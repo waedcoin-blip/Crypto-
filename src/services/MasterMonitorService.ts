@@ -2,7 +2,7 @@
 import { Connection } from '@solana/web3.js';
 import { PositionExitManager } from './PositionExitManager';
 import { masterMonitorHealthManager } from './MasterMonitorHealthManager';
-import { getNetworkConfig } from '../config/network';
+import { rpcRouting } from './rpcRouting';
 
 export interface TokenPriceUpdate {
   mint: string;
@@ -21,7 +21,7 @@ export interface PriceState {
 }
 
 export class MasterMonitorService {
-  private connection: Connection;
+  private connection!: Connection;
   private exitManager: PositionExitManager;
   private subscribedMints = new Set<string>();
   private batchInterval: ReturnType<typeof setInterval> | null = null;
@@ -31,21 +31,23 @@ export class MasterMonitorService {
   private connectionGeneration = 0;
 
   constructor(rpcEndpoint: string, exitManager: PositionExitManager) {
-    const defaultRpc = getNetworkConfig('paper').rpcUrl;
-    const ep = rpcEndpoint && rpcEndpoint.trim() ? rpcEndpoint.trim() : defaultRpc;
-    const wsEndpoint = masterMonitorHealthManager.getActiveWsEndpoint() || undefined;
-    this.connection = new Connection(ep, {
-      commitment: 'confirmed',
-      wsEndpoint,
-    });
     this.exitManager = exitManager;
+    // Master Monitor MUST use dedicated monitor RPC or parameter. It must NEVER fall back to execution, search, or paper default RPC.
+    const ep = (rpcEndpoint && rpcEndpoint.trim()) ? rpcEndpoint.trim() : rpcRouting.getMonitorRpcUrl();
+    if (ep) {
+      const wsEndpoint = masterMonitorHealthManager.getActiveWsEndpoint() || undefined;
+      this.connection = new Connection(ep, {
+        commitment: 'confirmed',
+        wsEndpoint,
+      });
+    }
   }
 
   public getPriceState(mint: string): PriceState | undefined {
     const state = this.priceEngine.get(mint);
     if (!state) return undefined;
-    // Mark as stale if updatedAt is older than 15 seconds
-    const isStale = (Date.now() - state.updatedAt) > 15000;
+    // Mark as stale if updatedAt is older than 5 seconds (5s monitor-price staleness)
+    const isStale = (Date.now() - state.updatedAt) > 5000;
     return {
       ...state,
       isStale,
@@ -85,7 +87,7 @@ export class MasterMonitorService {
   }
 
   // Fast direct push update from RPC parser, WebSocket, or Market Tracker
-  public pushPriceUpdate(rawMint: string, priceNative: number, timestamp = Date.now(), source: TokenPriceUpdate['source'] = 'jupiter'): void {
+  public pushPriceUpdate(rawMint: string, priceNative: number, timestamp = Date.now(), source: 'jupiter' = 'jupiter'): void {
     if (!rawMint || priceNative <= 0) return;
     const mint = rawMint.includes(':') ? rawMint.split(':')[1] : rawMint;
     
@@ -95,11 +97,7 @@ export class MasterMonitorService {
       return;
     }
 
-    // Source authority rule: if existing price source is Jupiter and fresh (< 30s), reject non-Jupiter sources
-    const existing = this.priceEngine.get(mint);
-    if (existing && existing.source === 'jupiter' && source !== 'jupiter' && (now - existing.updatedAt) < 30000) {
-      return;
-    }
+    if (source !== 'jupiter') return;
 
     this.subscribedMints.add(mint);
     

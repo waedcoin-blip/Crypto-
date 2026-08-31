@@ -1151,7 +1151,7 @@ export const PnLPage = ({
   const [laserstreamEnabled, setLaserstreamEnabled] = useState(() => localStorage.getItem('hd_laserstream_enabled') !== 'false');
   const [laserstreamApiKey, setLaserstreamApiKey] = useState(() => localStorage.getItem('hd_laserstream_apiKey') || HELIUS_API_KEY);
   const [laserstreamEndpoint, setLaserstreamEndpoint] = useState(() => localStorage.getItem('hd_laserstream_endpoint') || 'auto');
-  const [laserstreamStatus, setLaserstreamStatus] = useState<'connected'|'disconnected'|'connecting'>('disconnected');
+  const [laserstreamStatus, setLaserstreamStatus] = useState<'connected'|'disconnected'|'connecting'|'stalled'>('disconnected');
   const [laserstreamIsFallback, setLaserstreamIsFallback] = useState(false);
   const [laserstreamIsSimulated, setLaserstreamIsSimulated] = useState(false);
   const [laserstreamActiveEndpoint, setLaserstreamActiveEndpoint] = useState<string | null>(null);
@@ -2303,6 +2303,11 @@ export const PnLPage = ({
 
     let eventSource: EventSource | null = null;
     let reconnectTimeout: number | null = null;
+    let telemetryWatchdog: number | null = null;
+    let lastTransportMessageAt = 0;
+    let lastDataEventAt = 0;
+    let lastHeartbeatAt = 0;
+    let lastObservedSlot = 0;
 
     const recordAndDedupe = (key: string): boolean => {
       if (seenTxSignaturesRef.current.has(key)) return false;
@@ -2314,63 +2319,40 @@ export const PnLPage = ({
       return true;
     };
 
-    const connectSSE = () => {
-      if (laserstreamActiveEndpoint && laserstreamActiveEndpoint.includes('Vercel')) {
-        // Vercel serverless doesn't support SSE, connect WebSocket directly
-        console.log("🔗 Vercel Detected: Connecting directly via network-matched WebSocket...");
-        const wsHost = 'mainnet.helius-rpc.com';
-        const wsUrl = (laserstreamApiKey && laserstreamApiKey.length > 20 && laserstreamApiKey !== 'default' && laserstreamApiKey !== 'free') 
-          ? `wss://${wsHost}/?api-key=${laserstreamApiKey}` 
-          : `wss://${wsHost}`;
-        
-        const ws = new WebSocket(wsUrl);
-        let pingTimer: any = null;
-        
-        ws.onopen = () => {
-          setLaserstreamStatus('connected');
-          pingTimer = setInterval(() => ws.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' })), 30000);
-          
-          const prog = '6EF87t756LkSg6GptZTEAtgX9v7R24C4FtsZbXm9o6RA';
+    telemetryWatchdog = window.setInterval(() => {
+      const now = Date.now();
 
-          ws.send(JSON.stringify({
-            jsonrpc: '2.0',
-            id: 1,
-            method: 'logsSubscribe',
-            params: [{ mentions: [ prog ] }, { commitment: 'confirmed' }]
-          }));
-        };
-        
-        ws.onmessage = (event) => {
-          try {
-             const data = JSON.parse(event.data);
-             if (data.method === 'logsNotification' && data.params?.result?.value) {
-               const sig = data.params.result.value.signature;
-               const slot = data.params.result.context?.slot || 0;
-               if (sig && recordAndDedupe(`${tradingNetwork}:${slot}:${sig}`)) {
-                 addLog(`⚡ Live Direct Feed: [slot: ${slot}] sig: ${sig.substring(0, 8)}... (${tradingNetwork.toUpperCase()} WebSocket)`, 'success');
-               }
-             }
-          } catch(e) {}
-        };
-        
-        ws.onerror = () => {
-           setLaserstreamStatus('disconnected');
-        };
-        
-        ws.onclose = () => {
-           setLaserstreamStatus('disconnected');
-           clearInterval(pingTimer);
-           reconnectTimeout = window.setTimeout(connectSSE, 5000);
-        };
-        
+      const transportStale =
+        !lastTransportMessageAt ||
+        now - lastTransportMessageAt > 15000;
+
+      const dataStale =
+        !lastDataEventAt ||
+        now - lastDataEventAt > 10000;
+
+      const heartbeatStale =
+        !lastHeartbeatAt ||
+        now - lastHeartbeatAt > 15000;
+
+      if (heartbeatStale || transportStale) {
+        setLaserstreamStatus('disconnected');
         return;
       }
 
+      if (dataStale) {
+        setLaserstreamStatus('connecting');
+        return;
+      }
+
+      setLaserstreamStatus('connected');
+    }, 2000);
+
+    const connectSSE = () => {
       console.log("🔗 Connecting to server-side Helius LaserStream stream...");
       eventSource = new EventSource('/api/laserstream/stream');
 
       eventSource.onopen = () => {
-        setLaserstreamStatus('connected');
+        setLaserstreamStatus('connecting');
       };
 
       eventSource.onerror = (err) => {
@@ -2384,26 +2366,42 @@ export const PnLPage = ({
       };
 
       eventSource.onmessage = (event) => {
+        const receivedAt = Date.now();
         try {
           const data = JSON.parse(event.data);
+          lastTransportMessageAt = receivedAt;
+
           if (data.type === 'HEARTBEAT') {
-            if (data.telemetry?.status) {
-              setLaserstreamStatus(data.telemetry.status === 'error' ? 'disconnected' : 'connected');
-            } else {
-              setLaserstreamStatus('connected');
-            }
-          } else if (data.type === 'STATUS') {
+            lastHeartbeatAt = receivedAt;
+            return;
+          }
+
+          if (data.type === 'STATUS') {
             if (data.laserstreamActive || data.status === 'connected') {
-              setLaserstreamStatus('connected');
               setLaserstreamIsFallback(!!data.isFallback);
               setLaserstreamIsSimulated(!!data.isSimulated);
               setLaserstreamActiveEndpoint(data.activeEndpoint || null);
-            } else {
-              setLaserstreamStatus('disconnected');
             }
-          } else if (data.type === 'ON_CHAIN_TX') {
+            return;
+          }
+
+          if (data.type === 'ON_CHAIN_TX') {
+            const slot = Number(data.slot || 0);
+
+            if (!Number.isFinite(slot) || slot <= 0) {
+              return;
+            }
+
+            // Reject old/out-of-order blockchain events
+            if (slot < lastObservedSlot) {
+              return;
+            }
+
+            lastObservedSlot = slot;
+            lastDataEventAt = receivedAt;
+            setLaserstreamStatus('connected');
+
             const signature = data.signature;
-            const slot = data.slot;
             const isFallback = !!data.isFallback;
             const isSim = !!data.isSimulated;
             const endpoint = data.endpoint;
@@ -2423,7 +2421,6 @@ export const PnLPage = ({
               setLaserstreamIsSimulated(isSim);
             }
             
-            setLaserstreamStatus('connected');
             if (isSim) {
               addLog(`⚡ LaserStream gRPC [Simulated]: [slot: ${slot}] sig: ${signature.substring(0, 8)}... (${eventNetwork.toUpperCase()} Sandbox)`, 'info');
             } else if (isFallback) {
@@ -2442,6 +2439,7 @@ export const PnLPage = ({
 
     return () => {
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      if (telemetryWatchdog) clearInterval(telemetryWatchdog);
       if (eventSource) {
         eventSource.close();
       }
@@ -2802,15 +2800,11 @@ export const PnLPage = ({
         };
         hasMetricUpdates = true;
 
-        // 2. PositionExitManager direct update with source propagation
-        const mappedSource: 'dexscreener' | 'jupiter' | 'rpc_ws' | 'price_tracker' =
-          tokenPrice.source === 'jupiter' ? 'jupiter' :
-          tokenPrice.source === 'rpc_ws' ? 'rpc_ws' :
-          tokenPrice.source === 'price_tracker' ? 'price_tracker' : 'dexscreener';
-        positionExitManagerRef.current?.onPriceUpdate(mint, freshPrice, now, 'SOL', mappedSource);
-
-        // 3. MasterMonitor direct update with mapped source authority
-        masterMonitorRef.current?.pushPriceUpdate(mint, freshPrice, now, mappedSource);
+        // 2. PositionExitManager direct update with Jupiter source authority
+        if (tokenPrice.source === 'jupiter') {
+          positionExitManagerRef.current?.onPriceUpdate(mint, freshPrice, now, 'SOL', 'jupiter');
+          masterMonitorRef.current?.pushPriceUpdate(mint, freshPrice, now, 'jupiter');
+        }
       });
 
       if (hasMetricUpdates) {
@@ -4375,7 +4369,7 @@ const checkTokenCriteria = (mint: string): {
             tokenDecimals,
           });
           if (pos.currentPrice && pos.currentPrice > 0) {
-            positionExitManagerRef.current.onPriceUpdate(mint, pos.currentPrice, Date.now(), 'SOL', (pos as any).activePriceSource || 'dexscreener');
+            positionExitManagerRef.current.onPriceUpdate(mint, pos.currentPrice, Date.now(), 'SOL', 'jupiter');
           }
           if (pos.txid && pos.txid !== 'init-sig') {
             positionExitManagerRef.current.confirmBuy(mint, pos.txid, pos.buySlot || 0);
@@ -4383,7 +4377,7 @@ const checkTokenCriteria = (mint: string): {
         } else {
           positionExitManagerRef.current.updatePositionTpSl(mint, targetTp, Math.abs(targetSl));
           if (pos.currentPrice && pos.currentPrice > 0) {
-            positionExitManagerRef.current.onPriceUpdate(mint, pos.currentPrice, Date.now(), 'SOL', (pos as any).activePriceSource || 'dexscreener');
+            positionExitManagerRef.current.onPriceUpdate(mint, pos.currentPrice, Date.now(), 'SOL', 'jupiter');
           }
         }
       }
@@ -4653,22 +4647,10 @@ const checkTokenCriteria = (mint: string): {
          }
       }
 
-      // 2. Fetch prices for active positions for UI display sync and notify exit managers
+      // 2. Fetch prices for active positions for UI display sync
       const mintsToFetch = activeMints;
       if (mintsToFetch.length > 0) {
         const batchedPrices = await getTokenPrices(mintsToFetch);
-        for (const [m, item] of Object.entries(batchedPrices)) {
-          const p = item as { price?: number | string };
-          if (p && p.price !== undefined) {
-            const newPrice = typeof p.price === 'number' ? p.price : parseFloat(p.price);
-            if (newPrice > 0) {
-              positionExitManagerRef.current?.onPriceUpdate(m, newPrice, Date.now(), 'SOL', 'price_tracker');
-              if (masterMonitorRef.current) {
-                masterMonitorRef.current.pushPriceUpdate(m, newPrice, Date.now(), 'price_tracker');
-              }
-            }
-          }
-        }
         useAppStore.getState().setTokenMetrics(prev => {
           let changed = false;
           const next = { ...prev };
@@ -4998,33 +4980,7 @@ const checkTokenCriteria = (mint: string): {
           }
         }
 
-        // Attempt 3: Telemetry X-Ray direct discovery feed (https://app.telemetry.io/x-ray)
-        if (!fetchedSuccessfully) {
-          try {
-            addLog(`🛰️ [TELEMETRY X-RAY] Querying live X-Ray token stream (app.telemetry.io/x-ray)...`, 'info');
-            const xrayRes = await fetch('https://app.telemetry.io/x-ray');
-            if (xrayRes.ok) {
-              const xrayText = await xrayRes.text();
-              const matches = xrayText.match(/[1-9A-HJ-NP-Za-km-z]{32,44}/g);
-              if (matches) {
-                const uniqueMints = Array.from(new Set(matches));
-                const xrayProfiles = uniqueMints.map(addr => ({
-                  tokenAddress: addr,
-                  chainId: 'solana',
-                  description: 'Discovered via Telemetry X-Ray Stream',
-                  url: 'https://app.telemetry.io/x-ray'
-                }));
-                if (xrayProfiles.length > 0) {
-                  profiles = xrayProfiles;
-                  fetchedSuccessfully = true;
-                  addLog(`✨ [TELEMETRY X-RAY] Ingested ${xrayProfiles.length} new tokens directly from Telemetry X-Ray stream!`, 'success');
-                }
-              }
-            }
-          } catch (xrayErr: any) {
-            addLog(`⚠️ [TELEMETRY X-RAY] X-Ray direct stream query error: ${xrayErr.message}`, 'warn');
-          }
-        }
+
 
         // If both failed, or returned empty, run the simulator stable fallback
         if (!fetchedSuccessfully || profiles.length === 0) {
@@ -5597,7 +5553,7 @@ const checkTokenCriteria = (mint: string): {
                       <div className="flex items-center gap-1.5">
                         <span className={`text-[8px] font-mono font-bold uppercase rounded px-1.5 py-0.5 ${
                           laserstreamStatus === 'connected' ? 'bg-[#c7f284]/15 text-[#c7f284] border border-[#c7f284]/30' :
-                          laserstreamStatus === 'connecting' ? 'bg-amber-400/15 text-amber-300 border border-amber-400/30' :
+                          laserstreamStatus === 'connecting' || laserstreamStatus === 'stalled' ? 'bg-amber-400/15 text-amber-300 border border-amber-400/30' :
                           'bg-rose-500/15 text-rose-300 border border-rose-500/30'
                         }`}>
                           {laserstreamStatus}

@@ -239,38 +239,26 @@ export const getSignatureStatusRobust = async (
   return null;
 };
 
-export const getLatestBlockhashWithFallback = async (
-  connection: Connection,
-  retries = 3
-): Promise<{ blockhash: string; lastValidBlockHeight: number }> => {
-  const rpcList = [
-    connection.rpcEndpoint,
-    localStorage.getItem('juipter_auto_rpcUrl') || '',
-    localStorage.getItem('juipter_auto_rpcUrl2') || '',
-    ...FALLBACK_RPCS
-  ].filter(url => url && url.trim() !== "");
-
-  const uniqueRpcs = Array.from(new Set(rpcList));
-
-  for (let i = 0; i < retries; i++) {
-    try {
-      return await Promise.any(
-        uniqueRpcs.map(async (rpc) => {
-          const conn = new Connection(rpc, 'confirmed');
-          const res = await conn.getLatestBlockhash('confirmed');
-          if (res && res.blockhash) return res;
-          throw new Error("Invalid blockhash");
-        })
-      );
-    } catch (err) {
-      if (i === retries - 1) break;
-      await new Promise(r => setTimeout(r, 500)); // wait before retry
-    }
+export const getLatestBlockhashForExecution = async (
+  connection: Connection
+): Promise<{
+  blockhash: string;
+  lastValidBlockHeight: number;
+}> => {
+  if (!connection?.rpcEndpoint) {
+    throw new Error('EXECUTION_RPC_UNAVAILABLE');
   }
 
-  // Ultimate fallback using original connection
-  return await connection.getLatestBlockhash('confirmed');
+  const result = await connection.getLatestBlockhash('confirmed');
+
+  if (!result.blockhash || !result.lastValidBlockHeight) {
+    throw new Error('INVALID_EXECUTION_BLOCKHASH');
+  }
+
+  return result;
 };
+
+export const getLatestBlockhashWithFallback = getLatestBlockhashForExecution;
 
 // --- MOMENTUM & JITO UTILITIES ---
 
@@ -534,7 +522,7 @@ export const createJupiterSwapTransaction = async (
 
     // ─── OPTIMIZATION: Inject super fresh blockhash to prevent expiration ───
     try {
-      const latestBlockhash = await getLatestBlockhashWithFallback(activeConnection);
+      const latestBlockhash = await getLatestBlockhashForExecution(activeConnection);
       tx.message.recentBlockhash = latestBlockhash.blockhash;
     } catch (bhErr: any) {
       console.warn("Failed to inject fresh blockhash into createJupiterSwapTransaction:", bhErr.message || bhErr);

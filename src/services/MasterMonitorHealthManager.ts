@@ -123,6 +123,9 @@ export class MasterMonitorHealthManager {
     return this.getStatus();
   }
 
+  private lastObservedSlot: number = 0;
+  private lastObservedAt: number = 0;
+
   public async checkHealth(): Promise<void> {
     const targetUrl = this.activeUrl;
     if (!targetUrl || !this.primaryUrl) {
@@ -139,14 +142,24 @@ export class MasterMonitorHealthManager {
       const currentSlot = await conn.getSlot('confirmed');
       const duration = Math.round(performance.now() - start);
 
+      const slotLag = this.lastObservedSlot > 0 ? Math.max(0, this.lastObservedSlot - currentSlot) : 0;
+      if (currentSlot >= this.lastObservedSlot) {
+        this.lastObservedSlot = currentSlot;
+        this.lastObservedAt = Date.now();
+      }
+
       this.latencyMs = duration;
       this.slot = currentSlot;
       this.lastUpdated = Date.now();
       
-      if (targetUrl === this.backupUrl) {
+      if (slotLag > 3) {
+        this.currentStatus = 'STALE';
+      } else if (duration > 800) {
+        this.currentStatus = 'DEGRADED';
+      } else if (targetUrl === this.backupUrl) {
         this.currentStatus = 'BACKUP';
       } else {
-        this.currentStatus = duration > 800 ? 'STALE' : 'PRIMARY';
+        this.currentStatus = 'PRIMARY';
       }
 
       telemetryService.recordApiRequest(targetUrl, 'getSlot', 200, duration);

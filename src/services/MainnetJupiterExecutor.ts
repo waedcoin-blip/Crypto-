@@ -13,6 +13,8 @@ import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
 import { walletBalanceService } from './WalletBalanceService';
 import { useAppStore } from '../store/appStore';
 
+import { rpcRouting } from './rpcRouting';
+
 const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
 const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
 
@@ -33,8 +35,7 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
   }
 
   private updateConnection(mainnetRpcUrl?: string) {
-    const defaultRpc = getNetworkConfig('mainnet').rpcUrl || DEFAULT_HELIUS_RPC;
-    const rpcUrl = mainnetRpcUrl || localStorage.getItem('juipter_auto_rpcUrl') || localStorage.getItem('rpc_url') || defaultRpc;
+    const rpcUrl = mainnetRpcUrl || rpcRouting.getExecutionRpcUrl();
     if (!this.connection || this.currentRpcUrl !== rpcUrl) {
       this.currentRpcUrl = rpcUrl;
       this.connection = new Connection(rpcUrl, 'confirmed');
@@ -262,23 +263,10 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
       }
 
       if (!verifiedReceipt || actualOutputAmountLamports <= 0) {
-        // Strict on-chain verification rule: Never substitute quote.outAmount as confirmed output
-        try {
-          const balanceLamports = await this.connection.getBalance(new PublicKey(activePublicKey), 'confirmed');
-          if (balanceLamports > 0) {
-            actualOutputAmountLamports = balanceLamports;
-            verifiedReceipt = true;
-          }
-        } catch {
-          // Keep actualOutputAmountLamports as 0 if unverified
-        }
-        if (actualOutputAmountLamports <= 0) {
-          throw new ExecutionError(
-            'transaction_failure',
-            `Mainnet transaction confirmed on-chain (${sig}) but output receipt could not be verified.`
-          );
-        }
-        console.warn(`[MainnetJupiterExecutor] On-chain transaction confirmed (${sig}). Output verified via balance lookup (${actualOutputAmountLamports} lamports).`);
+        throw new ExecutionError(
+          'receipt_failure',
+          `Mainnet transaction confirmed on-chain (${sig}) but output receipt could not be verified.`
+        );
       }
 
       this.telemetryTotalFeesPaidSol += actualFee;
