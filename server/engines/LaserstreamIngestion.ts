@@ -481,6 +481,12 @@ export async function startLaserStream(
       (update: SubscribeUpdate) => {
         if (state.currentSessionId !== sessionId) return;
 
+        // Any real update from server means we are connected
+        if (!state.transportConnected) {
+          state.transportConnected = true;
+          laserStreamWatchdog.setTransportState(true, state.activeEndpoint, 'grpc', network);
+        }
+
         // Slot notification
         if (update.slot) {
           const slotNum = Number(update.slot.slot || 0);
@@ -501,8 +507,6 @@ export async function startLaserStream(
             const dedupeKey = `${network}:${standardEvent.slot}:${standardEvent.signature}`;
             if (!signatureDeduplicator.add(dedupeKey)) return;
 
-            state.transportConnected = true;
-            laserStreamWatchdog.setTransportState(true, state.activeEndpoint, 'grpc', network);
             laserStreamWatchdog.recordReceivedEvent(Number(standardEvent.slot || 0));
 
             standardEvent.endpoint = state.activeEndpoint;
@@ -521,16 +525,13 @@ export async function startLaserStream(
         );
         laserStreamWatchdog.recordError(parsed.userActionableMessage);
 
-        if (parsed.isPlanError || parsed.isAuthError) {
-          state.transportConnected = false;
-          laserStreamWatchdog.setTransportState(false, state.activeEndpoint, 'grpc', network);
-        }
+        // Immediate disconnect on any stream error
+        state.transportConnected = false;
+        laserStreamWatchdog.setTransportState(false, state.activeEndpoint, 'grpc', network);
       }
     );
 
     state.activeStreamHandle = handle;
-    state.transportConnected = true;
-    laserStreamWatchdog.setTransportState(true, endpoint, 'grpc', network);
     laserStreamWatchdog.recordError(null);
     laserLogger.info({ endpoint, network }, 'Helius LaserStream gRPC stream established');
 

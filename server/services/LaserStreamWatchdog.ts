@@ -31,6 +31,7 @@ class LaserStreamWatchdog {
     degradedSlotLag: 15,
     checkIntervalMs: 1000,
     processingLagStaleMs: 30000,
+    activityStaleMs: 12000,
   };
 
   private lastReceivedSlot = 0;
@@ -234,6 +235,21 @@ class LaserStreamWatchdog {
     const slotLag = metrics.slotLag;
     const processingLagMs = metrics.processingLagMs;
 
+    const now = Date.now();
+    const lastActivity = Math.max(this.lastEventAt, this.lastHeartbeatAt, this.connectedAt);
+    const isStale =
+      this.transportConnected &&
+      lastActivity > 0 &&
+      now - lastActivity > (this.config.activityStaleMs || 12000);
+
+    if (isStale) {
+      laserLogger.warn(
+        { lastActivityMsAgo: now - lastActivity },
+        'LaserStream activity stale, marking disconnected for reconnect'
+      );
+      this.transportConnected = false;
+    }
+
     let newStatus: LaserStreamHealthStatus;
 
     if (!this.transportConnected) {
@@ -265,10 +281,21 @@ class LaserStreamWatchdog {
       if (newStatus === 'disconnected' && this.reconnectHandler && !this.isReconnecting) {
         this.isReconnecting = true;
         const fromSlot = this.lastProcessedSlot;
-        Promise.resolve(this.reconnectHandler(fromSlot)).catch((err) => {
-          laserLogger.error({ error: err, fromSlot }, 'Reconnect handler failed');
-          this.isReconnecting = false;
-        });
+        Promise.resolve(this.reconnectHandler(fromSlot))
+          .then(() => {
+            if (!this.transportConnected) {
+              // Failed to reconnect, reset after a delay to prevent tight loops
+              setTimeout(() => {
+                this.isReconnecting = false;
+              }, 5000);
+            }
+          })
+          .catch((err) => {
+            laserLogger.error({ error: err, fromSlot }, 'Reconnect handler failed');
+            setTimeout(() => {
+              this.isReconnecting = false;
+            }, 5000);
+          });
       }
     }
 

@@ -31,23 +31,7 @@ let currentOptions: LaserStreamOptions = {
 };
 
 // ─── Wire Watchdog Handlers ───
-// FIX: The watchdog stores these but never used them. Wire them here or in LaserstreamIngestion.
-laserStreamWatchdog.setReconnectHandler(async (fromSlot) => {
-  laserLogger.warn({ fromSlot }, 'Watchdog triggered reconnect');
-  try {
-    await stopLaserStream();
-    await startLaserStream(currentOptions, broadcastToClients);
-    laserLogger.info({ fromSlot }, 'Watchdog reconnect completed');
-  } catch (err) {
-    laserLogger.error({ error: err, fromSlot }, 'Watchdog reconnect failed');
-    throw err; // Let watchdog reset isReconnecting
-  }
-});
-
-laserStreamWatchdog.setHealthCheckHandler(async () => {
-  // Optional: implement deep health probe (e.g., ping Helius RPC)
-  laserLogger.debug('Watchdog health check tick');
-});
+// Handlers are now wired directly in LaserstreamIngestion.ts to prevent duplication.
 
 // ─── Watchdog State Listener for Real-time SSE Broadcast ───
 laserStreamWatchdog.onStateChange((status, telemetry) => {
