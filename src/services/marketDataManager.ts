@@ -250,8 +250,20 @@ export class MarketDataManager {
     // Check circuit breaker
     if (this.cbState === 'OPEN') {
       if (now < this.cbOpenUntil) {
-        // Circuit breaker open: serve stale cache or simulation fallback
-        return this.getFallbackPrices(mints);
+        const unavailableMap = new Map<string, TokenPrice>();
+        for (const m of mints) {
+          unavailableMap.set(m, {
+            mint: m,
+            priceUsd: null,
+            priceNative: null,
+            priceChange24h: 0,
+            updatedAt: 0,
+            source: 'failed',
+            isStale: true,
+            error: 'MARKET_DATA_UNAVAILABLE',
+          });
+        }
+        return unavailableMap;
       }
       // Cooldown expired: test in HALF_OPEN
       this.cbState = 'HALF_OPEN';
@@ -303,10 +315,18 @@ export class MarketDataManager {
             }
           }
         } else {
-          // Chunk failed completely, use fallbacks
-          const fallbackMap = this.getFallbackPrices(chunkMints);
-          for (const [m, p] of fallbackMap.entries()) {
-            result.set(m, p);
+          // Chunk failed completely
+          for (const m of chunkMints) {
+            result.set(m, {
+              mint: m,
+              priceUsd: null,
+              priceNative: null,
+              priceChange24h: 0,
+              updatedAt: 0,
+              source: 'failed',
+              isStale: true,
+              error: 'MARKET_DATA_UNAVAILABLE',
+            });
           }
         }
       });
@@ -399,10 +419,15 @@ export class MarketDataManager {
             const priceUsd = parseFloat(bestPair.priceUsd || '0');
             const priceNative = parseFloat(bestPair.priceNative || '0');
 
+            const solUsd = getSolPriceUsd();
+            const calculatedNativePrice = priceNative > 0 
+              ? priceNative 
+              : (solUsd && solUsd > 0 ? priceUsd / solUsd : 0);
+
             const tokenPrice: TokenPrice = {
               mint,
               priceUsd,
-              priceNative: priceNative > 0 ? priceNative : (priceUsd / (getSolPriceUsd() || 150)),
+              priceNative: calculatedNativePrice,
               priceChange24h: parseFloat(bestPair.priceChange?.h24 || '0'),
               priceChange5m: parseFloat(bestPair.priceChange?.m5 || '0'),
               volume24h: parseFloat(bestPair.volume?.h24 || '0'),
@@ -448,29 +473,6 @@ export class MarketDataManager {
       this.cbOpenUntil = Date.now() + this.CB_COOLDOWN_MS;
       this.stats.circuitBreakerState = 'OPEN';
     }
-  }
-
-  /**
-   * Fallback generation when requests fail or circuit breaker is open
-   */
-  private getFallbackPrices(mints: string[]): Map<string, TokenPrice> {
-    this.stats.fallbacks++;
-    const result = new Map<string, TokenPrice>();
-
-    for (const mint of mints) {
-      const fallbackPrice: TokenPrice = {
-        mint,
-        priceUsd: null,
-        priceNative: null,
-        priceChange24h: 0,
-        updatedAt: 0,
-        source: 'failed',
-        isStale: true,
-        error: 'Market data unavailable',
-      };
-      result.set(mint, fallbackPrice);
-    }
-    return result;
   }
 
   /**

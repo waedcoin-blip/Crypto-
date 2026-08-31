@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "VITE_DEV_SERVER=true tsx server.ts",
-    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs --log-override:empty-import-meta=silent",
+    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs --log-override:empty-import-meta=silent && esbuild server/workers/tradingWorker.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/worker.cjs --log-override:empty-import-meta=silent",
     "start": "node dist/server.cjs",
+    "worker": "node dist/worker.cjs",
     "preview": "vite preview",
     "capture:jupiter": "node scripts/capture-jupiter-fixture.mjs",
     "replay:captured": "node scripts/replay-captured-fixture.mjs",

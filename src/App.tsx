@@ -509,22 +509,25 @@ function App() {
     return () => { active = false; };
   }, [privateKey, user?.uid]);
 
-  // Load and decrypt private key on mount / user change
+  // Load authoritative trading config from backend worker API on mount
   useEffect(() => {
-    let active = true;
-    const loadAndDecrypt = async () => {
-      const stored = localStorage.getItem('juipter_auto_privateKey');
-      if (stored) {
-        const uid = user?.uid || 'default_app_offline_salt';
-        const decrypted = await decryptPrivateKey(stored, uid);
-        if (active && decrypted && decrypted !== privateKey) {
-          setPrivateKey(decrypted);
+    fetch('/api/trading/config')
+      .then(res => res.json())
+      .then(data => {
+        if (data && data.config) {
+          const cfg = data.config;
+          if (cfg.buyAmountSol) setBuyAmountSol(cfg.buyAmountSol);
+          if (cfg.minTakeProfit) setMinTakeProfit(cfg.minTakeProfit);
+          if (cfg.maxTakeProfit) setMaxTakeProfit(cfg.maxTakeProfit);
+          if (cfg.stopLoss) setStopLoss(cfg.stopLoss);
+          if (cfg.maxPositions) setMaxPositions(cfg.maxPositions);
+          if (cfg.minLiquidityUsd) setHardenedLiquidityMin(cfg.minLiquidityUsd);
+          if (cfg.minAgeMinutes !== undefined) setHardenedMinAge(cfg.minAgeMinutes);
+          if (cfg.maxAgeMinutes !== undefined) setHardenedMaxAge(cfg.maxAgeMinutes);
         }
-      }
-    };
-    loadAndDecrypt();
-    return () => { active = false; };
-  }, [user?.uid, setPrivateKey]);
+      })
+      .catch(err => console.warn('[App] Failed to load server trading config:', err));
+  }, []);
   useEffect(() => {
     localStorage.setItem('app_buyAmountSol', buyAmountSol.toString());
     localStorage.setItem('app_minTakeProfit', minTakeProfit.toString());

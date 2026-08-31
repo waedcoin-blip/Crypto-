@@ -1075,28 +1075,25 @@ export const PnLPage = ({
   const jupRpcUrlToUse = jupiterRpcUrl && jupiterRpcUrl.trim() !== "" ? jupiterRpcUrl.trim() : rpcUrl;
   const navigate = useNavigate();
 
-  const [localMasterMonitorRpc, setLocalMasterMonitorRpc] = useState(() => propMasterMonitorRpc || localStorage.getItem('master_monitor_rpc') || '');
+  const [localMasterMonitorRpc, setLocalMasterMonitorRpc] = useState(() => propMasterMonitorRpc || '');
   const masterMonitorRpc = propMasterMonitorRpc || localMasterMonitorRpc;
   const setMasterMonitorRpc = (val: string) => {
     setLocalMasterMonitorRpc(val);
     propSetMasterMonitorRpc(val);
-    localStorage.setItem('master_monitor_rpc', val);
   };
 
-  const [localMasterMonitorRpc2, setLocalMasterMonitorRpc2] = useState(() => propMasterMonitorRpc2 || localStorage.getItem('master_monitor_rpc2') || '');
+  const [localMasterMonitorRpc2, setLocalMasterMonitorRpc2] = useState(() => propMasterMonitorRpc2 || '');
   const masterMonitorRpc2 = propMasterMonitorRpc2 || localMasterMonitorRpc2;
   const setMasterMonitorRpc2 = (val: string) => {
     setLocalMasterMonitorRpc2(val);
     propSetMasterMonitorRpc2(val);
-    localStorage.setItem('master_monitor_rpc2', val);
   };
 
-  const [localMasterMonitorWs, setLocalMasterMonitorWs] = useState(() => propMasterMonitorWs || localStorage.getItem('master_monitor_ws') || '');
+  const [localMasterMonitorWs, setLocalMasterMonitorWs] = useState(() => propMasterMonitorWs || '');
   const masterMonitorWs = propMasterMonitorWs || localMasterMonitorWs;
   const setMasterMonitorWs = (val: string) => {
     setLocalMasterMonitorWs(val);
     propSetMasterMonitorWs(val);
-    localStorage.setItem('master_monitor_ws', val);
   };
   
   const signaledPositions = useRef<Set<string>>(new Set());
@@ -1112,13 +1109,7 @@ export const PnLPage = ({
   const pumpSwapStopLossPct = Math.abs(pumpSwapStopLoss);
   const unknownStopLossPct = Math.abs(unknownStopLoss);
 
-  const [unifyStopLoss, setUnifyStopLoss] = useState(() => {
-    try { return localStorage.getItem('juipter_unify_sl') === 'true'; } catch { return false; }
-  });
-
-  useEffect(() => {
-    localStorage.setItem('juipter_unify_sl', unifyStopLoss.toString());
-  }, [unifyStopLoss]);
+  const [unifyStopLoss, setUnifyStopLoss] = useState(false);
 
   const propagateSlChange = useCallback((value: number, source: 'raydium' | 'bonding' | 'pumpswap' | 'unknown') => {
     const absVal = -Math.abs(Number(value) || 0);
@@ -1142,26 +1133,26 @@ export const PnLPage = ({
   }, [slippage]);
   
   // Helius Sender (Ultra-Low Latency Broadcast) Configurations
-  const [senderEnabled, setSenderEnabled] = useState(() => localStorage.getItem('hd_sender_enabled') === 'true');
-  const [senderApiKey, setSenderApiKey] = useState(() => localStorage.getItem('hd_sender_apiKey') || '');
-  const [senderEndpoint, setSenderEndpoint] = useState(() => localStorage.getItem('hd_sender_endpoint') || 'https://sender.helius-rpc.com/fast');
-  const [senderSwqos, setSenderSwqos] = useState(() => localStorage.getItem('hd_sender_swqos') === 'true');
+  const [senderEnabled, setSenderEnabled] = useState(false);
+  const [senderApiKey, setSenderApiKey] = useState('');
+  const [senderEndpoint, setSenderEndpoint] = useState('https://sender.helius-rpc.com/fast');
+  const [senderSwqos, setSenderSwqos] = useState(false);
 
   // Helius LaserStream (Ultra-Low Latency Ingestion gRPC) Configurations
-  const [laserstreamEnabled, setLaserstreamEnabled] = useState(() => localStorage.getItem('hd_laserstream_enabled') !== 'false');
-  const [laserstreamApiKey, setLaserstreamApiKey] = useState(() => localStorage.getItem('hd_laserstream_apiKey') || HELIUS_API_KEY);
-  const [laserstreamEndpoint, setLaserstreamEndpoint] = useState(() => localStorage.getItem('hd_laserstream_endpoint') || 'auto');
+  const [laserstreamEnabled, setLaserstreamEnabled] = useState(true);
+  const [laserstreamApiKey, setLaserstreamApiKey] = useState(HELIUS_API_KEY);
+  const [laserstreamEndpoint, setLaserstreamEndpoint] = useState('auto');
   const [laserstreamStatus, setLaserstreamStatus] = useState<'connected'|'disconnected'|'connecting'|'stalled'>('disconnected');
   const [laserstreamIsFallback, setLaserstreamIsFallback] = useState(false);
   const [laserstreamIsSimulated, setLaserstreamIsSimulated] = useState(false);
   const [laserstreamActiveEndpoint, setLaserstreamActiveEndpoint] = useState<string | null>(null);
 
   // DexScreener Engine Configurations
-  const [dexScreenerEnabled, setDexScreenerEnabled] = useState(() => localStorage.getItem('hd_dexscreener_enabled') !== 'false');
+  const [dexScreenerEnabled, setDexScreenerEnabled] = useState(true);
   const [forceDexRefresh, setForceDexRefresh] = useState(0);
 
   // USDC Routing Configuration
-  const [forceUsdcRouting, setForceUsdcRouting] = useState(() => localStorage.getItem('force_usdc_routing') === 'true');
+  const [forceUsdcRouting, setForceUsdcRouting] = useState(false);
 
   const [selectedRisk, setSelectedRisk] = useState<keyof typeof RISK_PROFILES>('medium');
   const [isAuditingOpen, setIsAuditingOpen] = useState(false);
@@ -1176,12 +1167,12 @@ export const PnLPage = ({
   };
 
   // Cloud FTP Hosting State Variables
-  const [ftpHost, setFtpHost] = useState(() => '');
-  const [ftpUser, setFtpUser] = useState(() => '');
-  const [ftpPass, setFtpPass] = useState(() => '');
-  const [ftpDir, setFtpDir] = useState(() => localStorage.getItem('ftp_dir') || '/htdocs');
-  const [ftpWebUrl, setFtpWebUrl] = useState(() => localStorage.getItem('ftp_web_url') || '');
-  const [ftpSecure, setFtpSecure] = useState(() => localStorage.getItem('ftp_secure') === 'true');
+  const [ftpHost, setFtpHost] = useState('');
+  const [ftpUser, setFtpUser] = useState('');
+  const [ftpPass, setFtpPass] = useState('');
+  const [ftpDir, setFtpDir] = useState('/htdocs');
+  const [ftpWebUrl, setFtpWebUrl] = useState('');
+  const [ftpSecure, setFtpSecure] = useState(false);
   const [showFtpPass, setShowFtpPass] = useState(false);
 
   const [ftpTesting, setFtpTesting] = useState(false);
@@ -1283,52 +1274,7 @@ export const PnLPage = ({
     }
   };
 
-  const [positions, setPositions] = useState<Record<string, Position>>(() => {
-    try {
-      const saved = localStorage.getItem('juipter_auto_positions');
-      if (!saved) return {};
-      const parsed = JSON.parse(saved);
-      const cleaned: Record<string, Position> = {};
-      for (const [mint, pos] of Object.entries(parsed) as [string, any][]) {
-        if (
-          pos &&
-          typeof pos.symbol === 'string' &&
-          pos.symbol.trim() !== '' &&
-          pos.symbol !== 'Unknown' &&
-          typeof pos.buyPrice === 'number' &&
-          !isNaN(pos.buyPrice) &&
-          pos.buyPrice > 0 &&
-          typeof pos.amount === 'number' &&
-          !isNaN(pos.amount) &&
-          pos.amount > 0 &&
-          typeof pos.solSpent === 'number' &&
-          !isNaN(pos.solSpent) &&
-          pos.solSpent > 0
-        ) {
-          // Fix corrupted amounts from older versions (where amount was raw lamports)
-          if (pos.amount * pos.buyPrice > pos.solSpent * 100) {
-             const impliedDecimals = Math.round(Math.log10((pos.amount * pos.buyPrice) / pos.solSpent));
-             if (impliedDecimals >= 2) {
-               pos.amount = pos.amount / Math.pow(10, impliedDecimals);
-             }
-          }
-          // Fix corrupted buyPrice saved in USD instead of SOL
-          if (pos.amount > 0 && pos.solSpent > 0) {
-            const impliedSolPrice = pos.solSpent / pos.amount;
-            if (pos.buyPrice > impliedSolPrice * 30) {
-              pos.buyPrice = impliedSolPrice;
-            }
-          }
-          // Fix corrupted currentPrice saved in USD instead of SOL
-          if (pos.currentPrice && pos.buyPrice > 0 && pos.currentPrice > pos.buyPrice * 30 && pos.currentPrice < pos.buyPrice * 400) {
-            pos.currentPrice = pos.currentPrice / (getSolPriceUsd() || 150);
-          }
-          cleaned[mint] = pos;
-        }
-      }
-      return cleaned;
-    } catch { return {}; }
-  });
+  const [positions, setPositions] = useState<Record<string, Position>>({});
 
   useEffect(() => {
     if (onPositionsChange) {
@@ -1353,27 +1299,16 @@ export const PnLPage = ({
     return unsub;
   }, []);
 
-  const [stats, setStats] = useState(() => {
-    try {
-      const saved = localStorage.getItem('juipter_auto_stats');
-      const parsed = saved ? JSON.parse(saved) : null;
-      return {
-        trades: parsed?.trades ?? 0,
-        wins: parsed?.wins ?? 0,
-        losses: parsed?.losses ?? 0,
-        pnl: parsed?.pnl ?? 0,
-        bestTrade: parsed?.bestTrade ?? null
-      };
-    } catch { return { trades: 0, wins: 0, losses: 0, pnl: 0, bestTrade: null as number | null }; }
+  const [stats, setStats] = useState({
+    trades: 0,
+    wins: 0,
+    losses: 0,
+    pnl: 0,
+    bestTrade: null as number | null
   });
   const { solBalance, availableSolBalance } = useBalanceStore();
-      const realSolBalance = solBalance;
-  const [retentionLimit, setRetentionLimit] = useState<number>(() => {
-    try {
-      const saved = localStorage.getItem('juipter_auto_retentionLimit');
-      return saved ? Number(saved) : 1000;
-    } catch { return 1000; }
-  });
+  const realSolBalance = solBalance;
+  const [retentionLimit, setRetentionLimit] = useState<number>(1000);
 
   // --- MANUAL CONTRACT DIRECT SEARCH & TRADING ---
   const [manualSearchInput, setManualSearchInput] = useState('');
@@ -1587,7 +1522,7 @@ export const PnLPage = ({
     addLog(`⚡ [MANUAL ORDER REQUEST] Sending discretionary swap for ${symbol} with ${amount} SOL...`, 'buy');
     
     try {
-      await executeBuy(address, symbol, priceNative, amount, true);
+      await executeBuy(address, symbol, priceNative, amount);
     } catch (e: any) {
       addLog(`❌ Discretionary order failed: ${e.message}`, 'err');
     } finally {
@@ -1622,25 +1557,7 @@ export const PnLPage = ({
     buyFailed: 0
   });
 
-  const [logs, setLogs] = useState<LogEvent[]>(() => {
-    try {
-      const saved = localStorage.getItem('juipter_auto_logs');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        return parsed.map((item: any) => ({
-          id: item.id || Date.now().toString() + Math.random().toString(),
-          time: item.time || new Date().toLocaleTimeString(),
-          timestamp: item.timestamp || Date.now(),
-          msg: item.msg || '',
-          type: item.type || 'info',
-          category: item.category || 'system',
-          count: item.count || 1,
-          metadata: item.metadata
-        }));
-      }
-      return [];
-    } catch { return []; }
-  });
+  const [logs, setLogs] = useState<LogEvent[]>([]);
 
   // Safe parent-level logs trimming
   useEffect(() => {
@@ -1661,86 +1578,15 @@ export const PnLPage = ({
     buyAmountSol: number;
     sellAmountSol: number;
     pnlPct: number;
-  }[]>(() => {
-    try {
-      const saved = localStorage.getItem('juipter_auto_tradeHistory');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          return parsed.filter(t => t !== null && typeof t === 'object').map(t => {
-            const buySol = t.buyAmountSol !== undefined && t.buyAmountSol !== null ? Number(t.buyAmountSol) : 0;
-            let sellSol = t.sellAmountSol !== undefined && t.sellAmountSol !== null ? Number(t.sellAmountSol) : 0;
-            let pnl = t.pnlPct !== undefined && t.pnlPct !== null ? Number(t.pnlPct) : 0;
-
-            // Sanitize corrupt historical trade where sell SOL stored raw lamports (e.g. 12977573) or inflated units
-            if (sellSol >= 1000) {
-              sellSol = sellSol / 1_000_000_000;
-              pnl = buySol > 0 ? ((sellSol - buySol) / buySol) * 100 : pnl;
-            } else if (buySol > 0 && sellSol > buySol * 50 && pnl > 5000) {
-              pnl = Math.min(pnl, 100);
-              sellSol = buySol * (1 + (pnl / 100));
-            }
-
-            return {
-              id: t.id || Math.random().toString(),
-              mint: t.mint || 'Unknown',
-              buyTime: t.buyTime || Date.now(),
-              sellTime: t.sellTime || Date.now(),
-              buyAmountSol: buySol,
-              sellAmountSol: sellSol,
-              pnlPct: pnl
-            };
-          });
-        }
-      }
-      return [];
-    } catch { return []; }
-  });
+  }[]>([]);
 
   const tradeHistoryRef = useRef(tradeHistory);
   useEffect(() => {
     tradeHistoryRef.current = tradeHistory;
   }, [tradeHistory]);
 
-  // Auto-update ONLY profitable trade history token addresses to localStorage
-  useEffect(() => {
-    const profitablePnlTokens = [
-      ...new Set(
-        tradeHistory
-          .filter((trade: any) => {
-            if (!trade) return false;
-            const addr = trade.tokenAddress || trade.mint;
-            if (!addr || typeof addr !== 'string' || addr.trim().length === 0 || addr === 'Unknown') return false;
-            
-            const isProfitable = 
-              (trade.realizedPnL && Number(trade.realizedPnL) > 0) ||
-              ((Number(trade.sellAmountSol) || 0) - (Number(trade.buyAmountSol) || 0) > 0) ||
-              (trade.pnlPct && Number(trade.pnlPct) > 0) ||
-              (trade.pnl && Number(trade.pnl) > 0) ||
-              (trade.netPnl && Number(trade.netPnl) > 0);
-            
-            return isProfitable;
-          })
-          .map((trade: any) => (trade.tokenAddress || trade.mint).trim())
-      )
-    ];
-    try {
-      const prevStr = localStorage.getItem('pnl_profitable_token_addresses') || '';
-      const newStr = JSON.stringify(profitablePnlTokens);
-      if (prevStr !== newStr) {
-        localStorage.setItem('pnl_profitable_token_addresses', newStr);
-        window.dispatchEvent(new CustomEvent('pnl_trade_history_updated', { detail: profitablePnlTokens }));
-      }
-    } catch (e) {}
-  }, [tradeHistory]);
-
-  const [uptime, setUptime] = useState(() => Number(localStorage.getItem('juipter_auto_uptime')) || 0);
-  const [blacklistedMints, setBlacklistedMints] = useState<string[]>(() => {
-    try {
-      const saved = localStorage.getItem('juipter_auto_blacklistedMints');
-      return saved ? JSON.parse(saved) : [];
-    } catch { return []; }
-  });
+  const [uptime, setUptime] = useState(0);
+  const [blacklistedMints, setBlacklistedMints] = useState<string[]>([]);
   
   const blacklistedMintsRef = useRef<string[]>(blacklistedMints);
   useEffect(() => {
@@ -2149,41 +1995,57 @@ export const PnLPage = ({
     ftpHost, ftpUser, ftpPass, ftpDir, ftpWebUrl, ftpSecure,
     blacklistedMints, positions, stats, tradeHistory
   ]);
+  // Sync authoritative state from backend on mount
   useEffect(() => {
-    localStorage.setItem('juipter_auto_isRunning', isRunning.toString());
-  }, [isRunning]);
-  useEffect(() => {
-    localStorage.setItem('juipter_auto_positions', JSON.stringify(positions));
-  }, [positions]);
-  useEffect(() => {
-    localStorage.setItem('juipter_auto_stats', JSON.stringify(stats));
-  }, [stats]);
-  useEffect(() => {
-    localStorage.setItem('juipter_auto_logs', JSON.stringify(logs.slice(0, retentionLimit))); // Keep last logs matching chosen limit
-  }, [logs, retentionLimit]);
-  useEffect(() => {
-    localStorage.setItem('juipter_auto_tradeHistory', JSON.stringify(tradeHistory.slice(0, 50))); // Keep last 50 trades
-  }, [tradeHistory]);
-  useEffect(() => {
-    localStorage.setItem('juipter_auto_uptime', uptime.toString());
-  }, [uptime]);
-  useEffect(() => {
-    localStorage.setItem('juipter_auto_blacklistedMints', JSON.stringify(blacklistedMints));
-  }, [blacklistedMints]);
+    const syncBackendTradingState = async () => {
+      try {
+        const res = await fetch('/api/trading/config');
+        if (res.ok) {
+          const data = await res.json();
+          if (data.isRunning !== undefined) {
+            setIsRunning(data.isRunning);
+          }
+        }
+      } catch (e) {}
 
-  // Sync Helius Sender values and perform warm-connection background ping
-  useEffect(() => {
-    localStorage.setItem('hd_sender_enabled', senderEnabled.toString());
-  }, [senderEnabled]);
-  useEffect(() => {
-    localStorage.setItem('hd_sender_apiKey', senderApiKey);
-  }, [senderApiKey]);
-  useEffect(() => {
-    localStorage.setItem('hd_sender_endpoint', senderEndpoint);
-  }, [senderEndpoint]);
-  useEffect(() => {
-    localStorage.setItem('hd_sender_swqos', senderSwqos.toString());
-  }, [senderSwqos]);
+      try {
+        const posRes = await fetch('/api/trading/positions');
+        if (posRes.ok) {
+          const posData = await posRes.json();
+          if (posData.openPositions && Array.isArray(posData.openPositions)) {
+            const mapped: Record<string, Position> = {};
+            for (const p of posData.openPositions) {
+              mapped[p.mintAddress || p.id] = {
+                symbol: p.mintAddress ? p.mintAddress.slice(0, 6) : 'TOKEN',
+                buyPrice: p.entryPriceSOL || 0,
+                currentPrice: p.currentPriceSOL || p.entryPriceSOL || 0,
+                solSpent: p.solSpent || 0,
+                amount: p.amountRaw ? p.amountRaw / (10 ** (p.decimals || 6)) : 0,
+                entryTime: p.createdAt || Date.now(),
+                txid: p.buySignature || '',
+                positionId: p.id
+              };
+            }
+            if (Object.keys(mapped).length > 0) {
+              setPositions(mapped);
+            }
+          }
+        }
+      } catch (e) {}
+
+      try {
+        const tradesRes = await fetch('/api/trading/trades');
+        if (tradesRes.ok) {
+          const tradesData = await tradesRes.json();
+          if (tradesData.trades && Array.isArray(tradesData.trades)) {
+            setTradeHistory(tradesData.trades);
+          }
+        }
+      } catch (e) {}
+    };
+
+    syncBackendTradingState();
+  }, []);
 
   useEffect(() => {
     if (!senderEnabled) return;
@@ -2201,27 +2063,6 @@ export const PnLPage = ({
     const interval = setInterval(warmConnection, 30000);
     return () => clearInterval(interval);
   }, [senderEnabled, senderEndpoint]);
-
-  // Sync Helius LaserStream values and perform backend configuration sync
-  useEffect(() => {
-    localStorage.setItem('hd_laserstream_enabled', laserstreamEnabled.toString());
-  }, [laserstreamEnabled]);
-  useEffect(() => {
-    localStorage.setItem('hd_laserstream_apiKey', laserstreamApiKey);
-  }, [laserstreamApiKey]);
-  useEffect(() => {
-    localStorage.setItem('hd_laserstream_endpoint', laserstreamEndpoint);
-  }, [laserstreamEndpoint]);
-
-  // Sync DexScreener Engine configuration
-  useEffect(() => {
-    localStorage.setItem('hd_dexscreener_enabled', dexScreenerEnabled.toString());
-  }, [dexScreenerEnabled]);
-
-  // Sync USDC Routing configuration
-  useEffect(() => {
-    localStorage.setItem('force_usdc_routing', forceUsdcRouting.toString());
-  }, [forceUsdcRouting]);
 
   const { network: tradingNetwork } = useTradingEnvironmentStore();
   const seenTxSignaturesRef = useRef<Set<string>>(new Set());
@@ -2319,28 +2160,32 @@ export const PnLPage = ({
       return true;
     };
 
+    const TELEMETRY_TRANSPORT_TIMEOUT_MS = 15000;
+    const TELEMETRY_DATA_TIMEOUT_MS = 10000;
+    const TELEMETRY_HEARTBEAT_TIMEOUT_MS = 15000;
+
     telemetryWatchdog = window.setInterval(() => {
       const now = Date.now();
 
-      const transportStale =
-        !lastTransportMessageAt ||
-        now - lastTransportMessageAt > 15000;
+      const transportFresh =
+        lastTransportMessageAt > 0 &&
+        now - lastTransportMessageAt <= TELEMETRY_TRANSPORT_TIMEOUT_MS;
 
-      const dataStale =
-        !lastDataEventAt ||
-        now - lastDataEventAt > 10000;
+      const heartbeatFresh =
+        lastHeartbeatAt > 0 &&
+        now - lastHeartbeatAt <= TELEMETRY_HEARTBEAT_TIMEOUT_MS;
 
-      const heartbeatStale =
-        !lastHeartbeatAt ||
-        now - lastHeartbeatAt > 15000;
+      const dataFresh =
+        lastDataEventAt > 0 &&
+        now - lastDataEventAt <= TELEMETRY_DATA_TIMEOUT_MS;
 
-      if (heartbeatStale || transportStale) {
+      if (!transportFresh || !heartbeatFresh) {
         setLaserstreamStatus('disconnected');
         return;
       }
 
-      if (dataStale) {
-        setLaserstreamStatus('connecting');
+      if (!dataFresh) {
+        setLaserstreamStatus('stalled');
         return;
       }
 
@@ -3620,7 +3465,7 @@ const checkTokenCriteria = (mint: string): {
     return (passedCount * 2000) + baseCandidateScore;
   };
   
-  const _executeBuyInternal = async (mint: string, symbol: string, price: any, solAmount: number, isManualDirectBuy = false) => {
+  const _executeBuyInternal = async (mint: string, symbol: string, price: any, solAmount: number) => {
     const { maxPositions, privateKey, slippage } = configRef.current;
     // Block any token starting with 'sim' if privateKey is active
     if (privateKey && (mint.toLowerCase().startsWith('sim') || (symbol && symbol.toLowerCase().startsWith('sim')))) {
@@ -3704,53 +3549,51 @@ const checkTokenCriteria = (mint: string): {
       }
     }
 
-    // HARD ENTRY GATE: Token Min Age & Max Age check for automated/rebuy/telemetry/system trades
-    if (!isManualDirectBuy) {
-      const userMinAge = configRef.current.hardenedMinAge !== undefined ? configRef.current.hardenedMinAge : 0;
-      const userMaxAge = configRef.current.hardenedMaxAge !== undefined ? configRef.current.hardenedMaxAge : 120;
+    // MANDATORY ENTRY GATE: Token Min Age & Max Age check for all entries
+    const userMinAge = configRef.current.hardenedMinAge !== undefined ? configRef.current.hardenedMinAge : 0;
+    const userMaxAge = configRef.current.hardenedMaxAge !== undefined ? configRef.current.hardenedMaxAge : 120;
 
-      // 1. Establish actual creation time from token metrics or monitored tokens
-      let rawCreatedAt = tokenMetricsRef.current[mint]?.pairCreatedAt || monitoredTokensRef.current.get(mint)?.pairCreatedAt;
+    // 1. Establish actual creation time from token metrics or monitored tokens
+    let rawCreatedAt = tokenMetricsRef.current[mint]?.pairCreatedAt || monitoredTokensRef.current.get(mint)?.pairCreatedAt;
 
-      // 2. If creation time missing, attempt fetch from DexScreener pair metadata
-      if (!rawCreatedAt || rawCreatedAt <= 0) {
-        try {
-          const res = await fetch(`${DEXSCREENER}/tokens/${mint}`);
-          if (res.ok) {
-            const data = await res.json();
-            if (data && data.pairs && data.pairs.length > 0) {
-              const bestPair = data.pairs[0];
-              if (bestPair.pairCreatedAt) {
-                rawCreatedAt = Number(bestPair.pairCreatedAt);
-                if (tokenMetricsRef.current[mint]) {
-                  tokenMetricsRef.current[mint].pairCreatedAt = rawCreatedAt;
-                }
+    // 2. If creation time missing, attempt fetch from DexScreener pair metadata
+    if (!rawCreatedAt || rawCreatedAt <= 0) {
+      try {
+        const res = await fetch(`${DEXSCREENER}/tokens/${mint}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.pairs && data.pairs.length > 0) {
+            const bestPair = data.pairs[0];
+            if (bestPair.pairCreatedAt) {
+              rawCreatedAt = Number(bestPair.pairCreatedAt);
+              if (tokenMetricsRef.current[mint]) {
+                tokenMetricsRef.current[mint].pairCreatedAt = rawCreatedAt;
               }
             }
           }
-        } catch (e) {
-          console.warn("Failed to fetch token creation time for hard age gate:", e);
         }
+      } catch (e) {
+        console.warn("Failed to fetch token creation time for hard age gate:", e);
       }
-
-      // 3. If creation time STILL cannot be established -> BUY BLOCKED (TOKEN_AGE_UNKNOWN)
-      if (!rawCreatedAt || rawCreatedAt <= 0 || isNaN(rawCreatedAt)) {
-        addLog(`❌ [TOKEN AGE BLOCK] Skipped buy of ${symbol} (${mint.slice(0, 8)}...): Token creation time cannot be established. Reason: TOKEN_AGE_UNKNOWN`, 'warn');
-        return;
-      }
-
-      // 4. Calculate current age in minutes (normalize timestamp if in seconds)
-      const normCreatedAt = rawCreatedAt < 1000000000000 ? rawCreatedAt * 1000 : rawCreatedAt;
-      const ageMinutes = (Date.now() - normCreatedAt) / 60000;
-
-      // 5. Evaluate age >= user Min Age AND age <= user Max Age
-      if (ageMinutes < userMinAge || ageMinutes > userMaxAge) {
-        addLog(`❌ [TOKEN AGE BLOCK] Skipped buy of ${symbol} (${mint.slice(0, 8)}...): Token age: ${ageMinutes.toFixed(1)}m. Allowed: ${userMinAge}m–${userMaxAge}m. Reason: TOKEN_AGE_OUT_OF_RANGE`, 'warn');
-        return;
-      }
-
-      addLog(`✅ [TOKEN AGE PASS] ${symbol} age: ${ageMinutes.toFixed(1)}m is within allowed range (${userMinAge}m–${userMaxAge}m)`, 'info');
     }
+
+    // 3. If creation time STILL cannot be established -> BUY BLOCKED (TOKEN_AGE_UNKNOWN)
+    if (!rawCreatedAt || rawCreatedAt <= 0 || isNaN(rawCreatedAt)) {
+      addLog(`❌ [TOKEN AGE BLOCK] Skipped buy of ${symbol} (${mint.slice(0, 8)}...): Token creation time cannot be established. Reason: TOKEN_AGE_UNKNOWN`, 'warn');
+      return;
+    }
+
+    // 4. Calculate current age in minutes (normalize timestamp if in seconds)
+    const normCreatedAt = rawCreatedAt < 1000000000000 ? rawCreatedAt * 1000 : rawCreatedAt;
+    const ageMinutes = (Date.now() - normCreatedAt) / 60000;
+
+    // 5. Evaluate age >= user Min Age AND age <= user Max Age
+    if (ageMinutes < userMinAge || ageMinutes > userMaxAge) {
+      addLog(`❌ [TOKEN AGE BLOCK] Skipped buy of ${symbol} (${mint.slice(0, 8)}...): Token age: ${ageMinutes.toFixed(1)}m. Allowed: ${userMinAge}m–${userMaxAge}m. Reason: TOKEN_AGE_OUT_OF_RANGE`, 'warn');
+      return;
+    }
+
+    addLog(`✅ [TOKEN AGE PASS] ${symbol} age: ${ageMinutes.toFixed(1)}m is within allowed range (${userMinAge}m–${userMaxAge}m)`, 'info');
 
     // Criteria Validation handled by the single scanner (checkAndTrade)
     const {
@@ -3838,7 +3681,7 @@ const checkTokenCriteria = (mint: string): {
       return isValidPosition(p);
     }).length;
 
-    if (maxPositions > 0 && activePositionsCount + pendingBuysRef.current >= maxPositions && !isManualDirectBuy) {
+    if (maxPositions > 0 && activePositionsCount + pendingBuysRef.current >= maxPositions) {
       addLog(`Max positions reached (${maxPositions}). Active: ${activePositionsCount}, Pending: ${pendingBuysRef.current}. Skipping buy of ${symbol}`, 'warn');
       pendingBuyMintsRef.current.delete(mint);
       return;
@@ -3970,7 +3813,7 @@ const checkTokenCriteria = (mint: string): {
            positionsRef.current = next;
 
            if (positionExitManagerRef.current) {
-             const lamportsTotal = passedOutputAmount || (newAmount > 0 ? Math.floor(newAmount * Math.pow(10, tokenDecimals || 6)) : 1000000);
+             const lamportsTotal = passedOutputAmount || (newAmount > 0 ? Math.floor(newAmount * Math.pow(10, tokenDecimals)) : 0);
              const calcBuyPrice = newAmount > 0 ? (newSolSpent / newAmount) : parsedPrice;
              positionExitManagerRef.current.addPosition({
                mint,
@@ -4006,21 +3849,66 @@ const checkTokenCriteria = (mint: string): {
     }
   };
 
-  const executeBuy = async (mint: string, symbol: string, price: any, solAmount: number, isManualDirectBuy = false) => {
+  const executeBuy = async (mint: string, symbol: string, price: any, solAmount: number) => {
     if (positionsRef.current[mint] || pendingBuyMintsRef.current.has(mint)) return;
     pendingBuyMintsRef.current.add(mint);
     pipelineCountersRef.current.buyAttempts++;
     try {
-      await _executeBuyInternal(mint, symbol, price, solAmount, isManualDirectBuy);
+      await _executeBuyInternal(mint, symbol, price, solAmount);
     } finally {
       pendingBuyMintsRef.current.delete(mint);
     }
   };
 
   const handleQuickTradeFromLogs = useCallback(async (mint: string, symbol = 'TOKEN') => {
-    const metric = tokenMetricsRef.current[mint];
-    const dexId = metric?.dexId || (mint.toLowerCase().endsWith('pump') ? 'pumpfun' : 'raydium');
+    let metric = tokenMetricsRef.current[mint];
+    
+    // Fetch authoritative DexScreener market data if missing
+    if (!metric) {
+      try {
+        const res = await fetch(`${DEXSCREENER}/tokens/${mint}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.pairs && data.pairs.length > 0) {
+            const bestPair = data.pairs[0];
+            const priceNative = bestPair.priceNative ? parseFloat(bestPair.priceNative) : 0.0001;
+            const priceUsd = bestPair.priceUsd ? parseFloat(bestPair.priceUsd) : 0;
+            metric = {
+              address: mint,
+              symbol: bestPair.baseToken?.symbol || symbol,
+              priceUsd,
+              priceNative,
+              marketCap: bestPair.fdv || bestPair.marketCap || (priceUsd * 1000000000),
+              liquidity: bestPair.liquidity?.usd || 0,
+              volume24h: bestPair.volume?.h24 || 0,
+              discoveredAt: Date.now(),
+              pairCreatedAt: bestPair.pairCreatedAt ? Number(bestPair.pairCreatedAt) : undefined,
+              lastUpdated: Date.now(),
+              buyCount: bestPair.txns?.h24?.buys || 0,
+              sellCount: bestPair.txns?.h24?.sells || 0,
+              buyVolume: bestPair.volume?.h24 || 0,
+              sellVolume: 0,
+              priceChange5m: bestPair.priceChange?.m5 !== undefined ? parseFloat(String(bestPair.priceChange.m5)) : 0,
+              priceChange1m: bestPair.priceChange?.m5 !== undefined ? parseFloat(String(bestPair.priceChange.m5)) * 0.2 : 0,
+              percentageIncrease: bestPair.priceChange?.m5 !== undefined ? parseFloat(String(bestPair.priceChange.m5)) : 0,
+              recentBuysTimeline: [],
+              category: mint.toLowerCase().endsWith('pump') ? 'PUMP_FUN' : 'RAYDIUM',
+              isRugSafe: true,
+              mintAuthorityRevoked: true,
+              freezeAuthorityRevoked: true,
+              liquidityBurned: true,
+              top10Percentage: 20,
+              requiresManualReview: false
+            };
+            tokenMetricsRef.current[mint] = metric;
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to fetch authoritative DexScreener token data:', err);
+      }
+    }
 
+    const dexId = metric?.dexId || (mint.toLowerCase().endsWith('pump') ? 'pumpfun' : 'raydium');
     const sourceCheck = checkDexPlatformSourcesAllowed(mint, dexId);
     if (!sourceCheck.pass) {
       addLog(`⚠️ [SYSTEM LOG TRADE SKIPPED] Token ${symbol} (${mint.slice(0, 8)}...) is unselected in DEX Platform Sources settings on PnLPage (${sourceCheck.reason}).`, 'warn');
@@ -4030,45 +3918,10 @@ const checkTokenCriteria = (mint: string): {
     const priceNative = metric?.priceNative || (metric?.priceUsd ? metric.priceUsd / getSolPriceUsd() : 0.0001);
     const tradeSol = configRef.current.tradeAmount || tradeAmount || 0.1;
 
-    addLog(`⚡ [SYSTEM LOG QUICK TRADE] Direct sniper order triggered for ${symbol} (${mint.slice(0, 8)}...)...`, 'buy');
+    addLog(`⚡ [SYSTEM LOG QUICK TRADE] Sniper order triggered for ${symbol} (${mint.slice(0, 8)}...)...`, 'buy');
 
-    const priceUsd = metric?.priceUsd || (priceNative * getSolPriceUsd());
-    const quickTradeProfit = metric?.priceChange5m !== undefined ? metric.priceChange5m : (metric?.percentageIncrease !== undefined && !isNaN(metric.percentageIncrease) ? Math.max(3.0, metric.percentageIncrease) : 3.0);
-
-    const scannedTokenData = {
-      address: mint,
-      symbol: symbol,
-      name: metric?.symbol || symbol,
-      priceUsd: priceUsd,
-      marketCapUsd: metric?.marketCap || 50000,
-      marketCap: metric?.marketCap || 50000,
-      fdv: metric?.marketCap || 50000,
-      pairCreatedAt: Date.now() - 300000,
-      url: `https://dexscreener.com/solana/${mint}`,
-      liquidityUsd: metric?.liquidity || 10000,
-      volume24h: metric?.volume24h || 25000,
-      dexId: metric?.dexId || (mint.toLowerCase().endsWith('pump') ? 'pumpfun' : 'raydium'),
-      pairAddress: mint,
-      bondingProgress: mint.toLowerCase().endsWith('pump') ? 50 : 100,
-      ageMinutes: 5,
-      priceChange5m: quickTradeProfit,
-      priceChange1h: 10,
-      priceChange24h: 20,
-      uniqueBuyers30s: 10,
-      buyCount30s: 15,
-      sellCount30s: 3,
-      buyVolume30s: 3,
-      sellVolume30s: 1,
-      top10HoldersPct: 15,
-      devWalletOwnershipPct: 2,
-      isRugSafe: true,
-      riskScore: 5
-    };
-
-    monitoredTokensRef.current.set(mint, scannedTokenData);
-
-    // Execute direct buy into PnL active positions
-    await executeBuy(mint, symbol, priceNative, tradeSol, true);
+    // Execute buy with unified validation gate
+    await executeBuy(mint, symbol, priceNative, tradeSol);
   }, [executeBuy, addLog, tradeAmount]);
 
   const executeSell = async (mint: string, currentPrice?: number, pnlPct?: number, reason: string = 'MANUAL_FORCE_EXIT') => {
@@ -4205,7 +4058,7 @@ const checkTokenCriteria = (mint: string): {
             : (configRef.current.stopLossPct || 15));
         targetSl = Math.abs(targetSl);
 
-        const lamportsTotal = pos.amountLamports || (pos.amount > 0 ? Math.floor(pos.amount * Math.pow(10, pos.decimals ?? 6)) : 1000000);
+        const lamportsTotal = pos.amountLamports || (pos.amount > 0 && typeof pos.decimals === 'number' ? Math.floor(pos.amount * Math.pow(10, pos.decimals)) : 0);
         exitMgr.addPosition({
           mint,
           amount: lamportsTotal,

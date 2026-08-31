@@ -9,15 +9,16 @@ export interface TokenPriceUpdate {
   priceNative: number;
   priceUsd?: number;
   timestamp: number;
-  source: 'rpc_ws' | 'jupiter' | 'dexscreener' | 'price_tracker';
+  source: 'jupiter';
   slot?: number;
 }
 
 export interface PriceState {
   priceNative: number;
-  source: 'rpc_ws' | 'jupiter' | 'dexscreener' | 'price_tracker';
+  source: 'jupiter';
   isStale: boolean;
   updatedAt: number;
+  slot?: number;
 }
 
 export class MasterMonitorService {
@@ -32,22 +33,22 @@ export class MasterMonitorService {
 
   constructor(rpcEndpoint: string, exitManager: PositionExitManager) {
     this.exitManager = exitManager;
-    // Master Monitor MUST use dedicated monitor RPC or parameter. It must NEVER fall back to execution, search, or paper default RPC.
-    const ep = (rpcEndpoint && rpcEndpoint.trim()) ? rpcEndpoint.trim() : rpcRouting.getMonitorRpcUrl();
-    if (ep) {
-      const wsEndpoint = masterMonitorHealthManager.getActiveWsEndpoint() || undefined;
-      this.connection = new Connection(ep, {
-        commitment: 'confirmed',
-        wsEndpoint,
-      });
+    const ep = rpcRouting.getMonitorRpcUrl();
+    if (!ep) {
+      throw new Error('MONITOR_RPC_UNAVAILABLE');
     }
+    const wsEndpoint = masterMonitorHealthManager.getActiveWsEndpoint() || undefined;
+    this.connection = new Connection(ep, {
+      commitment: 'confirmed',
+      wsEndpoint,
+    });
   }
 
   public getPriceState(mint: string): PriceState | undefined {
     const state = this.priceEngine.get(mint);
     if (!state) return undefined;
-    // Mark as stale if updatedAt is older than 5 seconds (5s monitor-price staleness)
-    const isStale = (Date.now() - state.updatedAt) > 5000;
+    // Mark as stale if updatedAt is older than 2 seconds (2s monitor-price staleness)
+    const isStale = (Date.now() - state.updatedAt) > 2000;
     return {
       ...state,
       isStale,

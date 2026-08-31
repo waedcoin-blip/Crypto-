@@ -53,7 +53,7 @@ export class PositionRegistry {
   private listeners: Set<PositionRegistryListener> = new Set();
 
   private constructor() {
-    this.loadPersistedPositions();
+    this.loadPositions();
   }
 
   public static getInstance(): PositionRegistry {
@@ -63,35 +63,33 @@ export class PositionRegistry {
     return PositionRegistry.instance;
   }
 
-  private loadPersistedPositions(): void {
-    if (typeof window === 'undefined') return;
-    try {
-      const raw = localStorage.getItem('app_position_registry');
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) {
-          for (const pos of parsed) {
-            if (pos && pos.id && pos.mintAddress) {
-              this.positions.set(pos.id, pos);
-              if (pos.state !== 'CLOSED') {
-                this.positionsByMint.set(pos.mintAddress, pos.id);
-              }
+  private loadPositions(): void {
+    if (typeof window === 'undefined') {
+      try {
+        const { positionRepository } = require('../../server/repositories/PositionRepository.js');
+        const list = positionRepository.getAllPositions();
+        for (const pos of list) {
+          if (pos && pos.id && pos.mintAddress) {
+            this.positions.set(pos.id, pos);
+            if (pos.state !== 'CLOSED') {
+              this.positionsByMint.set(pos.mintAddress, pos.id);
             }
           }
         }
+      } catch (e) {
+        // Fallback for non-Node browser contexts
       }
-    } catch (e) {
-      console.warn('[PositionRegistry] Failed to load persisted positions:', e);
     }
   }
 
-  private persist(): void {
-    if (typeof window === 'undefined') return;
-    try {
-      const arr = Array.from(this.positions.values()).slice(-500);
-      localStorage.setItem('app_position_registry', JSON.stringify(arr));
-    } catch (e) {
-      console.warn('[PositionRegistry] Failed to persist positions:', e);
+  private syncServer(pos: PositionRecord): void {
+    if (typeof window === 'undefined') {
+      try {
+        const { positionRepository } = require('../../server/repositories/PositionRepository.js');
+        positionRepository.upsertPosition(pos);
+      } catch (e) {
+        // Ignored
+      }
     }
   }
 
@@ -154,7 +152,7 @@ export class PositionRegistry {
           existing.state = 'OPEN';
         }
         existing.updatedAt = Date.now();
-        this.persist();
+        this.syncServer(existing);
         this.notify();
         return existing;
       }
@@ -202,7 +200,7 @@ export class PositionRegistry {
 
     this.positions.set(posId, record);
     this.positionsByMint.set(mint, posId);
-    this.persist();
+    this.syncServer(record);
     this.notify();
     return record;
   }
@@ -277,7 +275,8 @@ export class PositionRegistry {
       }
     }
 
-    this.persist();
+    this.syncServer(pos);
+    this.notify();
     this.notify();
   }
 

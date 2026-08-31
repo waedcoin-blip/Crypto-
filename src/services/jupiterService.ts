@@ -47,7 +47,7 @@ class RpcPool {
 
   getBestEndpoint(): string {
     const healthy = [...this.endpoints.values()].filter(e => e.healthy);
-    if (!healthy.length) return [...this.endpoints.values()][0]?.url || DEFAULT_HELIUS_RPC;
+    if (!healthy.length) return [...this.endpoints.values()][0]?.url || '';
     return healthy.sort((a, b) => a.latencyMs - b.latencyMs)[0].url;
   }
 
@@ -508,10 +508,11 @@ export const createJupiterSwapTransaction = async (
     const swapTransactionBuf = Buffer.from(swapTransaction, 'base64');
     let tx = VersionedTransaction.deserialize(swapTransactionBuf);
 
-    const activeConnection = connection || new Connection(
-      localStorage.getItem('juipter_auto_rpcUrl') || DEFAULT_HELIUS_RPC,
-      'confirmed'
-    );
+    if (!connection) {
+      throw new Error('EXECUTION_CONNECTION_REQUIRED');
+    }
+
+    const activeConnection = connection;
 
     const isSenderEnabled = localStorage.getItem('hd_sender_enabled') === 'true';
     if (isSenderEnabled) {

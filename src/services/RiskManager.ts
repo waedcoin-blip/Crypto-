@@ -408,14 +408,16 @@ export class RiskManager {
   }
 
   /**
-   * Price update handler with currency verification, source authority tracking, and dynamic conversion.
-   */
-  /**
-   * Price update handler with currency verification, source propagation, and instant TP/SL evaluation.
-   * Architecture: Fresh valid market price -> TP/SL evaluator -> Jupiter executable pre-sell validation -> exit.
-   * Both Jupiter and DexScreener (and RPC/WS & price tracker) prices update the trigger engine.
-   * The system does NOT decide whether a price is valid based on whether it is profitable or losing.
-   * Stale market-data responses are rejected.
+   * Exit-price authority:
+   *
+   * Jupiter only.
+   *
+   * DexScreener, RPC WebSocket, telemetry,
+   * cached prices and UI prices must never
+   * authorize TP/SL execution.
+   *
+   * A Jupiter executable quote must be
+   * validated immediately before the swap.
    */
   public onPriceUpdate(
     mint: string,
@@ -442,7 +444,8 @@ export class RiskManager {
 
     let priceInSol = rawPrice;
     if (quoteCurrency === 'USD') {
-      const solUsd = getSolPriceUsd() || 150;
+      const solUsd = getSolPriceUsd();
+      if (!solUsd || solUsd <= 0 || !Number.isFinite(solUsd)) return;
       priceInSol = rawPrice / solUsd;
     }
 

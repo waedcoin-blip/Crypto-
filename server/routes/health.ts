@@ -8,6 +8,8 @@ import { logger } from '../utils/logger.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
 import type { HealthCheck } from '../types/index.js';
 
+import { workerStateRepository } from '../repositories/WorkerStateRepository.js';
+
 const router = Router();
 
 // Fast liveness probe for deployment platforms (Render, Cloud Run, K8s)
@@ -17,6 +19,11 @@ router.get('/ping', (req, res) => {
 
 router.get('/', asyncHandler(async (req, res) => {
   const checks: Record<string, string> = {};
+  const workerState = workerStateRepository.getWorkerState('trading');
+
+  const now = Date.now();
+  const workerHeartbeatAgeMs = workerState ? now - workerState.lastHeartbeat : Infinity;
+  const isWorkerHealthy = workerState && workerState.status === 'RUNNING' && workerHeartbeatAgeMs < 15000;
 
   // Check Jupiter Quote API
   try {
@@ -75,14 +82,51 @@ router.get('/', asyncHandler(async (req, res) => {
     return v === 'OK';
   });
 
-  const result: HealthCheck = {
-    status: allOk ? 'healthy' : 'degraded',
+  const result = {
+    web: 'healthy',
+    tradingWorker: isWorkerHealthy ? 'healthy' : 'unhealthy',
+    lastWorkerHeartbeat: workerState?.lastHeartbeat || 0,
+    monitor: isWorkerHealthy ? 'healthy' : 'degraded',
+    execution: 'healthy',
+    reconciliation: 'healthy',
+    status: allOk && isWorkerHealthy ? 'healthy' : 'degraded',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
     checks,
   };
 
   res.status(200).json(result);
+}));
+
+// Dedicated Render / K8s / Cloud Run Trading Worker health check endpoint
+router.get('/trading', asyncHandler(async (req, res) => {
+  const workerState = workerStateRepository.getWorkerState('trading');
+  const now = Date.now();
+  const workerHeartbeatAgeMs = workerState ? now - workerState.lastHeartbeat : Infinity;
+  const isHeartbeatFresh = workerState && workerState.status === 'RUNNING' && workerHeartbeatAgeMs <= 30000;
+
+  const { positionRepository } = await import('../repositories/PositionRepository.js');
+  const { orderRepository } = await import('../repositories/OrderRepository.js');
+
+  const recoveryPositions = positionRepository.getOpenPositions().filter(p => p.state === 'RECOVERY_REQUIRED');
+  const recoveryOrders = orderRepository.getOrders().filter(o => o.state === 'RECOVERY_REQUIRED');
+
+  const isHealthy = isHeartbeatFresh && recoveryPositions.length === 0 && recoveryOrders.length === 0;
+
+  const payload = {
+    healthy: isHealthy,
+    status: isHealthy ? 'healthy' : 'unhealthy',
+    workerHeartbeatAgeMs,
+    workerStatus: workerState?.status || 'STOPPED',
+    recoveryPositionsCount: recoveryPositions.length,
+    recoveryOrdersCount: recoveryOrders.length,
+    timestamp: new Date().toISOString(),
+  };
+
+  if (!isHealthy) {
+    return res.status(503).json(payload);
+  }
+  return res.status(200).json(payload);
 }));
 
 export default router;

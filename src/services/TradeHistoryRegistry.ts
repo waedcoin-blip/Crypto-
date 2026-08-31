@@ -49,7 +49,7 @@ export class TradeHistoryRegistry {
   private listeners: Set<TradeHistoryListener> = new Set();
 
   private constructor() {
-    this.loadPersistedTrades();
+    this.loadTrades();
   }
 
   public static getInstance(): TradeHistoryRegistry {
@@ -59,27 +59,26 @@ export class TradeHistoryRegistry {
     return TradeHistoryRegistry.instance;
   }
 
-  private loadPersistedTrades(): void {
-    if (typeof window === 'undefined') return;
-    try {
-      const raw = localStorage.getItem('app_trade_history_registry');
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) {
-          this.trades = parsed.filter(isValidTrade);
-        }
+  private loadTrades(): void {
+    if (typeof window === 'undefined') {
+      try {
+        const { tradeRepository } = require('../../server/repositories/TradeRepository.js');
+        const list = tradeRepository.getTrades();
+        this.trades = list.filter(isValidTrade);
+      } catch (e) {
+        // Ignored
       }
-    } catch (e) {
-      console.warn('[TradeHistoryRegistry] Failed to load persisted trades:', e);
     }
   }
 
-  private persist(): void {
-    if (typeof window === 'undefined') return;
-    try {
-      localStorage.setItem('app_trade_history_registry', JSON.stringify(this.trades.slice(0, 500)));
-    } catch (e) {
-      console.warn('[TradeHistoryRegistry] Failed to persist trades:', e);
+  private syncServer(trade: HistoricalTrade): void {
+    if (typeof window === 'undefined') {
+      try {
+        const { tradeRepository } = require('../../server/repositories/TradeRepository.js');
+        tradeRepository.recordTrade(trade);
+      } catch (e) {
+        // Ignored
+      }
     }
   }
 
@@ -106,7 +105,7 @@ export class TradeHistoryRegistry {
       // If existing was PENDING and incoming is CONFIRMED, upgrade it
       if (existing.status === 'PENDING' && trade.status === 'CONFIRMED') {
         this.trades[existingIdx] = { ...existing, ...trade };
-        this.persist();
+        this.syncServer(this.trades[existingIdx]);
         this.notify();
         return true;
       }
@@ -118,7 +117,7 @@ export class TradeHistoryRegistry {
     if (this.trades.length > 500) {
       this.trades = this.trades.slice(0, 500);
     }
-    this.persist();
+    this.syncServer(trade);
     this.notify();
     return true;
   }
@@ -138,7 +137,7 @@ export class TradeHistoryRegistry {
     if (updates.side !== undefined && updates.side !== 'BUY' && updates.side !== 'SELL') return false;
 
     this.trades[idx] = { ...this.trades[idx], ...updates };
-    this.persist();
+    this.syncServer(this.trades[idx]);
     this.notify();
     return true;
   }

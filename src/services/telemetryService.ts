@@ -50,9 +50,13 @@ class TelemetryService {
   private listeners: Set<() => void> = new Set();
 
   // Exporter Config
-  private otlpEndpoint = localStorage.getItem('otel_otlp_endpoint') || '';
-  private otlpApiKey = localStorage.getItem('otel_otlp_apikey') || '';
-  private autoExportEnabled = localStorage.getItem('otel_auto_export') === 'true';
+  private otlpEndpoint = 
+    (typeof process !== 'undefined' ? process.env?.OTEL_EXPORTER_OTLP_ENDPOINT || process.env?.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT : undefined) ||
+    '';
+  private otlpApiKey = 
+    (typeof process !== 'undefined' ? process.env?.OTEL_EXPORTER_OTLP_API_KEY || process.env?.OTEL_EXPORTER_OTLP_HEADERS : undefined) ||
+    '';
+  private autoExportEnabled = !!this.otlpEndpoint;
 
   constructor() {
     // Periodic auto-prune and auto-export

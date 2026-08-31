@@ -1,5 +1,4 @@
 // src/services/rpcRouting.ts
-import { DEFAULT_HELIUS_RPC } from '../constants/solana';
 
 export type RpcRole = 'execution' | 'monitor' | 'search';
 
@@ -18,53 +17,64 @@ class RpcRouting {
     this.reload();
   }
 
-  public reload() {
+  public reload(): void {
+    const env = (typeof process !== 'undefined' ? process.env : {}) as Record<string, string | undefined>;
     this.searchRpcUrl =
-      localStorage.getItem('juipter_auto_searchRpcUrl') ||
-      localStorage.getItem('juipter_auto_rpcUrl') ||
-      import.meta.env.VITE_SEARCH_RPC ||
-      DEFAULT_HELIUS_RPC;
+      env.SEARCH_RPC_URL?.trim() ||
+      (typeof import.meta !== 'undefined' ? import.meta.env?.VITE_SEARCH_RPC?.trim() : '') ||
+      '';
 
     this.executionRpcUrl =
-      localStorage.getItem('juipter_auto_executionRpcUrl') ||
-      localStorage.getItem('juipter_auto_rpcUrl') ||
-      import.meta.env.VITE_EXECUTION_RPC ||
-      DEFAULT_HELIUS_RPC;
+      env.EXECUTION_RPC_URL?.trim() ||
+      (typeof import.meta !== 'undefined' ? import.meta.env?.VITE_EXECUTION_RPC?.trim() : '') ||
+      '';
 
     this.monitorRpcUrl =
-      localStorage.getItem('juipter_auto_monitorRpcUrl') ||
-      import.meta.env.VITE_MONITOR_RPC ||
+      env.MONITOR_RPC_URL?.trim() ||
+      (typeof import.meta !== 'undefined' ? import.meta.env?.VITE_MONITOR_RPC?.trim() : '') ||
       '';
   }
 
   public getSearchRpcUrl(): string {
-    return this.searchRpcUrl || DEFAULT_HELIUS_RPC;
+    if (!this.searchRpcUrl) {
+      throw new Error('SEARCH_RPC_UNAVAILABLE');
+    }
+
+    return this.searchRpcUrl;
   }
 
   public getExecutionRpcUrl(): string {
-    return this.executionRpcUrl || DEFAULT_HELIUS_RPC;
+    if (!this.executionRpcUrl) {
+      throw new Error('EXECUTION_RPC_UNAVAILABLE');
+    }
+
+    return this.executionRpcUrl;
   }
 
-  /**
-   * Monitor RPC URL MUST NOT fall back to execution, search, or paper default RPC.
-   * If dedicated monitor RPC is missing, return empty string.
-   */
   public getMonitorRpcUrl(): string {
+    if (!this.monitorRpcUrl) {
+      throw new Error('MONITOR_RPC_UNAVAILABLE');
+    }
+
     return this.monitorRpcUrl;
   }
 
   public getRpcEndpoints(role: RpcRole): string[] {
-    if (role === 'execution') {
-      const ep = this.getExecutionRpcUrl();
-      return ep ? [ep] : [];
-    }
-    if (role === 'search') {
-      const ep = this.getSearchRpcUrl();
-      return ep ? [ep] : [];
-    }
-    if (role === 'monitor') {
-      const ep = this.getMonitorRpcUrl();
-      return ep ? [ep] : [];
+    try {
+      if (role === 'execution') {
+        const ep = this.getExecutionRpcUrl();
+        return ep ? [ep] : [];
+      }
+      if (role === 'search') {
+        const ep = this.getSearchRpcUrl();
+        return ep ? [ep] : [];
+      }
+      if (role === 'monitor') {
+        const ep = this.getMonitorRpcUrl();
+        return ep ? [ep] : [];
+      }
+    } catch {
+      return [];
     }
     return [];
   }
@@ -72,15 +82,12 @@ class RpcRouting {
   public setRpcRoles(config: Partial<RpcRoleConfig>) {
     if (config.searchRpcUrl !== undefined) {
       this.searchRpcUrl = config.searchRpcUrl.trim();
-      localStorage.setItem('juipter_auto_searchRpcUrl', this.searchRpcUrl);
     }
     if (config.executionRpcUrl !== undefined) {
       this.executionRpcUrl = config.executionRpcUrl.trim();
-      localStorage.setItem('juipter_auto_executionRpcUrl', this.executionRpcUrl);
     }
     if (config.monitorRpcUrl !== undefined) {
       this.monitorRpcUrl = config.monitorRpcUrl.trim();
-      localStorage.setItem('juipter_auto_monitorRpcUrl', this.monitorRpcUrl);
     }
   }
 }
@@ -100,4 +107,5 @@ export function getPrimaryRpc(role: RpcRole): string {
 
   return endpoint;
 }
+
 

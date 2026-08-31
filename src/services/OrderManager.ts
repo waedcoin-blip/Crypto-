@@ -55,7 +55,7 @@ export class OrderManager {
   private executor: ITradeExecutor = executionEngine;
 
   private constructor() {
-    this.loadPersistedOrders();
+    this.loadOrders();
   }
 
   public static getInstance(): OrderManager {
@@ -73,50 +73,62 @@ export class OrderManager {
     return this.executor;
   }
 
-  private loadPersistedOrders(): void {
-    if (typeof window === 'undefined') return;
-    try {
-      const saved = localStorage.getItem('app_order_history');
-      if (saved) {
-        const parsed = JSON.parse(saved) as Order[];
-        const now = Date.now();
-        for (const order of parsed) {
+  private loadOrders(): void {
+    if (typeof window === 'undefined') {
+      try {
+        const { orderRepository } = require('../../server/repositories/OrderRepository.js');
+        const list = orderRepository.getOrders();
+        for (const record of list) {
+          const order: Order = {
+            id: record.order_id,
+            mint: record.mint,
+            side: record.side,
+            amount: record.amount_raw,
+            slippageBps: record.slippageBps || 250,
+            label: record.label as any,
+            network: (record.network as TradingNetwork) || 'paper',
+            state: record.state,
+            createdAt: record.created_at,
+            updatedAt: record.updated_at,
+            signature: record.signature,
+            effectivePriceSol: record.effectivePriceSol,
+            totalCostSol: record.totalCostSol,
+            netProceedsSol: record.netProceedsSol,
+            error: record.error,
+          };
           this.orders.set(order.id, order);
-          const net = order.network || 'paper';
-          const isPending = [
-            'VALIDATING',
-            'QUOTE_REQUESTED',
-            'QUOTE_RECEIVED',
-            'TRANSACTION_BUILDING',
-            'SIGNING',
-            'SUBMITTED',
-            'CONFIRMING',
-          ].includes(order.state);
-
-          if (isPending) {
-            // If order was created more than 60s ago, expire stale lock to avoid blocking new trades on reload
-            if (now - order.createdAt > 60000) {
-              order.state = 'FAILED';
-              order.error = 'SESSION_RESTORE_TIMEOUT';
-              order.updatedAt = now;
-            } else {
-              this.activeOrdersByNetworkSideMint.set(`${net}_${order.side}_${order.mint}`, order.id);
-            }
-          }
         }
+      } catch (e) {
+        // Ignored
       }
-    } catch (e) {
-      console.warn('[OrderManager] Failed to load persisted orders:', e);
     }
   }
 
-  private persistOrders(): void {
-    if (typeof window === 'undefined') return;
-    try {
-      const array = Array.from(this.orders.values()).slice(-50); // Keep last 50
-      localStorage.setItem('app_order_history', JSON.stringify(array));
-    } catch (e) {
-      console.warn('[OrderManager] Failed to persist orders:', e);
+  private syncServerOrder(order: Order): void {
+    if (typeof window === 'undefined') {
+      try {
+        const { orderRepository } = require('../../server/repositories/OrderRepository.js');
+        orderRepository.createOrder({
+          order_id: order.id,
+          position_id: undefined,
+          mint: order.mint,
+          side: order.side,
+          amount_raw: order.amount,
+          slippageBps: order.slippageBps,
+          label: order.label,
+          network: order.network,
+          state: order.state,
+          signature: order.signature,
+          created_at: order.createdAt,
+          updated_at: order.updatedAt,
+          error: order.error,
+          effectivePriceSol: order.effectivePriceSol,
+          totalCostSol: order.totalCostSol,
+          netProceedsSol: order.netProceedsSol,
+        });
+      } catch (e) {
+        // Ignored
+      }
     }
   }
 
@@ -159,7 +171,7 @@ export class OrderManager {
 
     this.orders.set(id, order);
     this.activeOrdersByNetworkSideMint.set(key, id);
-    this.persistOrders();
+    this.syncServerOrder(order);
     return order;
   }
 
@@ -197,7 +209,7 @@ export class OrderManager {
       }
     }
 
-    this.persistOrders();
+    this.syncServerOrder(order);
     return order;
   }
 

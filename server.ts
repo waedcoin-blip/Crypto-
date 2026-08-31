@@ -48,6 +48,7 @@ import ftpRouter from "./server/routes/ftp.js";
 import telegramRouter from "./server/routes/telegram.js";
 import laserstreamRouter from "./server/routes/laserstream.js";
 import criteriaRouter from "./server/routes/criteria.js";
+import tradingRouter from "./server/routes/trading.js";
 
 // Process level crash guard
 process.on("uncaughtException", (err: any) => {
@@ -68,16 +69,6 @@ process.on("unhandledRejection", (reason: any) => {
 });
 
 async function startServer() {
-  if (process.env.IS_LASERSTREAM_WORKER === "true") {
-    try {
-      await runLaserstreamWorker();
-    } catch (e) {
-      console.error("Worker start failed:", e);
-      process.exit(1);
-    }
-    return;
-  }
-
   const app = express();
   
   // Trust proxy for rate limiter to get correct req.ip
@@ -102,6 +93,7 @@ async function startServer() {
   app.use("/api/telegram", telegramRouter);
   app.use("/api/laserstream", laserstreamRouter);
   app.use("/api/criteria", criteriaRouter);
+  app.use("/api/trading", tradingRouter);
 
   // API Catch-all 404 Handler
   app.all("/api/*", (req, res) => {

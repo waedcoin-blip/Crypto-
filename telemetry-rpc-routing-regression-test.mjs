@@ -44,10 +44,10 @@ runTest('No Telemetry X-Ray HTML Scraping in source code', () => {
   scanDir(path.join(process.cwd(), 'server'));
 });
 
-// 2. Verify 5s Monitor-Price Staleness
-runTest('MasterMonitorService enforces 5s price staleness', () => {
+// 2. Verify 2s Monitor-Price Staleness
+runTest('MasterMonitorService enforces 2s price staleness', () => {
   const fileContent = fs.readFileSync(path.join(process.cwd(), 'src/services/MasterMonitorService.ts'), 'utf8');
-  assert(fileContent.includes('> 5000'), 'MasterMonitorService must check > 5000ms for price staleness');
+  assert(fileContent.includes('> 2000'), 'MasterMonitorService must check > 2000ms for price staleness');
 });
 
 // 3. Verify 10s Telemetry Stream Stall Detection
@@ -82,7 +82,7 @@ runTest('PnLPage direct WebSocket fallback removed', () => {
 // 7. Verify MarketDataManager Fallback Price Behavior
 runTest('MarketDataManager returns market data unavailable on failure without cached price', () => {
   const fileContent = fs.readFileSync(path.join(process.cwd(), 'src/services/marketDataManager.ts'), 'utf8');
-  assert(fileContent.includes("error: 'Market data unavailable'"), 'MarketDataManager must return unavailable error');
+  assert(fileContent.includes("error: 'MARKET_DATA_UNAVAILABLE'") || fileContent.includes("error: 'Market data unavailable'"), 'MarketDataManager must return unavailable error');
   assert(!fileContent.includes('...cached.price,\n          isStale: true'), 'MarketDataManager must not return old cached prices on fallback');
 });
 

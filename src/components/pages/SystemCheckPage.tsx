@@ -142,18 +142,18 @@ export const SystemCheckPage = ({
       const lsDuration = performance.now() - start;
       if (res.ok) {
         const lsData = await res.json();
-        const mode = lsData.isSimulated ? 'Local Sandbox Stream' : (lsData.isFallback ? 'High-Speed WebSocket Fallback' : 'gRPC Geyser Stream');
+        const mode = lsData.isSimulated ? 'Local Sandbox Stream' : (lsData.isFallback ? 'LaserStream gRPC Ingestion Unavailable' : 'gRPC Geyser Stream');
         setResults(prev => ({
           ...prev,
-          laserstream: { status: 'success', details: `Latency: ${lsDuration.toFixed(2)}ms. LaserStream Operational (${mode}).` }
+          laserstream: { status: lsData.isFallback ? 'error' : 'success', details: `Latency: ${lsDuration.toFixed(2)}ms. ${mode}.` }
         }));
         telemetryService.recordApiRequest('LaserStream', 'status', 200, lsDuration);
       } else {
         setResults(prev => ({
           ...prev,
-          laserstream: { status: 'success', details: 'LaserStream Ingestion Service Active (Client-Side WebSocket Fallback).' }
+          laserstream: { status: 'error', details: 'LaserStream gRPC ingestion unavailable.' }
         }));
-        telemetryService.recordApiRequest('LaserStream', 'status', 200, lsDuration);
+        telemetryService.recordApiRequest('LaserStream', 'status', 500, lsDuration);
       }
     } catch (e: any) {
       setResults(prev => ({

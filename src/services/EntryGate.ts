@@ -79,13 +79,31 @@ export class EntryGate {
       return { allowed: false, reason: 'UNKNOWN_DECIMALS_FAIL_CLOSED' };
     }
 
-    // Retrieve criteria thresholds
-    const minLiquidity = Number(localStorage.getItem('hd_min_liquidity')) || 5000;
-    const minAgeMinutes = Number(localStorage.getItem('hd_min_age_min')) || 0;
-    const maxAgeMinutes = Number(localStorage.getItem('hd_max_age_min')) || 1440; // 24h
-    const maxDevPct = appState.hardenedMaxDevOwnership ?? 10;
-    const maxTop10Pct = Number(localStorage.getItem('hd_max_top10_pct')) || 40;
-    const maxRiskScore = appState.hardenedMaxRiskScore ?? 22;
+    // Retrieve criteria thresholds from server repository or criteria config
+    let criteria = {
+      minLiquidityUsd: 5000,
+      minAgeMinutes: 0,
+      maxAgeMinutes: 1440,
+      maxDevOwnershipPct: 10,
+      maxTop10Pct: 40,
+      maxRiskScore: 22,
+    };
+
+    if (typeof window === 'undefined') {
+      try {
+        const { criteriaRepository } = require('../../server/repositories/CriteriaRepository.js');
+        criteria = criteriaRepository.getActiveCriteriaSync();
+      } catch (e) {
+        // Fallback
+      }
+    }
+
+    const minLiquidity = criteria.minLiquidityUsd;
+    const minAgeMinutes = criteria.minAgeMinutes;
+    const maxAgeMinutes = criteria.maxAgeMinutes;
+    const maxDevPct = criteria.maxDevOwnershipPct ?? appState.hardenedMaxDevOwnership ?? 10;
+    const maxTop10Pct = criteria.maxTop10Pct;
+    const maxRiskScore = criteria.maxRiskScore ?? appState.hardenedMaxRiskScore ?? 22;
 
     const now = Date.now();
 
@@ -93,10 +111,10 @@ export class EntryGate {
     if (candidate.pairCreatedAt !== undefined && candidate.pairCreatedAt > 0) {
       const ageMinutes = (now - candidate.pairCreatedAt) / 60000;
       if (minAgeMinutes > 0 && ageMinutes < minAgeMinutes) {
-        return { allowed: false, reason: `TOKEN_TOO_YOUNG: ${ageMinutes.toFixed(1)}m < min ${minAgeMinutes}m` };
+        return { allowed: false, reason: 'TOKEN_TOO_YOUNG' };
       }
       if (maxAgeMinutes > 0 && ageMinutes > maxAgeMinutes) {
-        return { allowed: false, reason: `TOKEN_TOO_OLD: ${ageMinutes.toFixed(1)}m > max ${maxAgeMinutes}m` };
+        return { allowed: false, reason: 'TOKEN_TOO_OLD' };
       }
     } else if (minAgeMinutes > 0 || maxAgeMinutes < 1440) {
       return { allowed: false, reason: 'UNKNOWN_TOKEN_AGE_FAIL_CLOSED' };

@@ -41,7 +41,7 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
       this.connection = new Connection(rpcUrl, 'confirmed');
     }
     
-    const jupUrl = localStorage.getItem('juipter_auto_jupiterRpcUrl') || 'https://api.jup.ag/swap/v1';
+    const jupUrl = (typeof process !== 'undefined' ? process.env.JUPITER_API_URL : undefined) || 'https://api.jup.ag/swap/v1';
     this.jupiterApi = createJupiterApiClient({ basePath: jupUrl });
   }
 

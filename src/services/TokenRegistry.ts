@@ -50,7 +50,7 @@ export class TokenRegistry {
   private listeners: Set<TokenRegistryListener> = new Set();
 
   private constructor() {
-    this.loadPersistedTokens();
+    this.loadTokens();
   }
 
   public static getInstance(): TokenRegistry {
@@ -60,32 +60,30 @@ export class TokenRegistry {
     return TokenRegistry.instance;
   }
 
-  private loadPersistedTokens(): void {
-    if (typeof window === 'undefined') return;
-    try {
-      const raw = localStorage.getItem('app_token_registry');
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) {
-          for (const item of parsed) {
-            if (item && item.mintAddress) {
-              this.tokens.set(item.mintAddress, item);
-            }
+  private loadTokens(): void {
+    if (typeof window === 'undefined') {
+      try {
+        const { tokenRepository } = require('../../server/repositories/TokenRepository.js');
+        const list = tokenRepository.getTokens();
+        for (const item of list) {
+          if (item && item.mintAddress) {
+            this.tokens.set(item.mintAddress, item as TokenRecord);
           }
         }
+      } catch (e) {
+        // Ignored
       }
-    } catch (e) {
-      console.warn('[TokenRegistry] Failed to load persisted registry:', e);
     }
   }
 
-  private persist(): void {
-    if (typeof window === 'undefined') return;
-    try {
-      const arr = Array.from(this.tokens.values()).slice(-200); // Keep last 200 discovered tokens
-      localStorage.setItem('app_token_registry', JSON.stringify(arr));
-    } catch (e) {
-      console.warn('[TokenRegistry] Failed to persist registry:', e);
+  private syncServer(record: TokenRecord): void {
+    if (typeof window === 'undefined') {
+      try {
+        const { tokenRepository } = require('../../server/repositories/TokenRepository.js');
+        tokenRepository.upsertToken(record as any);
+      } catch (e) {
+        // Ignored
+      }
     }
   }
 
@@ -133,7 +131,7 @@ export class TokenRegistry {
     };
 
     this.tokens.set(mint, record);
-    this.persist();
+    this.syncServer(record);
     this.notify(record);
     return record;
   }
@@ -166,7 +164,7 @@ export class TokenRegistry {
       if (positionId !== undefined) {
         record.positionId = positionId;
       }
-      this.persist();
+      this.syncServer(record);
       this.notify(record);
     }
   }
@@ -177,7 +175,7 @@ export class TokenRegistry {
       record.priceSOL = priceSOL;
       if (priceUSD !== undefined) record.priceUSD = priceUSD;
       record.updatedAt = Date.now();
-      this.persist();
+      this.syncServer(record);
       this.notify(record);
     }
   }
