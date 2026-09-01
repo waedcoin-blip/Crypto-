@@ -2091,6 +2091,9 @@ export const PnLPage = ({
 
   const { network: tradingNetwork } = useTradingEnvironmentStore();
   const seenTxSignaturesRef = useRef<Set<string>>(new Set());
+  const [lastTransportMessageAt, setLastTransportMessageAt] = useState<number | null>(null);
+  const [lastDataEventAt, setLastDataEventAt] = useState<number | null>(null);
+  const [lastHeartbeatAt, setLastHeartbeatAt] = useState<number | null>(null);
 
   useEffect(() => {
     const syncLaserstream = async () => {
@@ -2188,9 +2191,12 @@ export const PnLPage = ({
 
       eventSource.onmessage = (event) => {
         try {
+          const now = Date.now();
+          setLastTransportMessageAt(now);
           const data = JSON.parse(event.data);
 
           if (data.type === 'HEARTBEAT' || data.type === 'STATUS') {
+            setLastHeartbeatAt(now);
             if (data.telemetry) {
               const t = data.telemetry;
               setLaserstreamStatus(t.status || 'connected');
@@ -2217,6 +2223,7 @@ export const PnLPage = ({
           }
 
           if (data.type === 'ON_CHAIN_TX') {
+            setLastDataEventAt(now);
             const slot = Number(data.slot || 0);
 
             if (!Number.isFinite(slot) || slot <= 0) {

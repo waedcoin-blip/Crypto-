@@ -184,10 +184,14 @@ export class TokenScanner {
     this.abortController = new AbortController();
     const startTime = performance.now();
 
+    const timeoutId = setTimeout(() => {
+      this.abortController?.abort();
+    }, DEFAULT_SCAN_TIMEOUT_MS);
+
     try {
       const response = await fetch('/api/dex/tokens/trending', {
         signal: this.abortController.signal,
-        headers: { Accept: 'application/json' },
+        headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
       });
 
       if (!response.ok) {
@@ -199,6 +203,18 @@ export class TokenScanner {
       }
 
       const data = (await response.json()) as Record<string, unknown>;
+      const responseTimestamp = Number(
+        data.timestamp ?? data.updatedAt ?? data.generatedAt ?? 0
+      );
+      // Reject explicitly timestamped discovery payloads that are stale.
+      // Untimestamped payloads are treated as fresh-at-receipt for compatibility.
+      if (Number.isFinite(responseTimestamp) && responseTimestamp > 0 &&
+          Date.now() - responseTimestamp > DEFAULT_SCAN_TIMEOUT_MS) {
+        this.lastScanStatus = 'DISCOVERY_UNAVAILABLE';
+        this.lastErrorMessage = 'TOKEN_DISCOVERY_STALE';
+        return [];
+      }
+
       if (data.error === 'DISCOVERY_UNAVAILABLE' || data.failed === true) {
         this.lastScanStatus = 'DISCOVERY_UNAVAILABLE';
         this.lastErrorMessage = typeof data.message === 'string' ? data.message : 'Discovery feeds currently unreachable';
@@ -230,8 +246,8 @@ export class TokenScanner {
         // Skip excluded mints
         if (this.criteria.excludedMints.has(token.address)) continue;
 
-        // Candidate re-check TTL: 10s for initial candidates, 60s once accepted
-        this.scannedCache.set(token.address, now - (CACHE_TTL_MS - 10000));
+        // Record the actual scan time; the TTL check above is the single source of truth.
+        this.scannedCache.set(token.address, now);
         candidates.push(token);
       }
 
@@ -250,6 +266,7 @@ export class TokenScanner {
       }
       return [];
     } finally {
+      clearTimeout(timeoutId);
       this.isScanning = false;
       const duration = performance.now() - startTime;
       this.lastScanStats = {

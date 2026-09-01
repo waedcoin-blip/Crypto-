@@ -62,6 +62,11 @@ export const DEFAULT_NETWORK_PROGRAMS: Record<LaserStreamNetwork, string[]> = {
 
 const HUB_PROBE_TIMEOUT = 2_500;
 const MAX_RECONNECT_ATTEMPTS = 10;
+export const STREAM_STALL_TIMEOUT_MS = 10000;
+
+export function isStreamStalled(lastActivityAt: number): boolean {
+  return Date.now() - lastActivityAt > 10000;
+}
 
 // ─── Base58 Binary Converter ───
 export function toBase58(val: unknown): string {

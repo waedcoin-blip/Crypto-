@@ -2,6 +2,21 @@
 
 export type RpcRole = 'execution' | 'monitor' | 'search';
 
+
+function normalizeRpcUrl(url: string): string {
+  const value = url.trim();
+  if (!value) return '';
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      throw new Error('unsupported protocol');
+    }
+    return parsed.toString().replace(/\/$/, '');
+  } catch {
+    throw new Error('INVALID_RPC_URL');
+  }
+}
+
 export interface RpcRoleConfig {
   searchRpcUrl: string;
   executionRpcUrl: string;
@@ -40,7 +55,7 @@ class RpcRouting {
       throw new Error('SEARCH_RPC_UNAVAILABLE');
     }
 
-    return this.searchRpcUrl;
+    return normalizeRpcUrl(this.searchRpcUrl);
   }
 
   public getExecutionRpcUrl(): string {
@@ -48,7 +63,7 @@ class RpcRouting {
       throw new Error('EXECUTION_RPC_UNAVAILABLE');
     }
 
-    return this.executionRpcUrl;
+    return normalizeRpcUrl(this.executionRpcUrl);
   }
 
   public getMonitorRpcUrl(): string {
@@ -56,7 +71,7 @@ class RpcRouting {
       throw new Error('MONITOR_RPC_UNAVAILABLE');
     }
 
-    return this.monitorRpcUrl;
+    return normalizeRpcUrl(this.monitorRpcUrl);
   }
 
   public getRpcEndpoints(role: RpcRole): string[] {
@@ -81,13 +96,13 @@ class RpcRouting {
 
   public setRpcRoles(config: Partial<RpcRoleConfig>) {
     if (config.searchRpcUrl !== undefined) {
-      this.searchRpcUrl = config.searchRpcUrl.trim();
+      this.searchRpcUrl = normalizeRpcUrl(config.searchRpcUrl);
     }
     if (config.executionRpcUrl !== undefined) {
-      this.executionRpcUrl = config.executionRpcUrl.trim();
+      this.executionRpcUrl = normalizeRpcUrl(config.executionRpcUrl);
     }
     if (config.monitorRpcUrl !== undefined) {
-      this.monitorRpcUrl = config.monitorRpcUrl.trim();
+      this.monitorRpcUrl = normalizeRpcUrl(config.monitorRpcUrl);
     }
   }
 }
