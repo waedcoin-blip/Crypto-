@@ -16,7 +16,7 @@ export const securityHeaders = helmet({
   crossOriginResourcePolicy: false,
 });
 
-export function isAllowedOrigin(origin: string | undefined): boolean {
+export function isAllowedOrigin(origin: string | undefined, reqHost?: string): boolean {
   if (!origin) return true;
 
   if (config.ALLOWED_ORIGINS.includes('*') || config.ALLOWED_ORIGINS.includes(origin)) {
@@ -37,16 +37,31 @@ export function isAllowedOrigin(origin: string | undefined): boolean {
     const url = new URL(origin);
     const host = url.hostname;
 
+    // Match same host as request Host header (e.g. crypto-yla8.onrender.com)
+    if (reqHost) {
+      const cleanReqHost = reqHost.split(':')[0];
+      if (host === cleanReqHost) {
+        return true;
+      }
+    }
+
     // Localhost / internal interfaces on any port
     if (host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0') {
       return true;
     }
 
-    // AI Studio / Google container specific framing
+    // Render, Cloud Run, Vercel, Netlify, AI Studio hosting domains
     if (
       host === 'ai.studio' ||
       host === 'aistudio.google.com' ||
-      host.endsWith('.aistudio.google.com') // Required for dynamic preview framing
+      host.endsWith('.aistudio.google.com') ||
+      host.endsWith('.onrender.com') ||
+      host.endsWith('.render.com') ||
+      host.endsWith('.run.app') ||
+      host.endsWith('.cloudrun.app') ||
+      host.endsWith('.vercel.app') ||
+      host.endsWith('.netlify.app') ||
+      host.endsWith('.googleusercontent.com')
     ) {
       return true;
     }
@@ -57,19 +72,22 @@ export function isAllowedOrigin(origin: string | undefined): boolean {
   return false;
 }
 
-export const corsMiddleware = cors({
-  origin: (origin, callback) => {
-    if (isAllowedOrigin(origin)) {
-      callback(null, true);
-    } else {
-      securityLogger.warn({ origin }, 'CORS request blocked from unauthorized origin');
-      callback(new Error('Origin not allowed by CORS policy'), false);
-    }
-  },
-  credentials: false,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key'],
-});
+export const corsMiddleware = (req: Request, res: Response, next: NextFunction) => {
+  const origin = req.headers.origin;
+  const host = req.headers.host;
+  const allowed = isAllowedOrigin(origin, host);
+
+  if (!allowed) {
+    securityLogger.warn({ origin, host }, 'CORS request blocked from unauthorized origin');
+  }
+
+  return cors({
+    origin: allowed ? (origin || true) : false,
+    credentials: false,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key'],
+  })(req, res, next);
+};
 
 // Per-IP rate limiter using express-rate-limit (more robust than custom)
 export const apiRateLimiter = rateLimit({

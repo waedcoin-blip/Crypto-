@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import { adminAuth } from '../utils/firebaseAdmin.js';
+import { getAdminAuth } from '../utils/firebaseAdmin.js';
 import { securityLogger } from '../utils/logger.js';
 
 export async function requireAuth(req: Request, res: Response, next: NextFunction) {
@@ -14,7 +14,13 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   const idToken = authHeader.split('Bearer ')[1];
 
   try {
-    const decodedToken = await adminAuth.verifyIdToken(idToken);
+    const auth = getAdminAuth();
+    if (!auth) {
+      securityLogger.warn({ ip: req.ip, path: req.path }, 'Auth service uninitialized on server');
+      res.status(503).json({ error: 'Authentication service unavailable', code: 'AUTH_UNAVAILABLE' });
+      return;
+    }
+    const decodedToken = await auth.verifyIdToken(idToken);
     (req as any).user = decodedToken;
     next();
   } catch (error) {
