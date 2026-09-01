@@ -528,6 +528,7 @@ export async function startLaserStream(
         );
         laserStreamWatchdog.recordError(parsed.userActionableMessage);
 
+        // Immediate disconnect or disable on stream error
         state.transportConnected = false;
         if (parsed.isPlanError || parsed.isAuthError) {
           state.mode = 'disabled';
