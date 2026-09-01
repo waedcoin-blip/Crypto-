@@ -1,5 +1,5 @@
 {
-  "signature": "3XYZp8StmcvQxM4hS6eB3zYvG1K9dTxJ4LqZ7rT8uW99",
+  "signature": "5VERp8StmcvQxM4hS6eB3zYvG1K9dTxJ4LqZ7rT8uW2m",
   "userWallet": "WaedUserWallet111111111111111111111111111111",
   "slot": 290450123,
   "blockTime": 1724900000,
@@ -47,6 +47,13 @@
     ],
     "logsContainJupiter": true
   },
-  "originalQuoteSnapshot": null,
-  "capturedAt": "2026-09-01T15:09:09.054Z"
+  "originalQuoteSnapshot": {
+    "inputMint": "So11111111111111111111111111111111111111112",
+    "outputMint": "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R",
+    "inAmount": "1000000000",
+    "outAmount": "25200000",
+    "otherAmountThreshold": "24900000",
+    "slippageBps": 50
+  },
+  "capturedAt": "2026-09-01T14:22:29.982Z"
 }
