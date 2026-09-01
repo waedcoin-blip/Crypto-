@@ -70,6 +70,13 @@ export type ExitErrorCallback = (
   errorMessage: string
 ) => void;
 
+export type RiskLogCallback = (
+  msg: string,
+  type?: 'info' | 'success' | 'warn' | 'err' | 'sell' | 'buy' | 'priority' | 'warning',
+  category?: string,
+  metadata?: any
+) => void;
+
 /**
  * RiskManager: Authoritative component for risk parameters, TP, SL, trailing SL,
  * max hold times, position limits, and emergency exits.
@@ -87,6 +94,7 @@ export class RiskManager {
   private config: RiskConfig;
   private onExitCallback?: ExitCallback;
   private onExitErrorCallback?: ExitErrorCallback;
+  private onLogCallback?: RiskLogCallback;
   private lastExitErrorTimes: Map<string, number> = new Map();
   private isRunning: boolean = false;
   private evaluationInterval: any = null;
@@ -124,6 +132,10 @@ export class RiskManager {
 
   public setOnExitErrorCallback(cb: ExitErrorCallback): void {
     this.onExitErrorCallback = cb;
+  }
+
+  public setOnLogCallback(cb: RiskLogCallback): void {
+    this.onLogCallback = cb;
   }
 
   public updateConfig(partial: Partial<RiskConfig>): void {
@@ -509,11 +521,63 @@ export class RiskManager {
     return this.calculateGrossPnLPct(pos);
   }
 
+  /**
+   * Priority scoring engine for position exit evaluations.
+   * STRICT DIRECTIVE: Provides highest priority to sell tokens in profit before price drops.
+   */
+  public getExitPriorityScore(pos: ManagedPosition): number {
+    const grossPnl = this.calculateGrossPnLPct(pos);
+    const peakPnl = pos.highestPnLPct ?? grossPnl;
+    const dropFromPeak = Math.max(0, peakPnl - grossPnl);
+    const tpPct = pos.tpPct ?? this.config.tpPct;
+    const slPct = Math.abs(pos.slPct ?? this.config.slPct);
+    const trailingSlPct = pos.trailingSlPct ?? this.config.trailingSlPct ?? 10;
+    const now = Date.now();
+
+    // 1. HIGHEST CRITICAL PRIORITY: Token is in net profit and dropping from peak
+    // Must be prioritized first to lock in green gains before reversal drops into red!
+    if (grossPnl > 0 && peakPnl >= 2.0 && dropFromPeak >= Math.min(trailingSlPct * 0.4, 1.5)) {
+      return 2500 + dropFromPeak * 25 + grossPnl * 10;
+    }
+
+    // 2. HIGH PRIORITY: Take-Profit Target Hit or Exceeded
+    if (grossPnl >= tpPct) {
+      return 2000 + grossPnl * 10;
+    }
+
+    // 3. HIGH PRIORITY: Trailing Stop Threshold Breached
+    if (trailingSlPct > 0 && peakPnl > 0 && dropFromPeak >= trailingSlPct) {
+      return 1800 + dropFromPeak * 15 + (grossPnl > 0 ? grossPnl * 5 : 0);
+    }
+
+    // 4. URGENT: Stop-Loss Breach
+    if (grossPnl <= -slPct) {
+      return 1400 + Math.abs(grossPnl);
+    }
+
+    // 5. Max Hold Timeout Exceeded
+    if (pos.maxHoldTimeMs && pos.maxHoldTimeMs > 0 && pos.createdAt > 0 && (now - pos.createdAt >= pos.maxHoldTimeMs)) {
+      return 1200 + (now - pos.createdAt) / 1000;
+    }
+
+    // 6. Healthy Profit Buffer (prioritize above neutral/negative positions)
+    if (grossPnl > 0) {
+      return 600 + grossPnl * 5;
+    }
+
+    // 7. Standard Open Position
+    return 100 + grossPnl;
+  }
+
   private async evaluateAllPositions(): Promise<void> {
     if (!this.isRunning || this.isEvaluatingLoop) return;
     this.isEvaluatingLoop = true;
     try {
-      for (const pos of this.positions.values()) {
+      const openPositions = Array.from(this.positions.values()).filter(p => p.state === 'OPEN');
+      // STRICT EXIT PRIORITY: Sort open positions by exit priority urgency so tokens in profit before drop are evaluated & executed FIRST
+      openPositions.sort((a, b) => this.getExitPriorityScore(b) - this.getExitPriorityScore(a));
+
+      for (const pos of openPositions) {
         if (pos.state === 'OPEN') {
           await this.evaluatePosition(pos);
         }
@@ -545,6 +609,9 @@ export class RiskManager {
       const grossPnlPct = this.calculateGrossPnLPct(pos);
       const tpPct = pos.tpPct ?? this.config.tpPct;
       const slPct = Math.abs(pos.slPct ?? this.config.slPct);
+      const peakPnL = pos.highestPnLPct ?? grossPnlPct;
+      const dropFromPeak = Math.max(0, peakPnL - grossPnlPct);
+      const trailingSlPct = pos.trailingSlPct ?? this.config.trailingSlPct ?? 10;
 
       // Initialization protection: Within 1.5 seconds of creation, skip SL if price delta is negligible
       if (now - pos.createdAt < 1500 && grossPnlPct > -0.1) {
@@ -559,14 +626,29 @@ export class RiskManager {
         candidateReason = 'sl';
         exitType = 'MAX_HOLD';
       } else {
-        // 2. Trailing stop check (evaluates trailing drop from peak gross market PnL)
-        const peakPnL = pos.highestPnLPct ?? grossPnlPct;
-        if (pos.trailingSlPct && pos.trailingSlPct > 0 && peakPnL > 0 && (peakPnL - grossPnlPct >= pos.trailingSlPct)) {
-          candidateReason = 'sl';
+        // 2. Priority check: Trailing stop / profit-drop protection (sell in profit before drop)
+        if (trailingSlPct > 0 && peakPnL > 0 && dropFromPeak >= trailingSlPct) {
+          candidateReason = grossPnlPct >= 0 ? 'tp' : 'sl';
           exitType = 'TRAILING_STOP';
+
+          if (grossPnlPct > 0) {
+            this.onLogCallback?.(
+              `🛡️⚡ [PRIORITY PROFIT EXIT] ${mint.slice(0, 8)}...: Prioritizing exit in profit (+${grossPnlPct.toFixed(2)}%) to lock in gains before drop (Peak: +${peakPnL.toFixed(2)}%, Drop: -${dropFromPeak.toFixed(2)}%)`,
+              'priority',
+              'risk',
+              { mint, grossPnlPct, peakPnL, dropFromPeak, exitType: 'TRAILING_STOP', tokenAddress: mint }
+            );
+          }
         } else if (grossPnlPct >= tpPct) {
           candidateReason = 'tp';
           exitType = 'TAKE_PROFIT';
+
+          this.onLogCallback?.(
+            `🎯⚡ [TAKE PROFIT PRIORITY] ${mint.slice(0, 8)}... reached target: +${grossPnlPct.toFixed(2)}% (Target: +${tpPct}%) — executing immediate exit`,
+            'priority',
+            'trade',
+            { mint, grossPnlPct, tpPct, exitType: 'TAKE_PROFIT', tokenAddress: mint }
+          );
         } else if (grossPnlPct <= -slPct) {
           candidateReason = 'sl';
           exitType = 'STOP_LOSS';
@@ -772,6 +854,22 @@ export class RiskManager {
       pos.state = 'CLOSED';
       this.positions.delete(mint);
       this.exitingMints.delete(mint);
+
+      if (actualPnlPct > 0) {
+        this.onLogCallback?.(
+          `⚡🟢 [PROFIT SECURED BEFORE DROP] Successfully sold ${mint.slice(0, 8)}... | Realized: +${actualPnlPct.toFixed(2)}% (+${actualPnlSol.toFixed(4)} SOL) | Secured before drop! Tx: ${result.signature?.slice(0, 10)}...`,
+          'success',
+          'trade',
+          { mint, pnlPct: actualPnlPct, pnlSol: actualPnlSol, signature: result.signature, tokenAddress: mint }
+        );
+      } else {
+        this.onLogCallback?.(
+          `🛑 [STOP LOSS EXECUTED] Sold ${mint.slice(0, 8)}... | PnL: ${actualPnlPct.toFixed(2)}% (${actualPnlSol.toFixed(4)} SOL) | Tx: ${result.signature?.slice(0, 10)}...`,
+          'sell',
+          'trade',
+          { mint, pnlPct: actualPnlPct, pnlSol: actualPnlSol, signature: result.signature, tokenAddress: mint }
+        );
+      }
 
       if (this.onExitCallback) {
         this.onExitCallback(mint, side, result.signature || 'exit-tx', actualPnlPct, netSolReceived);

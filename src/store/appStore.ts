@@ -51,6 +51,8 @@ interface AppState {
   hardenedMaxRiskScore: number;
   hardenedLiquidityRatio: number;
   hardenedMaxDevOwnership: number;
+  tradeOnlyOnce: boolean;
+  maxRebuyTimes: number;
   
   // Scanners / Metrics
   isMonitoring: boolean;
@@ -67,6 +69,8 @@ interface AppState {
   // Actions
   setAutoSniperEnabled: (val: boolean) => void;
   setIsLiveTrading: (val: boolean) => void;
+  setTradeOnlyOnce: (val: boolean) => void;
+  setMaxRebuyTimes: (val: number) => void;
   setTokenMetrics: (fn: (prev: Record<string, TokenMetric>) => Record<string, TokenMetric>) => void;
   setTrades: (fn: (prev: Trade[]) => Trade[]) => void;
   addTelemetryAlert: (alert: TelemetryAlert) => void;
@@ -95,6 +99,8 @@ export const useAppStore = create<AppState>((set) => ({
   hardenedMaxRiskScore: Number(localStorage.getItem('hd_max_risk_score')) || 22,
   hardenedLiquidityRatio: Number(localStorage.getItem('hd_liquidity_ratio')) || 7,
   hardenedMaxDevOwnership: Number(localStorage.getItem('hd_max_dev_ownership')) || 80,
+  tradeOnlyOnce: localStorage.getItem('app_tradeOnlyOnce') !== null ? localStorage.getItem('app_tradeOnlyOnce') === 'true' : true,
+  maxRebuyTimes: Number(localStorage.getItem('hd_max_rebuy_times')) || 1,
   
   isMonitoring: false,
   tokenMetrics: {},
@@ -125,6 +131,16 @@ export const useAppStore = create<AppState>((set) => ({
 
   setAutoSniperEnabled: (val) => set({ autoSniperEnabled: val }),
   setIsLiveTrading: (val) => set({ isLiveTrading: val }),
+  setTradeOnlyOnce: (val) => {
+    localStorage.setItem('app_tradeOnlyOnce', val.toString());
+    localStorage.setItem('hd_trade_only_once', val.toString());
+    set({ tradeOnlyOnce: val });
+  },
+  setMaxRebuyTimes: (val) => {
+    const num = Math.max(1, Number(val) || 1);
+    localStorage.setItem('hd_max_rebuy_times', num.toString());
+    set({ maxRebuyTimes: num });
+  },
   setTokenMetrics: (fn) => set((state) => ({ ...state, tokenMetrics: fn(state.tokenMetrics) })),
   setTrades: (fn) => set((state) => ({ trades: fn(state.trades) })),
   addTelemetryAlert: (alert) => set((state) => ({ telemetryAlerts: [alert, ...state.telemetryAlerts.slice(0, 19)] })),

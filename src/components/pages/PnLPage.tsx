@@ -169,10 +169,12 @@ interface TerminalConsoleProps {
   setLogs: React.Dispatch<React.SetStateAction<LogEvent[]>>;
   retentionLimit: number;
   setRetentionLimit: (limit: number) => void;
+  positions?: Record<string, any>;
   onQuickTrade?: (mint: string, symbol?: string) => void;
+  onQuickSell?: (mint: string, currentPrice?: number, pnlPct?: number, reason?: string) => void;
 }
 
-const TerminalConsole: React.FC<TerminalConsoleProps> = ({ logs, setLogs, retentionLimit, setRetentionLimit, onQuickTrade }) => {
+const TerminalConsole: React.FC<TerminalConsoleProps> = ({ logs, setLogs, retentionLimit, setRetentionLimit, positions, onQuickTrade, onQuickSell }) => {
   const [logSearch, setLogSearch] = useState('');
   const [logCategoryFilter, setLogCategoryFilter] = useState('all');
   const [logLevelFilter, setLogLevelFilter] = useState('all');
@@ -715,6 +717,10 @@ const TerminalConsole: React.FC<TerminalConsoleProps> = ({ logs, setLogs, retent
               colorClass = 'text-[#ff4d4d]';
               prefix = 'FAIL: ';
               lineAccent = 'border-l-2 border-red-500/80 pl-1.5';
+            } else if (log.type === 'priority') {
+              colorClass = 'text-emerald-300 font-bold bg-emerald-950/20 px-1 py-0.5 rounded';
+              prefix = 'PRIORITY: ';
+              lineAccent = 'border-l-2 border-emerald-400 pl-1.5 bg-emerald-950/30';
             } else if (log.type === 'buy') {
               colorClass = 'text-[#c7f284]';
               prefix = 'BUY: ';
@@ -727,7 +733,7 @@ const TerminalConsole: React.FC<TerminalConsoleProps> = ({ logs, setLogs, retent
               colorClass = 'text-[#34d399]';
               prefix = 'WIN: ';
               lineAccent = 'border-l-2 border-emerald-500/80 pl-1.5';
-            } else if (log.type === 'warn') {
+            } else if (log.type === 'warn' || log.type === 'warning') {
               colorClass = 'text-[#ffb300]';
               prefix = 'WARN: ';
               lineAccent = 'border-l-2 border-amber-500/80 pl-1.5';
@@ -740,6 +746,7 @@ const TerminalConsole: React.FC<TerminalConsoleProps> = ({ logs, setLogs, retent
               trade: 'TRADE',
               scanner: 'SCAN',
               risk: 'RISK',
+              priority: 'PRIO',
               dexscreener: 'DEX',
               wallet: 'WAL',
               system: 'SYS'
@@ -749,17 +756,18 @@ const TerminalConsole: React.FC<TerminalConsoleProps> = ({ logs, setLogs, retent
               trade: 'text-[#c7f284] bg-[#c7f284]/10 border-[#c7f284]/25',
               scanner: 'text-indigo-400 bg-indigo-500/10 border-indigo-500/25',
               risk: 'text-rose-400 bg-rose-500/10 border-rose-500/25',
+              priority: 'text-emerald-300 bg-emerald-500/20 border-emerald-400/50 animate-pulse font-black',
               dexscreener: 'text-sky-400 bg-sky-500/10 border-sky-500/25',
               wallet: 'text-teal-400 bg-teal-500/10 border-teal-500/25',
               system: 'text-[#94a3b8] bg-[#1f212e] border-slate-700/50'
             };
 
-            const categoryLabel = catLabels[log.category || ''] || 'SYS';
-            const categoryStyle = catColor[log.category || ''] || catColor.system;
+            const categoryLabel = catLabels[log.category || ''] || (log.type === 'priority' ? 'PRIO' : 'SYS');
+            const categoryStyle = catColor[log.category || ''] || (log.type === 'priority' ? catColor.priority : catColor.system);
             const hasMetadata = log.metadata && Object.keys(log.metadata).length > 0;
             const isExpanded = expandedLogId === log.id;
 
-            // Extract token information for Quick Buy button from System Logs
+            // Extract token information for Quick Buy/Sell button from System Logs
             const tokenInfo = (() => {
               if (log.metadata) {
                 const mint = log.metadata.tokenAddress || log.metadata.mint || log.metadata.address;
@@ -782,6 +790,15 @@ const TerminalConsole: React.FC<TerminalConsoleProps> = ({ logs, setLogs, retent
               }
               return null;
             })();
+
+            const activePos = tokenInfo && positions ? positions[tokenInfo.mint] : undefined;
+            const isPositionOpen = activePos && (activePos.state === 'OPEN' || activePos.amount > 0);
+            const posPnlPct = activePos ? (
+              activePos.realNetPnl !== undefined 
+                ? activePos.realNetPnl 
+                : (activePos.buyPrice > 0 && activePos.currentPrice > 0 ? ((activePos.currentPrice - activePos.buyPrice) / activePos.buyPrice) * 100 : 0)
+            ) : 0;
+            const isPosProfit = posPnlPct > 0;
 
             return (
               <div 
@@ -810,8 +827,24 @@ const TerminalConsole: React.FC<TerminalConsoleProps> = ({ logs, setLogs, retent
                     ) : null}
                   </span>
 
-                  {/* Inline Quick Trade Action Button for tokens identified in System Logs */}
-                  {tokenInfo && onQuickTrade && (
+                  {/* Inline Action Buttons: Priority Profit Sell for active positions, Buy for new discovered tokens */}
+                  {tokenInfo && isPositionOpen && onQuickSell ? (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onQuickSell(tokenInfo.mint, activePos?.currentPrice, posPnlPct, isPosProfit ? 'PRIORITY_PROFIT_EXIT' : 'MANUAL_SELL');
+                      }}
+                      className={`px-2 py-0.5 rounded text-[8.5px] font-black uppercase tracking-wider transition-all flex items-center gap-1 shrink-0 active:scale-95 cursor-pointer z-10 shadow-sm ${
+                        isPosProfit
+                          ? 'bg-emerald-500/25 hover:bg-emerald-500/40 text-emerald-300 border border-emerald-400/60 animate-pulse shadow-emerald-950/40'
+                          : 'bg-rose-500/20 hover:bg-rose-500/35 text-rose-300 border border-rose-500/40'
+                      }`}
+                      title={isPosProfit ? `Priority Exit: Lock in +${posPnlPct.toFixed(2)}% profit now before price drops` : `Execute exit for ${tokenInfo.symbol}`}
+                    >
+                      <ShieldAlert className={`w-2.5 h-2.5 ${isPosProfit ? 'text-emerald-400' : 'text-rose-400'}`} />
+                      <span>{isPosProfit ? `LOCK PROFIT (+${posPnlPct.toFixed(1)}%)` : `SELL ${tokenInfo.symbol}`}</span>
+                    </button>
+                  ) : tokenInfo && onQuickTrade ? (
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -823,7 +856,7 @@ const TerminalConsole: React.FC<TerminalConsoleProps> = ({ logs, setLogs, retent
                       <Zap className="w-2.5 h-2.5 text-emerald-400 animate-pulse" />
                       <span>BUY {tokenInfo.symbol}</span>
                     </button>
-                  )}
+                  ) : null}
 
                 </div>
               </div>
@@ -992,6 +1025,8 @@ export const PnLPage = ({
     setTelemetryAllowGoldenCross?: (v: boolean) => void;
     maxRebuyTimes?: number;
     setMaxRebuyTimes?: (v: number) => void;
+    tradeOnlyOnce?: boolean;
+    setTradeOnlyOnce?: (v: boolean) => void;
     apiKey?: string;
     setApiKey?: (v: string) => void;
     jupiterRpcUrl?: string;
@@ -1063,6 +1098,8 @@ export const PnLPage = ({
     setManualGemInput = () => {},
     maxRebuyTimes = 3,
     setMaxRebuyTimes = () => {},
+    tradeOnlyOnce = true,
+    setTradeOnlyOnce = () => {},
     apiKey = '',
     setApiKey = () => {},
     jupiterRpcUrl = '',
@@ -1627,7 +1664,7 @@ export const PnLPage = ({
     hardenedMaxBuySellRatio, hardenedMaxPriceChange1m,
     hardenedMinBondingProgress, hardenedMaxBondingProgress, hardenedMinAge, hardenedMaxAge,
     hardenedMinLatency, hardenedMaxLatency, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown,
-    hardenedMinProfit5m, enableLatencyGuard, rpcLatency, hardenedMatchRequirement, maxRebuyTimes
+    hardenedMinProfit5m, enableLatencyGuard, rpcLatency, hardenedMatchRequirement, maxRebuyTimes, tradeOnlyOnce
   });
 
   configRef.current = {
@@ -1639,7 +1676,7 @@ export const PnLPage = ({
     hardenedMaxBuySellRatio, hardenedMaxPriceChange1m,
     hardenedMinBondingProgress, hardenedMaxBondingProgress, hardenedMinAge, hardenedMaxAge,
     hardenedMinLatency, hardenedMaxLatency, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown,
-    hardenedMinProfit5m, enableLatencyGuard, rpcLatency, hardenedMatchRequirement, maxRebuyTimes
+    hardenedMinProfit5m, enableLatencyGuard, rpcLatency, hardenedMatchRequirement, maxRebuyTimes, tradeOnlyOnce
   };
 
   const checkDexPlatformSourcesAllowed = useCallback((mint: string, dexId?: string) => {
@@ -3082,6 +3119,7 @@ export const PnLPage = ({
         tradeUnknown,
         hardenedMinProfit5m,
         maxRebuyTimes,
+        tradeOnlyOnce,
         enableLatencyGuard,
         updatedAt: new Date().toISOString()
       }, undefined, false);
@@ -3096,7 +3134,7 @@ export const PnLPage = ({
     hardenedMinBuyCount30s, hardenedMaxBuyCount30s, hardenedMinBuySellRatio,
     hardenedMaxBuySellRatio, hardenedMaxPriceChange1m,
     hardenedMinBondingProgress, hardenedMaxBondingProgress, hardenedMinAge, hardenedMaxAge,
-    hardenedMinLatency, hardenedMaxLatency, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown, hardenedMinProfit5m, maxRebuyTimes, enableLatencyGuard,
+    hardenedMinLatency, hardenedMaxLatency, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown, hardenedMinProfit5m, maxRebuyTimes, tradeOnlyOnce, enableLatencyGuard,
     addLog
   ]);
 
@@ -3477,7 +3515,8 @@ const checkTokenCriteria = (mint: string): {
 
     // Trade frequency guard: Max trades per token check
     const storeStateForBuy = useAppStore.getState();
-    const activeMaxRebuyTimes = configRef.current.maxRebuyTimes !== undefined ? configRef.current.maxRebuyTimes : maxRebuyTimes;
+    const isTradeOnce = configRef.current.tradeOnlyOnce !== undefined ? configRef.current.tradeOnlyOnce : (storeStateForBuy.tradeOnlyOnce ?? true);
+    const activeMaxRebuyTimes = isTradeOnce ? 1 : (configRef.current.maxRebuyTimes !== undefined ? configRef.current.maxRebuyTimes : maxRebuyTimes);
     const totalTradedCount = getTradeCount(
       mint,
       symbol,
@@ -3487,7 +3526,7 @@ const checkTokenCriteria = (mint: string): {
     );
 
     if (totalTradedCount >= activeMaxRebuyTimes) {
-      addLog(`❌ [TRADE LIMIT BLOCK] Skipped buy of ${symbol} (${mint.slice(0, 8)}...): Token has already been traded ${totalTradedCount} times (Limit: max ${activeMaxRebuyTimes} trades per token).`, 'warn');
+      addLog(`❌ [TRADE LIMIT BLOCK] Skipped buy of ${symbol} (${mint.slice(0, 8)}...): Token has already been traded ${totalTradedCount} times (${isTradeOnce ? 'Policy: Trade Only Once / No Rebuy' : `Limit: max ${activeMaxRebuyTimes} trades`}).`, 'warn');
       return;
     }
 
@@ -3978,6 +4017,10 @@ const checkTokenCriteria = (mint: string): {
       const pos = positionsRef.current[mint];
       const symbol = pos?.symbol || mint.slice(0, 6);
       addLog(`⚠️ ${side.toUpperCase()} EXIT FAILED for ${symbol}: ${errorMessage} — will keep retrying automatically`, 'warning');
+    });
+
+    exitMgr.setOnLogCallback((msg, type, category, metadata) => {
+      addLog(msg, type as any, category, metadata);
     });
 
     exitMgr.setOnExitCallback((mint, side, signature, pnlPct, outputAmountSol) => {
@@ -5608,6 +5651,43 @@ const checkTokenCriteria = (mint: string): {
                 )}
               </div>
 
+              {/* Trade Frequency & Rebuy Guard */}
+              <div className="bg-[#050509] border border-[#2d2e3d] rounded-lg p-3 mb-3">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] text-[#94a3b8] uppercase font-bold tracking-wider">
+                      🛡️ Trade Tokens Only Once (No Rebuy)
+                    </span>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono font-bold ${tradeOnlyOnce ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'}`}>
+                      {tradeOnlyOnce ? '1x Only / No Rebuy' : `Rebuy: Max ${maxRebuyTimes}x`}
+                    </span>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input 
+                      id="toggle-trade-only-once-pnl"
+                      type="checkbox" 
+                      checked={tradeOnlyOnce} 
+                      onChange={(e) => {
+                        const next = e.target.checked;
+                        setTradeOnlyOnce(next);
+                        useAppStore.getState().setTradeOnlyOnce(next);
+                        if (next) {
+                          setMaxRebuyTimes(1);
+                          useAppStore.getState().setMaxRebuyTimes(1);
+                        }
+                      }} 
+                      className="sr-only peer"
+                    />
+                    <div className="w-9 h-5 bg-[#2d2e3d] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-500"></div>
+                  </label>
+                </div>
+                <p className="text-[10px] text-[#64748b] leading-tight">
+                  {tradeOnlyOnce 
+                    ? "Each token will strictly be traded 1 time only. Already traded tokens will be permanently filtered out from candidate discovery and sniper buy loops." 
+                    : `Tokens can be rebought up to ${maxRebuyTimes} times before being blocked.`}
+                </p>
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3">
                 <div>
                   <div className="flex justify-between text-[11px] text-[#64748b] mb-1.5 uppercase font-medium"><span>Trade Size</span><span>SOL</span></div>
@@ -5618,8 +5698,24 @@ const checkTokenCriteria = (mint: string): {
                   <input type="number" value={maxPositions} onChange={(e) => setMaxPositions(Number(e.target.value))} className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-2 text-[13px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors" />
                 </div>
                 <div>
-                  <div className="flex justify-between text-[11px] text-[#64748b] mb-1.5 uppercase font-medium"><span>Max Rebuy Times</span></div>
-                  <input id="input-max-rebuy-times" type="number" min="1" step="1" value={maxRebuyTimes} onChange={(e) => setMaxRebuyTimes(Number(e.target.value))} className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-2 text-[13px] text-white font-mono focus:outline-none focus:border-[#c7f284] transition-colors" />
+                  <div className="flex justify-between text-[11px] text-[#64748b] mb-1.5 uppercase font-medium">
+                    <span>Max Rebuy Times</span>
+                    {tradeOnlyOnce && <span className="text-[10px] text-emerald-400 font-mono">Locked: 1</span>}
+                  </div>
+                  <input 
+                    id="input-max-rebuy-times" 
+                    type="number" 
+                    min="1" 
+                    step="1" 
+                    disabled={tradeOnlyOnce}
+                    value={tradeOnlyOnce ? 1 : maxRebuyTimes} 
+                    onChange={(e) => {
+                      const val = Math.max(1, Number(e.target.value));
+                      setMaxRebuyTimes(val);
+                      useAppStore.getState().setMaxRebuyTimes(val);
+                    }} 
+                    className={`w-full bg-[#050509] border rounded-lg px-3 py-2 text-[13px] font-mono focus:outline-none transition-colors ${tradeOnlyOnce ? 'border-[#2d2e3d]/50 text-slate-500 cursor-not-allowed' : 'border-[#2d2e3d] text-white focus:border-[#c7f284]'}`} 
+                  />
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-3 mb-3">
@@ -6780,7 +6876,9 @@ const checkTokenCriteria = (mint: string): {
                 setLogs={setLogs} 
                 retentionLimit={retentionLimit}
                 setRetentionLimit={setRetentionLimit}
+                positions={positions}
                 onQuickTrade={handleQuickTradeFromLogs}
+                onQuickSell={executeSell}
               />
             ) : (
               <div className="p-4 overflow-y-auto max-h-[480px] space-y-2 font-mono text-[11px] flex-1 break-words">

@@ -110,4 +110,49 @@ export function getTradeCount(
   return Math.max(completedBuys, isActive) + isPending;
 }
 
+export interface RebuyValidationOptions {
+  tradeOnlyOnce?: boolean;
+  maxRebuyTimes?: number;
+  trades?: SniperTrade[];
+  positions?: Record<string, any>;
+  pendingQueue?: Set<string>;
+  network?: string;
+}
+
+export function isRebuyAllowed(
+  tokenAddress: string,
+  symbol: string | undefined,
+  options?: RebuyValidationOptions
+): { allowed: boolean; count: number; maxAllowed: number; reason?: string } {
+  const storeState = typeof useAppStore !== 'undefined' ? useAppStore.getState() : null;
+  const isTradeOnce = options?.tradeOnlyOnce ?? storeState?.tradeOnlyOnce ?? true;
+  const maxAllowed = isTradeOnce ? 1 : Math.max(1, options?.maxRebuyTimes ?? storeState?.maxRebuyTimes ?? 1);
+
+  const count = getTradeCount(
+    tokenAddress,
+    symbol,
+    options?.trades || storeState?.mySniperTrades || [],
+    options?.positions || storeState?.activePositions || {},
+    options?.pendingQueue,
+    options?.network
+  );
+
+  if (count >= maxAllowed) {
+    return {
+      allowed: false,
+      count,
+      maxAllowed,
+      reason: isTradeOnce
+        ? `TOKEN_ALREADY_TRADED_ONCE (Trade Count: ${count}, Policy: Trade Only Once / No Rebuy)`
+        : `MAX_REBUY_EXCEEDED (Trade Count: ${count} >= Limit: ${maxAllowed})`,
+    };
+  }
+
+  return {
+    allowed: true,
+    count,
+    maxAllowed,
+  };
+}
+
 

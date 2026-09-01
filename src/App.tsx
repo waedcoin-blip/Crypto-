@@ -636,6 +636,13 @@ function App() {
     }
     return 1;
   });
+  const [tradeOnlyOnce, setTradeOnlyOnce] = useState<boolean>(() => {
+    const saved = localStorage.getItem('app_tradeOnlyOnce');
+    if (saved !== null) return saved === 'true';
+    const savedHd = localStorage.getItem('hd_trade_only_once');
+    if (savedHd !== null) return savedHd === 'true';
+    return true;
+  });
 
   useEffect(() => {
     // Legacy expert_criteria_v3 initializer removed to prevent destructive resets
@@ -707,6 +714,8 @@ function App() {
     localStorage.setItem('hd_trade_unknown', tradeUnknown.toString());
     localStorage.setItem('hd_min_profit_5m', hardenedMinProfit5m.toString());
     localStorage.setItem('hd_max_rebuy_times', maxRebuyTimes.toString());
+    localStorage.setItem('hd_trade_only_once', tradeOnlyOnce.toString());
+    localStorage.setItem('app_tradeOnlyOnce', tradeOnlyOnce.toString());
     localStorage.setItem('hd_enable_latency_guard', enableLatencyGuard.toString());
     localStorage.setItem('hd_telemetry_allow_whale', telemetryAllowWhaleBuy.toString());
     localStorage.setItem('hd_telemetry_allow_high', telemetryAllowHighBuy.toString());
@@ -722,7 +731,7 @@ function App() {
     hardenedMinUniqueBuyers30s, hardenedMinBuyCount30s, hardenedMaxBuyCount30s,
     hardenedMinBuySellRatio, hardenedMaxBuySellRatio, hardenedMaxPriceChange1m,
     hardenedMinBondingProgress, hardenedMaxBondingProgress, hardenedMinAge, hardenedMaxAge,
-    hardenedMinLatency, hardenedMaxLatency, hardenedMatchRequirement, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown, hardenedMinProfit5m, maxRebuyTimes, enableLatencyGuard,
+    hardenedMinLatency, hardenedMaxLatency, hardenedMatchRequirement, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown, hardenedMinProfit5m, maxRebuyTimes, tradeOnlyOnce, enableLatencyGuard,
     telemetryAllowWhaleBuy, telemetryAllowHighBuy, telemetryAllowVolumeSpike, telemetryAllowMigrated, telemetryAllowGoldenCross,
     telemetryWhaleBuyMin, telemetryHighBuyMin, telemetryVolumeSpikeMin, activePreset
   ]);
@@ -1126,16 +1135,16 @@ function App() {
   }, [tokenMetrics]);
 
   const latestState = useRef({ 
-    tokenMetrics, autoSniperEnabled, isLiveTrading, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, unknownStopLoss, activePositions, maxPositions, slippage, moonbagStrategy, telegramBotToken, telegramChatId, mySniperTrades,
+    tokenMetrics, autoSniperEnabled, isLiveTrading, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, unknownStopLoss, activePositions, maxPositions, slippage, moonbagStrategy, telegramBotToken, telegramChatId, mySniperTrades, trades,
     hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax, hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore, hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s, hardenedMinBuyCount30s, hardenedMaxBuyCount30s, hardenedMinBuySellRatio, hardenedMaxBuySellRatio, hardenedMaxPriceChange1m,
     hardenedMinBondingProgress, hardenedMaxBondingProgress, hardenedMinAge, hardenedMaxAge,
-    hardenedMinLatency, hardenedMaxLatency, hardenedMatchRequirement, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown, hardenedMinProfit5m, enableLatencyGuard, maxRebuyTimes,
+    hardenedMinLatency, hardenedMaxLatency, hardenedMatchRequirement, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown, hardenedMinProfit5m, enableLatencyGuard, maxRebuyTimes, tradeOnlyOnce,
   });
   latestState.current = { 
-    tokenMetrics, autoSniperEnabled, isLiveTrading, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, unknownStopLoss, activePositions, maxPositions, slippage, moonbagStrategy, telegramBotToken, telegramChatId, mySniperTrades,
+    tokenMetrics, autoSniperEnabled, isLiveTrading, minTakeProfit, maxTakeProfit, bondingCurveTakeProfit, stopLoss, bondingCurveStopLoss, pumpSwapStopLoss, unknownStopLoss, activePositions, maxPositions, slippage, moonbagStrategy, telegramBotToken, telegramChatId, mySniperTrades, trades,
     hardenedMcapMinPump, hardenedMcapMinRaydium, hardenedMcapMax, hardenedLiquidityMin, hardenedLiquidityRatio, hardenedMaxRiskScore, hardenedMaxDevOwnership, hardenedMaxTop10, hardenedMinUniqueBuyers30s, hardenedMinBuyCount30s, hardenedMaxBuyCount30s, hardenedMinBuySellRatio, hardenedMaxBuySellRatio, hardenedMaxPriceChange1m,
     hardenedMinBondingProgress, hardenedMaxBondingProgress, hardenedMinAge, hardenedMaxAge,
-    hardenedMinLatency, hardenedMaxLatency, hardenedMatchRequirement, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown, hardenedMinProfit5m, enableLatencyGuard, maxRebuyTimes,
+    hardenedMinLatency, hardenedMaxLatency, hardenedMatchRequirement, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown, hardenedMinProfit5m, enableLatencyGuard, maxRebuyTimes, tradeOnlyOnce,
   };
 
   const fns = useRef<any>({});
@@ -1273,6 +1282,13 @@ function App() {
         } else {
           const tokens = tokensForTracking;
 
+          const tradedMints = new Set<string>([
+            ...(state.mySniperTrades || []).map((t: any) => t.address || t.mint || t.tokenAddress).filter(Boolean),
+            ...(state.trades || []).map((t: any) => t.address || t.mint || t.tokenAddress).filter(Boolean),
+            ...Object.keys(state.activePositions || {}),
+            ...Array.from(autoBoughtTokens.current)
+          ]);
+
           const customConfig = {
             minMcapPump: state.hardenedMcapMinPump,
             minMcapRaydium: state.hardenedMcapMinRaydium,
@@ -1297,6 +1313,9 @@ function App() {
             tradeBonding: state.tradeBonding,
             tradeUnknown: state.tradeUnknown,
             hardenedMinProfit5m: state.hardenedMinProfit5m,
+            tradeOnlyOnce: state.tradeOnlyOnce ?? true,
+            maxRebuyTimes: state.maxRebuyTimes ?? 1,
+            tradedMints,
             minBuyScoreThreshold: 45,
           };
 
@@ -1306,6 +1325,11 @@ function App() {
           for (const candidate of rankedCandidates) {
             if (currentActiveCount >= (state.maxPositions ?? 5)) break;
             if (state.activePositions[candidate.mint] || pendingTrades.current.has(candidate.mint)) continue;
+
+            // Strict Trade Only Once / No Rebuy check
+            if ((state.tradeOnlyOnce ?? true) && tradedMints.has(candidate.mint)) {
+              continue;
+            }
 
             // Trigger background security enrichment if pending
             if (candidate.securityStatus === 'PENDING') {
@@ -2063,14 +2087,18 @@ function App() {
     pendingTrades.current.add(tokenAddress);
     entryGate.markEntryPending(tokenAddress);
     
-    // Trade frequency guard: Max 1 trade per token
-    const hasTradedBefore = latestState.current.mySniperTrades.some(t => t.address === tokenAddress);
+    // Trade frequency guard: Max trades per token check
+    const isTradeOnce = latestState.current.tradeOnlyOnce ?? true;
+    const maxAllowedTrades = isTradeOnce ? 1 : Math.max(1, latestState.current.maxRebuyTimes ?? 1);
+
+    const hasTradedBefore = (latestState.current.mySniperTrades || []).some(t => t.address === tokenAddress) ||
+                            (latestState.current.trades || []).some((t: any) => (t.address === tokenAddress || t.tokenAddress === tokenAddress || t.mint === tokenAddress));
     const activePositionsCount = latestState.current.activePositions[tokenAddress] ? 1 : 0;
     const totalTradedCount = (hasTradedBefore ? 1 : 0) + activePositionsCount;
 
-    if (totalTradedCount >= 1 || autoBoughtTokens.current.has(tokenAddress)) {
-      console.log(`[TRADE LIMIT BLOCK] Sniper buy of ${symbol} blocked. Already traded or attempted once.`);
-      addNotification(`Trade Limit Guard: Skipped buy of ${symbol} (Max 1 trade per token reached).`);
+    if (totalTradedCount >= maxAllowedTrades || (isTradeOnce && autoBoughtTokens.current.has(tokenAddress))) {
+      console.log(`[TRADE LIMIT BLOCK] Sniper buy of ${symbol} blocked. Policy limit reached (Trades: ${totalTradedCount} >= Limit: ${maxAllowedTrades}, Trade Once: ${isTradeOnce}).`);
+      addNotification(`Trade Limit Guard: Skipped buy of ${symbol} (${isTradeOnce ? 'Policy: Trade 1 time only without rebuy' : `Max ${maxAllowedTrades} trades reached`}).`);
       pendingTrades.current.delete(tokenAddress);
       return;
     }
@@ -3314,6 +3342,9 @@ function App() {
             const val = Number(data.maxRebuyTimes);
             setMaxRebuyTimes(val === 2 ? 3 : val);
           }
+          if (data.tradeOnlyOnce !== undefined) {
+            setTradeOnlyOnce(data.tradeOnlyOnce === true);
+          }
           if (data.rpcUrl !== undefined) setRpcUrl(String(data.rpcUrl));
           if (data.rpcUrl2 !== undefined) setRpcUrl2(String(data.rpcUrl2));
           if (data.customWsUrl !== undefined) setCustomWsUrl(String(data.customWsUrl));
@@ -3381,6 +3412,7 @@ function App() {
       tradeUnknown,
       hardenedMinProfit5m,
       maxRebuyTimes,
+      tradeOnlyOnce,
       rpcUrl,
       rpcUrl2,
       customWsUrl,
@@ -3400,7 +3432,7 @@ function App() {
     hardenedMaxBondingProgress, hardenedMinAge, hardenedMaxAge, hardenedMinLatency, hardenedMaxLatency,
     hardenedMatchRequirement, enableLatencyGuard, telemetryWhaleBuyMin, telemetryHighBuyMin,
     telemetryVolumeSpikeMin, telemetryAllowWhaleBuy, telemetryAllowHighBuy, telemetryAllowVolumeSpike,
-    telemetryAllowMigrated, telemetryAllowGoldenCross, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown, hardenedMinProfit5m, maxRebuyTimes,
+    telemetryAllowMigrated, telemetryAllowGoldenCross, tradePumpFun, tradeRaydium, tradeBonding, tradeUnknown, hardenedMinProfit5m, maxRebuyTimes, tradeOnlyOnce,
     rpcUrl, rpcUrl2, customWsUrl, apiKey, jupiterRpcUrl
   ]);
 
@@ -4881,23 +4913,30 @@ function App() {
                     <div className={"w-3 h-3 bg-white rounded-full transition-transform " + (moonbagStrategy ? "translate-x-5" : "")} />
                   </div>
                   <span className="text-xs text-slate-400">
-                    {moonbagStrategy ? `Active: Tiered Take Profit ${minTakeProfit}% (50% out) / ${maxTakeProfit}% (Final out)` : 'Inactive: No moonbag strategy'}
+                    {moonbagStrategy ? `Active: Tiered Take Profit ${minTakeProfit}% (50% out) / ${maxTakeProfit}% (Final out)` : 'Inactive: Sell all at profit target'}
                   </span>
                 </div>
-                
 
                 <div className="flex justify-between items-center text-[10px] font-bold mt-4 mb-1">
-                  <span className="text-slate-500 uppercase">100x Moonbag Strategy</span>
+                  <span className="text-slate-500 uppercase">Trade Tokens Only Once (No Rebuy)</span>
+                  <span className={tradeOnlyOnce ? "text-emerald-400" : "text-amber-400"}>
+                    {tradeOnlyOnce ? "Single Trade" : `Rebuy: max ${maxRebuyTimes}x`}
+                  </span>
                 </div>
                 <div className="flex items-center gap-2 mb-4">
                   <div 
-                    onClick={() => setMoonbagStrategy(!moonbagStrategy)}
-                    className={"w-10 h-5 rounded-full p-1 cursor-pointer transition-colors relative " + (moonbagStrategy ? "bg-emerald-500" : "bg-slate-700")}
+                    id="btn-toggle-trade-only-once"
+                    onClick={() => {
+                      const next = !tradeOnlyOnce;
+                      setTradeOnlyOnce(next);
+                      if (next) setMaxRebuyTimes(1);
+                    }}
+                    className={"w-10 h-5 rounded-full p-1 cursor-pointer transition-colors relative " + (tradeOnlyOnce ? "bg-emerald-500" : "bg-slate-700")}
                   >
-                    <div className={"w-3 h-3 bg-white rounded-full transition-transform " + (moonbagStrategy ? "translate-x-5" : "")} />
+                    <div className={"w-3 h-3 bg-white rounded-full transition-transform " + (tradeOnlyOnce ? "translate-x-5" : "")} />
                   </div>
                   <span className="text-xs text-slate-400">
-                    {moonbagStrategy ? 'Active: 2x pull principal, 10x pull 50%, hold moonbag' : 'Inactive: Sell all at profit target'}
+                    {tradeOnlyOnce ? 'Active: Never rebuy tokens already traded once' : `Inactive: Rebuys permitted (limit: ${maxRebuyTimes} trades)`}
                   </span>
                 </div>
                 
@@ -6020,6 +6059,8 @@ function App() {
           setTelemetryAllowGoldenCross,
           maxRebuyTimes,
           setMaxRebuyTimes,
+          tradeOnlyOnce,
+          setTradeOnlyOnce,
           apiKey,
           setApiKey,
           jupiterRpcUrl,

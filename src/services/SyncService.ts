@@ -42,6 +42,7 @@ export interface CriteriaSyncPayload {
   tradeUnknown?: boolean;
   hardenedMinProfit5m?: number;
   maxRebuyTimes?: number;
+  tradeOnlyOnce?: boolean;
 
   // Exit & Position Limits
   minTakeProfit?: number;

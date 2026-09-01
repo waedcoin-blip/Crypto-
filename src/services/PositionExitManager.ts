@@ -7,12 +7,13 @@ import {
   ManagedPosition, 
   RiskConfig, 
   ExitCallback, 
-  ExitErrorCallback 
+  ExitErrorCallback,
+  RiskLogCallback
 } from './RiskManager';
 
 export type ManagedExitPosition = ManagedPosition;
 export type DefaultExitConfig = RiskConfig;
-export type { ExitCallback, ExitErrorCallback };
+export type { ExitCallback, ExitErrorCallback, RiskLogCallback };
 
 /**
  * PositionExitManager: Compatibility proxy delegating strictly to the singleton RiskManager.
@@ -81,6 +82,10 @@ export class PositionExitManager {
 
   public setOnExitErrorCallback(cb: ExitErrorCallback): void {
     this.delegate.setOnExitErrorCallback(cb);
+  }
+
+  public setOnLogCallback(cb: RiskLogCallback): void {
+    this.delegate.setOnLogCallback(cb);
   }
 
   public getPosition(mint: string): ManagedPosition | undefined {

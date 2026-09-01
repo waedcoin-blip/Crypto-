@@ -54,6 +54,9 @@ export interface OpportunityScoreConfig {
   tradeUnknown?: boolean;
   hardenedMinProfit5m?: number;
   minBuyScoreThreshold?: number;
+  tradeOnlyOnce?: boolean;
+  maxRebuyTimes?: number;
+  tradedMints?: Set<string> | string[];
 }
 
 export class OpportunityScoreEngine {
@@ -375,12 +378,20 @@ export class OpportunityScoreEngine {
     config?: OpportunityScoreConfig
   ): TradeCandidate[] {
     const seenMints = new Set<string>();
+    const tradedSet = config?.tradedMints
+      ? (config.tradedMints instanceof Set ? config.tradedMints : new Set(config.tradedMints))
+      : null;
     const candidates: TradeCandidate[] = [];
 
     for (const token of tokens) {
       const mint = (token as any).address || (token as any).mintAddress;
       if (!mint || seenMints.has(mint)) continue;
       seenMints.add(mint);
+
+      // If tradeOnlyOnce is active and token was already traded, exclude candidate
+      if (config?.tradeOnlyOnce && tradedSet && tradedSet.has(mint)) {
+        continue;
+      }
 
       const scored = this.scoreCandidate(token, config);
       // Filter out definitely unsafe or invalid mints from trade consideration
