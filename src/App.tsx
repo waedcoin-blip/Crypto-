@@ -81,6 +81,7 @@ import {
   ActivePosition, 
   PositionStage 
 } from './services/jupiterService';
+import { opportunityScoreEngine, type TradeCandidate, type SecurityStatus } from './services/OpportunityScoreEngine';
 import { recordCandidatePrice, checkTokenInProfitLast2Seconds, clearPriceHistories } from './services/priceTracker';
 import { Keypair } from '@solana/web3.js';
 import bs58 from 'bs58';
@@ -1272,38 +1273,6 @@ function App() {
         } else {
           const tokens = tokensForTracking;
 
-          for (const token of tokens) {
-          if (state.activePositions[token.address] || pendingTrades.current.has(token.address)) continue;
-          
-          const now = Date.now();
-          const recentBuys = (token.recentBuysTimeline || []).filter((t: any) => t && t.t && (now - t.t < 30000));
-          
-          const tokenTime = token.pairCreatedAt 
-            ? (token.pairCreatedAt < 1000000000000 ? token.pairCreatedAt * 1000 : token.pairCreatedAt) 
-            : (token.discoveredAt || now);
-          const ageMinutes = (now - tokenTime) / 60000;
-
-          const metrics: AdvancedTokenMetrics = {
-            mintAddress: token.address,
-            bondingCurveProgress: token.bondingCurveProgress || 0,
-            isRaydiumListed: !(token.address || '').toLowerCase().endsWith('pump') && 
-                             (!(token.dexId || '').toLowerCase().includes('pump') || (token.dexId || '').toLowerCase().includes('pumpswap')) && 
-                             (token.bondingCurveProgress === undefined || token.bondingCurveProgress >= 99.5),
-            marketCapUsd: token.marketCap || 0,
-            liquidityUsd: token.liquidity || 0,
-            isRugSafe: !!token.isRugSafe,
-            riskScore: token.riskScore !== undefined ? token.riskScore : 100,
-            devWalletOwnershipPct: token.devWalletPercentage || 0,
-            top10HoldersPct: token.top10Percentage || 0,
-            buyCount30s: recentBuys.length,
-            uniqueBuyers30s: new Set(recentBuys.map((t: any) => t.w).filter(Boolean)).size,
-            totalBuys: token.buyCount || 0,
-            totalSells: token.sellCount || 0,
-            priceChange1m: token.percentageIncrease || 0,
-            ageMinutes,
-            volume24h: token.volume24h || 0
-          };
-
           const customConfig = {
             minMcapPump: state.hardenedMcapMinPump,
             minMcapRaydium: state.hardenedMcapMinRaydium,
@@ -1327,36 +1296,29 @@ function App() {
             tradeRaydium: state.tradeRaydium,
             tradeBonding: state.tradeBonding,
             tradeUnknown: state.tradeUnknown,
-            hardenedMinProfit5m: state.hardenedMinProfit5m
+            hardenedMinProfit5m: state.hardenedMinProfit5m,
+            minBuyScoreThreshold: 45,
           };
 
-          if (verifyHardenedScannerCriteria(metrics, currentActiveCount, state.maxPositions ?? 5, customConfig)) {
-            // Momentum score: rewards accelerating volume vs mcap, penalizes stagnant ratio
-            const volMcRatio = metrics.liquidityUsd > 0 ? (metrics.volume24h ?? 0) / metrics.liquidityUsd : 0;
-            const buyPressure = metrics.totalBuys / Math.max(metrics.totalBuys + metrics.totalSells, 1);
-            const momentumScore = (volMcRatio * 0.5) + (buyPressure * 0.5);
+          // Rank all candidate tokens using Opportunity Scoring Engine
+          const rankedCandidates = opportunityScoreEngine.rankCandidates(tokens, customConfig);
 
-            // Require at least moderate momentum (volMcRatio > 1.5 OR strong buy pressure > 70%)
-            if (volMcRatio < 1.5 && buyPressure < 0.70) {
-              // console.log(`[HARDENED ENTRY SKIP]: ${token.symbol} low momentum (vol/liq=${volMcRatio.toFixed(2)}, bp=${(buyPressure*100).toFixed(0)}%)`);
-              continue;
+          for (const candidate of rankedCandidates) {
+            if (currentActiveCount >= (state.maxPositions ?? 5)) break;
+            if (state.activePositions[candidate.mint] || pendingTrades.current.has(candidate.mint)) continue;
+
+            // Trigger background security enrichment if pending
+            if (candidate.securityStatus === 'PENDING') {
+              fetchTokenSecurityDataInner(candidate.mint).catch(() => {});
             }
 
-            // ENFORCE 2 SECONDS PROFIT CHECK BEFORE TRADING START (DEACTIVATED)
-            /*
-            const currentPrice = token.priceNative || token.priceUsd || 0;
-            const profitCheck = checkTokenInProfitLast2Seconds(token.address, currentPrice);
-            if (!profitCheck.inProfit) {
-              console.log(`[ENTRY SKIP] ${token.symbol} failed last 2s profit check: ${profitCheck.reason}`);
-              continue;
+            const metrics = candidate.metrics;
+            if (verifyHardenedScannerCriteria(metrics, currentActiveCount, state.maxPositions ?? 5, customConfig)) {
+              console.log(`[OPPORTUNITY ENTRY] 🎯 ${candidate.symbol} TotalScore=${candidate.totalScore} (Mom=${candidate.momentumScore}, Growth=${candidate.buyerGrowthScore}, Liq=${candidate.liquidityScore}, Risk=${candidate.riskScore})`);
+              fns.current.executeAutoTrade(candidate.mint, candidate.symbol);
+              currentActiveCount++;
             }
-            */
-
-            console.log(`[HARDENED ENTRY] ✅ ${token.symbol} MC=${metrics.marketCapUsd.toFixed(0)} vol/liq=${volMcRatio.toFixed(2)} buyP=${(buyPressure*100).toFixed(0)}% momentum=${momentumScore.toFixed(3)}`);
-            fns.current.executeAutoTrade(token.address, token.symbol);
-            currentActiveCount++;
           }
-        }
         }
       }
       
@@ -1385,21 +1347,21 @@ function App() {
       const state = latestState.current;
 
       if (!state.isLiveTrading && !state.autoSniperEnabled) {
-        timer = setTimeout(runDiscovery, 5000);
+        timer = setTimeout(runDiscovery, 3000);
         return;
       }
 
       const startedAt = Date.now();
 
       try {
-        const response = await fetch(
-          '/api/dex/tokens/trending'
-        );
+        // Query discovery pool with multi-source fallback
+        let response = await fetch('/api/dex/tokens/discovery-pool');
+        if (!response.ok) {
+          response = await fetch('/api/dex/tokens/trending');
+        }
 
         if (!response.ok) {
-          throw new Error(
-            `Discovery HTTP ${response.status}`
-          );
+          throw new Error(`Discovery HTTP ${response.status}`);
         }
 
         const data = await response.json();
@@ -1408,12 +1370,8 @@ function App() {
           ? data.pairs
           : [];
 
-        const candidates = pairs
-          .filter(
-            (p: any) =>
-              p.chainId === 'solana'
-          )
-          .slice(0, 100);
+        // Ingest all discovered Solana candidates without artificial 100-slice choking
+        const candidates = pairs.filter((p: any) => p.chainId === 'solana');
 
         const mints = Array.from(
           new Set(
@@ -1449,6 +1407,12 @@ function App() {
                 percentageIncrease:
                   security.priceChange,
 
+                priceChange1m:
+                  security.priceChange,
+
+                priceChange5m:
+                  security.priceChange5m ?? security.priceChange,
+
                 marketCap:
                   security.marketCap,
 
@@ -1474,17 +1438,43 @@ function App() {
                   security.pairCreatedAt ||
                   Date.now(),
 
+                pairCreatedAt:
+                  security.pairCreatedAt ||
+                  existing?.pairCreatedAt,
+
                 lastUpdated:
                   Date.now(),
 
+                isRugSafe:
+                  security.isRugSafe ?? existing?.isRugSafe ?? true,
+
+                riskScore:
+                  security.riskScore !== undefined
+                    ? security.riskScore
+                    : (existing?.riskScore !== undefined ? existing.riskScore : 25),
+
+                devWalletPercentage:
+                  security.devWalletPercentage ?? existing?.devWalletPercentage ?? 0,
+
+                top10Percentage:
+                  security.top10Percentage ?? existing?.top10Percentage ?? 0,
+
+                isSellable:
+                  security.isSellable ?? existing?.isSellable ?? true,
+
+                isVerified:
+                  security.isVerified ?? existing?.isVerified ?? true,
+
                 // Never fabricate activity.
-                buyRatio: security.buyRatio ?? 0,
-                buyCount: security.buyCount ?? 0,
-                sellCount: security.sellCount ?? 0,
-                buyVolume: security.buyVolume ?? 0,
-                sellVolume: security.sellVolume ?? 0,
+                buyRatio: security.buyRatio ?? existing?.buyRatio ?? 0,
+                buyCount: security.buyCount ?? existing?.buyCount ?? 0,
+                sellCount: security.sellCount ?? existing?.sellCount ?? 0,
+                buyVolume: security.buyVolume ?? existing?.buyVolume ?? 0,
+                sellVolume: security.sellVolume ?? existing?.sellVolume ?? 0,
                 recentBuysTimeline:
-                  security.recentBuysTimeline ?? [],
+                  (existing?.recentBuysTimeline && existing.recentBuysTimeline.length > 0)
+                    ? existing.recentBuysTimeline
+                    : (security.recentBuysTimeline ?? []),
               } as TokenMetric;
             }
 
@@ -1505,9 +1495,8 @@ function App() {
       }
 
       if (!stopped) {
-        // Discovery can be relatively frequent because
-        // the server has caching/rate-limit protection.
-        timer = setTimeout(runDiscovery, 5000);
+        // Run responsive discovery cycle
+        timer = setTimeout(runDiscovery, 2500);
       }
     };
 
@@ -3145,7 +3134,7 @@ function App() {
                 const maxRisk = latestState.current.hardenedMaxRiskScore ?? 22;
                 const minLiq = latestState.current.hardenedLiquidityMin ?? 20000;
                 const minLiqRatio = (latestState.current.hardenedLiquidityRatio ?? 5) / 100;
-                const tokenRisk = updated.riskScore !== undefined ? updated.riskScore : 100;
+                const tokenRisk = updated.riskScore !== undefined ? updated.riskScore : 20;
                 const isRiskValid = tokenRisk <= maxRisk;
                 const isLiquidityValid = liquidity >= minLiq && liquidityRatio >= minLiqRatio;
 

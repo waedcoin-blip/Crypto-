@@ -82,7 +82,7 @@ export class EntryGate {
     // Retrieve criteria thresholds from server repository or criteria config
     let criteria = {
       minLiquidityUsd: 5000,
-      minAgeMinutes: Number.POSITIVE_INFINITY,
+      minAgeMinutes: 0,
       maxAgeMinutes: 1440,
       maxDevOwnershipPct: 10,
       maxTop10Pct: 40,

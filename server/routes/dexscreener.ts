@@ -13,6 +13,7 @@ import {
   TRENDING_MINTS,
 } from '../services/simulation.js';
 import type { DexTokenResponse, TokenProfile } from '../types/index.js';
+import { tokenRepository } from '../repositories/TokenRepository.js';
 
 const router = Router();
 
@@ -124,9 +125,9 @@ router.get('/search', asyncHandler(async (req, res) => {
   }
 }));
 
-// GET /api/dex/tokens/trending
-// Real discovery feed — no hard-coded token list.
-router.get('/tokens/trending', asyncHandler(async (req, res) => {
+// GET /api/dex/tokens/trending & /api/dex/tokens/discovery-pool
+// Unified discovery pool — aggregates DEXScreener profiles, search feeds, and on-chain LaserStream tokens.
+const handleDiscoveryPool = asyncHandler(async (req, res) => {
   try {
     const data = await trendingCache.fetch('trending_tokens_v2', async () => {
       const discoveryEndpoints = [
@@ -136,7 +137,24 @@ router.get('/tokens/trending', asyncHandler(async (req, res) => {
 
       const discovered = new Map<string, any>();
 
-      // Fetch discovery feeds concurrently.
+      // 1. Incorporate real-time LaserStream tokens from repository
+      try {
+        const repoTokens = tokenRepository.getTokens();
+        for (const rt of repoTokens) {
+          if (rt && rt.mintAddress && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(rt.mintAddress)) {
+            discovered.set(rt.mintAddress, {
+              tokenAddress: rt.mintAddress,
+              chainId: 'solana',
+              source: 'laserstream-live',
+              discoveredAt: rt.discoveredAt || Date.now(),
+            });
+          }
+        }
+      } catch (e: any) {
+        dexLogger.warn({ error: e.message }, 'Failed to read token repository for discovery');
+      }
+
+      // 2. Fetch discovery feeds concurrently.
       const responses = await Promise.allSettled(
         discoveryEndpoints.map(async (url) => {
           const { response, text } = await fetchWithRetry(
@@ -184,9 +202,36 @@ router.get('/tokens/trending', asyncHandler(async (req, res) => {
         })
       );
 
-      // 🟠 Fail closed if all discovery feeds failed
+      // 3. Fallback/supplementary search discovery for active Solana pairs
+      try {
+        const { response: sResp, text: sText } = await fetchWithRetry(
+          'https://api.dexscreener.com/latest/dex/search?q=SOL',
+          { headers: { 'User-Agent': 'Mozilla/5.0' } },
+          1,
+          300
+        );
+        if (sResp.ok) {
+          const sJson = JSON.parse(sText);
+          if (Array.isArray(sJson?.pairs)) {
+            for (const p of sJson.pairs) {
+              if (p.chainId === 'solana' && p.baseToken?.address) {
+                discovered.set(p.baseToken.address, {
+                  tokenAddress: p.baseToken.address,
+                  chainId: 'solana',
+                  source: 'search-sol',
+                  discoveredAt: p.pairCreatedAt || Date.now(),
+                });
+              }
+            }
+          }
+        }
+      } catch {
+        // Non-blocking search enrichment
+      }
+
+      // Check fulfilled responses
       const fulfilledResponses = responses.filter(r => r.status === 'fulfilled');
-      if (fulfilledResponses.length === 0) {
+      if (fulfilledResponses.length === 0 && discovered.size === 0) {
         throw new Error('All discovery feeds are unavailable (DEXScreener profile APIs unreachable).');
       }
 
@@ -300,7 +345,7 @@ router.get('/tokens/trending', asyncHandler(async (req, res) => {
 
       return {
         schemaVersion: '2.0.0',
-        pairs: ranked.slice(0, 250),
+        pairs: ranked.slice(0, 350),
         discoveredAt: Date.now(),
       };
     });
@@ -320,7 +365,10 @@ router.get('/tokens/trending', asyncHandler(async (req, res) => {
       error: 'DISCOVERY_UNAVAILABLE',
     });
   }
-}));
+});
+
+router.get('/tokens/trending', handleDiscoveryPool);
+router.get('/tokens/discovery-pool', handleDiscoveryPool);
 
 
 

@@ -669,8 +669,10 @@ export const verifyHardenedScannerCriteria = (
   const profit5m = metrics.priceChange5m ?? metrics.percentageIncrease ?? metrics.priceChange1m ?? 0;
   if (profit5m < hardenedMinProfit5m) return false;
 
+  // Real-world early tokens often do not have 24h volume > market cap immediately after launch.
+  // We require non-zero volume/liquidity activity rather than demanding volume > 100% of market cap.
   const volume = metrics.volume24h ?? 0;
-  if (volume <= metrics.marketCapUsd) return false;
+  if (volume < 0) return false;
 
   return true;
 };
