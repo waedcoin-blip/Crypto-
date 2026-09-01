@@ -3519,7 +3519,7 @@ function App() {
     // Global X-Ray Monitor (Telemetry Style - Master Monitor RPC)
     const conn = masterConnectionRef.current || connectionRef.current;
     if (isXRayEnabled && conn) {
-      const RAYDIUM_PROGRAM_ID = safePublicKey('675k1q2AYp74sk2Wym6L6nd56N7Y5D7T6jhpxS22bbe');
+      const RAYDIUM_PROGRAM_ID = safePublicKey('675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8');
       if (!RAYDIUM_PROGRAM_ID) return;
       
       const subId = conn.onLogs(RAYDIUM_PROGRAM_ID, async (logs) => {

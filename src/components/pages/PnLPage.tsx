@@ -2100,8 +2100,8 @@ export const PnLPage = ({
       try {
         setLaserstreamStatus('connecting');
         const defaultPrograms = [
-          '6EF87t756LkSg6GptZTEAtgX9v7R24C4FtsZbXm9o6RA', // Pump.fun
-          '675k1q2AYp74sk2Wym6L6nd56N7Y5D7T6jhpxS22bbe', // Raydium AMM
+          '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P', // Pump.fun
+          '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8', // Raydium AMM
         ];
 
         const res = await fetch('/api/laserstream/config', {

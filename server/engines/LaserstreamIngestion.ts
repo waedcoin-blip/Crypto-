@@ -54,8 +54,8 @@ export const LASERSTREAM_ENDPOINTS = {
 
 export const DEFAULT_NETWORK_PROGRAMS: Record<LaserStreamNetwork, string[]> = {
   mainnet: [
-    '6EF87t756LkSg6GptZTEAtgX9v7R24C4FtsZbXm9o6RA', // Pump.fun Mainnet
-    '675k1q2AYp74sk2Wym6L6nd56N7Y5D7T6jhpxS22bbe', // Raydium AMM Mainnet
+    '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P', // Pump.fun Mainnet
+    '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8', // Raydium AMM Mainnet
     'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4', // Jupiter v6 Mainnet
   ],
 };
