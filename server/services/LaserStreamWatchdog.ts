@@ -22,6 +22,8 @@ export interface WatchdogConfig {
   processingLagStaleMs: number;
   /** How long before lack of server updates marks the connection as stale */
   activityStaleMs: number;
+  /** Extended silence threshold after which a degraded transport is treated as dead */
+  disconnectAfterStaleMs: number;
 }
 
 export type ReconnectHandler = (fromSlot: number) => Promise<void> | void;
@@ -36,6 +38,7 @@ class LaserStreamWatchdog {
     checkIntervalMs: 1000,
     processingLagStaleMs: 30000,
     activityStaleMs: LASERSTREAM_ACTIVITY_STALE_MS,
+    disconnectAfterStaleMs: LASERSTREAM_ACTIVITY_STALE_MS * 3,
   };
 
   private lastReceivedSlot = 0;
@@ -74,6 +77,7 @@ class LaserStreamWatchdog {
   private stateChangeListeners: Set<StateChangeHandler> = new Set();
 
   private isReconnecting = false;
+  private lastStaleWarningAt = 0;
 
   constructor() {
     this.start();
@@ -179,16 +183,29 @@ class LaserStreamWatchdog {
   }
 
   public setDisconnected(): void {
-    this.status = "disconnected";
+    // Do not pre-set status here. evaluateHealth() must observe the transition so
+    // state listeners and the reconnect handler are invoked exactly once.
     this.transportConnected = false;
+    this.connectedAt = 0;
     this.evaluateHealth();
   }
 
-  public setDisabled(): void {
-    this.status = "disabled";
+  public setDisabled(errorMessage: string | null = null): void {
+    if (errorMessage) this.errorMessage = errorMessage;
+    // Keep the current status until evaluateHealth() performs the transition.
     this.transportConnected = false;
+    this.connectedAt = 0;
     this.isReconnecting = false;
-    this.evaluateHealth();
+    const previousStatus = this.status;
+    this.status = 'disabled';
+    if (previousStatus !== 'disabled') {
+      const telemetry = this.getMetrics();
+      this.stateChangeListeners.forEach((listener) => {
+        try { listener('disabled', telemetry); } catch (e) {
+          laserLogger.error({ error: e }, 'Error in watchdog state listener');
+        }
+      });
+    }
   }
 
   public setReplaying(replaying: boolean, fromSlot: number | null = null): void {
@@ -288,19 +305,30 @@ class LaserStreamWatchdog {
 
     const now = Date.now();
     const lastActivity = Math.max(this.lastEventAt, this.lastHeartbeatAt, this.connectedAt);
+    const activityAgeMs = lastActivity > 0 ? now - lastActivity : 0;
     const isStale =
       this.transportConnected &&
       lastActivity > 0 &&
-      now - lastActivity > (this.config.activityStaleMs || 12000);
+      activityAgeMs > this.config.activityStaleMs;
+    const isExtendedStale =
+      this.transportConnected &&
+      lastActivity > 0 &&
+      activityAgeMs > this.config.disconnectAfterStaleMs;
 
-    if (isStale) {
-      // No matching transaction activity is not proof that the gRPC transport is
-      // disconnected. Keep the transport state intact and surface the stream as
-      // degraded until a real transport error or heartbeat failure is observed.
+    if (isStale && now - this.lastStaleWarningAt >= this.config.activityStaleMs) {
+      this.lastStaleWarningAt = now;
       laserLogger.warn(
-        { lastActivityMsAgo: now - lastActivity },
-        'LaserStream activity stale; retaining transport connection and marking degraded'
+        { activityAgeMs, disconnectAfterStaleMs: this.config.disconnectAfterStaleMs },
+        'LaserStream activity stale; marking degraded while awaiting recovery'
       );
+    }
+
+    if (isExtendedStale) {
+      // A short quiet period can be caused by subscription filters, but prolonged
+      // silence is a recovery condition. Force a real disconnect so the normal
+      // transition/reconnect path is used rather than remaining degraded forever.
+      this.transportConnected = false;
+      this.connectedAt = 0;
     }
 
     let newStatus: LaserStreamHealthStatus;
@@ -405,9 +433,16 @@ class LaserStreamWatchdog {
     this.replayFromSlot = null;
     this.eventsReceived = 0;
     this.eventsProcessed = 0;
+    this.rawUpdatesReceived = 0;
+    this.invalidUpdates = 0;
+    this.rejectedUpdates = 0;
+    this.duplicateUpdates = 0;
+    this.queuedUpdates = 0;
+    this.processingFailures = 0;
     this.reconnectCount = 0;
     this.transportConnected = false;
     this.isReconnecting = false;
+    this.lastStaleWarningAt = 0;
     this.errorMessage = null;
     this.status = disabled ? 'disabled' : 'connecting';
   }

@@ -1,94 +1,90 @@
 import { laserStreamWatchdog } from '../server/services/LaserStreamWatchdog.js';
 import assert from 'assert';
 
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 async function runTests() {
   console.log('Running LaserStream regression tests...');
-  
-  // 1. False CONNECTED state check
-  laserStreamWatchdog.reset(false); // Reset to 'connecting' instead of 'disabled'
-  laserStreamWatchdog.start();
-  
-  // Initial state should be connecting if transport is not connected but we just started
-  laserStreamWatchdog.setTransportState(false, 'auto', 'grpc', 'mainnet');
-  assert.strictEqual(laserStreamWatchdog.getMetrics().status, 'connecting', 'Should be connecting initially');
 
-  // Should NOT be connected just because startLaserStream was called
-  // Connection requires ping/pong/slot/transaction
-  
-  laserStreamWatchdog.setTransportState(true, 'auto', 'grpc', 'mainnet');
-  assert.strictEqual(laserStreamWatchdog.getMetrics().status, 'connected', 'Should be connected after transport state true');
-
-  // 2. Quiet stream activity test (60-second observation threshold)
-  console.log('Testing quiet stream does not cause false disconnect...');
-  
   let reconnectCount = 0;
   laserStreamWatchdog.setReconnectHandler(() => {
     reconnectCount++;
-    return Promise.resolve(); // Resolves but transport remains disconnected
+    return Promise.resolve();
   });
 
-  // Simulate a healthy transport with no matching filtered events for 65 seconds
-  (laserStreamWatchdog as any).lastEventAt = Date.now() - 65000;
-  (laserStreamWatchdog as any).lastHeartbeatAt = Date.now() - 65000;
-  (laserStreamWatchdog as any).connectedAt = Date.now() - 65000;
-  
-  laserStreamWatchdog.evaluateHealth();
-  const quietStatus = laserStreamWatchdog.getMetrics().status;
-  
-  assert.notStrictEqual(quietStatus, 'disconnected', 'A healthy transport must not disconnect solely because no filtered events arrived');
-  assert.notStrictEqual(quietStatus, 'disabled', 'A quiet stream must never become disabled');
-  assert.strictEqual(quietStatus, 'degraded', 'A quiet stream beyond 60s activity threshold should be marked degraded');
-  assert.strictEqual(reconnectCount, 0, 'No reconnect should be triggered for a quiet stream on healthy transport');
-
-  // 3. Real transport failure triggers disconnect & reconnect
-  console.log('Testing real transport failure handling...');
+  // 1. Startup must not report connected until the transport is confirmed.
+  laserStreamWatchdog.reset(false);
   laserStreamWatchdog.setTransportState(false, 'auto', 'grpc', 'mainnet');
+  assert.strictEqual(laserStreamWatchdog.getMetrics().status, 'connecting');
+
+  laserStreamWatchdog.setTransportState(true, 'auto', 'grpc', 'mainnet');
+  assert.strictEqual(laserStreamWatchdog.getMetrics().status, 'connected');
+
+  // 2. Normal quiet periods are degraded, not disconnected or reconnected.
+  const baseReconnects = reconnectCount;
+  (laserStreamWatchdog as any).lastEventAt = Date.now() - 65_000;
+  (laserStreamWatchdog as any).lastHeartbeatAt = Date.now() - 65_000;
+  (laserStreamWatchdog as any).connectedAt = Date.now() - 65_000;
   laserStreamWatchdog.evaluateHealth();
-  
-  assert.strictEqual(laserStreamWatchdog.getMetrics().status, 'disconnected', 'Real transport failure should mark status as disconnected');
-  assert.strictEqual(reconnectCount, 1, 'Should trigger reconnect on real transport disconnect');
+  assert.strictEqual(laserStreamWatchdog.getMetrics().status, 'degraded');
+  assert.strictEqual(reconnectCount, baseReconnects);
 
-  // evaluateHealth again should not trigger another reconnect immediately because of the rate limiter
-  laserStreamWatchdog.evaluateHealth();
-  assert.strictEqual(reconnectCount, 1, 'Should not trigger reconnect immediately (avoids loop)');
-
-  // 4. Permanent provider plan denial triggers disabled
-  console.log('Testing permanent provider plan denial...');
-  laserStreamWatchdog.setDisabled('Subscription does not include Yellowstone gRPC access');
-  assert.strictEqual(laserStreamWatchdog.getMetrics().status, 'disabled', 'Verified plan denial must set status to disabled');
-
-  // 5. Test Paper Trading mode switch & Mainnet Ingestion Idempotency
-  console.log('Testing Paper Trading mode switch & Mainnet Ingestion Idempotency...');
-  
+  // 3. Prolonged silence must leave degraded and enter the real reconnect path.
   laserStreamWatchdog.reset(false);
   laserStreamWatchdog.setTransportState(true, 'auto', 'grpc', 'mainnet');
-  assert.strictEqual(laserStreamWatchdog.getMetrics().status, 'connected', 'LaserStream connected on mainnet');
+  const beforeExtendedStale = reconnectCount;
+  const now = Date.now();
+  (laserStreamWatchdog as any).lastEventAt = now - 181_000;
+  (laserStreamWatchdog as any).lastHeartbeatAt = now - 181_000;
+  (laserStreamWatchdog as any).connectedAt = now - 181_000;
+  laserStreamWatchdog.evaluateHealth();
+  assert.strictEqual(laserStreamWatchdog.getMetrics().status, 'disconnected');
+  assert.strictEqual(reconnectCount, beforeExtendedStale + 1);
 
-  // Simulate switching Paper -> Mainnet -> Paper
-  let tradingExecutionMode: 'paper' | 'mainnet' = 'paper';
-  
-  // LaserStream configuration payload sent by PnLPage during Paper Trading
-  const pnlPageConfigPayload = {
-    enabled: true,
-    apiKey: 'test-key',
-    network: 'mainnet', // Always mainnet ingestion, never 'paper'
-    endpoint: 'https://laserstream-mainnet-ams.helius-rpc.com',
-  };
+  // 4. setDisconnected() must emit a real transition and reconnect exactly once.
+  laserStreamWatchdog.reset(false);
+  laserStreamWatchdog.setTransportState(true, 'auto', 'grpc', 'mainnet');
+  const beforeManualDisconnect = reconnectCount;
+  laserStreamWatchdog.setDisconnected();
+  assert.strictEqual(laserStreamWatchdog.getMetrics().status, 'disconnected');
+  assert.strictEqual(reconnectCount, beforeManualDisconnect + 1);
+  laserStreamWatchdog.evaluateHealth();
+  assert.strictEqual(reconnectCount, beforeManualDisconnect + 1);
 
-  assert.strictEqual(pnlPageConfigPayload.network, 'mainnet', 'LaserStream config must always specify mainnet network even in Paper mode');
+  // 5. Fatal provider denial disables without reconnecting.
+  laserStreamWatchdog.setDisabled('Subscription does not include Yellowstone gRPC access');
+  assert.strictEqual(laserStreamWatchdog.getMetrics().status, 'disabled');
+  assert.strictEqual(reconnectCount, beforeManualDisconnect + 1);
 
-  // Toggling trading execution mode
-  tradingExecutionMode = 'mainnet';
-  assert.strictEqual(laserStreamWatchdog.getMetrics().status, 'connected', 'LaserStream remains connected after switching execution mode to mainnet');
+  // 6. reset() must clear every diagnostic counter.
+  laserStreamWatchdog.reset(false);
+  laserStreamWatchdog.recordRawUpdate();
+  laserStreamWatchdog.recordInvalidUpdate();
+  laserStreamWatchdog.recordRejectedUpdate();
+  laserStreamWatchdog.recordDuplicateUpdate();
+  laserStreamWatchdog.recordQueuedUpdate();
+  laserStreamWatchdog.recordProcessingFailure();
+  laserStreamWatchdog.recordReceivedEvent(100);
+  laserStreamWatchdog.recordProcessedEvent(100, 1);
+  laserStreamWatchdog.reset();
+  const metrics = laserStreamWatchdog.getMetrics();
+  assert.strictEqual(metrics.rawUpdatesReceived, 0);
+  assert.strictEqual(metrics.invalidUpdates, 0);
+  assert.strictEqual(metrics.rejectedUpdates, 0);
+  assert.strictEqual(metrics.duplicateUpdates, 0);
+  assert.strictEqual(metrics.queuedUpdates, 0);
+  assert.strictEqual(metrics.processingFailures, 0);
+  assert.strictEqual(metrics.eventsReceived, 0);
+  assert.strictEqual(metrics.eventsProcessed, 0);
 
-  tradingExecutionMode = 'paper';
-  assert.strictEqual(laserStreamWatchdog.getMetrics().status, 'connected', 'LaserStream remains connected after switching execution mode to paper');
-
+  // Avoid keeping the process alive because the watchdog owns an interval.
+  laserStreamWatchdog.stop();
+  await sleep(1);
   console.log('All LaserStream regression tests passed!');
-  process.exit(0);
 }
 
 runTests().catch(err => {
   console.error(err);
-  process.exit(1);
+  laserStreamWatchdog.stop();
+  process.exitCode = 1;
 });
