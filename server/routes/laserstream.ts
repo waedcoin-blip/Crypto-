@@ -184,8 +184,8 @@ router.post('/config', asyncHandler(async (req, res) => {
   };
 
   if (enabled) {
-    await stopLaserStream();
-    const handle = await startLaserStream(currentOptions, broadcastToClients);
+    // Configuration requests are idempotent: keep an already active stream when possible.
+    const handle = isActive ? {} : await startLaserStream(currentOptions, broadcastToClients);
     isActive = handle !== null;
     if (isActive) {
       laserLogger.info({ clients: clients.length, network: currentOptions.network }, 'LaserStream started');

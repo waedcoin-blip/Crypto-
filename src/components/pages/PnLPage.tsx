@@ -2107,7 +2107,7 @@ export const PnLPage = ({
           body: JSON.stringify({
             enabled: laserstreamEnabled,
             apiKey: laserstreamApiKey,
-            network: tradingNetwork,
+            network: 'mainnet',
             endpoint: laserstreamEndpoint,
             programAddresses: defaultPrograms,
           })
@@ -2122,13 +2122,13 @@ export const PnLPage = ({
         }
 
         if (data.active) {
-          const telStatus = data.telemetry?.status || 'connected';
+          const telStatus = data.telemetry?.status || 'connecting';
           setLaserstreamStatus(telStatus);
           setLaserstreamIsFallback(false);
           setLaserstreamIsSimulated(false);
           setLaserstreamActiveEndpoint(data.activeEndpoint || null);
           if (telStatus === 'connected') {
-            addLog(`Helius LaserStream gRPC channel active (${tradingNetwork.toUpperCase()}). Connected via regional hub: ${data.activeEndpoint || 'Auto'}`, 'success');
+            addLog(`Helius LaserStream gRPC channel active (MAINNET ingestion; ${tradingNetwork.toUpperCase()} execution). Connected via regional hub: ${data.activeEndpoint || 'Auto'}`, 'success');
           }
         } else {
           setLaserstreamStatus('disconnected');
@@ -2150,7 +2150,7 @@ export const PnLPage = ({
     };
 
     syncLaserstream();
-  }, [laserstreamEnabled, laserstreamApiKey, laserstreamEndpoint, tradingNetwork]);
+  }, [laserstreamEnabled, laserstreamApiKey, laserstreamEndpoint]);
 
   // Manage frontend Helius LaserStream EventSource connection
   useEffect(() => {

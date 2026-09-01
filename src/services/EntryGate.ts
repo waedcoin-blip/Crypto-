@@ -82,7 +82,7 @@ export class EntryGate {
     // Retrieve criteria thresholds from server repository or criteria config
     let criteria = {
       minLiquidityUsd: 5000,
-      minAgeMinutes: 0,
+      minAgeMinutes: Number.POSITIVE_INFINITY,
       maxAgeMinutes: 1440,
       maxDevOwnershipPct: 10,
       maxTop10Pct: 40,
@@ -94,7 +94,7 @@ export class EntryGate {
         const { criteriaRepository } = require('../../server/repositories/CriteriaRepository.js');
         criteria = criteriaRepository.getActiveCriteriaSync();
       } catch (e) {
-        // Fallback
+        // Fail closed: defaults intentionally reject entries until criteria can be loaded.
       }
     }
 

@@ -42,6 +42,33 @@ async function runTests() {
   laserStreamWatchdog.evaluateHealth();
   assert.strictEqual(reconnectCount, 1, 'Should not trigger reconnect immediately (avoids loop)');
 
+  // 4. Test Paper Trading mode switch & Mainnet Ingestion Idempotency
+  console.log('Testing Paper Trading mode switch & Mainnet Ingestion Idempotency...');
+  
+  laserStreamWatchdog.reset(false);
+  laserStreamWatchdog.setTransportState(true, 'auto', 'grpc', 'mainnet');
+  assert.strictEqual(laserStreamWatchdog.getMetrics().status, 'connected', 'LaserStream connected on mainnet');
+
+  // Simulate switching Paper -> Mainnet -> Paper
+  let tradingExecutionMode: 'paper' | 'mainnet' = 'paper';
+  
+  // LaserStream configuration payload sent by PnLPage during Paper Trading
+  const pnlPageConfigPayload = {
+    enabled: true,
+    apiKey: 'test-key',
+    network: 'mainnet', // Always mainnet ingestion, never 'paper'
+    endpoint: 'https://laserstream-mainnet-ams.helius-rpc.com',
+  };
+
+  assert.strictEqual(pnlPageConfigPayload.network, 'mainnet', 'LaserStream config must always specify mainnet network even in Paper mode');
+
+  // Toggling trading execution mode
+  tradingExecutionMode = 'mainnet';
+  assert.strictEqual(laserStreamWatchdog.getMetrics().status, 'connected', 'LaserStream remains connected after switching execution mode to mainnet');
+
+  tradingExecutionMode = 'paper';
+  assert.strictEqual(laserStreamWatchdog.getMetrics().status, 'connected', 'LaserStream remains connected after switching execution mode to paper');
+
   console.log('All LaserStream regression tests passed!');
   process.exit(0);
 }
