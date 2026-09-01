@@ -22,7 +22,8 @@
     "clean": "rm -rf dist",
     "postinstall": "node scripts/patch-bigint-buffer.cjs",
     "lint": "tsc --noEmit",
-    "test:integration-audit": "node scripts/integration-audit-v97.mjs"
+    "test:integration-audit": "node scripts/integration-audit-v97.mjs",
+    "test:integration-audit-v98": "node scripts/integration-audit-v98.mjs"
   },
   "dependencies": {
     "@jup-ag/api": "^6.0.48",

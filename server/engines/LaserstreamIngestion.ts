@@ -29,7 +29,7 @@ import { URL } from 'url';
 import bs58 from 'bs58';
 import { laserLogger } from '../utils/logger.js';
 import { config } from '../config/index.js';
-import { laserStreamWatchdog } from '../services/LaserStreamWatchdog.js';
+import { laserStreamWatchdog, LASERSTREAM_ACTIVITY_STALE_MS } from '../services/LaserStreamWatchdog.js';
 import type {
   LaserStreamOptions,
   LaserStreamStatus,
@@ -62,10 +62,11 @@ export const DEFAULT_NETWORK_PROGRAMS: Record<LaserStreamNetwork, string[]> = {
 
 const HUB_PROBE_TIMEOUT = 2_500;
 const MAX_RECONNECT_ATTEMPTS = 10;
-export const STREAM_STALL_TIMEOUT_MS = 10000;
+export const STREAM_STALL_TIMEOUT_MS = LASERSTREAM_ACTIVITY_STALE_MS;
 
 export function isStreamStalled(lastActivityAt: number): boolean {
-  return Date.now() - lastActivityAt > 10000;
+  // An uninitialized timestamp is not evidence of a stalled stream.
+  return lastActivityAt > 0 && Date.now() - lastActivityAt > STREAM_STALL_TIMEOUT_MS;
 }
 
 // ─── Base58 Binary Converter ───
@@ -151,6 +152,7 @@ class AsyncEventProcessor {
         item.callback(item.event);
       } catch (err) {
         laserLogger.error({ error: err }, 'Error in async event processor callback');
+        laserStreamWatchdog.recordProcessingFailure();
       } finally {
         const slot = Number(item.event.slot || 0);
         const duration = Date.now() - startTime;
@@ -486,6 +488,7 @@ export async function startLaserStream(
       subscriptionRequest,
       (update: SubscribeUpdate) => {
         if (state.currentSessionId !== sessionId) return;
+        laserStreamWatchdog.recordRawUpdate();
 
         // Any real update from server means we are connected
         if (!state.transportConnected) {
@@ -511,13 +514,19 @@ export async function startLaserStream(
           const standardEvent = normalizeLaserstreamTransaction(update, network);
           if (standardEvent && standardEvent.signature) {
             const dedupeKey = `${network}:${standardEvent.slot}:${standardEvent.signature}`;
-            if (!signatureDeduplicator.add(dedupeKey)) return;
+            if (!signatureDeduplicator.add(dedupeKey)) {
+              laserStreamWatchdog.recordDuplicateUpdate();
+              return;
+            }
 
             laserStreamWatchdog.recordReceivedEvent(Number(standardEvent.slot || 0));
 
             standardEvent.endpoint = state.activeEndpoint;
 
+            laserStreamWatchdog.recordQueuedUpdate();
             asyncEventProcessor.enqueue(standardEvent, eventBusCallback);
+          } else {
+            laserStreamWatchdog.recordRejectedUpdate();
           }
         }
       },

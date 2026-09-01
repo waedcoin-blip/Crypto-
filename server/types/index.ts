@@ -74,6 +74,13 @@ export interface LaserStreamTelemetry {
   replayFromSlot: number | null;
   eventsReceived: number;
   eventsProcessed: number;
+  /** v98 live-ingestion diagnostics */
+  rawUpdatesReceived?: number;
+  invalidUpdates?: number;
+  rejectedUpdates?: number;
+  duplicateUpdates?: number;
+  queuedUpdates?: number;
+  processingFailures?: number;
   reconnectCount: number;
   network: LaserStreamNetwork;
   endpoint: string | null;

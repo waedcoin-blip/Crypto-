@@ -9,6 +9,8 @@
  */
 
 import { laserLogger } from '../utils/logger.js';
+export const LASERSTREAM_ACTIVITY_STALE_MS = 60_000;
+
 import type { LaserStreamHealthStatus, LaserStreamTelemetry, LaserStreamMode, LaserStreamNetwork } from '../types/index.js';
 
 export interface WatchdogConfig {
@@ -33,7 +35,7 @@ class LaserStreamWatchdog {
     degradedSlotLag: 15,
     checkIntervalMs: 1000,
     processingLagStaleMs: 30000,
-    activityStaleMs: 60000,
+    activityStaleMs: LASERSTREAM_ACTIVITY_STALE_MS,
   };
 
   private lastReceivedSlot = 0;
@@ -55,6 +57,13 @@ class LaserStreamWatchdog {
 
   private eventsReceived = 0;
   private eventsProcessed = 0;
+  // v98 ingestion diagnostics: distinguish provider silence from local rejection.
+  private rawUpdatesReceived = 0;
+  private invalidUpdates = 0;
+  private rejectedUpdates = 0;
+  private duplicateUpdates = 0;
+  private queuedUpdates = 0;
+  private processingFailures = 0;
   private reconnectCount = 0;
 
   private status: LaserStreamHealthStatus = 'disabled';
@@ -82,6 +91,13 @@ class LaserStreamWatchdog {
     this.stateChangeListeners.add(listener);
     return () => this.stateChangeListeners.delete(listener);
   }
+
+  public recordRawUpdate(): void { this.rawUpdatesReceived++; }
+  public recordInvalidUpdate(): void { this.invalidUpdates++; }
+  public recordRejectedUpdate(): void { this.rejectedUpdates++; }
+  public recordDuplicateUpdate(): void { this.duplicateUpdates++; }
+  public recordQueuedUpdate(): void { this.queuedUpdates++; }
+  public recordProcessingFailure(): void { this.processingFailures++; }
 
   public recordReceivedEvent(slot: number): void {
     const now = Date.now();
@@ -215,7 +231,7 @@ class LaserStreamWatchdog {
   }
 
   public getMetrics(): LaserStreamTelemetry {
-    const slotLag = Math.max(0, this.lastReceivedSlot - this.lastProcessedSlot);
+    const slotLag = this.lastReceivedSlot > 0 && this.lastProcessedSlot > 0 ? Math.max(0, this.lastReceivedSlot - this.lastProcessedSlot) : 0;
     const now = Date.now();
 
     const isProcessingLagStale =
@@ -225,7 +241,7 @@ class LaserStreamWatchdog {
 
     const ingestionState: 'active' | 'idle' | 'replaying' = this.isReplaying
       ? 'replaying'
-      : this.lastEventAt > 0 && now - this.lastEventAt <= 10_000
+      : this.lastEventAt > 0 && now - this.lastEventAt <= this.config.activityStaleMs
         ? 'active'
         : 'idle';
 
@@ -245,6 +261,12 @@ class LaserStreamWatchdog {
       replayFromSlot: this.replayFromSlot,
       eventsReceived: this.eventsReceived,
       eventsProcessed: this.eventsProcessed,
+      rawUpdatesReceived: this.rawUpdatesReceived,
+      invalidUpdates: this.invalidUpdates,
+      rejectedUpdates: this.rejectedUpdates,
+      duplicateUpdates: this.duplicateUpdates,
+      queuedUpdates: this.queuedUpdates,
+      processingFailures: this.processingFailures,
       reconnectCount: this.reconnectCount,
       network: this.network,
       endpoint: this.activeEndpoint,

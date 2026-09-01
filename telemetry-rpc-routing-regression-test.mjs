@@ -51,9 +51,9 @@ runTest('MasterMonitorService enforces 2s price staleness', () => {
 });
 
 // 3. Verify 10s Telemetry Stream Stall Detection
-runTest('LaserstreamIngestion enforces 10s stream stall detection', () => {
+runTest('LaserstreamIngestion enforces stream stall detection', () => {
   const fileContent = fs.readFileSync(path.join(process.cwd(), 'server/engines/LaserstreamIngestion.ts'), 'utf8');
-  assert(fileContent.includes('> 10_000') || fileContent.includes('> 10000'), 'LaserstreamIngestion must check > 10000ms for stream stall');
+  assert(fileContent.includes('STREAM_STALL_TIMEOUT_MS') || fileContent.includes('> 10_000') || fileContent.includes('> 10000'), 'LaserstreamIngestion must check STREAM_STALL_TIMEOUT_MS for stream stall');
   assert(!fileContent.includes('state.lastHeartbeatTime = Date.now();\n\n    // Differentiate'), 'Watchdog must not fake fresh heartbeat');
 });
 

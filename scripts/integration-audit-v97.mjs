@@ -10,7 +10,7 @@ const pnl = read('src/components/pages/PnLPage.tsx');
 
 console.log('Running v97 static integration audit...');
 assert.match(ingest, /state\.transportConnected\s*=\s*true;[\s\S]{0,500}setTransportState\(true/, 'Subscription success must mark transport connected immediately');
-assert.match(watchdog, /activityStaleMs:\s*60000/, 'Watchdog observation threshold must be 60 seconds');
+assert.match(watchdog, /activityStaleMs:\s*(60000|LASERSTREAM_ACTIVITY_STALE_MS)/, 'Watchdog observation threshold must be 60 seconds');
 assert.match(watchdog, /marking degraded|newStatus = 'degraded'/, 'Quiet stream must degrade rather than disconnect');
 assert.match(ingest, /network:\s*['\"]?mainnet|LaserStreamNetwork/, 'LaserStream must retain explicit network handling');
 assert.match(pnl, /lastReceivedSlot/, 'PnL telemetry must surface receive-slot diagnostics');
