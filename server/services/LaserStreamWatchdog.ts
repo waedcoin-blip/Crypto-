@@ -168,6 +168,13 @@ class LaserStreamWatchdog {
     this.evaluateHealth();
   }
 
+  public setDisabled(): void {
+    this.status = "disabled";
+    this.transportConnected = false;
+    this.isReconnecting = false;
+    this.evaluateHealth();
+  }
+
   public setReplaying(replaying: boolean, fromSlot: number | null = null): void {
     this.isReplaying = replaying;
     this.replayFromSlot = fromSlot;
@@ -176,8 +183,22 @@ class LaserStreamWatchdog {
 
   public recordError(errorMessage: string | null): void {
     this.errorMessage = errorMessage;
-    if (errorMessage && this.status === 'connected') {
-      this.evaluateHealth();
+    if (errorMessage) {
+      const lower = errorMessage.toLowerCase();
+      if (
+        lower.includes('unsupported plan') ||
+        lower.includes('business or professional plan') ||
+        lower.includes('invalid helius api key') ||
+        lower.includes('does not have permission') ||
+        lower.includes('permission denied') ||
+        lower.includes('geyser access denied')
+      ) {
+        this.status = 'disabled';
+        this.transportConnected = false;
+        this.isReconnecting = false;
+      } else if (this.status === 'connected') {
+        this.evaluateHealth();
+      }
     }
   }
 
@@ -286,25 +307,39 @@ class LaserStreamWatchdog {
         }
       });
 
-      // FIX: Trigger reconnect handler when we become disconnected
+      // FIX: Trigger reconnect handler when we become disconnected (unless fatal plan/auth error)
       if (newStatus === 'disconnected' && this.reconnectHandler && !this.isReconnecting) {
-        this.isReconnecting = true;
-        const fromSlot = this.lastProcessedSlot;
-        Promise.resolve(this.reconnectHandler(fromSlot))
-          .then(() => {
-            if (!this.transportConnected) {
-              // Failed to reconnect, reset after a delay to prevent tight loops
+        const lowerErr = (this.errorMessage || '').toLowerCase();
+        const isUnrecoverable =
+          lowerErr.includes('unsupported plan') ||
+          lowerErr.includes('business or professional plan') ||
+          lowerErr.includes('invalid helius api key') ||
+          lowerErr.includes('does not have permission') ||
+          lowerErr.includes('permission denied') ||
+          lowerErr.includes('geyser access denied');
+
+        if (isUnrecoverable) {
+          this.status = 'disabled';
+          this.isReconnecting = false;
+        } else {
+          this.isReconnecting = true;
+          const fromSlot = this.lastProcessedSlot;
+          Promise.resolve(this.reconnectHandler(fromSlot))
+            .then(() => {
+              if (!this.transportConnected) {
+                // Failed to reconnect, reset after a delay to prevent tight loops
+                setTimeout(() => {
+                  this.isReconnecting = false;
+                }, 5000);
+              }
+            })
+            .catch((err) => {
+              laserLogger.error({ error: err, fromSlot }, 'Reconnect handler failed');
               setTimeout(() => {
                 this.isReconnecting = false;
               }, 5000);
-            }
-          })
-          .catch((err) => {
-            laserLogger.error({ error: err, fromSlot }, 'Reconnect handler failed');
-            setTimeout(() => {
-              this.isReconnecting = false;
-            }, 5000);
-          });
+            });
+        }
       }
     }
 

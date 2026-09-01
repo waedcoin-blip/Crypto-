@@ -263,6 +263,8 @@ export function parseHeliusError(err: unknown): {
     lower.includes('business') ||
     lower.includes('tier limit') ||
     lower.includes('permission denied') ||
+    lower.includes('does not have permission') ||
+    lower.includes('permission to execute') ||
     lower.includes('403');
 
   const isAuthError =
@@ -526,9 +528,17 @@ export async function startLaserStream(
         );
         laserStreamWatchdog.recordError(parsed.userActionableMessage);
 
-        // Immediate disconnect on any stream error
         state.transportConnected = false;
-        laserStreamWatchdog.setDisconnected();
+        if (parsed.isPlanError || parsed.isAuthError) {
+          state.mode = 'disabled';
+          laserStreamWatchdog.setDisabled();
+          laserLogger.warn(
+            { error: parsed.message },
+            'Helius gRPC plan/permission error; disabling gRPC stream reconnects.'
+          );
+        } else {
+          laserStreamWatchdog.setDisconnected();
+        }
       }
     );
 
@@ -545,7 +555,16 @@ export async function startLaserStream(
     );
     state.transportConnected = false;
     laserStreamWatchdog.recordError(parsed.userActionableMessage);
-    laserStreamWatchdog.setDisconnected();
+    if (parsed.isPlanError || parsed.isAuthError) {
+      state.mode = 'disabled';
+      laserStreamWatchdog.setDisabled();
+      laserLogger.warn(
+        { error: parsed.message },
+        'Helius gRPC plan/permission error on init; disabling gRPC stream reconnects.'
+      );
+    } else {
+      laserStreamWatchdog.setDisconnected();
+    }
     return null;
   }
 }
