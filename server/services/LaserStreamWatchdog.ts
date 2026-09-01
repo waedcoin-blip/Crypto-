@@ -33,7 +33,7 @@ class LaserStreamWatchdog {
     degradedSlotLag: 15,
     checkIntervalMs: 1000,
     processingLagStaleMs: 30000,
-    activityStaleMs: 12000,
+    activityStaleMs: 60000,
   };
 
   private lastReceivedSlot = 0;
@@ -272,11 +272,13 @@ class LaserStreamWatchdog {
       now - lastActivity > (this.config.activityStaleMs || 12000);
 
     if (isStale) {
+      // No matching transaction activity is not proof that the gRPC transport is
+      // disconnected. Keep the transport state intact and surface the stream as
+      // degraded until a real transport error or heartbeat failure is observed.
       laserLogger.warn(
         { lastActivityMsAgo: now - lastActivity },
-        'LaserStream activity stale, marking disconnected for reconnect'
+        'LaserStream activity stale; retaining transport connection and marking degraded'
       );
-      this.transportConnected = false;
     }
 
     let newStatus: LaserStreamHealthStatus;
@@ -287,6 +289,7 @@ class LaserStreamWatchdog {
     } else if (this.isReplaying) {
       newStatus = 'replaying';
     } else if (
+      isStale ||
       this.queueDepth >= this.config.degradedQueueThreshold ||
       processingLagMs >= this.config.degradedProcessingLagMs ||
       slotLag >= this.config.degradedSlotLag

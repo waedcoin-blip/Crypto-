@@ -265,12 +265,10 @@ export function parseHeliusError(err: unknown): {
     lower.includes('plan does not support') ||
     lower.includes('geyser access denied') ||
     lower.includes('upgrade your plan') ||
-    lower.includes('business') ||
     lower.includes('tier limit') ||
-    lower.includes('permission denied') ||
-    lower.includes('does not have permission') ||
-    lower.includes('permission to execute') ||
-    lower.includes('403');
+    lower.includes('subscription does not include') ||
+    lower.includes('yellowstone grpc access') ||
+    lower.includes('laserstream access denied');
 
   const isAuthError =
     lower.includes('invalid api key') ||
@@ -549,6 +547,10 @@ export async function startLaserStream(
     );
 
     state.activeStreamHandle = handle;
+    // A successfully created subscription establishes the transport. Matching
+    // transaction activity is not required before reporting CONNECTED.
+    state.transportConnected = true;
+    laserStreamWatchdog.setTransportState(true, endpoint, 'grpc', network);
     laserStreamWatchdog.recordError(null);
     laserLogger.info({ endpoint, network }, 'Helius LaserStream gRPC stream established');
 
