@@ -66,6 +66,7 @@ import { positionExitManager } from './services/PositionExitManager';
 import { resolveTokenDecimals } from './services/PaperTradeExecutor';
 import { StartupReconciliation } from './services/StartupReconciliation';
 import { entryGate } from './services/EntryGate';
+import { parseWalletTransaction } from './services/WalletTransactionParser';
 
 
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
@@ -3176,6 +3177,8 @@ function App() {
   const connectionRef = useRef<Connection | null>(null);
   const masterConnectionRef = useRef<Connection | null>(null);
   const subscriptionIds = useRef<Record<string, number>>({});
+  // Separate wallet-signature registry so wallet events cannot race React state updates.
+  const processedWalletSignatures = useRef<Set<string>>(new Set());
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [isMobile, setIsMobile] = useState(false);
 
@@ -3828,138 +3831,119 @@ function App() {
   }, [isXRayEnabled, monitoredWallets, telegramBotToken, telegramChatId, rpcUrl, masterMonitorRpc, customWsUrl]);
 
   useEffect(() => {
-    // Multi-wallet Monitoring Logic (Master Monitor RPC)
+    // Multi-wallet monitoring: each wallet gets an explicit subscription and
+    // every signature is deduplicated before any RPC work or UI mutation.
     const conn = masterConnectionRef.current || connectionRef.current;
-    if (isMonitoring && monitoredWallets.length > 0 && conn) {
-      // Clear existing subscriptions
-      Object.keys(subscriptionIds.current).forEach(addr => {
-        conn.removeOnLogsListener(subscriptionIds.current[addr]);
-      });
-      subscriptionIds.current = {};
+    if (!isMonitoring || monitoredWallets.length === 0 || !conn) return;
 
-      monitoredWallets.forEach(wallet => {
-        const pubKey = safePublicKey(wallet.address);
-        if (!pubKey) {
-          console.error('Invalid address in monitored list:', wallet.address);
-          return;
-        }
+    const activeSubscriptionIds: Record<string, number> = {};
+    let cancelled = false;
 
-        const id = conn.onLogs(pubKey, async (logs) => {
-            const signature = logs.signature;
-            const uniqueId = `trade-${signature}-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
-            let parsedTrade: Trade | null = null;
-
-            try {
-              const tx = await fetchTransactionWithRetry(signature);
-
-              if (tx && tx.meta) {
-                const postTokenBalances = tx.meta.postTokenBalances || [];
-                if (postTokenBalances.length > 0) {
-                  const balance = postTokenBalances[0];
-                  const preTokenBalances = tx.meta.preTokenBalances || [];
-                  const preBalance = preTokenBalances.find((b: any) => b.accountIndex === balance.accountIndex);
-                  const preAmt = preBalance ? Number(preBalance.uiTokenAmount.uiAmount) : 0;
-                  const postAmt = Number(balance.uiTokenAmount.uiAmount);
-                  const diff = postAmt - preAmt;
-
-                  parsedTrade = {
-                    id: uniqueId,
-                    type: diff > 0 ? 'buy' : 'sell',
-                    token: resolveTokenName(balance.mint),
-                    tokenAddress: balance.mint,
-                    amount: Math.abs(diff) || (Math.random() * 5),
-                    timestamp: new Date().toISOString(),
-                    signature: signature,
-                    status: 'confirmed',
-                    fromAccount: balance.owner || tx.transaction?.message?.accountKeys?.[0]?.toString()
-                  };
-                }
-              } else if (tx && tx.tokenTransfers && tx.tokenTransfers.length > 0) {
-                // Helius API format
-                const transfer = tx.tokenTransfers.find((t: any) => t.mint !== 'So11111111111111111111111111111111111111112') || tx.tokenTransfers[0];
-                
-                // Determine if buy or sell based on Helius fromUserAccount vs monitored wallet
-                const pubKeyStr = pubKey.toBase58();
-                let type: 'buy' | 'sell' = 'buy';
-                if (transfer.fromUserAccount === pubKeyStr) {
-                    type = transfer.mint === 'So11111111111111111111111111111111111111112' ? 'buy' : 'sell'; // Wait, selling token means token moved OUT
-                } else if (transfer.toUserAccount === pubKeyStr) {
-                    type = 'buy'; // Token moved IN 
-                } else {
-                    // Fallback to description
-                    if (tx.description?.toLowerCase().includes('swapped') || tx.type === 'SWAP') {
-                       type = tx.description?.toLowerCase().includes('for ' + pubKeyStr) ? 'buy' : 'sell'; // weak fallback
-                    }
-                }
-
-                parsedTrade = {
-                   id: uniqueId,
-                   type: type,
-                   token: resolveTokenName(transfer.mint),
-                   tokenAddress: transfer.mint,
-                   amount: transfer.tokenAmount || (Math.random() * 5),
-                   timestamp: new Date((tx.timestamp || Date.now() / 1000) * 1000).toISOString(),
-                   signature: signature,
-                   status: 'confirmed',
-                   fromAccount: transfer.fromUserAccount || tx.feePayer
-                };
-              }
-            } catch (e: any) {
-              if (e.message?.includes('Failed to fetch')) {
-                console.warn('RPC Network Error - Retrying in background');
-              } else {
-                console.error('Parsing error', e);
-              }
-            }
-
-            if (!parsedTrade) {
-              console.warn(`[MASTER MONITOR] Ignoring unparseable transaction ${signature}`);
-              return;
-            }
-            const newTrade: Trade = parsedTrade;
-
-              if (newTrade.type === 'buy' || newTrade.type === 'sell') {
-                const targetMetric = tokenMetrics[newTrade.tokenAddress];
-                const liqRatio = (targetMetric?.liquidity || 0) / (targetMetric?.marketCap || 1);
-                const hasLiqWarning = liqRatio < 0.07;
-
-                setTelemetryAlerts(prev => [
-                  {
-                    id: `wallet-alert-${Date.now()}-${Math.random()}`,
-                    token: newTrade.token,
-                    address: newTrade.tokenAddress,
-                    type: 'WALLET_TRADE',
-                    message: `Monitored Wallet ${newTrade.type.toUpperCase()}: ${newTrade.token}${hasLiqWarning ? ' (⚠️ LOW LIQUIDITY RATIO - DANGER)' : ''}`,
-                    timestamp: Date.now()
-                  },
-                  ...prev.slice(0, 19)
-                ]);
-              }
-              
-              setTrades(prev => {
-                if (prev.some(t => t.signature === signature)) return prev;
-                
-                // Process enrichment immediately inside the pipeline
-                processIncomingTrade(newTrade);
-                
-                return [newTrade, ...prev].slice(0, 50);
-              });
-              
-              setStats(prev => prev ? { ...prev, totalTrades: prev.totalTrades + 1 } : null);
-            }, 'confirmed');
-          
-          subscriptionIds.current[wallet.address] = id;
-      });
-    }
-
-    return () => {
-      if (conn) {
-        Object.keys(subscriptionIds.current).forEach(addr => {
-          conn.removeOnLogsListener(subscriptionIds.current[addr]);
-        });
+    const persistWalletEvent = async (wallet: { id: string; address: string; label: string }, signature: string, trade: Trade) => {
+      if (!user) return;
+      try {
+        await setDoc(
+          doc(db, 'walletTransactions', `${user.uid}_${wallet.id}_${signature}`),
+          {
+            userId: user.uid,
+            walletId: wallet.id,
+            walletAddress: wallet.address,
+            walletLabel: wallet.label,
+            signature,
+            side: trade.type,
+            tokenMint: trade.tokenAddress,
+            token: trade.token,
+            amount: trade.amount,
+            status: trade.status,
+            timestamp: trade.timestamp,
+            syncedAt: serverTimestamp(),
+            source: 'master-monitor',
+          },
+          { merge: true }
+        );
+      } catch (error) {
+        // Persistence failure must not fabricate a trade or stop live monitoring.
+        console.warn('[WALLET_MONITOR] Failed to persist transaction event', { signature, error });
       }
     };
-  }, [isMonitoring, monitoredWallets, rpcUrl, masterMonitorRpc, customWsUrl]);
+
+    for (const wallet of monitoredWallets) {
+      const pubKey = safePublicKey(wallet.address);
+      if (!pubKey) {
+        console.error('[WALLET_MONITOR] Invalid monitored wallet', wallet.address);
+        continue;
+      }
+
+      const subscriptionId = conn.onLogs(pubKey, async (logs) => {
+        const signature = logs.signature;
+        const dedupeKey = `${wallet.address}:${signature}`;
+        if (cancelled || processedWalletSignatures.current.has(dedupeKey)) return;
+        processedWalletSignatures.current.add(dedupeKey);
+
+        // Keep the in-memory registry bounded without weakening near-term dedupe.
+        if (processedWalletSignatures.current.size > 10000) {
+          const oldest = processedWalletSignatures.current.values().next().value;
+          if (oldest) processedWalletSignatures.current.delete(oldest);
+        }
+
+        try {
+          const tx = await fetchTransactionWithRetry(signature);
+          if (cancelled) return;
+          const parsed = parseWalletTransaction(tx, wallet.address);
+          if (!parsed) {
+            console.warn('[WALLET_MONITOR] Ignoring transaction without a verified wallet-owned token delta', { wallet: wallet.address, signature });
+            return;
+          }
+
+          const newTrade: Trade = {
+            id: `wallet-${wallet.id}-${signature}`,
+            type: parsed.type,
+            token: resolveTokenName(parsed.mint),
+            tokenAddress: parsed.mint,
+            amount: parsed.amount,
+            timestamp: new Date(parsed.timestampMs).toISOString(),
+            signature,
+            status: 'confirmed',
+            fromAccount: wallet.address,
+          };
+
+          const targetMetric = tokenMetrics[newTrade.tokenAddress];
+          const liqRatio = (targetMetric?.liquidity || 0) / (targetMetric?.marketCap || 1);
+          const hasLiqWarning = liqRatio < 0.07;
+
+          setTelemetryAlerts(prev => [{
+            id: `wallet-alert-${wallet.id}-${signature}`,
+            token: newTrade.token,
+            address: newTrade.tokenAddress,
+            type: 'WALLET_TRADE',
+            message: `[${wallet.label || wallet.address.slice(0, 8)}] ${newTrade.type.toUpperCase()}: ${newTrade.token}${hasLiqWarning ? ' (LOW LIQUIDITY RATIO)' : ''}`,
+            timestamp: Date.now(),
+          }, ...prev.slice(0, 19)]);
+
+          // Do not perform side effects inside a React state updater.
+          processIncomingTrade(newTrade);
+          setTrades(prev => prev.some(t => t.signature === signature && t.fromAccount === wallet.address)
+            ? prev
+            : [newTrade, ...prev].slice(0, 50));
+          setStats(prev => prev ? { ...prev, totalTrades: prev.totalTrades + 1 } : null);
+          void persistWalletEvent(wallet, signature, newTrade);
+        } catch (error) {
+          console.error('[WALLET_MONITOR] Transaction synchronization failed', { wallet: wallet.address, signature, error });
+        }
+      }, 'confirmed');
+
+      activeSubscriptionIds[wallet.address] = subscriptionId;
+    }
+
+    subscriptionIds.current = activeSubscriptionIds;
+    return () => {
+      cancelled = true;
+      Object.values(activeSubscriptionIds).forEach(id => {
+        try { void conn.removeOnLogsListener(id); } catch {}
+      });
+      if (subscriptionIds.current === activeSubscriptionIds) subscriptionIds.current = {};
+    };
+  }, [isMonitoring, monitoredWallets, user, rpcUrl, masterMonitorRpc, customWsUrl]);
 
   const copyToClipboard = async (text: string, id: string) => {
     try {

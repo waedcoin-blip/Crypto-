@@ -33,7 +33,9 @@ export class MasterMonitorService {
 
   constructor(rpcEndpoint: string, exitManager: PositionExitManager) {
     this.exitManager = exitManager;
-    const ep = rpcRouting.getMonitorRpcUrl();
+    // Explicit Master Monitor configuration wins. Fall back to the role router
+    // only when no endpoint was supplied, preventing two competing sources.
+    const ep = rpcEndpoint?.trim() || rpcRouting.getMonitorRpcUrl();
     if (!ep) {
       throw new Error('MONITOR_RPC_UNAVAILABLE');
     }
