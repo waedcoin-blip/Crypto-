@@ -1,7 +1,5 @@
-// src/services/rpcRouting.ts
 // Centralized role-isolated RPC + WebSocket routing.
-// Search, Monitor, and Execution each have isolated primary + backup RPC and WS endpoints.
-// LaserStream remains an independent gRPC/Geyser ingestion transport.
+// A role may only use its own HTTP RPC and WS endpoints.
 
 export type RpcRole = 'execution' | 'monitor' | 'search';
 
@@ -23,15 +21,15 @@ function normalizeUrl(url: string, protocols: readonly string[], errorCode: stri
   }
 }
 
-export function normalizeRpcUrl(url: string): string {
+function normalizeRpcUrl(url: string): string {
   return normalizeUrl(url, ['https:', 'http:'], 'INVALID_RPC_URL');
 }
 
-export function normalizeWsUrl(url: string): string {
+function normalizeWsUrl(url: string): string {
   return normalizeUrl(url, ['wss:', 'ws:'], 'INVALID_WS_URL');
 }
 
-export function deriveWsUrl(rpcUrl: string): string {
+function deriveWsUrl(rpcUrl: string): string {
   const parsed = new URL(normalizeRpcUrl(rpcUrl));
   parsed.protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
   return parsed.toString().replace(/\/$/, '');
@@ -65,9 +63,7 @@ class RpcRouting {
     execution: { rpc: [], ws: [] },
   };
 
-  constructor() {
-    this.reload();
-  }
+  constructor() { this.reload(); }
 
   public reload(): void {
     const env = runtimeEnv();
@@ -88,42 +84,11 @@ class RpcRouting {
       ].filter(Boolean).map(normalizeWsUrl));
       this.endpoints[role] = { rpc, ws };
     };
-    load('search');
-    load('monitor');
-    load('execution');
+    load('search'); load('monitor'); load('execution');
   }
 
-  public getSearchRpcUrl(): string {
-    return this.getPrimaryRpc('search');
-  }
-
-  public getExecutionRpcUrl(): string {
-    return this.getPrimaryRpc('execution');
-  }
-
-  public getMonitorRpcUrl(): string {
-    return this.getPrimaryRpc('monitor');
-  }
-
-  public getSearchWsUrl(): string {
-    return this.getPrimaryWs('search');
-  }
-
-  public getExecutionWsUrl(): string {
-    return this.getPrimaryWs('execution');
-  }
-
-  public getMonitorWsUrl(): string {
-    return this.getPrimaryWs('monitor');
-  }
-
-  public getRpcEndpoints(role: RpcRole): string[] {
-    return [...this.endpoints[role].rpc];
-  }
-
-  public getWsEndpoints(role: RpcRole): string[] {
-    return [...this.endpoints[role].ws];
-  }
+  public getRpcEndpoints(role: RpcRole): string[] { return [...this.endpoints[role].rpc]; }
+  public getWsEndpoints(role: RpcRole): string[] { return [...this.endpoints[role].ws]; }
 
   public getPrimaryRpc(role: RpcRole): string {
     const endpoint = this.endpoints[role].rpc[0];
@@ -142,45 +107,16 @@ class RpcRouting {
   }
 
   public setRpcRoles(config: Partial<RpcRoleConfig>): void {
-    const assign = (
-      role: RpcRole,
-      rpc: string | undefined,
-      rpcBackup: string | undefined,
-      ws: string | undefined,
-      wsBackup: string | undefined
-    ) => {
+    const assign = (role: RpcRole, rpc: string | undefined, rpcBackup: string | undefined, ws: string | undefined, wsBackup: string | undefined) => {
       const current = this.endpoints[role];
-      const nextRpc =
-        rpc === undefined && rpcBackup === undefined
-          ? current.rpc
-          : unique(
-              [
-                rpc === undefined ? current.rpc[0] : rpc,
-                rpcBackup === undefined ? current.rpc[1] : rpcBackup,
-              ]
-                .filter(Boolean)
-                .map(normalizeRpcUrl)
-            );
-
-      const primaryWs =
-        ws !== undefined
-          ? ws
-          : nextRpc[0]
-          ? deriveWsUrl(nextRpc[0])
-          : '';
-      const backupWs =
-        wsBackup !== undefined
-          ? wsBackup
-          : nextRpc[1]
-          ? deriveWsUrl(nextRpc[1])
-          : '';
-
-      const nextWs = unique(
-        [primaryWs, backupWs]
-          .filter(Boolean)
-          .map(normalizeWsUrl)
-      );
-
+      const nextRpc = rpc === undefined && rpcBackup === undefined ? current.rpc : unique([
+        rpc === undefined ? current.rpc[0] : rpc,
+        rpcBackup === undefined ? current.rpc[1] : rpcBackup,
+      ].filter(Boolean).map(normalizeRpcUrl));
+      const nextWs = ws === undefined && wsBackup === undefined ? current.ws : unique([
+        ws === undefined ? current.ws[0] : ws,
+        wsBackup === undefined ? current.ws[1] : wsBackup,
+      ].filter(Boolean).map(normalizeWsUrl));
       this.endpoints[role] = { rpc: nextRpc, ws: nextWs };
     };
     assign('search', config.searchRpcUrl, config.searchRpcBackupUrl, config.searchWsUrl, config.searchWsBackupUrl);

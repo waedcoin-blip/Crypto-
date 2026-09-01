@@ -24,6 +24,7 @@
     "lint": "tsc --noEmit",
     "test:integration-audit": "node scripts/integration-audit-v97.mjs",
     "test:integration-audit-v98": "node scripts/integration-audit-v98.mjs",
+    "test:rpc-routing": "node scripts/rpc-routing-regression-test.mjs",
     "test:rpc-ws-routing": "node scripts/rpc-ws-routing-regression-test.mjs"
   },
   "dependencies": {

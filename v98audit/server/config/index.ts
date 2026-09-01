@@ -28,22 +28,6 @@ const configSchema = z.object({
   HELIUS_API_KEY: z.string().optional(),
   VITE_HELIUS_API_KEY: z.string().optional(),
 
-  // Isolated RPC & WebSocket Endpoints
-  SEARCH_RPC_URL: z.string().optional(),
-  SEARCH_RPC_BACKUP_URL: z.string().optional(),
-  SEARCH_WS_URL: z.string().optional(),
-  SEARCH_WS_BACKUP_URL: z.string().optional(),
-
-  MONITOR_RPC_URL: z.string().optional(),
-  MONITOR_RPC_BACKUP_URL: z.string().optional(),
-  MONITOR_WS_URL: z.string().optional(),
-  MONITOR_WS_BACKUP_URL: z.string().optional(),
-
-  EXECUTION_RPC_URL: z.string().optional(),
-  EXECUTION_RPC_BACKUP_URL: z.string().optional(),
-  EXECUTION_WS_URL: z.string().optional(),
-  EXECUTION_WS_BACKUP_URL: z.string().optional(),
-
   // FTP
   ALLOWED_FTP_HOSTS: z
     .string()

@@ -1,0 +1,161 @@
+import { create } from 'zustand';
+import { TokenMetric, TelemetryAlert, Trade, SniperTrade } from '../types';
+import { Keypair } from '@solana/web3.js';
+import { useBalanceStore } from './balanceStore';
+import { getSavedSessionKeypair, saveSessionKeypair } from '../utils/keypairUtils';
+
+export interface ActivePositionData {
+    boughtAt?: number;
+    amount?: number;
+    tokenQuantityRaw?: string;
+    symbol?: string;
+    entryPrice?: number;
+    entryPriceSol?: number;
+    buyPrice?: number;
+    currentPrice?: number;
+    entryTime?: number;
+    solSpent?: number;
+    peakPnLPct?: number;
+    initialTokens?: number;
+    soldPartial?: boolean;
+    entryFeesSol?: number;
+    hasPulled10x?: boolean;
+    hasPulledPrincipal?: boolean;
+    recoveryMode?: boolean;
+    triggersDisabled?: boolean;
+    tpPct?: number;
+    slPct?: number;
+    txid?: string;
+    buySlot?: number;
+    buyEntries?: { signature: string; solSpent: number; amount: number; buyPrice: number; slot: number }[];
+    currentStage?: any;
+    initialMoonbagSizeStr?: string;
+    isManualSellTriggered?: boolean;
+    [key: string]: any;
+}
+
+interface AppState {
+  // Settings
+  autoSniperEnabled: boolean;
+  isLiveTrading: boolean;
+  buyAmountSol: number;
+  minTakeProfit: number;
+  maxTakeProfit: number;
+  bondingCurveTakeProfit: number;
+  moonbagStrategy: boolean;
+  stopLoss: number;
+  maxPositions: number;
+  slippage: number;
+  telegramBotToken: string;
+  telegramChatId: string;
+  hardenedMaxRiskScore: number;
+  hardenedLiquidityRatio: number;
+  hardenedMaxDevOwnership: number;
+  
+  // Scanners / Metrics
+  isMonitoring: boolean;
+  tokenMetrics: Record<string, TokenMetric>;
+  telemetryAlerts: TelemetryAlert[];
+  telemetryBits: boolean[];
+  trades: Trade[];
+  mySniperTrades: SniperTrade[];
+  activePositions: Record<string, ActivePositionData>;
+  monitoredWallets: {id: string, address: string, label: string}[];
+  sessionWallet: Keypair | null;
+  jupiterLogs: { id: string; timestamp: number; type: 'QUOTE' | 'SWAP' | 'ERROR' | 'INFO'; message: string; details?: any }[];
+
+  // Actions
+  setAutoSniperEnabled: (val: boolean) => void;
+  setIsLiveTrading: (val: boolean) => void;
+  setTokenMetrics: (fn: (prev: Record<string, TokenMetric>) => Record<string, TokenMetric>) => void;
+  setTrades: (fn: (prev: Trade[]) => Trade[]) => void;
+  addTelemetryAlert: (alert: TelemetryAlert) => void;
+  setTelemetryAlerts: (fn: (prev: TelemetryAlert[]) => TelemetryAlert[]) => void;
+  setTelemetryBits: (bits: boolean[]) => void;
+  updateActivePositions: (fn: (prev: Record<string, ActivePositionData>) => Record<string, ActivePositionData>) => void;
+  setMySniperTrades: (fn: (prev: SniperTrade[]) => SniperTrade[]) => void;
+  setSessionWallet: (wallet: Keypair | null) => void;
+  setIsMonitoring: (val: boolean) => void;
+  addJupiterLog: (log: Omit<{ id: string; timestamp: number; type: 'QUOTE' | 'SWAP' | 'ERROR' | 'INFO'; message: string; details?: any }, 'id' | 'timestamp'>) => void;
+}
+
+export const useAppStore = create<AppState>((set) => ({
+  autoSniperEnabled: false,
+  isLiveTrading: localStorage.getItem('trade_mode') === 'mainnet' || localStorage.getItem('is_live_trading') === 'true',
+  buyAmountSol: Number(localStorage.getItem('app_buyAmountSol')) || 0.1,
+  minTakeProfit: Number(localStorage.getItem('app_minTakeProfit')) || 25,
+  maxTakeProfit: Number(localStorage.getItem('app_maxTakeProfit')) || 45,
+  bondingCurveTakeProfit: Number(localStorage.getItem('app_bondingCurveTakeProfit')) || 25,
+  moonbagStrategy: localStorage.getItem('app_moonbagStrategy') === 'true',
+  stopLoss: Number(localStorage.getItem('app_stopLoss')) || -30,
+  maxPositions: Number(localStorage.getItem('app_maxPositions')) || 5,
+  slippage: 1.0,
+  telegramBotToken: localStorage.getItem('tg_bot_token') || '',
+  telegramChatId: localStorage.getItem('tg_chat_id') || '',
+  hardenedMaxRiskScore: Number(localStorage.getItem('hd_max_risk_score')) || 22,
+  hardenedLiquidityRatio: Number(localStorage.getItem('hd_liquidity_ratio')) || 7,
+  hardenedMaxDevOwnership: Number(localStorage.getItem('hd_max_dev_ownership')) || 80,
+  
+  isMonitoring: false,
+  tokenMetrics: {},
+  telemetryAlerts: [],
+  telemetryBits: Array(12).fill(false),
+  trades: [],
+  mySniperTrades: (() => {
+    try {
+      const saved = localStorage.getItem('app_mySniperTrades');
+      return saved ? JSON.parse(saved) : [];
+    } catch { return []; }
+  })(),
+  activePositions: (() => {
+    try {
+      const saved = localStorage.getItem('app_activePositions');
+      return saved ? JSON.parse(saved) : {};
+    } catch { return {}; }
+  })(),
+  monitoredWallets: [],
+  jupiterLogs: [],
+  sessionWallet: (() => {
+    try {
+      return getSavedSessionKeypair();
+    } catch {
+      return null;
+    }
+  })(),
+
+  setAutoSniperEnabled: (val) => set({ autoSniperEnabled: val }),
+  setIsLiveTrading: (val) => set({ isLiveTrading: val }),
+  setTokenMetrics: (fn) => set((state) => ({ ...state, tokenMetrics: fn(state.tokenMetrics) })),
+  setTrades: (fn) => set((state) => ({ trades: fn(state.trades) })),
+  addTelemetryAlert: (alert) => set((state) => ({ telemetryAlerts: [alert, ...state.telemetryAlerts.slice(0, 19)] })),
+  setTelemetryAlerts: (fn) => set((state) => ({ telemetryAlerts: fn(state.telemetryAlerts) })),
+  setTelemetryBits: (bits) => set({ telemetryBits: bits }),
+  updateActivePositions: (fn) => set((state) => {
+    const newPositions = fn(state.activePositions);
+    localStorage.setItem('app_activePositions', JSON.stringify(newPositions));
+    return { activePositions: newPositions };
+  }),
+  setMySniperTrades: (fn) => set((state) => {
+    const next = fn(state.mySniperTrades);
+    localStorage.setItem('app_mySniperTrades', JSON.stringify(next));
+    return { mySniperTrades: next };
+  }),
+  setSessionWallet: (wallet) => {
+    if (wallet) {
+      saveSessionKeypair(wallet);
+    }
+    set((state) => {
+      if (
+        (state.sessionWallet === null && wallet === null) ||
+        (state.sessionWallet && wallet && state.sessionWallet.publicKey.toBase58() === wallet.publicKey.toBase58())
+      ) {
+        return state;
+      }
+      return { sessionWallet: wallet };
+    });
+  },
+  setIsMonitoring: (val) => set({ isMonitoring: val }),
+  addJupiterLog: (log) => set((state) => ({
+    jupiterLogs: [{ id: Math.random().toString(36).substr(2, 9), timestamp: Date.now(), ...log }, ...state.jupiterLogs].slice(0, 100)
+  })),
+}));
