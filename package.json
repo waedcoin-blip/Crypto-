@@ -26,7 +26,8 @@
     "test:integration-audit": "node scripts/integration-audit-v97.mjs",
     "test:integration-audit-v98": "node scripts/integration-audit-v98.mjs",
     "test:rpc-ws-routing": "node scripts/rpc-ws-routing-regression-test.mjs",
-    "test:wallet-monitor": "tsx scripts/wallet-transaction-parser-regression-test.ts"
+    "test:wallet-monitor": "tsx scripts/wallet-transaction-parser-regression-test.ts",
+    "test:fami-decimals": "tsx scripts/fami-decimals-regression-test.ts"
   },
   "dependencies": {
     "@jup-ag/api": "^6.0.48",

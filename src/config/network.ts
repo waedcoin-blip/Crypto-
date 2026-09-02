@@ -13,7 +13,8 @@ export interface NetworkConfig {
 }
 
 const MAINNET_RPC =
-  import.meta.env.VITE_MAINNET_RPC_URL ||
+  (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_MAINNET_RPC_URL) ||
+  (typeof process !== 'undefined' && process.env?.VITE_MAINNET_RPC_URL) ||
   'https://api.mainnet-beta.solana.com';
 
 function toWsUrl(rpcUrl: string): string {

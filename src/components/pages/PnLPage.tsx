@@ -38,7 +38,9 @@ import { resolveTokenDecimals } from '../../services/PaperTradeExecutor';
 
 import { DEFAULT_HELIUS_RPC, DEFAULT_HELIUS_WS, HELIUS_API_KEY, SOL_MINT, USDC_MINT } from '../../constants/solana';
 
-window.Buffer = window.Buffer || Buffer;
+if (typeof window !== 'undefined') {
+  window.Buffer = window.Buffer || Buffer;
+}
 
 const JUPITER_SWAP = 'https://api.jup.ag/swap/v1/swap';
 const JUPITER_PRICE = 'https://api.jup.ag/price/v2';

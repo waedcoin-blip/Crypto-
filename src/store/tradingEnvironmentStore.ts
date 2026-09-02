@@ -18,7 +18,7 @@ interface TradingEnvironmentState {
 
 export const useTradingEnvironmentStore = create<TradingEnvironmentState>((set) => {
   const initialNetwork: TradingNetwork = 
-    (localStorage.getItem('app_trading_network') as TradingNetwork) || 'paper';
+    (typeof localStorage !== 'undefined' ? localStorage.getItem('app_trading_network') as TradingNetwork : null) || 'paper';
   const initial = getNetworkConfig(initialNetwork);
 
   return {

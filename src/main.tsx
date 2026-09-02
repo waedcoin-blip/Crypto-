@@ -17,7 +17,9 @@ import { startAlertManager } from './engines';
 import { TradeManager, TradeMode } from './services/TradeManager';
 import { TradeModeProvider } from './context/TradeModeContext';
 
-window.Buffer = Buffer;
+if (typeof window !== 'undefined') {
+  window.Buffer = Buffer;
+}
 
 // ─── MONKEY-PATCH CONSOLE TO SUPPRESS BENIGN METRIC/WS LIMITS ──────────────
 const originalConsoleError = console.error;
@@ -62,48 +64,52 @@ console.warn = function (...args) {
 };
 
 // ─── 24H STABILITY: Global error handlers to prevent silent crashes ────────
-window.addEventListener('unhandledrejection', (event) => {
-  const reason = event.reason;
-  let msg = reason?.message || String(reason) || '';
-  if (reason && typeof reason === 'object') { try { msg += ' ' + JSON.stringify(reason); } catch (e) {} }
-  
-  // Suppress known non-critical errors from crashing the app
-  const benign = [
-    'NO_ROUTES_FOUND', 'No liquidity', 'User rejected', 'WalletNotConnected',
-    'Transaction not confirmed', 'SIMULATION_ERROR', 'AbortError', 'Unexpected server response', '429', 'ws error', 'WebSocket'
-  ];
-  if (benign.some(s => msg.includes(s) || msg.toLowerCase().includes(s.toLowerCase()))) {
+if (typeof window !== 'undefined') {
+  window.addEventListener('unhandledrejection', (event) => {
+    const reason = event.reason;
+    let msg = reason?.message || String(reason) || '';
+    if (reason && typeof reason === 'object') { try { msg += ' ' + JSON.stringify(reason); } catch (e) {} }
+    
+    // Suppress known non-critical errors from crashing the app
+    const benign = [
+      'NO_ROUTES_FOUND', 'No liquidity', 'User rejected', 'WalletNotConnected',
+      'Transaction not confirmed', 'SIMULATION_ERROR', 'AbortError', 'Unexpected server response', '429', 'ws error', 'WebSocket'
+    ];
+    if (benign.some(s => msg.includes(s) || msg.toLowerCase().includes(s.toLowerCase()))) {
+      event.preventDefault();
+      return;
+    }
+    
+    console.error('[UNHANDLED REJECTION]:', reason);
+    // Don't crash — keep the app alive for 24h operation
     event.preventDefault();
-    return;
-  }
-  
-  console.error('[UNHANDLED REJECTION]:', reason);
-  // Don't crash — keep the app alive for 24h operation
-  event.preventDefault();
-});
+  });
 
-window.addEventListener('error', (event) => {
-  let msg = event.message || event.error?.message || String(event.error) || '';
-  if (event.error && typeof event.error === 'object') {
-    try { msg += ' ' + JSON.stringify(event.error); } catch (e) {}
-  }
-  
-  const benign = [
-    'NO_ROUTES_FOUND', 'No liquidity', 'User rejected', 'WalletNotConnected',
-    'Transaction not confirmed', 'SIMULATION_ERROR', 'AbortError', 'Unexpected server response', '429', 'ws error', 'WebSocket'
-  ];
-  if (benign.some(s => msg.includes(s) || msg.toLowerCase().includes(s.toLowerCase()))) {
-    event.preventDefault();
-    return;
-  }
+  window.addEventListener('error', (event) => {
+    let msg = event.message || event.error?.message || String(event.error) || '';
+    if (event.error && typeof event.error === 'object') {
+      try { msg += ' ' + JSON.stringify(event.error); } catch (e) {}
+    }
+    
+    const benign = [
+      'NO_ROUTES_FOUND', 'No liquidity', 'User rejected', 'WalletNotConnected',
+      'Transaction not confirmed', 'SIMULATION_ERROR', 'AbortError', 'Unexpected server response', '429', 'ws error', 'WebSocket'
+    ];
+    if (benign.some(s => msg.includes(s) || msg.toLowerCase().includes(s.toLowerCase()))) {
+      event.preventDefault();
+      return;
+    }
 
-// Prevent white screen of death on runtime errors
-});
+  // Prevent white screen of death on runtime errors
+  });
+}
+
+const lsGet = (key: string) => typeof localStorage !== 'undefined' ? localStorage.getItem(key) : null;
 
 // Using Helius RPC from App.tsx via environment or hardcoded fallback
-const savedRpc = localStorage.getItem('juipter_auto_rpcUrl');
-const savedRpc2 = localStorage.getItem('juipter_auto_rpcUrl2');
-const savedWs = localStorage.getItem('juipter_auto_wsUrl');
+const savedRpc = lsGet('juipter_auto_rpcUrl');
+const savedRpc2 = lsGet('juipter_auto_rpcUrl2');
+const savedWs = lsGet('juipter_auto_wsUrl');
 const defaultRpc = DEFAULT_HELIUS_RPC;
 const HELIUS_RPC = savedRpc || defaultRpc;
 const HELIUS_RPC_2 = savedRpc2 || DEFAULT_HELIUS_RPC;
@@ -125,13 +131,13 @@ export const WS_URLS = RPC_URLS.map((rpc, index) => {
 });
 
 // Override global WebSocket to load balance websocket connections
-const OriginalWebSocket = window.WebSocket;
+const OriginalWebSocket = typeof window !== 'undefined' ? (window as any).WebSocket : null;
 if (OriginalWebSocket) {
   const CustomWebSocket = function (this: any, url: string | URL, protocols?: string | string[]) {
     let targetUrl = url ? url.toString() : '';
     
     // Check if WS belongs to Master Monitor
-    const masterWs = (localStorage.getItem('master_monitor_ws') || '').trim().replace(/\/$/, '');
+    const masterWs = (lsGet('master_monitor_ws') || '').trim().replace(/\/$/, '');
     if (masterWs && targetUrl.startsWith(masterWs)) {
       // Direct connection to Master Monitor WS - do NOT rewrite to execution WS pool
       const wsInst = (protocols !== undefined && protocols !== null)
@@ -173,7 +179,9 @@ if (OriginalWebSocket) {
   CustomWebSocket.OPEN = OriginalWebSocket.OPEN;
   CustomWebSocket.CLOSING = OriginalWebSocket.CLOSING;
   CustomWebSocket.CLOSED = OriginalWebSocket.CLOSED;
-  (window as any).WebSocket = CustomWebSocket;
+  if (typeof window !== 'undefined') {
+    (window as any).WebSocket = CustomWebSocket;
+  }
 }
 
 import { getPrimaryRpc } from './services/rpcRouting';
@@ -218,7 +226,7 @@ function Root() {
   ], []);
 
   const tradeManager = useMemo(() => new TradeManager({
-    mode: (localStorage.getItem('trade_mode') as TradeMode) || 'paper',
+    mode: (lsGet('trade_mode') as TradeMode) || 'paper',
     realConfig: {},
   }), []);
 
@@ -241,10 +249,15 @@ function Root() {
   );
 }
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <ErrorBoundary>
-      <Root />
-    </ErrorBoundary>
-  </StrictMode>,
-);
+if (typeof document !== 'undefined') {
+  const rootEl = document.getElementById('root');
+  if (rootEl) {
+    createRoot(rootEl).render(
+      <StrictMode>
+        <ErrorBoundary>
+          <Root />
+        </ErrorBoundary>
+      </StrictMode>,
+    );
+  }
+}

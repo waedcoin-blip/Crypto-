@@ -1,7 +1,6 @@
 import { create } from 'zustand';
 import { TokenMetric, TelemetryAlert, Trade, SniperTrade } from '../types';
 import { Keypair } from '@solana/web3.js';
-import { useBalanceStore } from './balanceStore';
 import { getSavedSessionKeypair, saveSessionKeypair } from '../utils/keypairUtils';
 
 export interface ActivePositionData {
@@ -35,7 +34,6 @@ export interface ActivePositionData {
 }
 
 interface AppState {
-  // Settings
   autoSniperEnabled: boolean;
   isLiveTrading: boolean;
   buyAmountSol: number;
@@ -54,7 +52,6 @@ interface AppState {
   tradeOnlyOnce: boolean;
   maxRebuyTimes: number;
   
-  // Scanners / Metrics
   isMonitoring: boolean;
   tokenMetrics: Record<string, TokenMetric>;
   telemetryAlerts: TelemetryAlert[];
@@ -66,7 +63,6 @@ interface AppState {
   sessionWallet: Keypair | null;
   jupiterLogs: { id: string; timestamp: number; type: 'QUOTE' | 'SWAP' | 'ERROR' | 'INFO'; message: string; details?: any }[];
 
-  // Actions
   setAutoSniperEnabled: (val: boolean) => void;
   setIsLiveTrading: (val: boolean) => void;
   setTradeOnlyOnce: (val: boolean) => void;
@@ -83,95 +79,100 @@ interface AppState {
   addJupiterLog: (log: Omit<{ id: string; timestamp: number; type: 'QUOTE' | 'SWAP' | 'ERROR' | 'INFO'; message: string; details?: any }, 'id' | 'timestamp'>) => void;
 }
 
-export const useAppStore = create<AppState>((set) => ({
-  autoSniperEnabled: false,
-  isLiveTrading: localStorage.getItem('trade_mode') === 'mainnet' || localStorage.getItem('is_live_trading') === 'true',
-  buyAmountSol: Number(localStorage.getItem('app_buyAmountSol')) || 0.1,
-  minTakeProfit: Number(localStorage.getItem('app_minTakeProfit')) || 25,
-  maxTakeProfit: Number(localStorage.getItem('app_maxTakeProfit')) || 45,
-  bondingCurveTakeProfit: Number(localStorage.getItem('app_bondingCurveTakeProfit')) || 25,
-  moonbagStrategy: localStorage.getItem('app_moonbagStrategy') === 'true',
-  stopLoss: Number(localStorage.getItem('app_stopLoss')) || -30,
-  maxPositions: Number(localStorage.getItem('app_maxPositions')) || 5,
-  slippage: 1.0,
-  telegramBotToken: localStorage.getItem('tg_bot_token') || '',
-  telegramChatId: localStorage.getItem('tg_chat_id') || '',
-  hardenedMaxRiskScore: Number(localStorage.getItem('hd_max_risk_score')) || 22,
-  hardenedLiquidityRatio: Number(localStorage.getItem('hd_liquidity_ratio')) || 7,
-  hardenedMaxDevOwnership: Number(localStorage.getItem('hd_max_dev_ownership')) || 80,
-  tradeOnlyOnce: localStorage.getItem('app_tradeOnlyOnce') !== null ? localStorage.getItem('app_tradeOnlyOnce') === 'true' : true,
-  maxRebuyTimes: Number(localStorage.getItem('hd_max_rebuy_times')) || 1,
-  
-  isMonitoring: false,
-  tokenMetrics: {},
-  telemetryAlerts: [],
-  telemetryBits: Array(12).fill(false),
-  trades: [],
-  mySniperTrades: (() => {
-    try {
-      const saved = localStorage.getItem('app_mySniperTrades');
-      return saved ? JSON.parse(saved) : [];
-    } catch { return []; }
-  })(),
-  activePositions: (() => {
-    try {
-      const saved = localStorage.getItem('app_activePositions');
-      return saved ? JSON.parse(saved) : {};
-    } catch { return {}; }
-  })(),
-  monitoredWallets: [],
-  jupiterLogs: [],
-  sessionWallet: (() => {
-    try {
-      return getSavedSessionKeypair();
-    } catch {
-      return null;
-    }
-  })(),
+export const useAppStore = create<AppState>((set) => {
+  const lsGet = (k: string) => typeof localStorage !== 'undefined' ? localStorage.getItem(k) : null;
+  const lsSet = (k: string, v: string) => { if (typeof localStorage !== 'undefined') localStorage.setItem(k, v); };
 
-  setAutoSniperEnabled: (val) => set({ autoSniperEnabled: val }),
-  setIsLiveTrading: (val) => set({ isLiveTrading: val }),
-  setTradeOnlyOnce: (val) => {
-    localStorage.setItem('app_tradeOnlyOnce', val.toString());
-    localStorage.setItem('hd_trade_only_once', val.toString());
-    set({ tradeOnlyOnce: val });
-  },
-  setMaxRebuyTimes: (val) => {
-    const num = Math.max(1, Number(val) || 1);
-    localStorage.setItem('hd_max_rebuy_times', num.toString());
-    set({ maxRebuyTimes: num });
-  },
-  setTokenMetrics: (fn) => set((state) => ({ ...state, tokenMetrics: fn(state.tokenMetrics) })),
-  setTrades: (fn) => set((state) => ({ trades: fn(state.trades) })),
-  addTelemetryAlert: (alert) => set((state) => ({ telemetryAlerts: [alert, ...state.telemetryAlerts.slice(0, 19)] })),
-  setTelemetryAlerts: (fn) => set((state) => ({ telemetryAlerts: fn(state.telemetryAlerts) })),
-  setTelemetryBits: (bits) => set({ telemetryBits: bits }),
-  updateActivePositions: (fn) => set((state) => {
-    const newPositions = fn(state.activePositions);
-    localStorage.setItem('app_activePositions', JSON.stringify(newPositions));
-    return { activePositions: newPositions };
-  }),
-  setMySniperTrades: (fn) => set((state) => {
-    const next = fn(state.mySniperTrades);
-    localStorage.setItem('app_mySniperTrades', JSON.stringify(next));
-    return { mySniperTrades: next };
-  }),
-  setSessionWallet: (wallet) => {
-    if (wallet) {
-      saveSessionKeypair(wallet);
-    }
-    set((state) => {
-      if (
-        (state.sessionWallet === null && wallet === null) ||
-        (state.sessionWallet && wallet && state.sessionWallet.publicKey.toBase58() === wallet.publicKey.toBase58())
-      ) {
-        return state;
+  return {
+    autoSniperEnabled: false,
+    isLiveTrading: lsGet('trade_mode') === 'mainnet' || lsGet('is_live_trading') === 'true',
+    buyAmountSol: Number(lsGet('app_buyAmountSol')) || 0.1,
+    minTakeProfit: Number(lsGet('app_minTakeProfit')) || 25,
+    maxTakeProfit: Number(lsGet('app_maxTakeProfit')) || 45,
+    bondingCurveTakeProfit: Number(lsGet('app_bondingCurveTakeProfit')) || 25,
+    moonbagStrategy: lsGet('app_moonbagStrategy') === 'true',
+    stopLoss: Number(lsGet('app_stopLoss')) || -30,
+    maxPositions: Number(lsGet('app_maxPositions')) || 5,
+    slippage: 1.0,
+    telegramBotToken: lsGet('tg_bot_token') || '',
+    telegramChatId: lsGet('tg_chat_id') || '',
+    hardenedMaxRiskScore: Number(lsGet('hd_max_risk_score')) || 22,
+    hardenedLiquidityRatio: Number(lsGet('hd_liquidity_ratio')) || 7,
+    hardenedMaxDevOwnership: Number(lsGet('hd_max_dev_ownership')) || 80,
+    tradeOnlyOnce: lsGet('app_tradeOnlyOnce') !== null ? lsGet('app_tradeOnlyOnce') === 'true' : true,
+    maxRebuyTimes: Number(lsGet('hd_max_rebuy_times')) || 1,
+  
+    isMonitoring: false,
+    tokenMetrics: {},
+    telemetryAlerts: [],
+    telemetryBits: Array(12).fill(false),
+    trades: [],
+    mySniperTrades: (() => {
+      try {
+        const saved = lsGet('app_mySniperTrades');
+        return saved ? JSON.parse(saved) : [];
+      } catch { return []; }
+    })(),
+    activePositions: (() => {
+      try {
+        const saved = lsGet('app_activePositions');
+        return saved ? JSON.parse(saved) : {};
+      } catch { return {}; }
+    })(),
+    monitoredWallets: [],
+    jupiterLogs: [],
+    sessionWallet: (() => {
+      try {
+        return getSavedSessionKeypair();
+      } catch {
+        return null;
       }
-      return { sessionWallet: wallet };
-    });
-  },
-  setIsMonitoring: (val) => set({ isMonitoring: val }),
-  addJupiterLog: (log) => set((state) => ({
-    jupiterLogs: [{ id: Math.random().toString(36).substr(2, 9), timestamp: Date.now(), ...log }, ...state.jupiterLogs].slice(0, 100)
-  })),
-}));
+    })(),
+
+    setAutoSniperEnabled: (val) => set({ autoSniperEnabled: val }),
+    setIsLiveTrading: (val) => set({ isLiveTrading: val }),
+    setTradeOnlyOnce: (val) => {
+      lsSet('app_tradeOnlyOnce', val.toString());
+      lsSet('hd_trade_only_once', val.toString());
+      set({ tradeOnlyOnce: val });
+    },
+    setMaxRebuyTimes: (val) => {
+      const num = Math.max(1, Number(val) || 1);
+      lsSet('hd_max_rebuy_times', num.toString());
+      set({ maxRebuyTimes: num });
+    },
+    setTokenMetrics: (fn) => set((state) => ({ ...state, tokenMetrics: fn(state.tokenMetrics) })),
+    setTrades: (fn) => set((state) => ({ trades: fn(state.trades) })),
+    addTelemetryAlert: (alert) => set((state) => ({ telemetryAlerts: [alert, ...state.telemetryAlerts.slice(0, 19)] })),
+    setTelemetryAlerts: (fn) => set((state) => ({ telemetryAlerts: fn(state.telemetryAlerts) })),
+    setTelemetryBits: (bits) => set({ telemetryBits: bits }),
+    updateActivePositions: (fn) => set((state) => {
+      const newPositions = fn(state.activePositions);
+      lsSet('app_activePositions', JSON.stringify(newPositions));
+      return { activePositions: newPositions };
+    }),
+    setMySniperTrades: (fn) => set((state) => {
+      const next = fn(state.mySniperTrades);
+      lsSet('app_mySniperTrades', JSON.stringify(next));
+      return { mySniperTrades: next };
+    }),
+    setSessionWallet: (wallet) => {
+      if (wallet) {
+        saveSessionKeypair(wallet);
+      }
+      set((state) => {
+        if (
+          (state.sessionWallet === null && wallet === null) ||
+          (state.sessionWallet && wallet && state.sessionWallet.publicKey.toBase58() === wallet.publicKey.toBase58())
+        ) {
+          return state;
+        }
+        return { sessionWallet: wallet };
+      });
+    },
+    setIsMonitoring: (val) => set({ isMonitoring: val }),
+    addJupiterLog: (log) => set((state) => ({
+      jupiterLogs: [{ id: Math.random().toString(36).substr(2, 9), timestamp: Date.now(), ...log }, ...state.jupiterLogs].slice(0, 100)
+    })),
+  };
+});
