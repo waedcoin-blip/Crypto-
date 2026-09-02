@@ -11,6 +11,7 @@ async function runTestSuite() {
   const { pnlEngine } = await import('../server/trading/PnLEngine.js');
   const { yellowstoneConnectionManager } = await import('../server/market/YellowstoneConnectionManager.js');
   const { walletManager } = await import('../server/wallet/WalletManager.js');
+  const { Keypair } = await import('@solana/web3.js');
 
   console.log('🚀 Running Refactored Architecture V90.23 Integration Suite...\n');
 
@@ -28,7 +29,7 @@ async function runTestSuite() {
 
   // TEST 2: RebuyGuard Atomic Reservation & Failure Release
   console.log('▶ [TEST 2] RebuyGuard Atomic Reservation & Release');
-  const testMint = 'TESTMINT11111111111111111111111111111111111';
+  const testMint = Keypair.generate().publicKey.toBase58();
   const res = rebuyGuard.reserveBuy({
     network: 'paper',
     wallet: 'default',
@@ -75,6 +76,7 @@ async function runTestSuite() {
     wallet: 'default',
     mint: testMint,
     amountSol: 0.1,
+    decimals: 6,
     tpPct: 20,
     slPct: 10,
     maxRebuyTimes: 1,
@@ -119,6 +121,7 @@ async function runTestSuite() {
     wallet: 'default',
     mint: testMint,
     amountSol: 0.1,
+    decimals: 6,
     maxRebuyTimes: 1,
   });
 

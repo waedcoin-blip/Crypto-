@@ -8,10 +8,22 @@ import { criteriaRepository } from '../repositories/CriteriaRepository.js';
 import { workerStateRepository } from '../repositories/WorkerStateRepository.js';
 import { tradeRepository } from '../repositories/TradeRepository.js';
 
+import { CriteriaService } from '../services/criteriaService.js';
+
 const router = Router();
 
 // User-scoped criteria resolver helper
 async function fetchCriteriaFromFirestore(userId?: string, idToken?: string): Promise<any> {
+  if (userId && idToken) {
+    try {
+      const state = await CriteriaService.getInstance().fetchCriteriaFromFirestore(userId, idToken);
+      if (state?.criteria) {
+        return state.criteria;
+      }
+    } catch (e) {
+      // Fall back to server repository if Firestore unreachable
+    }
+  }
   return criteriaRepository.getActiveCriteria();
 }
 

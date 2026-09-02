@@ -14,6 +14,7 @@ export interface BuyParams {
   wallet: string;
   mint: string;
   amountSol: number;
+  decimals?: number;
   slippageBps?: number;
   maxRebuyTimes?: number;
   tradeOnlyOnce?: boolean;
@@ -89,14 +90,21 @@ export class TradingEngine {
     const amountLamports = Math.floor(params.amountSol * 1e9);
     const slippageBps = params.slippageBps || 250;
 
-    // 1. Fetch token decimals first (resolves from chain or cache)
-    // Use an external connection if on mainnet, but we can just let resolver try with null if we don't have it easily
-    const executor = executionGateway.getExecutor(network) as any;
-    const tokenInfo = await tokenProgramResolver.resolve(
-      executor?.connection || null,
-      mint
-    );
-    const decimals = tokenInfo.decimals;
+    // 1. Fetch token decimals first (resolves from params, existing position, or chain/cache)
+    let decimals = params.decimals;
+    if (decimals === undefined || !Number.isInteger(decimals) || decimals < 0 || decimals > 255) {
+      const existingPos = positionManager.getPosition(network, wallet, mint);
+      if (existingPos?.decimals !== undefined && Number.isInteger(existingPos.decimals)) {
+        decimals = existingPos.decimals;
+      } else {
+        const executor = executionGateway.getExecutor(network) as any;
+        const tokenInfo = await tokenProgramResolver.resolve(
+          executor?.connection || null,
+          mint
+        );
+        decimals = tokenInfo.decimals;
+      }
+    }
 
     // 2. RebuyGuard Reservation Check
     let reservation;
@@ -345,7 +353,9 @@ export class TradingEngine {
   }
 
   public async rebuy(params: BuyParams): Promise<TradeEngineResponse> {
+    const existingPos = positionManager.getPosition(params.network || 'paper', params.wallet || 'default', params.mint);
     return this.buy({
+      decimals: existingPos?.decimals ?? params.decimals,
       ...params,
       label: 'rebuy',
     });

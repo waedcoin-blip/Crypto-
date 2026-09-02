@@ -63,7 +63,9 @@ async function runTests() {
   // Override paper executor with MockTimeoutExecutor for testing
   executionGateway.paperExecutor = new MockTimeoutExecutor();
 
-  const testMint = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+  const { Keypair } = await import('@solana/web3.js');
+
+  const testMint = Keypair.generate().publicKey.toBase58();
   const network = 'paper';
   const wallet = 'default';
 
@@ -105,7 +107,7 @@ async function runTests() {
   console.log(`PASSED: Duplicate spend prevented! (${buyRes2.error})`);
 
   console.log('\n[TEST 2] Testing SELL path on broadcast timeout (Duplicate sell / premature reopen prevention)...');
-  const sellMint = '4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R';
+  const sellMint = Keypair.generate().publicKey.toBase58();
   positionManager.openOrAccumulatePosition({
     network,
     wallet,

@@ -416,9 +416,13 @@ export class RiskManager {
     }
 
     const dec = pos.tokenDecimals || resolveTokenDecimals(mint);
-    const rawWalletBalanceStr = await this.getAuthoritativeWalletBalanceRaw(mint, dec);
-    const rawWalletBalance = Number(rawWalletBalanceStr);
-    const walletBalUi = rawWalletBalance / (10 ** dec);
+    const balanceString = await this.getAuthoritativeWalletBalanceRaw(mint, dec);
+    const authoritativeBalanceBi = BigInt(balanceString || '0');
+    const rawWalletBalance = authoritativeBalanceBi <= BigInt(Number.MAX_SAFE_INTEGER)
+      ? Number(authoritativeBalanceBi)
+      : parseFloat(balanceString);
+    const walletBalUi = Number(authoritativeBalanceBi / BigInt(10 ** dec)) +
+      Number(authoritativeBalanceBi % BigInt(10 ** dec)) / (10 ** dec);
     const prevRaw = pos.amount;
     const isDiscrepancy = Math.abs(prevRaw - rawWalletBalance) > 1;
 

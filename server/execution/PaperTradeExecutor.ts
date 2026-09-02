@@ -50,6 +50,7 @@ export class PaperTradeExecutor implements TradeExecutor {
       inputMint: params.inputMint,
       outputMint: params.outputMint,
       amount: params.amount,
+      decimals: params.decimals,
       slippageBps: params.slippageBps,
     }));
 
@@ -104,6 +105,7 @@ export class PaperTradeExecutor implements TradeExecutor {
       inputMint: params.inputMint,
       outputMint: params.outputMint,
       amount: sellAmountRaw,
+      decimals: params.decimals,
       slippageBps: params.slippageBps,
     }));
 

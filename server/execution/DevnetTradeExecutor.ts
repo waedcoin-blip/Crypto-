@@ -61,6 +61,7 @@ export class DevnetTradeExecutor implements TradeExecutor {
       inputMint: params.inputMint,
       outputMint: params.outputMint,
       amount: params.amount,
+      decimals: params.decimals,
       slippageBps: params.slippageBps,
     }));
 
@@ -90,6 +91,7 @@ export class DevnetTradeExecutor implements TradeExecutor {
       inputMint: params.inputMint,
       outputMint: params.outputMint,
       amount: params.amount,
+      decimals: params.decimals,
       slippageBps: params.slippageBps,
     }));
 
