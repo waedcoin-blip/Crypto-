@@ -19,6 +19,7 @@ export interface OrderRecord {
   order_id: string;
   position_id?: string;
   mint: string;
+  wallet?: string;
   side: 'buy' | 'sell';
   amount_raw: number | string;
   slippageBps?: number;

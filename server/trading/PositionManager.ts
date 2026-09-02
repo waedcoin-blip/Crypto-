@@ -59,7 +59,7 @@ export class PositionManager {
       const pos: Position = {
         id: record.id,
         network: record.network || 'paper',
-        wallet: 'default',
+        wallet: record.wallet || 'default',
         mint: record.mintAddress,
         tokenAmount: Number(record.amountRaw || 0),
         decimals: record.decimals || 6,
@@ -249,6 +249,7 @@ export class PositionManager {
       id: pos.id,
       mintAddress: pos.mint,
       network: pos.network,
+      wallet: pos.wallet,
       amountRaw: pos.tokenAmount,
       decimals: pos.decimals,
       entryPriceSOL: pos.averageEntryPrice,

@@ -1,5 +1,6 @@
 // server/trading/RebuyGuard.ts
 import { positionManager } from './PositionManager.js';
+import { tradeRepository } from '../repositories/TradeRepository.js';
 
 export interface BuyReservation {
   reservationId: string;
@@ -26,12 +27,22 @@ export class RebuyGuard {
   }
 
   public getGuardKey(network: string, wallet: string, mint: string): string {
-    return `${network}:${wallet}:${mint.trim()}`;
+    // Solana base58 addresses are case-sensitive; never lowercase them.
+    return `${network.trim().toLowerCase()}:${wallet.trim()}:${mint.trim()}`;
   }
 
   public getCompletedBuyCount(network: string, wallet: string, mint: string): number {
     const key = this.getGuardKey(network, wallet, mint);
-    return this.completedBuyCounts.get(key) || 0;
+    // The repository is authoritative across process restarts. The in-memory
+    // counter remains a fast-path for the current process.
+    const persisted = tradeRepository.getTrades(network).filter((t) =>
+      t.side === 'BUY' &&
+      t.status === 'CONFIRMED' &&
+      (t.wallet || 'default') === wallet.trim() &&
+      t.mintAddress.trim() === mint.trim()
+    ).length;
+    const memory = this.completedBuyCounts.get(key) || 0;
+    return Math.max(persisted, memory);
   }
 
   /**
@@ -46,6 +57,7 @@ export class RebuyGuard {
     wallet: string;
     mint: string;
     maxRebuyTimes?: number;
+    tradeOnlyOnce?: boolean;
   }): { allowed: boolean; reason: string } {
     const key = this.getGuardKey(params.network, params.wallet, params.mint);
 
@@ -61,14 +73,16 @@ export class RebuyGuard {
     }
 
     // 3. Rebuy count check
-    const maxRebuys = params.maxRebuyTimes ?? 1; // Default 1 rebuy allowed (2 total trades)
-    const maxTotalBuys = 1 + maxRebuys;
-    const currentCompleted = this.completedBuyCounts.get(key) || 0;
+    const maxRebuys = Math.max(0, Math.floor(Number(params.maxRebuyTimes ?? 1)));
+    const maxTotalBuys = params.tradeOnlyOnce ? 1 : 1 + maxRebuys;
+    const currentCompleted = this.getCompletedBuyCount(params.network, params.wallet, params.mint);
 
     if (currentCompleted >= maxTotalBuys) {
       return {
         allowed: false,
-        reason: `REBUY_LIMIT_REACHED: Completed ${currentCompleted}/${maxTotalBuys} total buys (maxRebuyTimes: ${maxRebuys})`,
+        reason: params.tradeOnlyOnce
+          ? `TRADE_ONLY_ONCE: Completed ${currentCompleted}/${maxTotalBuys} total buys`
+          : `REBUY_LIMIT_REACHED: Completed ${currentCompleted}/${maxTotalBuys} total buys (maxRebuyTimes: ${maxRebuys})`,
       };
     }
 
@@ -84,6 +98,7 @@ export class RebuyGuard {
     mint: string;
     amountSol: number;
     maxRebuyTimes?: number;
+    tradeOnlyOnce?: boolean;
   }): BuyReservation {
     const check = this.canBuy(params);
     if (!check.allowed) {

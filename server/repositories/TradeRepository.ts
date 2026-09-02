@@ -9,6 +9,7 @@ export interface HistoricalTradeRecord {
   symbol?: string;
   side: 'BUY' | 'SELL';
   network: string;
+  wallet?: string;
   amountRaw: number;
   amountTokens: number;
   solAmount: number;

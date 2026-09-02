@@ -49,7 +49,7 @@ router.post('/config', updateConfigHandler);
 
 // POST /api/trading/buy
 router.post('/buy', asyncHandler(async (req, res) => {
-  const { network, wallet, mint, amountSol, slippageBps, maxRebuyTimes, clientRequestId, label, tpPct, slPct } = req.body;
+  const { network, wallet, mint, amountSol, slippageBps, maxRebuyTimes, tradeOnlyOnce, clientRequestId, label, tpPct, slPct } = req.body;
   const response = await tradingEngine.buy({
     network: network || 'paper',
     wallet: wallet || 'default',
@@ -57,6 +57,7 @@ router.post('/buy', asyncHandler(async (req, res) => {
     amountSol: Number(amountSol || 0.1),
     slippageBps: Number(slippageBps || 250),
     maxRebuyTimes: maxRebuyTimes !== undefined ? Number(maxRebuyTimes) : undefined,
+    tradeOnlyOnce: tradeOnlyOnce !== undefined ? tradeOnlyOnce === true : undefined,
     clientRequestId,
     label,
     tpPct,

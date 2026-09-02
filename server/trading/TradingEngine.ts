@@ -6,6 +6,7 @@ import { riskManager } from './RiskManager.js';
 import { pnlEngine, PnLMetrics } from './PnLEngine.js';
 import { executionGateway } from '../execution/ExecutionGateway.js';
 import { ExecutionResult } from '../execution/TradeExecutor.js';
+import { tradeRepository } from '../repositories/TradeRepository.js';
 
 export interface BuyParams {
   network: string;
@@ -14,6 +15,7 @@ export interface BuyParams {
   amountSol: number;
   slippageBps?: number;
   maxRebuyTimes?: number;
+  tradeOnlyOnce?: boolean;
   clientRequestId?: string;
   label?: string;
   tpPct?: number;
@@ -74,6 +76,7 @@ export class TradingEngine {
         mint,
         amountSol: params.amountSol,
         maxRebuyTimes: params.maxRebuyTimes,
+        tradeOnlyOnce: params.tradeOnlyOnce,
       });
     } catch (err: any) {
       return {
@@ -109,9 +112,8 @@ export class TradingEngine {
         };
       }
 
-      // 4. Confirm Buy and update PositionManager
-      rebuyGuard.confirmBuy(reservation.reservationId);
-
+      // 4. Update the authoritative position first, then persist the
+      // confirmed BUY so rebuy limits survive worker/server restarts.
       const position = positionManager.openOrAccumulatePosition({
         network,
         wallet,
@@ -124,6 +126,24 @@ export class TradingEngine {
         slPct: params.slPct,
         trailingSlPct: params.trailingSlPct,
         maxHoldTimeMs: params.maxHoldTimeMs,
+      });
+
+      rebuyGuard.confirmBuy(reservation.reservationId);
+      tradeRepository.recordTrade({
+        id: `trade_${order.id}`,
+        orderId: order.id,
+        positionId: position.id,
+        mintAddress: mint,
+        side: 'BUY',
+        network,
+        wallet,
+        amountRaw: execResult.outAmountRaw,
+        amountTokens: execResult.outAmountRaw / (10 ** position.decimals),
+        solAmount: execResult.totalCostSol || params.amountSol,
+        priceSOL: execResult.effectivePriceSol || position.averageEntryPrice,
+        signature: execResult.signature || order.id,
+        timestamp: Date.now(),
+        status: 'CONFIRMED',
       });
 
       return {
@@ -170,7 +190,7 @@ export class TradingEngine {
 
     positionManager.updatePositionStatus(network, wallet, mint, 'EXIT_PENDING');
 
-    const sellAmountRaw = params.amountRaw || position.tokenAmount;
+    const sellAmountRaw = params.amountRaw !== undefined ? params.amountRaw : position.tokenAmount;
     const clientRequestId = params.clientRequestId || `sell_${mint.slice(0, 8)}_${Date.now()}`;
     const slippageBps = params.slippageBps || (params.reason === 'TP' ? position.slippageBpsTp : position.slippageBpsSl);
 
@@ -204,6 +224,24 @@ export class TradingEngine {
       positionManager.updatePositionStatus(network, wallet, mint, 'CLOSED', {
         exitSignature: execResult.signature,
         netProceedsSol: execResult.netProceedsSol,
+      });
+
+      tradeRepository.recordTrade({
+        id: `trade_${order.id}`,
+        orderId: order.id,
+        positionId: position.id,
+        mintAddress: mint,
+        side: 'SELL',
+        network,
+        wallet,
+        amountRaw: sellAmountRaw,
+        amountTokens: sellAmountRaw / (10 ** position.decimals),
+        solAmount: execResult.netProceedsSol || 0,
+        priceSOL: execResult.effectivePriceSol || 0,
+        pnlSol: execResult.netProceedsSol !== undefined ? execResult.netProceedsSol - position.totalSolSpent : undefined,
+        signature: execResult.signature || order.id,
+        timestamp: Date.now(),
+        status: 'CONFIRMED',
       });
 
       riskManager.releaseExit(position.id);

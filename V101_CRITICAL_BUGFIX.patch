@@ -1,0 +1,255 @@
+--- a/server/repositories/PositionRepository.ts
++++ b/server/repositories/PositionRepository.ts
+@@ -14,6 +14,7 @@
+   id: string;
+   mintAddress: string;
+   network: string;
++  wallet?: string;
+   amountRaw: number | string;
+   decimals: number;
+   entryPriceSOL: number;
+--- a/server/repositories/OrderRepository.ts
++++ b/server/repositories/OrderRepository.ts
+@@ -19,6 +19,7 @@
+   order_id: string;
+   position_id?: string;
+   mint: string;
++  wallet?: string;
+   side: 'buy' | 'sell';
+   amount_raw: number | string;
+   slippageBps?: number;
+--- a/server/repositories/TradeRepository.ts
++++ b/server/repositories/TradeRepository.ts
+@@ -9,6 +9,7 @@
+   symbol?: string;
+   side: 'BUY' | 'SELL';
+   network: string;
++  wallet?: string;
+   amountRaw: number;
+   amountTokens: number;
+   solAmount: number;
+--- a/server/trading/PositionManager.ts
++++ b/server/trading/PositionManager.ts
+@@ -59,7 +59,7 @@
+       const pos: Position = {
+         id: record.id,
+         network: record.network || 'paper',
+-        wallet: 'default',
++        wallet: record.wallet || 'default',
+         mint: record.mintAddress,
+         tokenAmount: Number(record.amountRaw || 0),
+         decimals: record.decimals || 6,
+@@ -249,6 +249,7 @@
+       id: pos.id,
+       mintAddress: pos.mint,
+       network: pos.network,
++      wallet: pos.wallet,
+       amountRaw: pos.tokenAmount,
+       decimals: pos.decimals,
+       entryPriceSOL: pos.averageEntryPrice,
+--- a/server/trading/OrderManager.ts
++++ b/server/trading/OrderManager.ts
+@@ -55,7 +55,7 @@
+       const order: Order = {
+         id: record.order_id,
+         network: record.network || 'paper',
+-        wallet: 'default',
++        wallet: record.wallet || 'default',
+         mint: record.mint,
+         side: record.side,
+         amount: Number(record.amount_raw || 0),
+@@ -161,6 +161,7 @@
+     orderRepository.createOrder({
+       order_id: id,
+       mint: order.mint,
++      wallet: order.wallet,
+       side: order.side,
+       amount_raw: order.amount,
+       slippageBps: order.slippageBps,
+--- a/server/trading/RebuyGuard.ts
++++ b/server/trading/RebuyGuard.ts
+@@ -1,5 +1,6 @@
+ // server/trading/RebuyGuard.ts
+ import { positionManager } from './PositionManager.js';
++import { tradeRepository } from '../repositories/TradeRepository.js';
+ 
+ export interface BuyReservation {
+   reservationId: string;
+@@ -26,12 +27,22 @@
+   }
+ 
+   public getGuardKey(network: string, wallet: string, mint: string): string {
+-    return `${network}:${wallet}:${mint.trim()}`;
++    // Solana base58 addresses are case-sensitive; never lowercase them.
++    return `${network.trim().toLowerCase()}:${wallet.trim()}:${mint.trim()}`;
+   }
+ 
+   public getCompletedBuyCount(network: string, wallet: string, mint: string): number {
+     const key = this.getGuardKey(network, wallet, mint);
+-    return this.completedBuyCounts.get(key) || 0;
++    // The repository is authoritative across process restarts. The in-memory
++    // counter remains a fast-path for the current process.
++    const persisted = tradeRepository.getTrades(network).filter((t) =>
++      t.side === 'BUY' &&
++      t.status === 'CONFIRMED' &&
++      (t.wallet || 'default') === wallet.trim() &&
++      t.mintAddress.trim() === mint.trim()
++    ).length;
++    const memory = this.completedBuyCounts.get(key) || 0;
++    return Math.max(persisted, memory);
+   }
+ 
+   /**
+@@ -46,6 +57,7 @@
+     wallet: string;
+     mint: string;
+     maxRebuyTimes?: number;
++    tradeOnlyOnce?: boolean;
+   }): { allowed: boolean; reason: string } {
+     const key = this.getGuardKey(params.network, params.wallet, params.mint);
+ 
+@@ -61,14 +73,16 @@
+     }
+ 
+     // 3. Rebuy count check
+-    const maxRebuys = params.maxRebuyTimes ?? 1; // Default 1 rebuy allowed (2 total trades)
+-    const maxTotalBuys = 1 + maxRebuys;
+-    const currentCompleted = this.completedBuyCounts.get(key) || 0;
++    const maxRebuys = Math.max(0, Math.floor(Number(params.maxRebuyTimes ?? 1)));
++    const maxTotalBuys = params.tradeOnlyOnce ? 1 : 1 + maxRebuys;
++    const currentCompleted = this.getCompletedBuyCount(params.network, params.wallet, params.mint);
+ 
+     if (currentCompleted >= maxTotalBuys) {
+       return {
+         allowed: false,
+-        reason: `REBUY_LIMIT_REACHED: Completed ${currentCompleted}/${maxTotalBuys} total buys (maxRebuyTimes: ${maxRebuys})`,
++        reason: params.tradeOnlyOnce
++          ? `TRADE_ONLY_ONCE: Completed ${currentCompleted}/${maxTotalBuys} total buys`
++          : `REBUY_LIMIT_REACHED: Completed ${currentCompleted}/${maxTotalBuys} total buys (maxRebuyTimes: ${maxRebuys})`,
+       };
+     }
+ 
+@@ -84,6 +98,7 @@
+     mint: string;
+     amountSol: number;
+     maxRebuyTimes?: number;
++    tradeOnlyOnce?: boolean;
+   }): BuyReservation {
+     const check = this.canBuy(params);
+     if (!check.allowed) {
+--- a/server/trading/TradingEngine.ts
++++ b/server/trading/TradingEngine.ts
+@@ -6,6 +6,7 @@
+ import { pnlEngine, PnLMetrics } from './PnLEngine.js';
+ import { executionGateway } from '../execution/ExecutionGateway.js';
+ import { ExecutionResult } from '../execution/TradeExecutor.js';
++import { tradeRepository } from '../repositories/TradeRepository.js';
+ 
+ export interface BuyParams {
+   network: string;
+@@ -14,6 +15,7 @@
+   amountSol: number;
+   slippageBps?: number;
+   maxRebuyTimes?: number;
++  tradeOnlyOnce?: boolean;
+   clientRequestId?: string;
+   label?: string;
+   tpPct?: number;
+@@ -74,6 +76,7 @@
+         mint,
+         amountSol: params.amountSol,
+         maxRebuyTimes: params.maxRebuyTimes,
++        tradeOnlyOnce: params.tradeOnlyOnce,
+       });
+     } catch (err: any) {
+       return {
+@@ -109,9 +112,8 @@
+         };
+       }
+ 
+-      // 4. Confirm Buy and update PositionManager
+-      rebuyGuard.confirmBuy(reservation.reservationId);
+-
++      // 4. Update the authoritative position first, then persist the
++      // confirmed BUY so rebuy limits survive worker/server restarts.
+       const position = positionManager.openOrAccumulatePosition({
+         network,
+         wallet,
+@@ -124,6 +126,24 @@
+         slPct: params.slPct,
+         trailingSlPct: params.trailingSlPct,
+         maxHoldTimeMs: params.maxHoldTimeMs,
++      });
++
++      rebuyGuard.confirmBuy(reservation.reservationId);
++      tradeRepository.recordTrade({
++        id: `trade_${order.id}`,
++        orderId: order.id,
++        positionId: position.id,
++        mintAddress: mint,
++        side: 'BUY',
++        network,
++        wallet,
++        amountRaw: execResult.outAmountRaw,
++        amountTokens: execResult.outAmountRaw / (10 ** position.decimals),
++        solAmount: execResult.totalCostSol || params.amountSol,
++        priceSOL: execResult.effectivePriceSol || position.averageEntryPrice,
++        signature: execResult.signature || order.id,
++        timestamp: Date.now(),
++        status: 'CONFIRMED',
+       });
+ 
+       return {
+@@ -170,7 +190,7 @@
+ 
+     positionManager.updatePositionStatus(network, wallet, mint, 'EXIT_PENDING');
+ 
+-    const sellAmountRaw = params.amountRaw || position.tokenAmount;
++    const sellAmountRaw = params.amountRaw !== undefined ? params.amountRaw : position.tokenAmount;
+     const clientRequestId = params.clientRequestId || `sell_${mint.slice(0, 8)}_${Date.now()}`;
+     const slippageBps = params.slippageBps || (params.reason === 'TP' ? position.slippageBpsTp : position.slippageBpsSl);
+ 
+@@ -206,6 +226,24 @@
+         netProceedsSol: execResult.netProceedsSol,
+       });
+ 
++      tradeRepository.recordTrade({
++        id: `trade_${order.id}`,
++        orderId: order.id,
++        positionId: position.id,
++        mintAddress: mint,
++        side: 'SELL',
++        network,
++        wallet,
++        amountRaw: sellAmountRaw,
++        amountTokens: sellAmountRaw / (10 ** position.decimals),
++        solAmount: execResult.netProceedsSol || 0,
++        priceSOL: execResult.effectivePriceSol || 0,
++        pnlSol: execResult.netProceedsSol !== undefined ? execResult.netProceedsSol - position.totalSolSpent : undefined,
++        signature: execResult.signature || order.id,
++        timestamp: Date.now(),
++        status: 'CONFIRMED',
++      });
++
+       riskManager.releaseExit(position.id);
+ 
+       return {
+--- a/server/routes/trading.ts
++++ b/server/routes/trading.ts
+@@ -49,7 +49,7 @@
+ 
+ // POST /api/trading/buy
+ router.post('/buy', asyncHandler(async (req, res) => {
+-  const { network, wallet, mint, amountSol, slippageBps, maxRebuyTimes, clientRequestId, label, tpPct, slPct } = req.body;
++  const { network, wallet, mint, amountSol, slippageBps, maxRebuyTimes, tradeOnlyOnce, clientRequestId, label, tpPct, slPct } = req.body;
+   const response = await tradingEngine.buy({
+     network: network || 'paper',
+     wallet: wallet || 'default',
+@@ -57,6 +57,7 @@
+     amountSol: Number(amountSol || 0.1),
+     slippageBps: Number(slippageBps || 250),
+     maxRebuyTimes: maxRebuyTimes !== undefined ? Number(maxRebuyTimes) : undefined,
++    tradeOnlyOnce: tradeOnlyOnce !== undefined ? tradeOnlyOnce === true : undefined,
+     clientRequestId,
+     label,
+     tpPct,

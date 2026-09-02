@@ -55,7 +55,7 @@ export class OrderManager {
       const order: Order = {
         id: record.order_id,
         network: record.network || 'paper',
-        wallet: 'default',
+        wallet: record.wallet || 'default',
         mint: record.mint,
         side: record.side,
         amount: Number(record.amount_raw || 0),
@@ -161,6 +161,7 @@ export class OrderManager {
     orderRepository.createOrder({
       order_id: id,
       mint: order.mint,
+      wallet: order.wallet,
       side: order.side,
       amount_raw: order.amount,
       slippageBps: order.slippageBps,
