@@ -47,7 +47,7 @@ export interface RpcProbeResult {
   error?: string;
 }
 
-export type LaserStreamNetwork = 'mainnet';
+export type LaserStreamNetwork = 'mainnet' | 'devnet';
 export type LaserStreamMode = 'grpc' | 'disabled';
 export type LaserStreamHealthStatus =
   | 'connected'

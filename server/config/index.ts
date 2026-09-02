@@ -28,6 +28,11 @@ const configSchema = z.object({
   HELIUS_API_KEY: z.string().optional(),
   VITE_HELIUS_API_KEY: z.string().optional(),
 
+  // Yellowstone gRPC Endpoints & Token
+  YELLOWSTONE_GRPC_ENDPOINT: z.string().optional(),
+  YELLOWSTONE_GRPC_DEVNET_ENDPOINT: z.string().optional(),
+  YELLOWSTONE_GRPC_X_TOKEN: z.string().optional(),
+
   // Isolated RPC & WebSocket Endpoints
   SEARCH_RPC_URL: z.string().optional(),
   SEARCH_RPC_BACKUP_URL: z.string().optional(),
