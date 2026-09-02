@@ -197,7 +197,9 @@ export class WalletBalanceService {
     if (this.network === 'paper') {
       const { usePaperWalletStore } = await import('../store/paperWalletStore');
       const bal = usePaperWalletStore.getState().tokenBalances[mint] || 0;
-      return BigInt(Math.floor(bal));
+      const { resolveTokenDecimals } = await import('./PaperTradeExecutor');
+      const decimals = resolveTokenDecimals(mint);
+      return BigInt(Math.round(bal * Math.pow(10, decimals)));
     }
 
     const address = walletAddress || useActiveWalletStore.getState().activeWallet?.address;
@@ -227,11 +229,17 @@ export class WalletBalanceService {
   }
 
   /**
-   * Fetch raw on-chain SPL token account balance as number for backwards compatibility.
+   * Fetch raw on-chain SPL token account balance as human number.
    */
   async getTokenBalance(mint: string, walletAddress?: string): Promise<number> {
+    if (this.network === 'paper') {
+      const { usePaperWalletStore } = await import('../store/paperWalletStore');
+      return usePaperWalletStore.getState().tokenBalances[mint] || 0;
+    }
     const raw = await this.getTokenBalanceRaw(mint, walletAddress);
-    return Number(raw);
+    const { resolveTokenDecimals } = await import('./PaperTradeExecutor');
+    const decimals = resolveTokenDecimals(mint);
+    return Number(raw) / Math.pow(10, decimals);
   }
 }
 

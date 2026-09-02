@@ -8,6 +8,7 @@ export type PositionState =
   | 'EXIT_SUBMITTED'
   | 'EXIT_CONFIRMING'
   | 'CLOSED'
+  | 'RECONCILIATION_REQUIRED'
   | 'RECOVERY_REQUIRED';
 
 export interface PositionRecord {
@@ -292,6 +293,33 @@ export class PositionRegistry {
     }
     console.warn(`[PositionRegistry] Cannot close position: No open position found for mint ${mintAddress}`);
     return false;
+  }
+
+  /**
+   * Reconciles an open position's token amount to match the authoritative wallet balance.
+   * If wallet balance is 0, closes the position.
+   */
+  public reconcilePosition(mintAddress: string, authoritativeAmountRaw: number): PositionRecord | undefined {
+    const pos = this.getOpenPositionByMint(mintAddress);
+    if (!pos) return undefined;
+
+    if (authoritativeAmountRaw <= 0) {
+      this.closePosition(mintAddress);
+      return undefined;
+    }
+
+    if (pos.amountRaw > 0 && pos.amountRaw !== authoritativeAmountRaw) {
+      const ratio = authoritativeAmountRaw / pos.amountRaw;
+      pos.solSpent = pos.solSpent * ratio;
+    }
+    pos.amountRaw = authoritativeAmountRaw;
+    pos.updatedAt = Date.now();
+    if (pos.state === 'RECONCILIATION_REQUIRED') {
+      pos.state = 'OPEN';
+    }
+    this.syncServer(pos);
+    this.notify();
+    return pos;
   }
 
   public updatePositionState(mintAddress: string, newState: PositionState): boolean {

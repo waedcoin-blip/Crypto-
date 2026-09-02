@@ -27,13 +27,18 @@ export interface ManagedPosition {
   currentPrice: number; // Current market price in SOL
   peakPrice?: number;
   highestPnLPct?: number;
-  state: 'PENDING_BUY' | 'OPEN' | 'CLOSING' | 'CLOSED' | 'RECOVERY_REQUIRED';
+  state: 'PENDING_BUY' | 'OPEN' | 'EXIT_REQUESTED' | 'CLOSING' | 'CLOSED' | 'RECONCILIATION_REQUIRED' | 'RECOVERY_REQUIRED';
   buySignature?: string;
   buySlot?: number;
   createdAt: number;
   lastPriceUpdate?: number;
   pendingSince?: number;
   activePriceSource?: 'jupiter';
+  exitAttempts?: number;
+  lastExitAttempt?: number;
+  exitCooldownUntil?: number;
+  lastExitError?: string;
+  reconciliationRequired?: boolean;
 }
 
 export interface RiskConfig {
@@ -188,6 +193,7 @@ export class RiskManager {
     tokenDecimals?: number;
     buySignature?: string;
     buyOrderId?: string;
+    isIncremental?: boolean;
   }): void {
     const rawAmount = Math.floor(Math.max(0, params.amount || 0));
     const solSpent = Math.max(0, params.solSpent || 0);
@@ -214,23 +220,42 @@ export class RiskManager {
       if (params.slippageBpsTp !== undefined) existing.slippageBpsTp = params.slippageBpsTp;
       if (params.slippageBpsSl !== undefined) existing.slippageBpsSl = params.slippageBpsSl;
 
-      // Weighted average cost basis accumulation
-      if (rawAmount > 0 && solSpent > 0) {
-        const prevTotalCost = existing.solSpent;
-        const prevTotalRaw = existing.amount;
-        const newTotalCost = prevTotalCost + solSpent;
-        const newTotalRaw = prevTotalRaw + rawAmount;
-        const newTotalQty = newTotalRaw / (10 ** existing.tokenDecimals);
+      const isInc = params.isIncremental === true;
 
-        existing.amount = newTotalRaw;
-        existing.solSpent = newTotalCost;
-        if (newTotalQty > 0) {
-          existing.buyPrice = newTotalCost / newTotalQty;
+      if (isInc) {
+        // Weighted average cost basis accumulation
+        if (rawAmount > 0 && solSpent > 0) {
+          const prevTotalCost = existing.solSpent;
+          const prevTotalRaw = existing.amount;
+          const newTotalCost = prevTotalCost + solSpent;
+          const newTotalRaw = prevTotalRaw + rawAmount;
+          const newTotalQty = newTotalRaw / (10 ** existing.tokenDecimals);
+
+          existing.amount = newTotalRaw;
+          existing.solSpent = newTotalCost;
+          if (newTotalQty > 0) {
+            existing.buyPrice = newTotalCost / newTotalQty;
+          }
+        }
+      } else {
+        // Absolute update
+        if (rawAmount > 0) {
+          existing.amount = rawAmount;
+        }
+        if (solSpent > 0) {
+          existing.solSpent = solSpent;
+        }
+        if (params.buyPrice && params.buyPrice > 0) {
+          existing.buyPrice = params.buyPrice;
+        } else if (existing.amount > 0 && existing.solSpent > 0) {
+          const qty = existing.amount / (10 ** existing.tokenDecimals);
+          if (qty > 0) existing.buyPrice = existing.solSpent / qty;
         }
       }
 
-      if (existing.state === 'RECOVERY_REQUIRED') {
+      if (existing.state === 'RECOVERY_REQUIRED' || existing.state === 'RECONCILIATION_REQUIRED') {
         existing.state = 'OPEN';
+        existing.reconciliationRequired = false;
       }
 
       // Also sync accumulation to PositionRegistry
@@ -238,10 +263,10 @@ export class RiskManager {
       const posRecord = positionRegistry.openPosition({
         mintAddress: params.mint,
         network,
-        amountRaw: rawAmount,
+        amountRaw: isInc ? rawAmount : existing.amount,
         decimals: existing.tokenDecimals,
         entryPriceSOL: existing.buyPrice,
-        solSpent,
+        solSpent: isInc ? solSpent : existing.solSpent,
         tpPct: existing.tpPct,
         slPct: existing.slPct,
         trailingSlPct: existing.trailingSlPct,
@@ -252,24 +277,26 @@ export class RiskManager {
         buySignature: params.buySignature,
       });
 
-      // Record BUY trade in TradeHistoryRegistry
-      tradeHistoryRegistry.recordTrade({
-        id: 'BUY_' + params.mint + '_' + Date.now(),
-        orderId: params.buyOrderId,
-        positionId: posRecord.id,
-        mintAddress: params.mint,
-        side: 'BUY',
-        network,
-        amountRaw: rawAmount,
-        amountTokens: tokenQty,
-        solAmount: solSpent,
-        priceSOL: existing.buyPrice,
-        signature: params.buySignature || '',
-        timestamp: Date.now(),
-        status: params.buySignature ? 'CONFIRMED' : 'PENDING',
-      });
+      if (params.buyOrderId || params.buySignature) {
+        // Record BUY trade in TradeHistoryRegistry
+        tradeHistoryRegistry.recordTrade({
+          id: 'BUY_' + params.mint + '_' + Date.now(),
+          orderId: params.buyOrderId,
+          positionId: posRecord.id,
+          mintAddress: params.mint,
+          side: 'BUY',
+          network,
+          amountRaw: isInc ? rawAmount : existing.amount,
+          amountTokens: isInc ? tokenQty : (existing.amount / (10 ** existing.tokenDecimals)),
+          solAmount: isInc ? solSpent : existing.solSpent,
+          priceSOL: existing.buyPrice,
+          signature: params.buySignature || '',
+          timestamp: Date.now(),
+          status: params.buySignature ? 'CONFIRMED' : 'PENDING',
+        });
+      }
 
-      console.log(`[RiskManager] Accumulated position for ${params.mint}: Total Raw=${existing.amount}, CostBasis=${existing.solSpent.toFixed(4)} SOL, AvgEntry=${existing.buyPrice.toFixed(8)} SOL`);
+      console.log(`[RiskManager] Updated position for ${params.mint}: Total Raw=${existing.amount}, CostBasis=${existing.solSpent.toFixed(4)} SOL, AvgEntry=${existing.buyPrice.toFixed(8)} SOL`);
       return;
     }
 
@@ -307,6 +334,7 @@ export class RiskManager {
       buySignature: params.buySignature,
       createdAt: Date.now(),
       activePriceSource: 'jupiter',
+      exitAttempts: 0,
     };
 
     this.positions.set(params.mint, pos);
@@ -351,6 +379,94 @@ export class RiskManager {
     if (this.isRunning && pos.state === 'OPEN') {
       void this.evaluatePosition(pos);
     }
+  }
+
+  /**
+   * Fetches authoritative wallet token balance in raw integer units.
+   */
+  public async getAuthoritativeWalletBalanceRaw(mint: string, decimals?: number): Promise<number> {
+    const dec = decimals ?? resolveTokenDecimals(mint);
+    const net = useTradingEnvironmentStore.getState().network || 'paper';
+    if (net === 'paper') {
+      const { usePaperWalletStore } = await import('../store/paperWalletStore');
+      const uiBal = usePaperWalletStore.getState().tokenBalances[mint] || 0;
+      return Math.round(uiBal * (10 ** dec));
+    }
+    const rawBig = await walletBalanceService.getTokenBalanceRaw(mint);
+    return Number(rawBig);
+  }
+
+  /**
+   * Reconciles in-memory position state with authoritative wallet balance.
+   * If wallet balance is 0, position is marked CLOSED and cleaned up.
+   */
+  public async reconcilePositionWithWallet(mint: string): Promise<{
+    reconciled: boolean;
+    previousAmountRaw: number;
+    newAmountRaw: number;
+    walletBalanceUi: number;
+    discrepancy: boolean;
+  }> {
+    const pos = this.positions.get(mint);
+    if (!pos) {
+      return { reconciled: false, previousAmountRaw: 0, newAmountRaw: 0, walletBalanceUi: 0, discrepancy: false };
+    }
+
+    const dec = pos.tokenDecimals || resolveTokenDecimals(mint);
+    const rawWalletBalance = await this.getAuthoritativeWalletBalanceRaw(mint, dec);
+    const walletBalUi = rawWalletBalance / (10 ** dec);
+    const prevRaw = pos.amount;
+    const isDiscrepancy = Math.abs(prevRaw - rawWalletBalance) > 1;
+
+    if (isDiscrepancy) {
+      console.warn(
+        `[RiskManager] ⚠️ Position balance mismatch for ${mint}: Tracked=${prevRaw} (${(prevRaw / (10 ** dec)).toFixed(4)} tokens), Wallet=${rawWalletBalance} (${walletBalUi.toFixed(4)} tokens). Reconciling to authoritative balance.`
+      );
+
+      this.onLogCallback?.(
+        `🔄 [RECONCILE] Synced position for ${mint.slice(0, 8)}... (${(prevRaw / (10 ** dec)).toFixed(4)} -> ${walletBalUi.toFixed(4)} tokens)`,
+        'warn',
+        'risk',
+        { mint, prevRaw, rawWalletBalance, walletBalUi }
+      );
+
+      if (rawWalletBalance <= 0) {
+        pos.amount = 0;
+        pos.state = 'CLOSED';
+        this.positions.delete(mint);
+        this.exitingMints.delete(mint);
+        positionRegistry.closePosition(mint);
+      } else {
+        if (prevRaw > 0) {
+          const ratio = rawWalletBalance / prevRaw;
+          pos.solSpent = pos.solSpent * ratio;
+        }
+        pos.amount = rawWalletBalance;
+        if (pos.state === 'RECONCILIATION_REQUIRED') {
+          pos.state = 'OPEN';
+        }
+        pos.reconciliationRequired = false;
+        pos.lastExitError = undefined;
+
+        positionRegistry.reconcilePosition(mint, rawWalletBalance);
+      }
+
+      return {
+        reconciled: true,
+        previousAmountRaw: prevRaw,
+        newAmountRaw: rawWalletBalance,
+        walletBalanceUi: walletBalUi,
+        discrepancy: true,
+      };
+    }
+
+    return {
+      reconciled: true,
+      previousAmountRaw: prevRaw,
+      newAmountRaw: rawWalletBalance,
+      walletBalanceUi: walletBalUi,
+      discrepancy: false,
+    };
   }
 
   public updatePositionTpSl(mint: string, tpPct: number, slPct: number, trailingSlPct?: number): void {

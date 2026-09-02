@@ -330,13 +330,16 @@ export class PaperTradeExecutor implements ITradeExecutor {
           );
         }
 
-        const tokenAmount = rawInputTokens / Math.pow(10, inDecimals);
+        let tokenAmount = rawInputTokens / Math.pow(10, inDecimals);
         const currentTokenBal = paperStore.tokenBalances[inputMint] || 0;
 
         // Strict balance check: Never allow selling more tokens than owned
-        if (currentTokenBal < tokenAmount) {
+        if (currentTokenBal < tokenAmount - 1e-6) {
           const errMsg = `INSUFFICIENT_FUNDS: Required ${tokenAmount.toFixed(6)} tokens, Available ${currentTokenBal.toFixed(6)}.`;
           throw new ExecutionError('transaction_failure', `PAPER_EXECUTION_FAILED: ${errMsg}`);
+        }
+        if (tokenAmount > currentTokenBal) {
+          tokenAmount = currentTokenBal;
         }
 
         // Pre-fetch quote and validate safety
