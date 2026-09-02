@@ -11,6 +11,7 @@
     "preview": "vite preview",
     "capture:jupiter": "node scripts/capture-jupiter-fixture.mjs",
     "replay:captured": "node scripts/replay-captured-fixture.mjs",
+    "test": "node scripts/final-production-audit.mjs && node scripts/final-production-regression-test.mjs && node scripts/remaining-production-regression.mjs && tsx scripts/refactored-architecture-v90-23-test.mjs",
     "test:jupiter-replay": "node scripts/jupiter-transaction-replay-test.mjs && node scripts/fixture-replay-test.mjs",
     "test:parity": "node scripts/execution-parity-test.mjs",
     "test:tpsl-pipeline": "node scripts/tpsl-evaluation-pipeline-test.mjs",
