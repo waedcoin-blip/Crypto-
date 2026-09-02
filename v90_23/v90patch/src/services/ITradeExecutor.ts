@@ -1,0 +1,76 @@
+// src/services/ITradeExecutor.ts
+import { QuoteGetRequest, QuoteResponse } from '@jup-ag/api';
+
+export type ExecutionFailureClassification =
+  | 'quote_failure'
+  | 'slippage_failure'
+  | 'transaction_failure'
+  | 'receipt_failure';
+
+export class ExecutionError extends Error {
+  classification: ExecutionFailureClassification;
+  details?: any;
+
+  constructor(classification: ExecutionFailureClassification, message: string, details?: any) {
+    super(message);
+    this.name = 'ExecutionError';
+    this.classification = classification;
+    this.details = details;
+  }
+}
+
+export interface SwapResult {
+  signature: string;
+  inputMint: string;
+  outputMint: string;
+  inputAmount: number;
+  outputAmount: number;
+  feeSol: number;
+  totalCostSol?: number;
+  slot: number;
+  landingTimeMs: number;
+  method: 'jito' | 'helius' | 'rpc';
+  simulated?: boolean;
+  error?: string;
+  failureClassification?: ExecutionFailureClassification;
+}
+
+export interface ITradeExecutor {
+  readonly mode: 'paper' | 'mainnet';
+  readonly publicKey: string;
+
+  getQuote(params: QuoteGetRequest): Promise<QuoteResponse>;
+
+  swap(
+    inputMint: string,
+    outputMint: string,
+    amount: number,
+    slippageBps: number,
+    label?: 'entry' | 'exit_tp' | 'exit_sl' | 'MAX_HOLD' | 'MANUAL' | 'FORCE_EXIT' | string,
+    preValidatedQuote?: QuoteResponse | null
+  ): Promise<SwapResult>;
+
+  getSolBalance(): Promise<number>;
+  getTokenBalance(mint: string): Promise<number>;
+  hasTokenAccount(mint: string): Promise<boolean>;
+
+  batchSwap(
+    swaps: Array<{
+      inputMint: string;
+      outputMint: string;
+      amount: number;
+      slippageBps: number;
+      label?: 'entry' | 'exit_tp' | 'exit_sl' | 'MAX_HOLD' | 'MANUAL' | 'FORCE_EXIT' | string;
+    }>
+  ): Promise<SwapResult[]>;
+
+  getTelemetry(): ExecutorTelemetry;
+}
+
+export interface ExecutorTelemetry {
+  totalSwaps: number;
+  totalFeesPaidSol: number;
+  avgLandingTimeMs: number;
+  failureRate: number;
+  lastFailure?: string;
+}

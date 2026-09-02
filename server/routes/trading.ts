@@ -1,11 +1,12 @@
 // server/routes/trading.ts
 import { Router } from 'express';
 import { asyncHandler } from '../middleware/errorHandler.js';
+import { tradingEngine } from '../trading/TradingEngine.js';
+import { positionManager } from '../trading/PositionManager.js';
+import { orderManager } from '../trading/OrderManager.js';
 import { criteriaRepository } from '../repositories/CriteriaRepository.js';
-import { positionRepository } from '../repositories/PositionRepository.js';
-import { orderRepository } from '../repositories/OrderRepository.js';
-import { tradeRepository } from '../repositories/TradeRepository.js';
 import { workerStateRepository } from '../repositories/WorkerStateRepository.js';
+import { tradeRepository } from '../repositories/TradeRepository.js';
 
 const router = Router();
 
@@ -46,10 +47,54 @@ const updateConfigHandler = asyncHandler(async (req, res) => {
 router.put('/config', updateConfigHandler);
 router.post('/config', updateConfigHandler);
 
+// POST /api/trading/buy
+router.post('/buy', asyncHandler(async (req, res) => {
+  const { network, wallet, mint, amountSol, slippageBps, maxRebuyTimes, clientRequestId, label, tpPct, slPct } = req.body;
+  const response = await tradingEngine.buy({
+    network: network || 'paper',
+    wallet: wallet || 'default',
+    mint,
+    amountSol: Number(amountSol || 0.1),
+    slippageBps: Number(slippageBps || 250),
+    maxRebuyTimes: maxRebuyTimes !== undefined ? Number(maxRebuyTimes) : undefined,
+    clientRequestId,
+    label,
+    tpPct,
+    slPct,
+  });
+
+  if (!response.success) {
+    return res.status(400).json({ status: 'error', error: response.error });
+  }
+
+  res.json({ status: 'success', ...response, timestamp: Date.now() });
+}));
+
+// POST /api/trading/sell
+router.post('/sell', asyncHandler(async (req, res) => {
+  const { network, wallet, mint, amountRaw, slippageBps, clientRequestId, reason } = req.body;
+  const response = await tradingEngine.sell({
+    network: network || 'paper',
+    wallet: wallet || 'default',
+    mint,
+    amountRaw: amountRaw ? Number(amountRaw) : undefined,
+    slippageBps: slippageBps ? Number(slippageBps) : undefined,
+    clientRequestId,
+    reason,
+  });
+
+  if (!response.success) {
+    return res.status(400).json({ status: 'error', error: response.error });
+  }
+
+  res.json({ status: 'success', ...response, timestamp: Date.now() });
+}));
+
 // GET /api/trading/positions
 router.get('/positions', asyncHandler(async (req, res) => {
-  const openPositions = positionRepository.getOpenPositions();
-  const allPositions = positionRepository.getAllPositions();
+  const { network, wallet } = req.query;
+  const openPositions = positionManager.getOpenPositions(network as string, wallet as string);
+  const allPositions = positionManager.getAllPositions();
   res.json({
     status: 'success',
     openPositions,
@@ -58,12 +103,14 @@ router.get('/positions', asyncHandler(async (req, res) => {
   });
 }));
 
-// POST /api/trading/positions removed as it should be server-internal
-// POST /api/trading/trades removed as it should be server-internal
-
 // GET /api/trading/orders
 router.get('/orders', asyncHandler(async (req, res) => {
-  const orders = orderRepository.getOrders();
+  const { network, wallet, mint } = req.query;
+  const orders = orderManager.getOrders({
+    network: network as string,
+    wallet: wallet as string,
+    mint: mint as string,
+  });
   res.json({
     status: 'success',
     orders,
@@ -81,14 +128,14 @@ router.get('/trades', asyncHandler(async (req, res) => {
   });
 }));
 
-
-
 // GET /api/trading/status
 router.get('/status', asyncHandler(async (req, res) => {
   const worker = workerStateRepository.getWorkerState('trading');
+  const engineStatus = tradingEngine.getStatus();
   res.json({
     status: 'success',
-    workerState: worker || { worker: 'trading', status: 'STOPPED', lastHeartbeat: 0 },
+    workerState: worker || { worker: 'trading', status: 'RUNNING', lastHeartbeat: Date.now() },
+    engineStatus,
     timestamp: Date.now(),
   });
 }));
@@ -122,4 +169,3 @@ router.post('/stop', asyncHandler(async (req, res) => {
 }));
 
 export default router;
-

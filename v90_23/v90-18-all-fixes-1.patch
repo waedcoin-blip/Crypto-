@@ -1,0 +1,421 @@
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -66,6 +66,7 @@
+ import { resolveTokenDecimals } from './services/PaperTradeExecutor';
+ import { StartupReconciliation } from './services/StartupReconciliation';
+ import { entryGate } from './services/EntryGate';
++import { parseWalletTransaction } from './services/WalletTransactionParser';
+ 
+ 
+ import { useWallet, useConnection } from '@solana/wallet-adapter-react';
+@@ -3176,6 +3177,8 @@
+   const connectionRef = useRef<Connection | null>(null);
+   const masterConnectionRef = useRef<Connection | null>(null);
+   const subscriptionIds = useRef<Record<string, number>>({});
++  // Separate wallet-signature registry so wallet events cannot race React state updates.
++  const processedWalletSignatures = useRef<Set<string>>(new Set());
+   const [copiedId, setCopiedId] = useState<string | null>(null);
+   const [isMobile, setIsMobile] = useState(false);
+ 
+@@ -3828,138 +3831,119 @@
+   }, [isXRayEnabled, monitoredWallets, telegramBotToken, telegramChatId, rpcUrl, masterMonitorRpc, customWsUrl]);
+ 
+   useEffect(() => {
+-    // Multi-wallet Monitoring Logic (Master Monitor RPC)
++    // Multi-wallet monitoring: each wallet gets an explicit subscription and
++    // every signature is deduplicated before any RPC work or UI mutation.
+     const conn = masterConnectionRef.current || connectionRef.current;
+-    if (isMonitoring && monitoredWallets.length > 0 && conn) {
+-      // Clear existing subscriptions
+-      Object.keys(subscriptionIds.current).forEach(addr => {
+-        conn.removeOnLogsListener(subscriptionIds.current[addr]);
+-      });
+-      subscriptionIds.current = {};
++    if (!isMonitoring || monitoredWallets.length === 0 || !conn) return;
+ 
+-      monitoredWallets.forEach(wallet => {
+-        const pubKey = safePublicKey(wallet.address);
+-        if (!pubKey) {
+-          console.error('Invalid address in monitored list:', wallet.address);
+-          return;
+-        }
++    const activeSubscriptionIds: Record<string, number> = {};
++    let cancelled = false;
+ 
+-        const id = conn.onLogs(pubKey, async (logs) => {
+-            const signature = logs.signature;
+-            const uniqueId = `trade-${signature}-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
+-            let parsedTrade: Trade | null = null;
+-
+-            try {
+-              const tx = await fetchTransactionWithRetry(signature);
+-
+-              if (tx && tx.meta) {
+-                const postTokenBalances = tx.meta.postTokenBalances || [];
+-                if (postTokenBalances.length > 0) {
+-                  const balance = postTokenBalances[0];
+-                  const preTokenBalances = tx.meta.preTokenBalances || [];
+-                  const preBalance = preTokenBalances.find((b: any) => b.accountIndex === balance.accountIndex);
+-                  const preAmt = preBalance ? Number(preBalance.uiTokenAmount.uiAmount) : 0;
+-                  const postAmt = Number(balance.uiTokenAmount.uiAmount);
+-                  const diff = postAmt - preAmt;
+-
+-                  parsedTrade = {
+-                    id: uniqueId,
+-                    type: diff > 0 ? 'buy' : 'sell',
+-                    token: resolveTokenName(balance.mint),
+-                    tokenAddress: balance.mint,
+-                    amount: Math.abs(diff) || (Math.random() * 5),
+-                    timestamp: new Date().toISOString(),
+-                    signature: signature,
+-                    status: 'confirmed',
+-                    fromAccount: balance.owner || tx.transaction?.message?.accountKeys?.[0]?.toString()
+-                  };
+-                }
+-              } else if (tx && tx.tokenTransfers && tx.tokenTransfers.length > 0) {
+-                // Helius API format
+-                const transfer = tx.tokenTransfers.find((t: any) => t.mint !== 'So11111111111111111111111111111111111111112') || tx.tokenTransfers[0];
+-                
+-                // Determine if buy or sell based on Helius fromUserAccount vs monitored wallet
+-                const pubKeyStr = pubKey.toBase58();
+-                let type: 'buy' | 'sell' = 'buy';
+-                if (transfer.fromUserAccount === pubKeyStr) {
+-                    type = transfer.mint === 'So11111111111111111111111111111111111111112' ? 'buy' : 'sell'; // Wait, selling token means token moved OUT
+-                } else if (transfer.toUserAccount === pubKeyStr) {
+-                    type = 'buy'; // Token moved IN 
+-                } else {
+-                    // Fallback to description
+-                    if (tx.description?.toLowerCase().includes('swapped') || tx.type === 'SWAP') {
+-                       type = tx.description?.toLowerCase().includes('for ' + pubKeyStr) ? 'buy' : 'sell'; // weak fallback
+-                    }
+-                }
++    const persistWalletEvent = async (wallet: { id: string; address: string; label: string }, signature: string, trade: Trade) => {
++      if (!user) return;
++      try {
++        await setDoc(
++          doc(db, 'walletTransactions', `${user.uid}_${wallet.id}_${signature}`),
++          {
++            userId: user.uid,
++            walletId: wallet.id,
++            walletAddress: wallet.address,
++            walletLabel: wallet.label,
++            signature,
++            side: trade.type,
++            tokenMint: trade.tokenAddress,
++            token: trade.token,
++            amount: trade.amount,
++            status: trade.status,
++            timestamp: trade.timestamp,
++            syncedAt: serverTimestamp(),
++            source: 'master-monitor',
++          },
++          { merge: true }
++        );
++      } catch (error) {
++        // Persistence failure must not fabricate a trade or stop live monitoring.
++        console.warn('[WALLET_MONITOR] Failed to persist transaction event', { signature, error });
++      }
++    };
+ 
+-                parsedTrade = {
+-                   id: uniqueId,
+-                   type: type,
+-                   token: resolveTokenName(transfer.mint),
+-                   tokenAddress: transfer.mint,
+-                   amount: transfer.tokenAmount || (Math.random() * 5),
+-                   timestamp: new Date((tx.timestamp || Date.now() / 1000) * 1000).toISOString(),
+-                   signature: signature,
+-                   status: 'confirmed',
+-                   fromAccount: transfer.fromUserAccount || tx.feePayer
+-                };
+-              }
+-            } catch (e: any) {
+-              if (e.message?.includes('Failed to fetch')) {
+-                console.warn('RPC Network Error - Retrying in background');
+-              } else {
+-                console.error('Parsing error', e);
+-              }
+-            }
++    for (const wallet of monitoredWallets) {
++      const pubKey = safePublicKey(wallet.address);
++      if (!pubKey) {
++        console.error('[WALLET_MONITOR] Invalid monitored wallet', wallet.address);
++        continue;
++      }
+ 
+-            if (!parsedTrade) {
+-              console.warn(`[MASTER MONITOR] Ignoring unparseable transaction ${signature}`);
+-              return;
+-            }
+-            const newTrade: Trade = parsedTrade;
++      const subscriptionId = conn.onLogs(pubKey, async (logs) => {
++        const signature = logs.signature;
++        const dedupeKey = `${wallet.address}:${signature}`;
++        if (cancelled || processedWalletSignatures.current.has(dedupeKey)) return;
++        processedWalletSignatures.current.add(dedupeKey);
++
++        // Keep the in-memory registry bounded without weakening near-term dedupe.
++        if (processedWalletSignatures.current.size > 10000) {
++          const oldest = processedWalletSignatures.current.values().next().value;
++          if (oldest) processedWalletSignatures.current.delete(oldest);
++        }
+ 
+-              if (newTrade.type === 'buy' || newTrade.type === 'sell') {
+-                const targetMetric = tokenMetrics[newTrade.tokenAddress];
+-                const liqRatio = (targetMetric?.liquidity || 0) / (targetMetric?.marketCap || 1);
+-                const hasLiqWarning = liqRatio < 0.07;
++        try {
++          const tx = await fetchTransactionWithRetry(signature);
++          if (cancelled) return;
++          const parsed = parseWalletTransaction(tx, wallet.address);
++          if (!parsed) {
++            console.warn('[WALLET_MONITOR] Ignoring transaction without a verified wallet-owned token delta', { wallet: wallet.address, signature });
++            return;
++          }
+ 
+-                setTelemetryAlerts(prev => [
+-                  {
+-                    id: `wallet-alert-${Date.now()}-${Math.random()}`,
+-                    token: newTrade.token,
+-                    address: newTrade.tokenAddress,
+-                    type: 'WALLET_TRADE',
+-                    message: `Monitored Wallet ${newTrade.type.toUpperCase()}: ${newTrade.token}${hasLiqWarning ? ' (⚠️ LOW LIQUIDITY RATIO - DANGER)' : ''}`,
+-                    timestamp: Date.now()
+-                  },
+-                  ...prev.slice(0, 19)
+-                ]);
+-              }
+-              
+-              setTrades(prev => {
+-                if (prev.some(t => t.signature === signature)) return prev;
+-                
+-                // Process enrichment immediately inside the pipeline
+-                processIncomingTrade(newTrade);
+-                
+-                return [newTrade, ...prev].slice(0, 50);
+-              });
+-              
+-              setStats(prev => prev ? { ...prev, totalTrades: prev.totalTrades + 1 } : null);
+-            }, 'confirmed');
+-          
+-          subscriptionIds.current[wallet.address] = id;
+-      });
++          const newTrade: Trade = {
++            id: `wallet-${wallet.id}-${signature}`,
++            type: parsed.type,
++            token: resolveTokenName(parsed.mint),
++            tokenAddress: parsed.mint,
++            amount: parsed.amount,
++            timestamp: new Date(parsed.timestampMs).toISOString(),
++            signature,
++            status: 'confirmed',
++            fromAccount: wallet.address,
++          };
++
++          const targetMetric = tokenMetrics[newTrade.tokenAddress];
++          const liqRatio = (targetMetric?.liquidity || 0) / (targetMetric?.marketCap || 1);
++          const hasLiqWarning = liqRatio < 0.07;
++
++          setTelemetryAlerts(prev => [{
++            id: `wallet-alert-${wallet.id}-${signature}`,
++            token: newTrade.token,
++            address: newTrade.tokenAddress,
++            type: 'WALLET_TRADE',
++            message: `[${wallet.label || wallet.address.slice(0, 8)}] ${newTrade.type.toUpperCase()}: ${newTrade.token}${hasLiqWarning ? ' (LOW LIQUIDITY RATIO)' : ''}`,
++            timestamp: Date.now(),
++          }, ...prev.slice(0, 19)]);
++
++          // Do not perform side effects inside a React state updater.
++          processIncomingTrade(newTrade);
++          setTrades(prev => prev.some(t => t.signature === signature && t.fromAccount === wallet.address)
++            ? prev
++            : [newTrade, ...prev].slice(0, 50));
++          setStats(prev => prev ? { ...prev, totalTrades: prev.totalTrades + 1 } : null);
++          void persistWalletEvent(wallet, signature, newTrade);
++        } catch (error) {
++          console.error('[WALLET_MONITOR] Transaction synchronization failed', { wallet: wallet.address, signature, error });
++        }
++      }, 'confirmed');
++
++      activeSubscriptionIds[wallet.address] = subscriptionId;
+     }
+ 
++    subscriptionIds.current = activeSubscriptionIds;
+     return () => {
+-      if (conn) {
+-        Object.keys(subscriptionIds.current).forEach(addr => {
+-          conn.removeOnLogsListener(subscriptionIds.current[addr]);
+-        });
+-      }
++      cancelled = true;
++      Object.values(activeSubscriptionIds).forEach(id => {
++        try { void conn.removeOnLogsListener(id); } catch {}
++      });
++      if (subscriptionIds.current === activeSubscriptionIds) subscriptionIds.current = {};
+     };
+-  }, [isMonitoring, monitoredWallets, rpcUrl, masterMonitorRpc, customWsUrl]);
++  }, [isMonitoring, monitoredWallets, user, rpcUrl, masterMonitorRpc, customWsUrl]);
+ 
+   const copyToClipboard = async (text: string, id: string) => {
+     try {
+--- a/src/services/MasterMonitorService.ts
++++ b/src/services/MasterMonitorService.ts
+@@ -33,7 +33,9 @@
+ 
+   constructor(rpcEndpoint: string, exitManager: PositionExitManager) {
+     this.exitManager = exitManager;
+-    const ep = rpcRouting.getMonitorRpcUrl();
++    // Explicit Master Monitor configuration wins. Fall back to the role router
++    // only when no endpoint was supplied, preventing two competing sources.
++    const ep = rpcEndpoint?.trim() || rpcRouting.getMonitorRpcUrl();
+     if (!ep) {
+       throw new Error('MONITOR_RPC_UNAVAILABLE');
+     }
+--- /dev/null
++++ b/src/services/WalletTransactionParser.ts
+@@ -0,0 +1,102 @@
++export type WalletTradeSide = 'buy' | 'sell';
++
++export interface ParsedWalletTrade {
++  type: WalletTradeSide;
++  mint: string;
++  amount: number;
++  timestampMs: number;
++  owner: string;
++}
++
++const WSOL_MINT = 'So11111111111111111111111111111111111111112';
++
++type UnknownRecord = Record<string, unknown>;
++const asRecord = (value: unknown): UnknownRecord | null =>
++  value !== null && typeof value === 'object' ? value as UnknownRecord : null;
++
++function rawToUi(raw: unknown, decimals: unknown): number | null {
++  const rawString = typeof raw === 'string' ? raw : typeof raw === 'number' ? String(raw) : null;
++  const decimalNumber = typeof decimals === 'number' ? decimals : Number(decimals);
++  if (!rawString || !/^\d+$/.test(rawString) || !Number.isInteger(decimalNumber) || decimalNumber < 0 || decimalNumber > 30) return null;
++  const rawBig = BigInt(rawString);
++  const divisor = 10n ** BigInt(decimalNumber);
++  const whole = rawBig / divisor;
++  const fraction = rawBig % divisor;
++  const value = Number(whole) + Number(fraction) / Number(divisor);
++  return Number.isFinite(value) && value >= 0 ? value : null;
++}
++
++/**
++ * Parses only token balance deltas owned by the monitored wallet. It never
++ * guesses an amount and never uses an arbitrary first token balance.
++ */
++export function parseWalletTransaction(tx: unknown, monitoredWallet: string): ParsedWalletTrade | null {
++  const root = asRecord(tx);
++  if (!root || !monitoredWallet) return null;
++
++  const meta = asRecord(root.meta);
++  if (meta) {
++    const pre = Array.isArray(meta.preTokenBalances) ? meta.preTokenBalances : [];
++    const post = Array.isArray(meta.postTokenBalances) ? meta.postTokenBalances : [];
++    const balances = new Map<string, { mint: string; decimals: number; pre: bigint; post: bigint }>();
++
++    const add = (entry: unknown, side: 'pre' | 'post') => {
++      const row = asRecord(entry);
++      const owner = row?.owner;
++      const mint = row?.mint;
++      const ui = asRecord(row?.uiTokenAmount);
++      const raw = ui?.amount;
++      const decimals = Number(ui?.decimals);
++      if (owner !== monitoredWallet || typeof mint !== 'string' || mint === WSOL_MINT || !Number.isInteger(decimals) || decimals < 0) return;
++      if (typeof raw !== 'string' || !/^\d+$/.test(raw)) return;
++      const current = balances.get(mint) || { mint, decimals, pre: 0n, post: 0n };
++      current.decimals = decimals;
++      current[side] += BigInt(raw);
++      balances.set(mint, current);
++    };
++
++    pre.forEach(entry => add(entry, 'pre'));
++    post.forEach(entry => add(entry, 'post'));
++
++    let best: { mint: string; decimals: number; delta: bigint } | null = null;
++    for (const value of balances.values()) {
++      const delta = value.post - value.pre;
++      if (delta === 0n) continue;
++      if (!best || (delta < 0n ? -delta : delta) > (best.delta < 0n ? -best.delta : best.delta)) {
++        best = { mint: value.mint, decimals: value.decimals, delta };
++      }
++    }
++
++    if (best) {
++      const amount = rawToUi((best.delta < 0n ? -best.delta : best.delta).toString(), best.decimals);
++      if (amount && amount > 0) {
++        const blockTime = typeof root.blockTime === 'number' ? root.blockTime * 1000 : Date.now();
++        return { type: best.delta > 0n ? 'buy' : 'sell', mint: best.mint, amount, timestampMs: blockTime, owner: monitoredWallet };
++      }
++    }
++  }
++
++  // Helius enriched transaction fallback. Only accept transfers where the
++  // monitored wallet is explicitly the sender or recipient.
++  const transfers = Array.isArray(root.tokenTransfers) ? root.tokenTransfers : [];
++  let bestTransfer: ParsedWalletTrade | null = null;
++  for (const item of transfers) {
++    const transfer = asRecord(item);
++    if (!transfer || transfer.mint === WSOL_MINT || typeof transfer.mint !== 'string') continue;
++    const from = typeof transfer.fromUserAccount === 'string' ? transfer.fromUserAccount : '';
++    const to = typeof transfer.toUserAccount === 'string' ? transfer.toUserAccount : '';
++    if (from !== monitoredWallet && to !== monitoredWallet) continue;
++    const amount = Number(transfer.tokenAmount);
++    if (!Number.isFinite(amount) || amount <= 0) continue;
++    const timestamp = typeof root.timestamp === 'number' ? root.timestamp * 1000 : Date.now();
++    const candidate: ParsedWalletTrade = {
++      type: to === monitoredWallet ? 'buy' : 'sell',
++      mint: transfer.mint,
++      amount,
++      timestampMs: timestamp,
++      owner: monitoredWallet,
++    };
++    if (!bestTransfer || candidate.amount > bestTransfer.amount) bestTransfer = candidate;
++  }
++  return bestTransfer;
++}
+--- a/package.json
++++ b/package.json
+@@ -24,7 +24,8 @@
+     "lint": "tsc --noEmit",
+     "test:integration-audit": "node scripts/integration-audit-v97.mjs",
+     "test:integration-audit-v98": "node scripts/integration-audit-v98.mjs",
+-    "test:rpc-ws-routing": "node scripts/rpc-ws-routing-regression-test.mjs"
++    "test:rpc-ws-routing": "node scripts/rpc-ws-routing-regression-test.mjs",
++    "test:wallet-monitor": "tsx scripts/wallet-transaction-parser-regression-test.ts"
+   },
+   "dependencies": {
+     "@jup-ag/api": "^6.0.48",
+--- /dev/null
++++ b/scripts/wallet-transaction-parser-regression-test.ts
+@@ -0,0 +1,28 @@
++import assert from 'assert';
++import { parseWalletTransaction } from '../src/services/WalletTransactionParser';
++
++const wallet = 'Wallet1111111111111111111111111111111111111';
++const mint = 'Mint111111111111111111111111111111111111111';
++
++const tx = {
++  blockTime: 1000,
++  meta: {
++    preTokenBalances: [
++      { accountIndex: 0, owner: 'Other', mint, uiTokenAmount: { amount: '999999', decimals: 6 } },
++      { accountIndex: 1, owner: wallet, mint, uiTokenAmount: { amount: '1000000', decimals: 6 } },
++    ],
++    postTokenBalances: [
++      { accountIndex: 0, owner: 'Other', mint, uiTokenAmount: { amount: '1', decimals: 6 } },
++      { accountIndex: 1, owner: wallet, mint, uiTokenAmount: { amount: '2500000', decimals: 6 } },
++    ],
++  },
++};
++
++const parsed = parseWalletTransaction(tx, wallet);
++assert(parsed, 'must parse a wallet-owned delta');
++assert.strictEqual(parsed.type, 'buy');
++assert.strictEqual(parsed.mint, mint);
++assert.strictEqual(parsed.amount, 1.5);
++assert.strictEqual(parseWalletTransaction(tx, 'UnknownWallet'), null, 'must never use another wallet balance');
++assert.strictEqual(parseWalletTransaction({ meta: { preTokenBalances: [], postTokenBalances: [] } }, wallet), null, 'must not fabricate amounts');
++console.log('Wallet transaction parser regression tests passed');
