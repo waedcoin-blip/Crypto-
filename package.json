@@ -18,6 +18,7 @@
     "test:laserstream": "tsx scripts/laserstream-regression-test.ts",
     "test:single-exit-authority": "node scripts/single-exit-authority-regression-test.mjs",
     "test:jupiter-only": "node scripts/jupiter-only-architecture-test.mjs",
+    "test:quote-safety": "tsx scripts/quote-safety-regression-test.ts",
     "test:token-age-gate": "node scripts/token-age-gate-test.mjs",
     "clean": "rm -rf dist",
     "postinstall": "node scripts/patch-bigint-buffer.cjs",

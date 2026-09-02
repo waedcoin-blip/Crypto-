@@ -3,6 +3,7 @@ import { QuoteResponse } from '@jup-ag/api';
 import { getJupiterQuote } from './jupiterService';
 import { SOL_MINT } from '../constants/solana';
 import { useAppStore } from '../store/appStore';
+import { normalizePriceImpact, buildSafeQuoteDiagnostic, MAX_PRICE_IMPACT_RATIO } from '../utils/quoteSafety';
 
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 
@@ -117,26 +118,35 @@ export class JupiterPreSellValidator {
     }
 
     if (!quote) {
-      return baseFailure('Jupiter executable quote unavailable or returned null. Non-Jupiter fallbacks are forbidden for pre-sell validation.');
+      return baseFailure('INVALID_QUOTE: Jupiter executable quote unavailable or returned null. Non-Jupiter fallbacks are forbidden for pre-sell validation.');
     }
 
     // 2. VALIDATE ROUTE PLAN & OUTPUT
     if (!quote.routePlan || quote.routePlan.length === 0) {
-      return baseFailure('Jupiter returned empty route plan (no executable DEX route found).');
+      return baseFailure('NO_ROUTE: Jupiter returned empty route plan (no executable DEX route found).');
     }
 
     const outAmountLamports = Number(quote.outAmount) || 0;
     if (outAmountLamports <= 0) {
-      return baseFailure('Jupiter returned zero or negative output lamports.');
+      return baseFailure('INVALID_QUOTE: Jupiter returned zero or negative output lamports.');
     }
 
     const outAmountSol = outAmountLamports / 1e9;
 
     // 3. VALIDATE PRICE IMPACT
-    const priceImpactPct = Math.abs(parseFloat(String(quote.priceImpactPct || '0')) * 100);
-    const maxImpactThreshold = 10.0;
-    if (priceImpactPct > maxImpactThreshold) {
-      return baseFailure(`Price impact (${priceImpactPct.toFixed(2)}%) exceeds safety threshold (${maxImpactThreshold}%).`);
+    const normalizedImpact = normalizePriceImpact(quote.priceImpactPct);
+    if (Number.isNaN(normalizedImpact) || !Number.isFinite(normalizedImpact)) {
+      const diagnostic = buildSafeQuoteDiagnostic({ quote, inputMint: mint, outputMint: WSOL_MINT });
+      console.error('[JupiterPreSellValidator] Invalid price impact from Jupiter:', diagnostic);
+      return baseFailure(`INVALID_QUOTE: Jupiter returned invalid priceImpactPct (${quote.priceImpactPct}).`);
+    }
+
+    const priceImpactPct = normalizedImpact * 100;
+    const maxImpactThreshold = MAX_PRICE_IMPACT_RATIO * 100; // 10.0%
+    if (normalizedImpact > MAX_PRICE_IMPACT_RATIO) {
+      const diagnostic = buildSafeQuoteDiagnostic({ quote, inputMint: mint, outputMint: WSOL_MINT });
+      console.error('[JupiterPreSellValidator] Price impact exceeds safety threshold:', diagnostic);
+      return baseFailure(`QUOTE_SAFETY_ERROR: Price impact (${priceImpactPct.toFixed(2)}%) exceeds safety threshold (${maxImpactThreshold.toFixed(1)}%).`);
     }
 
     // 4. CALCULATE REALIZABLE EXECUTABLE P&L (without hardcoded artificial fees)

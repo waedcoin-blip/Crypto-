@@ -2,12 +2,24 @@
 import { Connection, LAMPORTS_PER_SOL, ParsedTransactionWithMeta } from '@solana/web3.js';
 import { QuoteResponse, QuoteGetRequest } from '@jup-ag/api';
 import { ExecutionFailureClassification, ExecutionError } from './ITradeExecutor';
+import {
+  normalizePriceImpact,
+  buildSafeQuoteDiagnostic,
+  validateQuoteSafetyStrict,
+  MAX_PRICE_IMPACT_RATIO,
+} from '../utils/quoteSafety';
 
 export interface ReplayQuoteValidationParams {
   quote: QuoteResponse;
   inputAmount: number;
   slippageBps: number;
   maxPriceImpactPct?: number;
+  isBuy?: boolean;
+  expectedOutputMint?: string;
+  usdContext?: {
+    requestedUsdAmount?: number;
+    solPriceUsed?: number;
+  };
 }
 
 export interface ReplayExecutionParams {
@@ -89,46 +101,27 @@ export class JupiterTransactionReplay {
    * Replays and asserts safety validation for an initial Jupiter quote
    */
   static validateInitialQuote(params: ReplayQuoteValidationParams): { otherAmountThreshold: number; outAmount: number } {
-    const { quote, inputAmount, slippageBps, maxPriceImpactPct = 10.0 } = params;
+    const { quote, inputAmount, slippageBps, maxPriceImpactPct = 10.0, isBuy, expectedOutputMint, usdContext } = params;
 
-    if (inputAmount <= 0 || !Number.isFinite(inputAmount)) {
-      throw new ExecutionError(
-        'quote_failure',
-        `INVALID_SWAP_AMOUNT: Amount must be positive and finite (got: ${inputAmount})`
-      );
+    try {
+      const result = validateQuoteSafetyStrict({
+        quote,
+        inputAmount,
+        slippageBps,
+        maxPriceImpactRatio: maxPriceImpactPct / 100,
+        isBuy,
+        expectedOutputMint,
+        usdContext,
+      });
+
+      return {
+        otherAmountThreshold: Number(result.otherAmountThreshold),
+        outAmount: Number(result.outAmount),
+      };
+    } catch (err: any) {
+      const classification = classifyExecutionError(err);
+      throw new ExecutionError(classification, err.message || String(err));
     }
-
-    if (slippageBps > 1000) {
-      throw new ExecutionError(
-        'slippage_failure',
-        `EXCESSIVE_SLIPPAGE: Slippage BPS ${slippageBps} exceeds maximum allowable limit of 1000 (10%).`
-      );
-    }
-
-    if (!quote) {
-      throw new ExecutionError('quote_failure', 'QUOTE_SAFETY_ERROR: Jupiter returned empty quote.');
-    }
-
-    if (!quote.outAmount || BigInt(quote.outAmount) <= 0n) {
-      throw new ExecutionError('quote_failure', 'QUOTE_SAFETY_ERROR: Jupiter returned zero or negative output amount.');
-    }
-
-    if (!quote.routePlan || quote.routePlan.length === 0) {
-      throw new ExecutionError('quote_failure', 'QUOTE_SAFETY_ERROR: Jupiter returned no executable routes.');
-    }
-
-    const impact = parseFloat(String(quote.priceImpactPct || '0')) * 100;
-    if (impact > maxPriceImpactPct) {
-      throw new ExecutionError(
-        'slippage_failure',
-        `QUOTE_SAFETY_ERROR: Excessive price impact (${impact.toFixed(2)}%) exceeds safety threshold of ${maxPriceImpactPct.toFixed(1)}%.`
-      );
-    }
-
-    const otherAmountThreshold = quote.otherAmountThreshold ? Number(quote.otherAmountThreshold) : 0;
-    const outAmount = Number(quote.outAmount);
-
-    return { otherAmountThreshold, outAmount };
   }
 
   /**

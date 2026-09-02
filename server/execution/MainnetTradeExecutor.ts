@@ -7,6 +7,7 @@ import * as jupApi from '@jup-ag/api';
 import { TradeExecutor, QuoteParams, QuoteResult, ExecuteParams, ExecutionResult } from './TradeExecutor.js';
 import { walletManager } from '../wallet/WalletManager.js';
 import { tokenProgramResolver } from '../wallet/TokenProgramResolver.js';
+import { validateQuoteSafetyStrict, normalizePriceImpact } from '../utils/quoteSafety.js';
 
 const createJupiterApiClient = (jupApi as any).createJupiterApiClient || (jupApi as any).default?.createJupiterApiClient || (() => ({}));
 
@@ -29,15 +30,20 @@ export class MainnetTradeExecutor implements TradeExecutor {
       userPublicKey: params.userPublicKey,
     });
 
-    if (!quote || !quote.outAmount || BigInt(quote.outAmount) <= 0n) {
-      throw new Error(`QUOTE_FAILED: Jupiter returned invalid quote for BUY ${params.outputMint}`);
-    }
+    const validated = validateQuoteSafetyStrict({
+      quote,
+      inputAmount: params.amount,
+      slippageBps: params.slippageBps || 250,
+      expectedInputMint: params.inputMint,
+      expectedOutputMint: params.outputMint,
+      isBuy: true,
+    });
 
     return {
       inAmount: quote.inAmount,
       outAmount: quote.outAmount,
-      otherAmountThreshold: quote.otherAmountThreshold || quote.outAmount,
-      priceImpactPct: parseFloat(String(quote.priceImpactPct || '0')),
+      otherAmountThreshold: String(validated.otherAmountThreshold),
+      priceImpactPct: validated.normalizedPriceImpactRatio * 100,
       routePlan: quote.routePlan,
       rawQuote: quote,
     };
@@ -52,15 +58,20 @@ export class MainnetTradeExecutor implements TradeExecutor {
       userPublicKey: params.userPublicKey,
     });
 
-    if (!quote || !quote.outAmount || BigInt(quote.outAmount) <= 0n) {
-      throw new Error(`QUOTE_FAILED: Jupiter returned invalid quote for SELL ${params.inputMint}`);
-    }
+    const validated = validateQuoteSafetyStrict({
+      quote,
+      inputAmount: params.amount,
+      slippageBps: params.slippageBps || 250,
+      expectedInputMint: params.inputMint,
+      expectedOutputMint: params.outputMint,
+      isBuy: false,
+    });
 
     return {
       inAmount: quote.inAmount,
       outAmount: quote.outAmount,
-      otherAmountThreshold: quote.otherAmountThreshold || quote.outAmount,
-      priceImpactPct: parseFloat(String(quote.priceImpactPct || '0')),
+      otherAmountThreshold: String(validated.otherAmountThreshold),
+      priceImpactPct: validated.normalizedPriceImpactRatio * 100,
       routePlan: quote.routePlan,
       rawQuote: quote,
     };

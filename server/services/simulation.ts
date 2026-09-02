@@ -188,7 +188,21 @@ export function generateSimulatedQuote(
     slippageBps: slipBps,
     platformFee: null,
     priceImpactPct: '0.001',
-    routePlan: [],
+    routePlan: [
+      {
+        swapInfo: {
+          ammKey: 'sim_amm',
+          label: 'SimulatedRoute',
+          inputMint,
+          outputMint,
+          inAmount: String(inAmt),
+          outAmount: String(outAmtVal),
+          feeAmount: '0',
+          feeMint: inputMint,
+        },
+        percent: 100,
+      },
+    ],
     contextSlot: 2341234,
   };
 }

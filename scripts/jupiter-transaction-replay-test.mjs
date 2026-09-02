@@ -64,9 +64,20 @@ function validateInitialQuote({ quote, inputAmount, slippageBps, maxPriceImpactP
     err.classification = 'quote_failure';
     throw err;
   }
-  const impact = parseFloat(String(quote.priceImpactPct || '0')) * 100;
-  if (impact > maxPriceImpactPct) {
-    const err = new Error(`QUOTE_SAFETY_ERROR: Excessive price impact (${impact.toFixed(2)}%) exceeds safety threshold of ${maxPriceImpactPct.toFixed(1)}%.`);
+  function normalizePriceImpact(raw) {
+    if (raw === null || raw === undefined) return NaN;
+    const num = typeof raw === 'number' ? raw : parseFloat(String(raw).trim());
+    return (!Number.isFinite(num) || Number.isNaN(num)) ? NaN : Math.abs(num) / 100;
+  }
+  const impactRatio = normalizePriceImpact(quote.priceImpactPct);
+  if (Number.isNaN(impactRatio)) {
+    const err = new Error(`INVALID_QUOTE: Jupiter returned invalid priceImpactPct (${quote.priceImpactPct}).`);
+    err.classification = 'quote_failure';
+    throw err;
+  }
+  const impactPct = impactRatio * 100;
+  if (impactPct > maxPriceImpactPct) {
+    const err = new Error(`QUOTE_SAFETY_ERROR: Excessive price impact (${impactPct.toFixed(2)}%) exceeds safety threshold of ${maxPriceImpactPct.toFixed(1)}%.`);
     err.classification = 'slippage_failure';
     throw err;
   }
@@ -201,7 +212,7 @@ try {
 }
 
 try {
-  validateInitialQuote({ quote: { ...validQuote, priceImpactPct: '0.12' }, inputAmount: 100000000, slippageBps: 100 });
+  validateInitialQuote({ quote: { ...validQuote, priceImpactPct: '12.00' }, inputAmount: 100000000, slippageBps: 100 });
   assert.fail('Should have thrown');
 } catch (err) {
   assert.strictEqual(classifyExecutionError(err), 'slippage_failure');

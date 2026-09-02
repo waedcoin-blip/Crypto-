@@ -6,6 +6,7 @@ import { DEFAULT_HELIUS_RPC } from '../constants/solana';
 import { telemetryService } from './telemetryService';
 import { getNetworkConfig } from '../config/network';
 import { getSolPriceUsd } from '../utils/pnlCalculator';
+import { normalizePriceImpact, buildSafeQuoteDiagnostic, MAX_PRICE_IMPACT_RATIO } from '../utils/quoteSafety';
 
 // ─── RPC POOL: Smart multi-endpoint with health tracking ───────────────────
 export interface RpcEndpoint {
@@ -422,10 +423,18 @@ export const getJupiterQuote = async (
       return null;
     }
 
-    const priceImpactPct = parseFloat(quote.priceImpactPct as any) * 100;
+    const normalizedImpact = normalizePriceImpact(quote.priceImpactPct);
+    if (Number.isNaN(normalizedImpact) || !Number.isFinite(normalizedImpact)) {
+      const diagnostic = buildSafeQuoteDiagnostic({ quote, inputMint, outputMint });
+      console.warn('[QUOTE REJECTED]: Invalid price impact from Jupiter:', diagnostic);
+      return null;
+    }
+
+    const priceImpactPct = normalizedImpact * 100;
     const maxAllowedImpact = liquidityUsd > 100000 ? 8.0 : 10.0;
     if (priceImpactPct > maxAllowedImpact) {
-      console.warn(`[QUOTE REJECTED]: Price impact ${priceImpactPct.toFixed(2)}%`);
+      const diagnostic = buildSafeQuoteDiagnostic({ quote, inputMint, outputMint });
+      console.warn(`[QUOTE REJECTED]: Price impact ${priceImpactPct.toFixed(2)}% exceeds max allowed ${maxAllowedImpact}%:`, diagnostic);
       return null;
     }
 
@@ -441,7 +450,7 @@ export const getJupiterQuote = async (
 
     useAppStore.getState().addJupiterLog({
       type: 'INFO',
-      message: `Quote Success: ${quote.outAmount} (${quote.priceImpactPct}% impact)`,
+      message: `Quote Success: ${quote.outAmount} (${priceImpactPct.toFixed(2)}% impact)`,
       details: { routePlan: quote.routePlan?.length, outAmount: quote.outAmount }
     });
 

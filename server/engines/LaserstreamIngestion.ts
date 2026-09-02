@@ -15,8 +15,7 @@
  *   Trading Monitor & SSE Broadcast
  */
 
-import Client, {
-  CommitmentLevel,
+import ClientPkg, {
   type SubscribeRequest,
   type SubscribeUpdate,
 } from '@triton-one/yellowstone-grpc';
@@ -26,6 +25,9 @@ import bs58 from 'bs58';
 import { laserLogger } from '../utils/logger.js';
 import { config } from '../config/index.js';
 import { laserStreamWatchdog, LASERSTREAM_ACTIVITY_STALE_MS } from '../services/LaserStreamWatchdog.js';
+
+const Client = (ClientPkg as any).default || ClientPkg;
+const CommitmentLevel = (ClientPkg as any).CommitmentLevel || { PROCESSED: 0, CONFIRMED: 1, FINALIZED: 2 };
 import type {
   LaserStreamOptions,
   LaserStreamNetwork,
