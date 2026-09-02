@@ -90,6 +90,9 @@ async function runTestSuite() {
   }
   console.log(`  ✔ BUY executed cleanly, position ${pos.id} created with ${pos.tokenAmount} tokens`);
 
+  const initialTokenAmount = pos.tokenAmount;
+  const initialSolSpent = pos.totalSolSpent;
+
   // TEST 4: Rebuy via TradingEngine
   console.log('▶ [TEST 4] TradingEngine REBUY & Position Accumulation');
   const rebuyRes = await tradingEngine.rebuy({
@@ -105,7 +108,7 @@ async function runTestSuite() {
   }
 
   const accumulatedPos = positionManager.getPosition('paper', 'default', testMint);
-  if (accumulatedPos.tokenAmount <= pos.tokenAmount || accumulatedPos.totalSolSpent <= 0.1) {
+  if (accumulatedPos.tokenAmount <= initialTokenAmount || accumulatedPos.totalSolSpent <= initialSolSpent) {
     throw new Error('FAIL: Position cost basis accumulation failed');
   }
   console.log(`  ✔ REBUY accumulated cost basis to ${accumulatedPos.totalSolSpent.toFixed(2)} SOL`);
