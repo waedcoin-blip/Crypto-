@@ -1,0 +1,747 @@
+diff -ruN v90orig/.env.example v90patch/.env.example
+--- v90orig/.env.example	2026-09-02 10:50:00.000000000 +0000
++++ v90patch/.env.example	2026-09-02 10:59:50.817453231 +0000
+@@ -55,3 +55,8 @@
+ DEVNET_TOKEN_PRICE_SOL=0.00001
+ # Shadow mint decimals. Keep <= 6 if the frontend uses JS number token amounts.
+ DEVNET_SHADOW_TOKEN_DECIMALS=6
++
++# Yellowstone Geyser gRPC (server-side only)
++YELLOWSTONE_GRPC_ENDPOINT=
++YELLOWSTONE_GRPC_X_TOKEN=
++YELLOWSTONE_GRPC_DEVNET_ENDPOINT=
+diff -ruN v90orig/package.json v90patch/package.json
+--- v90orig/package.json	2026-09-02 10:50:00.000000000 +0000
++++ v90patch/package.json	2026-09-02 10:59:32.739749214 +0000
+@@ -48,7 +48,6 @@
+     "express-rate-limit": "^8.6.0",
+     "firebase": "^12.12.1",
+     "firebase-admin": "^14.2.0",
+-    "helius-laserstream": "^0.8.4",
+     "helmet": "^8.3.0",
+     "lucide-react": "^0.546.0",
+     "mitt": "^3.0.1",
+@@ -62,7 +61,8 @@
+     "vite": "^6.2.3",
+     "ws": "^8.21.1",
+     "zod": "^3.25.76",
+-    "zustand": "^5.0.14"
++    "zustand": "^5.0.14",
++    "@triton-one/yellowstone-grpc": "^7.0.1"
+   },
+   "devDependencies": {
+     "@types/cors": "^2.8.19",
+diff -ruN v90orig/server/engines/LaserstreamIngestion.ts v90patch/server/engines/LaserstreamIngestion.ts
+--- v90orig/server/engines/LaserstreamIngestion.ts	2026-09-02 10:50:00.000000000 +0000
++++ v90patch/server/engines/LaserstreamIngestion.ts	2026-09-02 10:59:50.817390348 +0000
+@@ -1,8 +1,8 @@
+ /**
+- * Helius LaserStream Engine - Direct In-Process gRPC Ingestion & Normalization
++ * Yellowstone Geyser gRPC Engine - Direct In-Process Ingestion & Normalization
+  *
+  * Architecture:
+- *   Helius LaserStream gRPC (helius-laserstream v0.8.4+)
++ *   Yellowstone Geyser gRPC (@triton-one/yellowstone-grpc)
+  *          ↓
+  *   Single persistent in-process subscription
+  *          ↓
+@@ -15,15 +15,9 @@
+  *   Trading Monitor & SSE Broadcast
+  */
+ 
+-import {
+-  subscribe,
+-  CommitmentLevel,
+-  type LaserstreamConfig,
+-  type SubscribeRequest,
+-  type SubscribeUpdate,
+-  type StreamHandle,
+-  shutdownAllStreams,
+-} from 'helius-laserstream';
++import Client, { CommitmentLevel, type SubscribeRequest, type SubscribeUpdate } from '@triton-one/yellowstone-grpc';
++
++type StreamHandle = any;
+ import tls from 'tls';
+ import { URL } from 'url';
+ import bs58 from 'bs58';
+@@ -42,22 +36,17 @@
+ 
+ // ─── Network Endpoints & Program Filters ───
+ export const LASERSTREAM_ENDPOINTS = {
+-  mainnet: [
+-    'https://laserstream-mainnet-ams.helius-rpc.com', // Europe AMS (Amsterdam)
+-    'https://laserstream-mainnet-fra.helius-rpc.com', // Europe FRA (Frankfurt)
+-    'https://laserstream-mainnet-lon.helius-rpc.com', // Europe LON (London)
+-    'https://laserstream-mainnet-ewr.helius-rpc.com', // East US EWR (Newark)
+-    'https://laserstream-mainnet-tyo.helius-rpc.com', // Asia TYO (Tokyo)
+-    'https://laserstream-mainnet-sgp.helius-rpc.com', // Asia SGP (Singapore)
+-  ],
++  mainnet: [process.env.YELLOWSTONE_GRPC_ENDPOINT || ''],
++  devnet: [process.env.YELLOWSTONE_GRPC_DEVNET_ENDPOINT || ''],
+ } as const;
+ 
+ export const DEFAULT_NETWORK_PROGRAMS: Record<LaserStreamNetwork, string[]> = {
+   mainnet: [
+-    '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P', // Pump.fun Mainnet
+-    '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8', // Raydium AMM Mainnet
+-    'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4', // Jupiter v6 Mainnet
++    '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P',
++    '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8',
++    'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4',
+   ],
++  devnet: [],
+ };
+ 
+ const HUB_PROBE_TIMEOUT = 2_500;
+@@ -300,10 +289,10 @@
+   let userActionableMessage = errMsg;
+   if (isPlanError) {
+     userActionableMessage =
+-      'Helius LaserStream gRPC on Mainnet requires a Business or Professional plan. Your current Helius plan does not have Yellowstone gRPC access.';
++      'Yellowstone gRPC endpoint rejected the connection or credentials. Check YELLOWSTONE_GRPC_ENDPOINT and YELLOWSTONE_GRPC_X_TOKEN.';
+   } else if (isAuthError) {
+     userActionableMessage =
+-      'Invalid Helius API Key provided. Please verify your HELIUS_API_KEY credentials in settings.';
++      'Invalid Yellowstone x-token. Verify YELLOWSTONE_GRPC_X_TOKEN or the provider token configured for this endpoint.';
+   }
+ 
+   return { isPlanError, isAuthError, message: errMsg, userActionableMessage };
+@@ -357,69 +346,12 @@
+ }
+ 
+ // ─── Regional Hub Selection ───
+-async function probeHubLatency(hubUrl: string, timeoutMs = HUB_PROBE_TIMEOUT): Promise<number> {
+-  return new Promise((resolve) => {
+-    try {
+-      const parsedUrl = new URL(hubUrl);
+-      const host = parsedUrl.hostname;
+-      const port = parsedUrl.port ? parseInt(parsedUrl.port, 10) : 443;
+-      const start = Date.now();
+-
+-      const socket = tls.connect(port, host, { servername: host, timeout: timeoutMs }, () => {
+-        const latency = Date.now() - start;
+-        socket.destroy();
+-        resolve(latency);
+-      });
+-
+-      socket.on('error', () => {
+-        socket.destroy();
+-        resolve(Infinity);
+-      });
+-
+-      socket.on('timeout', () => {
+-        socket.destroy();
+-        resolve(Infinity);
+-      });
+-    } catch {
+-      resolve(Infinity);
+-    }
+-  });
+-}
+-
+-export async function getFastestRegionalHub(
+-  network: LaserStreamNetwork = 'mainnet',
+-  excludeHubs: Set<string> = new Set()
+-): Promise<string | null> {
+-  const candidateHubs = (LASERSTREAM_ENDPOINTS[network] || LASERSTREAM_ENDPOINTS.mainnet).filter(
+-    (h) => !excludeHubs.has(h)
+-  );
+-
+-  if (candidateHubs.length === 0) return null;
+-
+-  laserLogger.info(
+-    { network, candidates: candidateHubs.length },
+-    'Probing regional LaserStream hubs for lowest gRPC latency'
+-  );
+-
+-  const results = await Promise.all(
+-    candidateHubs.map(async (url) => {
+-      const latency = await probeHubLatency(url);
+-      laserLogger.debug({ hub: url, latency }, 'LaserStream hub TLS probe result');
+-      return { url, latency };
+-    })
+-  );
+-
+-  const validResults = results.filter((r) => Number.isFinite(r.latency));
+-  if (validResults.length === 0) {
+-    laserLogger.warn('All hub TLS probes timed out, defaulting to primary hub');
+-    return candidateHubs[0];
+-  }
+-
+-  validResults.sort((a, b) => a.latency - b.latency);
+-  const fastest = validResults[0];
+-
+-  laserLogger.info({ hub: fastest.url, latency: fastest.latency, network }, 'Selected optimal LaserStream regional hub');
+-  return fastest.url;
++function resolveYellowstoneEndpoint(options: LaserStreamOptions): string {
++  const configured = String(options.endpoint || '').trim();
++  if (configured && configured !== 'auto' && /^https?:\/\//i.test(configured)) return configured;
++  const env = String((options.network === 'devnet' ? process.env.YELLOWSTONE_GRPC_DEVNET_ENDPOINT : process.env.YELLOWSTONE_GRPC_ENDPOINT) || '').trim();
++  if (env) return env;
++  throw new Error(`Yellowstone endpoint is required for ${options.network || 'mainnet'}. Set the appropriate YELLOWSTONE_GRPC_*_ENDPOINT.`);
+ }
+ 
+ // ─── Main Stream Start (In-Process Persistent gRPC) ───
+@@ -429,185 +361,125 @@
+ ): Promise<StreamHandle | null> {
+   const sessionId = ++state.currentSessionId;
+   const network = options.network || 'mainnet';
+-  const apiKey = sanitizeApiKey(options.apiKey || config.HELIUS_API_KEY || '');
+-  const programs =
+-    options.programAddresses && options.programAddresses.length > 0
+-      ? options.programAddresses
+-      : DEFAULT_NETWORK_PROGRAMS[network];
++  const xToken = String(options.apiKey || process.env.YELLOWSTONE_GRPC_X_TOKEN || '').trim();
++  const programs = options.programAddresses?.length ? options.programAddresses : DEFAULT_NETWORK_PROGRAMS[network];
+ 
+   state.currentOptions = options;
+   state.network = network;
+   state.eventBusCallback = eventBusCallback;
+ 
+-  // Cleanly stop any existing stream handle
+-  if (state.activeStreamHandle) {
+-    try {
+-      state.activeStreamHandle.cancel();
+-    } catch {}
+-    state.activeStreamHandle = null;
+-  }
++  if (state.activeStreamHandle) { try { state.activeStreamHandle.end?.(); state.activeStreamHandle.cancel?.(); } catch {} }
++  state.activeStreamHandle = null;
+   asyncEventProcessor.clear();
+ 
+-  // Validate API key upfront - fail loudly
+-  if (!apiKey) {
+-    const errorMsg = 'Helius API Key is required for LaserStream gRPC streaming.';
+-    laserLogger.warn(errorMsg);
+-    laserStreamWatchdog.recordError(errorMsg);
++  let endpoint: string;
++  try { endpoint = resolveYellowstoneEndpoint(options); } catch (err: any) {
++    const msg = err?.message || String(err);
++    laserLogger.error({ error: msg }, 'Yellowstone endpoint is not configured');
++    laserStreamWatchdog.recordError(msg);
+     laserStreamWatchdog.setTransportState(false, null, 'disabled', network);
+     return null;
+   }
+ 
+-  // Auto-select fastest regional endpoint
+-  let endpoint = options.endpoint || 'auto';
+-  if (endpoint === 'auto' || !endpoint.includes('http')) {
+-    const fastestHub = await getFastestRegionalHub(network);
+-    endpoint = fastestHub || LASERSTREAM_ENDPOINTS.mainnet[0];
+-  }
+-
+   state.mode = 'grpc';
+   state.activeEndpoint = endpoint;
+   state.transportConnected = false;
+-
+-  laserStreamWatchdog.reset(false); // Set watchdog to connecting state
++  laserStreamWatchdog.reset(false);
+   laserStreamWatchdog.setTransportState(false, endpoint, 'grpc', network);
+-  laserLogger.info(
+-    { endpoint, network, programFilters: programs.length },
+-    'Connecting directly to Helius LaserStream gRPC (in-process)'
+-  );
+-
+-  const laserConfig: LaserstreamConfig = {
+-    apiKey,
+-    endpoint,
+-    maxReconnectAttempts: 0,
+-    replay: true,
+-  };
+-
+-  const subscriptionRequest: SubscribeRequest = {
+-    commitment: CommitmentLevel.CONFIRMED,
+-    transactions: {
+-      'network-transactions': {
+-        accountInclude: programs,
+-        vote: false,
+-        failed: false,
+-      },
+-    },
+-    slots: {
+-      'slots-stream': {
+-        filterByCommitment: true,
+-      },
+-    },
+-  };
+ 
+   try {
+-    const handle = await subscribe(
+-      laserConfig,
+-      subscriptionRequest,
+-      (update: SubscribeUpdate) => {
+-        if (state.currentSessionId !== sessionId) return;
+-        laserStreamWatchdog.recordRawUpdate();
+-
+-        // Any real update from server means we are connected
+-        if (!state.transportConnected) {
+-          state.transportConnected = true;
+-          laserStreamWatchdog.setTransportState(true, state.activeEndpoint, 'grpc', network);
+-        }
+-
+-        // Slot notification
+-        if (update.slot) {
+-          const slotNum = Number(update.slot.slot || 0);
+-          if (slotNum > 0) {
+-            laserStreamWatchdog.recordReceivedEvent(slotNum);
+-          }
+-        }
+-
+-        // Heartbeat / ping / pong
+-        if (update.ping || update.pong) {
+-          laserStreamWatchdog.recordHeartbeat();
+-        }
+-
+-        // Transaction notification
+-        if (update.transaction) {
+-          const standardEvent = normalizeLaserstreamTransaction(update, network);
+-          if (standardEvent && standardEvent.signature) {
+-            const dedupeKey = `${network}:${standardEvent.slot}:${standardEvent.signature}`;
+-            if (!signatureDeduplicator.add(dedupeKey)) {
+-              laserStreamWatchdog.recordDuplicateUpdate();
+-              return;
+-            }
+-
+-            laserStreamWatchdog.recordReceivedEvent(Number(standardEvent.slot || 0));
+-
+-            standardEvent.endpoint = state.activeEndpoint;
+-
+-            laserStreamWatchdog.recordQueuedUpdate();
+-            asyncEventProcessor.enqueue(standardEvent, eventBusCallback);
+-          } else {
+-            laserStreamWatchdog.recordRejectedUpdate();
+-          }
+-        }
++    const client = new Client(endpoint, xToken || undefined, {
++      grpcMaxDecodingMessageSize: 64 * 1024 * 1024,
++    }, {
++      backoff: { initialIntervalMs: 100, multiplier: 2, maxRetries: MAX_RECONNECT_ATTEMPTS },
++      slotRetention: 250,
++    });
++    await client.connect();
++
++    const request: SubscribeRequest = {
++      accounts: {},
++      slots: { 'slots-stream': { filterByCommitment: true } },
++      transactions: {
++        'network-transactions': {
++          accountInclude: programs,
++          accountExclude: [],
++          accountRequired: [],
++          vote: false,
++          failed: false,
++        },
+       },
+-      (error: unknown) => {
+-        if (state.currentSessionId !== sessionId) return;
+-
+-        const parsed = parseHeliusError(error);
+-        laserLogger.error(
+-          { error: parsed.message, userNotice: parsed.userActionableMessage },
+-          'LaserStream gRPC error encountered'
+-        );
+-        laserStreamWatchdog.recordError(parsed.userActionableMessage);
+-
+-        // Immediate disconnect or disable on stream error
+-        state.transportConnected = false;
+-        if (parsed.isPlanError || parsed.isAuthError) {
+-          state.mode = 'disabled';
+-          if (state.activeStreamHandle) {
+-            try { state.activeStreamHandle.cancel(); } catch {}
+-            state.activeStreamHandle = null;
+-          }
+-          try { shutdownAllStreams(); } catch {}
+-          laserStreamWatchdog.setDisabled(parsed.userActionableMessage);
+-          laserLogger.info(
+-            { error: parsed.message },
+-            'Helius gRPC plan/permission error; disabling gRPC stream reconnects.'
+-          );
+-        } else {
+-          laserStreamWatchdog.setDisconnected();
+-        }
++      transactionsStatus: {},
++      blocks: {},
++      blocksMeta: {},
++      entry: {},
++      accountsDataSlice: [],
++      commitment: CommitmentLevel.CONFIRMED,
++      ping: undefined,
++    };
++
++    const stream = await client.subscribe();
++    state.activeStreamHandle = {
++      end: () => { try { stream.end(); } catch {} },
++      cancel: () => { try { stream.end(); } catch {} },
++      client,
++      stream,
++    };
++
++    stream.on('data', (update: SubscribeUpdate) => {
++      if (state.currentSessionId !== sessionId) return;
++      laserStreamWatchdog.recordRawUpdate();
++      if (!state.transportConnected) {
++        state.transportConnected = true;
++        laserStreamWatchdog.setTransportState(true, endpoint, 'grpc', network);
++      }
++      if (update.slot) {
++        const slotNum = Number(update.slot.slot || 0);
++        if (slotNum > 0) laserStreamWatchdog.recordReceivedEvent(slotNum);
++      }
++      if (update.ping || update.pong) laserStreamWatchdog.recordHeartbeat();
++      if (update.transaction) {
++        const event = normalizeLaserstreamTransaction(update, network);
++        if (!event?.signature) { laserStreamWatchdog.recordRejectedUpdate(); return; }
++        const dedupeKey = `${network}:${event.slot}:${event.signature}`;
++        if (!signatureDeduplicator.add(dedupeKey)) { laserStreamWatchdog.recordDuplicateUpdate(); return; }
++        laserStreamWatchdog.recordReceivedEvent(Number(event.slot || 0));
++        event.endpoint = endpoint;
++        laserStreamWatchdog.recordQueuedUpdate();
++        asyncEventProcessor.enqueue(event, eventBusCallback);
+       }
+-    );
++    });
++
++    stream.on('error', (error: unknown) => {
++      if (state.currentSessionId !== sessionId) return;
++      const msg = error instanceof Error ? error.message : String(error);
++      state.transportConnected = false;
++      laserStreamWatchdog.recordError(msg);
++      laserStreamWatchdog.setDisconnected();
++      laserLogger.error({ error: msg, endpoint }, 'Yellowstone gRPC stream error');
++    });
++    stream.on('end', () => {
++      if (state.currentSessionId === sessionId) { state.transportConnected = false; laserStreamWatchdog.setDisconnected(); }
++    });
++    stream.on('close', () => {
++      if (state.currentSessionId === sessionId) { state.transportConnected = false; laserStreamWatchdog.setDisconnected(); }
++    });
++
++    // Yellowstone accepts the request on the duplex stream.
++    await new Promise<void>((resolve, reject) => {
++      stream.write(request, (err: Error | null | undefined) => err ? reject(err) : resolve());
++    });
+ 
+-    state.activeStreamHandle = handle;
+-    // A successfully created subscription establishes the transport. Matching
+-    // transaction activity is not required before reporting CONNECTED.
+     state.transportConnected = true;
+     laserStreamWatchdog.setTransportState(true, endpoint, 'grpc', network);
+     laserStreamWatchdog.recordError(null);
+-    laserLogger.info({ endpoint, network }, 'Helius LaserStream gRPC stream established');
+-
+-    return handle;
+-  } catch (err: unknown) {
+-    const parsed = parseHeliusError(err);
+-    laserLogger.info(
+-      { error: parsed.message, userNotice: parsed.userActionableMessage },
+-      'LaserStream gRPC unavailable'
+-    );
++    laserLogger.info({ endpoint, network, programFilters: programs.length }, 'Yellowstone Geyser gRPC stream established');
++    return state.activeStreamHandle;
++  } catch (err: any) {
++    const msg = err instanceof Error ? err.message : String(err);
+     state.transportConnected = false;
+-    laserStreamWatchdog.recordError(parsed.userActionableMessage);
+-    if (parsed.isPlanError || parsed.isAuthError) {
+-      state.mode = 'disabled';
+-      if (state.activeStreamHandle) {
+-        try { state.activeStreamHandle.cancel(); } catch {}
+-        state.activeStreamHandle = null;
+-      }
+-      try { shutdownAllStreams(); } catch {}
+-      laserStreamWatchdog.setDisabled(parsed.userActionableMessage);
+-      laserLogger.info(
+-        { error: parsed.message },
+-        'Helius gRPC plan/permission error on init; disabling gRPC stream reconnects.'
+-      );
+-    } else {
+-      laserStreamWatchdog.setDisconnected();
+-    }
++    laserStreamWatchdog.recordError(msg);
++    laserStreamWatchdog.setDisconnected();
++    laserLogger.error({ error: msg, endpoint }, 'Yellowstone gRPC unavailable');
+     return null;
+   }
+ }
+@@ -634,8 +506,8 @@
+   laserStreamWatchdog.reset(true);
+ 
+   try {
+-    shutdownAllStreams();
++    state.activeStreamHandle?.client?.close?.();
+   } catch {}
+ 
+-  laserLogger.info('Helius LaserStream gRPC engine cleanly stopped');
++  laserLogger.info('Yellowstone Geyser gRPC engine cleanly stopped');
+ }
+diff -ruN v90orig/server/routes/laserstream.ts v90patch/server/routes/laserstream.ts
+--- v90orig/server/routes/laserstream.ts	2026-09-02 10:50:00.000000000 +0000
++++ v90patch/server/routes/laserstream.ts	2026-09-02 10:59:44.496341057 +0000
+@@ -1,6 +1,4 @@
+-/**
+- * Helius LaserStream SSE endpoints
+- */
++/** Yellowstone Geyser gRPC SSE bridge. */
+ import { Router } from 'express';
+ import { config } from '../config/index.js';
+ import { laserLogger } from '../utils/logger.js';
+@@ -24,7 +22,7 @@
+ const clients: SseClient[] = [];
+ let isActive = false;
+ let currentOptions: LaserStreamOptions = {
+-  apiKey: process.env.HELIUS_API_KEY || '',
++  apiKey: process.env.YELLOWSTONE_GRPC_X_TOKEN || '',
+   endpoint: 'auto',
+   network: 'mainnet',
+   programAddresses: [],
+@@ -154,7 +152,7 @@
+ const ConfigSchema = z.object({
+   enabled: z.boolean().optional(),
+   apiKey: z.string().optional(),
+-  network: z.enum(['mainnet']).optional(),
++  network: z.enum(['mainnet', 'devnet']).optional(),
+   endpoint: z.string().optional(),
+   programAddresses: z.array(z.string()).max(10).optional(),
+ });
+@@ -188,15 +186,15 @@
+     const handle = isActive ? {} : await startLaserStream(currentOptions, broadcastToClients);
+     isActive = handle !== null;
+     if (isActive) {
+-      laserLogger.info({ clients: clients.length, network: currentOptions.network }, 'LaserStream started');
++      laserLogger.info({ clients: clients.length, network: currentOptions.network }, 'Yellowstone started');
+     } else {
+-      laserLogger.warn({ network: currentOptions.network }, 'LaserStream failed to start via config route');
++      laserLogger.warn({ network: currentOptions.network }, 'Yellowstone failed to start via config route');
+     }
+   } else {
+     await stopLaserStream();
+     isActive = false;
+     laserStreamWatchdog.reset(true);
+-    laserLogger.info('LaserStream stopped');
++    laserLogger.info('Yellowstone stopped');
+   }
+ 
+   const telemetry = getLaserStreamTelemetry();
+diff -ruN v90orig/server/types/index.ts v90patch/server/types/index.ts
+--- v90orig/server/types/index.ts	2026-09-02 10:50:00.000000000 +0000
++++ v90patch/server/types/index.ts	2026-09-02 10:59:50.817188650 +0000
+@@ -47,7 +47,7 @@
+   error?: string;
+ }
+ 
+-export type LaserStreamNetwork = 'mainnet';
++export type LaserStreamNetwork = 'mainnet' | 'devnet';
+ export type LaserStreamMode = 'grpc' | 'disabled';
+ export type LaserStreamHealthStatus =
+   | 'connected'
+diff -ruN v90orig/src/App.tsx v90patch/src/App.tsx
+--- v90orig/src/App.tsx	2026-09-02 10:50:00.000000000 +0000
++++ v90patch/src/App.tsx	2026-09-02 10:59:21.718076052 +0000
+@@ -235,6 +235,7 @@
+ const NARRATIVE_KEYWORDS = ['AI', 'AGENT', 'GPT', 'ZK', 'PROOF', 'SOL', 'MASK'];
+ 
+ import { SniperTrade, Trade, TokenMetric, TelemetryAlert } from './types';
++import { getTradeCount } from './config/rebuyGuard';
+ 
+ interface WalletStats {
+   balance: number;
+@@ -1282,12 +1283,18 @@
+         } else {
+           const tokens = tokensForTracking;
+ 
+-          const tradedMints = new Set<string>([
+-            ...(state.mySniperTrades || []).map((t: any) => t.address || t.mint || t.tokenAddress).filter(Boolean),
+-            ...(state.trades || []).map((t: any) => t.address || t.mint || t.tokenAddress).filter(Boolean),
+-            ...Object.keys(state.activePositions || {}),
+-            ...Array.from(autoBoughtTokens.current)
+-          ]);
++          // Do not globally blacklist previously traded mints when rebuy is enabled.
++          // OpportunityScoreEngine only consumes this set when tradeOnlyOnce=true.
++          const tradedMints = new Set<string>();
++          if (state.tradeOnlyOnce ?? true) {
++            [
++              ...(state.mySniperTrades || []),
++              ...(state.trades || [])
++            ].forEach((t: any) => {
++              const addr = t.address || t.mint || t.tokenAddress;
++              if (addr) tradedMints.add(addr);
++            });
++          }
+ 
+           const customConfig = {
+             minMcapPump: state.hardenedMcapMinPump,
+@@ -1763,7 +1770,8 @@
+         address: tokenAddress,
+         amount: entryCost,
+         timestamp: Date.now(),
+-        signature: signature
++        signature: signature,
++        network: useTradingEnvironmentStore.getState().network || (isLiveTrading ? 'mainnet' : 'paper')
+       };
+       
+       setMySniperTrades(prev => [newTrade, ...prev]);
+@@ -2031,7 +2039,8 @@
+         amount: position.amount ?? 0,
+         timestamp: Date.now(),
+         pnl: realizedPnL,
+-        signature: signature
++        signature: signature,
++        network: useTradingEnvironmentStore.getState().network || (isLiveTrading ? 'mainnet' : 'paper')
+       };
+       
+       setMySniperTrades(prev => [newTrade, ...prev]);
+@@ -2091,10 +2100,15 @@
+     const isTradeOnce = latestState.current.tradeOnlyOnce ?? true;
+     const maxAllowedTrades = isTradeOnce ? 1 : Math.max(1, latestState.current.maxRebuyTimes ?? 1);
+ 
+-    const hasTradedBefore = (latestState.current.mySniperTrades || []).some(t => t.address === tokenAddress) ||
+-                            (latestState.current.trades || []).some((t: any) => (t.address === tokenAddress || t.tokenAddress === tokenAddress || t.mint === tokenAddress));
+-    const activePositionsCount = latestState.current.activePositions[tokenAddress] ? 1 : 0;
+-    const totalTradedCount = (hasTradedBefore ? 1 : 0) + activePositionsCount;
++    const tradingNetwork = useTradingEnvironmentStore.getState().network || (isLiveTrading ? 'mainnet' : 'paper');
++    const totalTradedCount = getTradeCount(
++      tokenAddress,
++      symbol,
++      latestState.current.mySniperTrades || [],
++      latestState.current.activePositions || {},
++      pendingTrades.current,
++      tradingNetwork
++    );
+ 
+     if (totalTradedCount >= maxAllowedTrades || (isTradeOnce && autoBoughtTokens.current.has(tokenAddress))) {
+       console.log(`[TRADE LIMIT BLOCK] Sniper buy of ${symbol} blocked. Policy limit reached (Trades: ${totalTradedCount} >= Limit: ${maxAllowedTrades}, Trade Once: ${isTradeOnce}).`);
+@@ -2208,7 +2222,8 @@
+         address: tokenAddress,
+         amount: actualBuyAmountSol,
+         timestamp: Date.now(),
+-        signature: signature
++        signature: signature,
++        network: useTradingEnvironmentStore.getState().network || (isLiveTrading ? 'mainnet' : 'paper')
+       };
+       setMySniperTrades(prev => [newTrade, ...prev]);
+       
+diff -ruN v90orig/src/config/rebuyGuard.ts v90patch/src/config/rebuyGuard.ts
+--- v90orig/src/config/rebuyGuard.ts	2026-09-02 10:50:00.000000000 +0000
++++ v90patch/src/config/rebuyGuard.ts	2026-09-02 10:59:21.714608341 +0000
+@@ -29,11 +29,8 @@
+   const normSym = normalizeSymbol(symbol);
+   const currentNetwork = network || (typeof localStorage !== 'undefined' ? localStorage.getItem('trade_mode') : null) || 'paper';
+ 
+-  // Combine trades from argument AND global store to ensure no trades are missed
+   let storeState: any = null;
+-  try {
+-    storeState = useAppStore.getState();
+-  } catch {}
++  try { storeState = useAppStore.getState(); } catch {}
+ 
+   const allTradesList: SniperTrade[] = [
+     ...(trades || []),
+@@ -41,73 +38,47 @@
+     ...(storeState?.trades || [])
+   ];
+ 
+-  // 1. Count completed BUY trades in trades history matching current network
+-  const countedSignatures = new Set<string>();
++  const counted = new Set<string>();
+   let completedBuys = 0;
+ 
+   for (const t of allTradesList) {
+     if (!t || t.type !== 'BUY') continue;
+-
+-    const tradeNet = (t as any).network || (t as any).mode || (t.id?.startsWith('SIM') || t.signature?.startsWith('SIM') ? 'paper' : 'mainnet');
++    const tradeNet = (t as any).network || (t as any).mode ||
++      (t.id?.startsWith('SIM') || t.signature?.startsWith('SIM') ? 'paper' : 'mainnet');
+     if (tradeNet !== currentNetwork) continue;
+ 
+-    // Avoid double counting same trade signature/id if present in multiple lists
+     const uniqueKey = t.id || t.signature || `${t.address}-${t.timestamp}`;
+-    if (countedSignatures.has(uniqueKey)) continue;
++    if (counted.has(uniqueKey)) continue;
+ 
+-    const tAddr = normalizeAddress(t.address || (t as any).mint || (t as any).tokenAddress || (t.token && t.token.length >= 32 ? t.token : undefined));
++    const tAddr = normalizeAddress(t.address || (t as any).mint || (t as any).tokenAddress);
+     const tSym = normalizeSymbol(t.token);
+-
+-    const matchByAddr = normAddr && tAddr && tAddr === normAddr;
+-    const matchBySym = normSym && tSym && normSym === tSym && normSym.length > 2;
+-
+-    if (matchByAddr || matchBySym) {
+-      countedSignatures.add(uniqueKey);
+-      completedBuys++;
+-    }
++    const matches = (normAddr && tAddr && tAddr === normAddr) ||
++      (normSym && tSym && normSym === tSym && normSym.length > 2);
++    if (matches) { counted.add(uniqueKey); completedBuys++; }
+   }
+ 
+-  // 2. Count active position matching current network
+-  let isActive = 0;
+-  const activePositionsMap = {
+-    ...(positions || {}),
+-    ...(storeState?.activePositions || {})
+-  };
+-
++  // A live position is already represented by its BUY history. Do not count it
++  // again or the first rebuy would be rejected one trade too early.
++  let activeForToken = false;
++  const activePositionsMap = { ...(positions || {}), ...(storeState?.activePositions || {}) };
+   for (const [key, pos] of Object.entries(activePositionsMap)) {
+     if (!pos) continue;
+     const p = pos as any;
+-
+-    const posNet = p.network || p.mode || (key.toLowerCase().startsWith('sim') || p.mint?.toLowerCase().startsWith('sim') ? 'paper' : 'mainnet');
++    const posNet = p.network || p.mode || (key.toLowerCase().startsWith('sim') ? 'paper' : 'mainnet');
+     if (posNet !== currentNetwork) continue;
+-
+-    const pAddr = normalizeAddress(key || p?.address || p?.mint);
+-    const pSym = normalizeSymbol(p?.symbol);
+-
+-    const isActivePos = (p?.amount !== undefined && p.amount > 0) || (p?.solSpent !== undefined && p.solSpent > 0);
+-
+-    if (isActivePos) {
+-      const matchByAddr = normAddr && pAddr && pAddr === normAddr;
+-      const matchBySym = normSym && pSym && normSym === pSym && normSym.length > 2;
+-      if (matchByAddr || matchBySym) {
+-        isActive = 1;
+-        break;
+-      }
+-    }
+-  }
+-
+-  // 3. Count pending in-flight buy attempts
+-  let isPending = 0;
+-  if (pendingQueue) {
+-    for (const pendingAddr of pendingQueue) {
+-      if (pendingAddr && normalizeAddress(pendingAddr) === normAddr) {
+-        isPending = 1;
+-        break;
+-      }
++    const pAddr = normalizeAddress(key || p.address || p.mint);
++    const pSym = normalizeSymbol(p.symbol);
++    if ((p.amount > 0 || p.solSpent > 0) &&
++        ((normAddr && pAddr === normAddr) || (normSym && pSym === normSym && normSym.length > 2))) {
++      activeForToken = true;
++      break;
+     }
+   }
+ 
+-  return Math.max(completedBuys, isActive) + isPending;
++  // Reserve exactly one additional trade while a BUY is in flight.
++  const pending = pendingQueue?.has(tokenAddress) ||
++    (pendingQueue ? Array.from(pendingQueue).some(a => normalizeAddress(a) === normAddr) : false);
++  return completedBuys + (pending ? 1 : 0);
+ }
+ 
+ export interface RebuyValidationOptions {
+diff -ruN v90orig/src/types/index.ts v90patch/src/types/index.ts
+--- v90orig/src/types/index.ts	2026-09-02 10:50:00.000000000 +0000
++++ v90patch/src/types/index.ts	2026-09-02 10:59:21.714429587 +0000
+@@ -104,6 +104,8 @@
+   signature: string;
+   tokenAmount?: number;
+   positionId?: string;
++  /** Trading environment namespace used by rebuy/risk accounting. */
++  network?: 'paper' | 'devnet' | 'mainnet';
+ }
+ 
+ export type PositionState =

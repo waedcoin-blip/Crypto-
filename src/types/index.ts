@@ -1,6 +1,7 @@
 export interface TokenMetric {
   address: string;
   symbol: string;
+  name?: string;
   buyCount: number;
   sellCount: number;
   buyVolume: number;
@@ -34,6 +35,8 @@ export interface TokenMetric {
   uniqueWalletsCount?: number;
   priceChange1m?: number;
   priceChange5m?: number;
+  priceChange1h?: number;
+  priceChange24h?: number;
   category?: string; // 'AI' | 'RWA' | 'MEME' | 'DEPIN' | 'GAMEFI' | 'DEFI' | 'POLITIFI' | 'AI_MEME'
   pairCreatedAt?: number;
 

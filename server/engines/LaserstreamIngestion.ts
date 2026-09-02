@@ -284,7 +284,8 @@ export function parseHeliusError(err: unknown): {
     lower.includes('yellowstone grpc access') ||
     lower.includes('laserstream access denied') ||
     lower.includes('caller does not have permission') ||
-    lower.includes('permission to execute');
+    lower.includes('permission to execute') ||
+    lower.includes('unsupported plan type');
 
   const isAuthError =
     lower.includes('invalid api key') ||
@@ -477,7 +478,7 @@ export async function startLaserStream(
   const laserConfig: LaserstreamConfig = {
     apiKey,
     endpoint,
-    maxReconnectAttempts: MAX_RECONNECT_ATTEMPTS,
+    maxReconnectAttempts: 0,
     replay: true,
   };
 
@@ -563,8 +564,9 @@ export async function startLaserStream(
             try { state.activeStreamHandle.cancel(); } catch {}
             state.activeStreamHandle = null;
           }
+          try { shutdownAllStreams(); } catch {}
           laserStreamWatchdog.setDisabled(parsed.userActionableMessage);
-          laserLogger.warn(
+          laserLogger.info(
             { error: parsed.message },
             'Helius gRPC plan/permission error; disabling gRPC stream reconnects.'
           );
@@ -585,9 +587,9 @@ export async function startLaserStream(
     return handle;
   } catch (err: unknown) {
     const parsed = parseHeliusError(err);
-    laserLogger.error(
+    laserLogger.info(
       { error: parsed.message, userNotice: parsed.userActionableMessage },
-      'Failed to initialize Helius LaserStream gRPC stream'
+      'LaserStream gRPC unavailable'
     );
     state.transportConnected = false;
     laserStreamWatchdog.recordError(parsed.userActionableMessage);
@@ -597,8 +599,9 @@ export async function startLaserStream(
         try { state.activeStreamHandle.cancel(); } catch {}
         state.activeStreamHandle = null;
       }
+      try { shutdownAllStreams(); } catch {}
       laserStreamWatchdog.setDisabled(parsed.userActionableMessage);
-      laserLogger.warn(
+      laserLogger.info(
         { error: parsed.message },
         'Helius gRPC plan/permission error on init; disabling gRPC stream reconnects.'
       );
