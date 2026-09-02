@@ -1,0 +1,18 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+console.log("Running v98 Live Ingestion Diagnostic audit...");
+const ingestion=fs.readFileSync("server/engines/LaserstreamIngestion.ts","utf8");
+const watchdog=fs.readFileSync("server/services/LaserStreamWatchdog.ts","utf8");
+assert.match(ingestion,/LASERSTREAM_ACTIVITY_STALE_MS/);
+assert.match(ingestion,/recordRawUpdate\(\)/);
+assert.match(ingestion,/recordDuplicateUpdate\(\)/);
+assert.match(ingestion,/recordRejectedUpdate\(\)/);
+assert.match(ingestion,/recordQueuedUpdate\(\)/);
+assert.match(watchdog,/LASERSTREAM_ACTIVITY_STALE_MS = 60_000/);
+assert.doesNotMatch(watchdog,/now - this\.lastEventAt <= 10_000/);
+assert.match(watchdog,/rawUpdatesReceived/);
+assert.match(watchdog,/processingFailures/);
+console.log("✓ shared 60-second activity policy");
+console.log("✓ raw/rejected/duplicate/queued/processing diagnostics present");
+console.log("✓ obsolete 10-second telemetry threshold removed");
+console.log("v98 integration audit passed");
