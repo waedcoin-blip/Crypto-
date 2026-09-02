@@ -26,14 +26,78 @@ function isPumpMint(mint: string): boolean {
   return typeof mint === 'string' && mint.trim().toLowerCase().endsWith('pump');
 }
 
-import { TokenDecimalsResolver } from './TokenDecimalsResolver';
-
 export function resolveTokenDecimals(tokenMint: string): number {
-  return TokenDecimalsResolver.resolveSync(tokenMint);
+  const cleanMint = (tokenMint || '').trim();
+  if (!cleanMint) return 6;
+  if (isSolMint(cleanMint)) return 9;
+  if (isPumpMint(cleanMint)) {
+    tokenRegistry.registerOrUpdate({ mintAddress: cleanMint, decimals: 6 });
+    return 6;
+  }
+  const regToken = tokenRegistry.getToken(cleanMint);
+  if (regToken?.decimals !== undefined && typeof regToken.decimals === 'number') return regToken.decimals;
+  const metric = useAppStore.getState()?.tokenMetrics?.[cleanMint] as any;
+  if (metric?.decimals !== undefined && typeof metric.decimals === 'number') return metric.decimals;
+  return 6;
 }
 
 export async function resolveTokenDecimalsAsync(tokenMint: string): Promise<number> {
-  return TokenDecimalsResolver.resolveAsync(tokenMint);
+  const cleanMint = (tokenMint || '').trim();
+  if (!cleanMint) return 6;
+  if (isSolMint(cleanMint)) return 9;
+  if (isPumpMint(cleanMint)) {
+    tokenRegistry.registerOrUpdate({ mintAddress: cleanMint, decimals: 6 });
+    return 6;
+  }
+  
+  // 1. Check registry & app store
+  const regToken = tokenRegistry.getToken(cleanMint);
+  if (regToken?.decimals !== undefined && typeof regToken.decimals === 'number' && regToken.decimals >= 0) {
+    return regToken.decimals;
+  }
+  const metric = useAppStore.getState()?.tokenMetrics?.[cleanMint] as any;
+  if (metric?.decimals !== undefined && typeof metric.decimals === 'number' && metric.decimals >= 0) {
+    tokenRegistry.registerOrUpdate({ mintAddress: cleanMint, decimals: metric.decimals });
+    return metric.decimals;
+  }
+
+  // 2. Query Solana RPC on-chain parsed account info
+  try {
+    const net = useTradingEnvironmentStore.getState().network || 'paper';
+    const cfg = getNetworkConfig(net);
+    const connection = new Connection(cfg.rpcUrl, 'confirmed');
+    const info = await connection.getParsedAccountInfo(new PublicKey(cleanMint));
+    if (info?.value?.data && typeof info.value.data === 'object' && 'parsed' in info.value.data) {
+      const decimals = info.value.data.parsed?.info?.decimals;
+      if (typeof decimals === 'number' && decimals >= 0 && decimals <= 18) {
+        tokenRegistry.registerOrUpdate({ mintAddress: cleanMint, decimals });
+        return decimals;
+      }
+    }
+  } catch (rpcErr) {
+    console.warn(`[PaperTradeExecutor] RPC decimal lookup skipped for ${cleanMint}:`, rpcErr);
+  }
+
+  // 3. Query Jupiter Token API
+  try {
+    const res = await fetch(`https://tokens.jup.ag/token/${cleanMint}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data && typeof data.decimals === 'number' && data.decimals >= 0 && data.decimals <= 18) {
+        tokenRegistry.registerOrUpdate({
+          mintAddress: cleanMint,
+          decimals: data.decimals,
+          symbol: data.symbol || 'UNKNOWN',
+        });
+        return data.decimals;
+      }
+    }
+  } catch (jupErr) {
+    // ignore
+  }
+
+  // 4. Unknown decimals hard failure
+  throw new Error(`UNRESOLVED_TOKEN_DECIMALS: Unable to resolve token decimals for mint ${cleanMint}. Execution rejected to prevent quantity corruption.`);
 }
 
 export async function resolveTokenPriceInSol(tokenMint: string): Promise<number | null> {
@@ -64,7 +128,10 @@ export async function resolveTokenPriceInSol(tokenMint: string): Promise<number 
 
   // 2. Query Jupiter Quote API directly (1 whole token test quote)
   try {
-    const decimals = tokenRegistry.get(tokenMint)?.decimals || 6;
+    const decimals = tokenRegistry.get(tokenMint)?.decimals;
+    if (decimals === undefined) {
+      throw new Error(`UNRESOLVED_TOKEN_DECIMALS: Cannot fetch price for ${tokenMint}`);
+    }
     const testAmount = Math.floor(10 ** decimals);
     const quote = await getJupiterQuote(tokenMint, WSOL_MINT, testAmount);
     if (quote && quote.outAmount) {

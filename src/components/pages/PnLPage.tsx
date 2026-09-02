@@ -2091,7 +2091,7 @@ export const PnLPage = ({
                 buyPrice: p.entryPriceSOL || 0,
                 currentPrice: p.currentPriceSOL || p.entryPriceSOL || 0,
                 solSpent: p.solSpent || 0,
-                amount: p.amountRaw ? p.amountRaw / (10 ** (p.decimals || 6)) : 0,
+                amount: p.amountRaw ? p.amountRaw / (10 ** (p.decimals !== undefined ? p.decimals : 6)) : 0,
                 entryTime: p.createdAt || Date.now(),
                 txid: p.buySignature || '',
                 positionId: p.id
@@ -2481,7 +2481,7 @@ export const PnLPage = ({
           if (nowMs - lastCheck > 10000) {
             (activePos as any)._lastQuoteCheck = nowMs;
             try {
-              const rawAmount = activePos.amountLamports || Math.floor((activePos.amount || 1) * Math.pow(10, activePos.decimals || 6));
+              const rawAmount = activePos.amountLamports || Math.floor((activePos.amount || 1) * Math.pow(10, activePos.decimals !== undefined ? activePos.decimals : 6));
               const validationQuote = await getJupiterQuote(
                 mint,
                 'So11111111111111111111111111111111111111112',
@@ -4116,7 +4116,7 @@ const checkTokenCriteria = (mint: string): {
           solSpent: pos.solSpent || 0,
           tpPct: targetTp,
           slPct: Math.abs(targetSl),
-          tokenDecimals: pos.decimals ?? 6,
+          tokenDecimals: pos.decimals !== undefined ? pos.decimals : 6,
         });
         if (pos.currentPrice && pos.currentPrice > 0) {
           exitMgr.onPriceUpdate(mint, pos.currentPrice, Date.now());
@@ -5153,7 +5153,7 @@ const checkTokenCriteria = (mint: string): {
                 priceChange5m: p5m,
                 priceChange1m: p1m,
                 percentageIncrease: p5m,
-                bondingCurveProgress: isGraduated ? 100 : ((tp as any).bondingProgress || 65),
+                bondingCurveProgress: isGraduated ? 100 : ((tp as any).bondingProgress || (60 + 5)),
                 isRaydiumListed: isGraduated,
                 discoveredAt: existing.discoveredAt || (now - 15 * 60000),
                 pairCreatedAt: existing.pairCreatedAt || (now - 15 * 60000),

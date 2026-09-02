@@ -7,8 +7,11 @@ export class PaperTradeExecutor implements TradeExecutor {
 
   async quoteBuy(params: QuoteParams): Promise<QuoteResult> {
     const solAmount = params.amount / 1e9;
-    // Simulated token price: e.g. 1 SOL = 1,000,000 tokens (6 decimals = 10^12 base units)
-    const simulatedTokensRaw = Math.floor(solAmount * 1_000_000 * 1e6);
+    const decs = params.decimals;
+    if (decs === undefined) {
+      throw new Error('Decimals must be provided for quote');
+    }
+    const simulatedTokensRaw = Math.floor(solAmount * 1_000_000 * (10 ** decs));
     const slippage = params.slippageBps ? params.slippageBps / 10000 : 0.025;
     const minOutputRaw = Math.floor(simulatedTokensRaw * (1 - slippage));
 
@@ -23,7 +26,11 @@ export class PaperTradeExecutor implements TradeExecutor {
 
   async quoteSell(params: QuoteParams): Promise<QuoteResult> {
     // Input is raw token base units
-    const tokenQty = params.amount / 1e6;
+    const decs = params.decimals;
+    if (decs === undefined) {
+      throw new Error('Decimals must be provided for quote');
+    }
+    const tokenQty = params.amount / (10 ** decs);
     const solProceeds = tokenQty * 0.000001; // 1M tokens = 1 SOL
     const lamports = Math.floor(solProceeds * 1e9);
     const slippage = params.slippageBps ? params.slippageBps / 10000 : 0.025;
@@ -63,7 +70,7 @@ export class PaperTradeExecutor implements TradeExecutor {
     const existingToken = this.paperTokenBalances.get(params.outputMint) || 0;
     this.paperTokenBalances.set(params.outputMint, existingToken + tokenReceivedRaw);
 
-    const tokenQty = tokenReceivedRaw / 1e6;
+    const tokenQty = tokenReceivedRaw / (10 ** params.decimals);
     const effectivePrice = tokenQty > 0 ? solSpent / tokenQty : 0;
 
     return {

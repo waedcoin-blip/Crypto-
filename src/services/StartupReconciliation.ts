@@ -47,7 +47,10 @@ export class StartupReconciliation {
           }
         } else {
           // Convert raw atomic units to human readable token count using actual decimals
-          const decimals = pos.decimals ?? tokenRegistry.getToken(mint)?.decimals ?? 6;
+          let decimals = pos.decimals ?? tokenRegistry.getToken(mint)?.decimals;
+          if (decimals === undefined) {
+             throw new Error(`UNRESOLVED_TOKEN_DECIMALS: Missing decimals for ${mint}`);
+          }
           const humanAmount = rawBalance / Math.pow(10, decimals);
           if (Math.abs((pos.amount || 0) - humanAmount) > 0.01 || pos.state === 'RECOVERY_REQUIRED') {
             console.log(`[StartupReconciliation] Reconciled position ${mint}: humanAmount=${humanAmount}, rawBalance=${rawBalance}, decimals=${decimals}, state=OPEN.`);

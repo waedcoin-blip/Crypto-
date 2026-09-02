@@ -239,7 +239,8 @@ export class WalletBalanceService {
     const raw = await this.getTokenBalanceRaw(mint, walletAddress);
     const { resolveTokenDecimals } = await import('./PaperTradeExecutor');
     const decimals = resolveTokenDecimals(mint);
-    return Number(raw) / Math.pow(10, decimals);
+    const rawStr = raw.toString();
+    return parseInt(rawStr, 10) / Math.pow(10, decimals);
   }
 }
 

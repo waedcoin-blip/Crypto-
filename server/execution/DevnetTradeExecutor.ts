@@ -16,7 +16,11 @@ export class DevnetTradeExecutor implements TradeExecutor {
 
   async quoteBuy(params: QuoteParams): Promise<QuoteResult> {
     const solAmount = params.amount / 1e9;
-    const simulatedTokensRaw = Math.floor(solAmount * 500_000 * 1e6); // Devnet swap simulation
+    const decs = params.decimals;
+    if (decs === undefined) {
+      throw new Error('Decimals must be provided for quote');
+    }
+    const simulatedTokensRaw = Math.floor(solAmount * 500_000 * (10 ** decs)); // Devnet swap simulation
     const slippage = params.slippageBps ? params.slippageBps / 10000 : 0.05;
     const minThreshold = Math.floor(simulatedTokensRaw * (1 - slippage));
 
@@ -30,7 +34,11 @@ export class DevnetTradeExecutor implements TradeExecutor {
   }
 
   async quoteSell(params: QuoteParams): Promise<QuoteResult> {
-    const tokenQty = params.amount / 1e6;
+    const decs = params.decimals;
+    if (decs === undefined) {
+      throw new Error('Decimals must be provided for quote');
+    }
+    const tokenQty = params.amount / (10 ** decs);
     const solProceeds = tokenQty * 0.000002;
     const lamports = Math.floor(solProceeds * 1e9);
     const slippage = params.slippageBps ? params.slippageBps / 10000 : 0.05;

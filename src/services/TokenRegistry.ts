@@ -115,7 +115,7 @@ export class TokenRegistry {
       network: params.network || existing?.network || 'paper',
       symbol: params.symbol || existing?.symbol || 'UNKNOWN',
       name: params.name || existing?.name || existing?.symbol || 'Unknown Token',
-      decimals: params.decimals !== undefined ? params.decimals : (existing?.decimals ?? 6),
+      decimals: params.decimals !== undefined ? params.decimals : existing?.decimals,
       priceSOL: params.priceSOL !== undefined ? params.priceSOL : existing?.priceSOL,
       priceUSD: params.priceUSD !== undefined ? params.priceUSD : existing?.priceUSD,
       liquidity: params.liquidity !== undefined ? params.liquidity : existing?.liquidity,

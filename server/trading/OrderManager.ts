@@ -20,6 +20,7 @@ export interface Order {
   mint: string;
   side: 'buy' | 'sell';
   amount: number; // Raw integer base units or lamports
+  decimals: number; // ADDED
   slippageBps: number;
   status: OrderStatus;
   createdAt: number;
@@ -59,6 +60,7 @@ export class OrderManager {
         mint: record.mint,
         side: record.side,
         amount: Number(record.amount_raw || 0),
+        decimals: 6, // Loaded orders missing decimals fallback (historical)
         slippageBps: record.slippageBps || 250,
         status: this.mapRecordStateToStatus(record.state),
         createdAt: record.created_at,
@@ -118,6 +120,7 @@ export class OrderManager {
     mint: string;
     side: 'buy' | 'sell';
     amount: number;
+    decimals: number; // ADDED
     slippageBps: number;
     clientRequestId: string;
     label?: string;
@@ -147,6 +150,7 @@ export class OrderManager {
       mint: params.mint,
       side: params.side,
       amount: params.amount,
+      decimals: params.decimals,
       slippageBps: params.slippageBps,
       status: 'CREATED',
       createdAt: now,
@@ -196,6 +200,7 @@ export class OrderManager {
       outputMint: order.side === 'buy' ? order.mint : 'So11111111111111111111111111111111111111112',
       amount: order.amount,
       slippageBps: order.slippageBps,
+      decimals: order.decimals,
       walletAddress: order.wallet,
       label: order.label,
       preValidatedQuote,

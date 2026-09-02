@@ -10,6 +10,7 @@ export class TradingMonitorWorker {
   private static instance: TradingMonitorWorker;
   private isRunning: boolean = false;
   private timer: NodeJS.Timeout | null = null;
+  private monitorLoopRunning: boolean = false;
 
   public static getInstance(): TradingMonitorWorker {
     if (!TradingMonitorWorker.instance) {
@@ -23,8 +24,12 @@ export class TradingMonitorWorker {
     this.isRunning = true;
     console.log('[TradingMonitorWorker] Trading Monitor Worker initialized with RiskManager & TradingEngine.');
 
-    this.timer = setInterval(async () => {
-      await this.monitorLoop();
+    this.timer = setInterval(() => {
+      if (this.monitorLoopRunning) return;
+      this.monitorLoopRunning = true;
+      this.monitorLoop().finally(() => {
+        this.monitorLoopRunning = false;
+      });
     }, 2000);
   }
 

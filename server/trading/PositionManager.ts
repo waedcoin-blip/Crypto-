@@ -62,7 +62,7 @@ export class PositionManager {
         wallet: record.wallet || 'default',
         mint: record.mintAddress,
         tokenAmount: Number(record.amountRaw || 0),
-        decimals: record.decimals || 6,
+        decimals: record.decimals,
         totalSolSpent: record.solSpent || 0,
         averageEntryPrice: record.entryPriceSOL || 0,
         currentPriceSol: record.currentPriceSOL || record.entryPriceSOL || 0,
@@ -147,7 +147,10 @@ export class PositionManager {
     const key = this.getPositionKey(params.network, params.wallet, params.mint);
     const existingId = this.positionKeys.get(key);
     const now = Date.now();
-    const decimals = params.decimals ?? 6;
+    const decimals = params.decimals;
+    if (decimals === undefined) {
+      throw new Error(`Cannot open position for ${params.mint}: missing decimals.`);
+    }
 
     if (existingId) {
       const existing = this.positions.get(existingId);

@@ -7,6 +7,7 @@ import { pnlEngine, PnLMetrics } from './PnLEngine.js';
 import { executionGateway } from '../execution/ExecutionGateway.js';
 import { ExecutionResult } from '../execution/TradeExecutor.js';
 import { tradeRepository } from '../repositories/TradeRepository.js';
+import { tokenProgramResolver } from '../wallet/TokenProgramResolver.js';
 
 export interface BuyParams {
   network: string;
@@ -88,7 +89,16 @@ export class TradingEngine {
     const amountLamports = Math.floor(params.amountSol * 1e9);
     const slippageBps = params.slippageBps || 250;
 
-    // 1. RebuyGuard Reservation Check
+    // 1. Fetch token decimals first (resolves from chain or cache)
+    // Use an external connection if on mainnet, but we can just let resolver try with null if we don't have it easily
+    const executor = executionGateway.getExecutor(network) as any;
+    const tokenInfo = await tokenProgramResolver.resolve(
+      executor?.connection || null,
+      mint
+    );
+    const decimals = tokenInfo.decimals;
+
+    // 2. RebuyGuard Reservation Check
     let reservation;
     try {
       reservation = rebuyGuard.reserveBuy({
@@ -106,19 +116,20 @@ export class TradingEngine {
       };
     }
 
-    // 2. Create Order in OrderManager
+    // 3. Create Order in OrderManager
     const order = orderManager.createOrder({
       network,
       wallet,
       mint,
       side: 'buy',
       amount: amountLamports,
+      decimals,
       slippageBps,
       clientRequestId,
       label: params.label || 'entry',
     });
 
-    // 3. Execute Order
+    // 4. Execute Order
     try {
       const execResult = await orderManager.executeOrder(order.id);
 
@@ -133,13 +144,14 @@ export class TradingEngine {
         };
       }
 
-      // 4. Update the authoritative position first, then persist the
+      // 5. Update the authoritative position first, then persist the
       // confirmed BUY so rebuy limits survive worker/server restarts.
       const position = positionManager.openOrAccumulatePosition({
         network,
         wallet,
         mint,
         tokenAmountRaw: execResult.outAmountRaw,
+        decimals,
         solSpent: execResult.totalCostSol || params.amountSol,
         orderId: order.id,
         buySignature: execResult.signature,
@@ -221,6 +233,7 @@ export class TradingEngine {
       mint,
       side: 'sell',
       amount: sellAmountRaw,
+      decimals: position.decimals, // ADDED
       slippageBps,
       clientRequestId,
       label: params.reason || 'MANUAL',

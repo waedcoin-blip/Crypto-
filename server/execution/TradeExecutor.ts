@@ -5,6 +5,7 @@ export interface QuoteParams {
   outputMint: string;
   amount: number; // Raw integer units or lamports
   slippageBps?: number;
+  decimals?: number; // ADDED
   userPublicKey?: string;
   network?: string;
 }
@@ -23,6 +24,7 @@ export interface ExecuteParams {
   outputMint: string;
   amount: number; // Raw integer units
   slippageBps: number;
+  decimals: number; // ADDED: Must be provided
   walletAddress?: string;
   label?: string;
   preValidatedQuote?: QuoteResult | null;

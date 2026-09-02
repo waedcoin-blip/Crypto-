@@ -103,7 +103,7 @@ export class MainnetTradeExecutor implements TradeExecutor {
         inAmountRaw: params.amount,
         outAmountRaw: outAmount,
         totalCostSol: solSpent,
-        effectivePriceSol: solSpent / (outAmount / 1e6),
+        effectivePriceSol: solSpent / (outAmount / (10 ** params.decimals)),
       };
     }
 
@@ -150,7 +150,7 @@ export class MainnetTradeExecutor implements TradeExecutor {
         inAmountRaw: params.amount,
         outAmountRaw,
         totalCostSol: solSpent,
-        effectivePriceSol: solSpent / (outAmountRaw / 1e6),
+        effectivePriceSol: solSpent / (outAmountRaw / (10 ** params.decimals)),
       };
     } catch (e: any) {
       return {

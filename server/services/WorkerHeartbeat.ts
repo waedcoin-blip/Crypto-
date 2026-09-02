@@ -3,7 +3,8 @@ import { workerStateRepository } from '../repositories/WorkerStateRepository.js'
 
 export function startWorkerHeartbeat(workerName: string = 'trading', intervalMs: number = 3000): () => void {
   let running = false;
-  const timer = setInterval(async () => {
+  let timer: NodeJS.Timeout | null = null;
+  const loop = async () => {
     if (running) return;
     running = true;
     try {
@@ -17,7 +18,13 @@ export function startWorkerHeartbeat(workerName: string = 'trading', intervalMs:
     } finally {
       running = false;
     }
+  };
+  
+  timer = setInterval(() => {
+    loop().catch(console.error);
   }, intervalMs);
 
-  return () => clearInterval(timer);
+  return () => {
+    if (timer) clearInterval(timer);
+  };
 }

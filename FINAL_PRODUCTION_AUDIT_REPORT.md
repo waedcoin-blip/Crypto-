@@ -1,40 +1,26 @@
 # Final Production Audit Report
-Generated at: 2026-09-02T16:07:35.518Z
-Total Findings: 155
-Bugs: 24
-Warnings: 131
+Generated at: 2026-09-02T16:39:14.570Z
+Total Findings: 129
+Bugs: 0
+Warnings: 129
 
 ## Findings Details
-- **[WARNING]** `server/execution/DevnetTradeExecutor.ts:19`: Floating Point Multiplication by 1e6 (`const simulatedTokensRaw = Math.floor(solAmount * 500_000 * 1e6); // Devnet swap simulation`)
-- **[BUG]** `server/execution/DevnetTradeExecutor.ts:33`: Floating Point Division by 1e6 (`const tokenQty = params.amount / 1e6;`)
-- **[BUG]** `server/execution/MainnetTradeExecutor.ts:106`: Floating Point Division by 1e6 (`effectivePriceSol: solSpent / (outAmount / 1e6),`)
-- **[BUG]** `server/execution/MainnetTradeExecutor.ts:153`: Floating Point Division by 1e6 (`effectivePriceSol: solSpent / (outAmountRaw / 1e6),`)
-- **[WARNING]** `server/execution/PaperTradeExecutor.ts:11`: Floating Point Multiplication by 1e6 (`const simulatedTokensRaw = Math.floor(solAmount * 1_000_000 * 1e6);`)
-- **[BUG]** `server/execution/PaperTradeExecutor.ts:26`: Floating Point Division by 1e6 (`const tokenQty = params.amount / 1e6;`)
-- **[BUG]** `server/execution/PaperTradeExecutor.ts:66`: Floating Point Division by 1e6 (`const tokenQty = tokenReceivedRaw / 1e6;`)
 - **[WARNING]** `server/repositories/OrderRepository.ts:65`: Artificial History Truncation (slice(-500)) (`const arr = Array.from(this.orders.values()).slice(-500);`)
 - **[WARNING]** `server/repositories/PositionRepository.ts:71`: Artificial History Truncation (slice(-500)) (`const arr = Array.from(this.positions.values()).slice(-500);`)
 - **[WARNING]** `server/repositories/TokenRepository.ts:51`: Artificial History Truncation (slice(-500)) (`const arr = Array.from(this.tokens.values()).slice(-200);`)
-- **[BUG]** `server/routes/trading.ts:81`: Unsafe Number Conversion on Raw Amounts (`amountRaw: amountRaw ? Number(amountRaw) : undefined,`)
 - **[WARNING]** `server/services/JupiterTradingService.ts:11`: Hardcoded Secret / Private Key (`privateKey?: string;`)
 - **[WARNING]** `server/services/JupiterTradingService.ts:86`: Hardcoded Secret / Private Key (`walletPrivateKey: string;`)
 - **[WARNING]** `server/services/JupiterTradingService.ts:89`: Hardcoded Secret / Private Key (`const rawPrivateKey = params.walletPrivateKey.trim();`)
 - **[WARNING]** `server/services/JupiterTradingService.ts:92`: Hardcoded Secret / Private Key (`if (rawPrivateKey.startsWith('[') && rawPrivateKey.endsWith(']')) {`)
 - **[WARNING]** `server/services/JupiterTradingService.ts:93`: Hardcoded Secret / Private Key (`keypair = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(rawPrivateKey)));`)
 - **[WARNING]** `server/services/JupiterTradingService.ts:95`: Hardcoded Secret / Private Key (`keypair = Keypair.fromSecretKey(bs58.decode(rawPrivateKey));`)
-- **[BUG]** `server/services/WorkerHeartbeat.ts:5`: Overlapping Async Interval (`const timer = setInterval(async () => {`)
 - **[WARNING]** `server/services/simulation.ts:111`: Artificial History Truncation (slice(-500)) (`pairAddress: `${mint.slice(0, 8)}pair${mint.slice(-4)}`,`)
-- **[BUG]** `server/trading/PnLEngine.ts:37`: Unsafe Decimal Fallback (?? 6 or || 6) (`const decimals = position.decimals || 6;`)
-- **[BUG]** `server/trading/PositionManager.ts:65`: Unsafe Decimal Fallback (?? 6 or || 6) (`decimals: record.decimals || 6,`)
-- **[BUG]** `server/trading/PositionManager.ts:150`: Unsafe Decimal Fallback (?? 6 or || 6) (`const decimals = params.decimals ?? 6;`)
 - **[WARNING]** `server/wallet/WalletManager.ts:45`: Hardcoded Secret / Private Key (`const secret = bs58.decode(devnetKeyA);`)
 - **[WARNING]** `server/wallet/WalletManager.ts:46`: Hardcoded Secret / Private Key (`keypairDevnetA = Keypair.fromSecretKey(secret);`)
 - **[WARNING]** `server/wallet/WalletManager.ts:66`: Hardcoded Secret / Private Key (`const secret = bs58.decode(devnetKeyB);`)
 - **[WARNING]** `server/wallet/WalletManager.ts:67`: Hardcoded Secret / Private Key (`keypairDevnetB = Keypair.fromSecretKey(secret);`)
 - **[WARNING]** `server/wallet/WalletManager.ts:87`: Hardcoded Secret / Private Key (`const secret = bs58.decode(mainnetKey);`)
 - **[WARNING]** `server/wallet/WalletManager.ts:88`: Hardcoded Secret / Private Key (`keypairMainnet = Keypair.fromSecretKey(secret);`)
-- **[BUG]** `server/workers/TradingMonitorWorker.ts:26`: Overlapping Async Interval (`this.timer = setInterval(async () => {`)
-- **[BUG]** `server/workers/tradingWorker.ts:45`: Overlapping Async Interval (`setInterval(async () => {`)
 - **[WARNING]** `src/App.tsx:3`: Hardcoded Secret / Private Key (`import { getKeypairFromPrivateKey, getSavedSessionKeypair, saveSessionKeypair } from './utils/keypairUtils';`)
 - **[WARNING]** `src/App.tsx:37`: Hardcoded Secret / Private Key (`import { encryptPrivateKey, decryptPrivateKey } from './lib/crypto';`)
 - **[WARNING]** `src/App.tsx:463`: Hardcoded Secret / Private Key (`const [privateKey, setPrivateKeyState] = useState(() => {`)
@@ -94,8 +80,6 @@ Warnings: 131
 - **[WARNING]** `src/components/pages/PnLPage.tsx:2012`: Hardcoded Secret / Private Key (`privateKey: encryptedKey,`)
 - **[WARNING]** `src/components/pages/PnLPage.tsx:2036`: Hardcoded Secret / Private Key (`rpcUrl, rpcUrl2, customWsUrl, apiKey, privateKey,`)
 - **[WARNING]** `src/components/pages/PnLPage.tsx:2062`: Hardcoded Secret / Private Key (`user, rpcUrl, rpcUrl2, customWsUrl, apiKey, privateKey,`)
-- **[BUG]** `src/components/pages/PnLPage.tsx:2094`: Unsafe Decimal Fallback (?? 6 or || 6) (`amount: p.amountRaw ? p.amountRaw / (10 ** (p.decimals || 6)) : 0,`)
-- **[BUG]** `src/components/pages/PnLPage.tsx:2484`: Unsafe Decimal Fallback (?? 6 or || 6) (`const rawAmount = activePos.amountLamports || Math.floor((activePos.amount || 1) * Math.pow(10, activePos.decimals || 6));`)
 - **[WARNING]** `src/components/pages/PnLPage.tsx:2600`: Hardcoded Secret / Private Key (`if (!privateKey || !rpcUrl) return;`)
 - **[WARNING]** `src/components/pages/PnLPage.tsx:2628`: Artificial History Truncation (slice(-500)) (`symbol: metric ? metric.symbol : t.mint.slice(0, 4) + '...' + t.mint.slice(-4),`)
 - **[WARNING]** `src/components/pages/PnLPage.tsx:2642`: Hardcoded Secret / Private Key (`}, [privateKey, rpcUrl, customWsUrl]);`)
@@ -117,9 +101,7 @@ Warnings: 131
 - **[WARNING]** `src/components/pages/PnLPage.tsx:3513`: Hardcoded Secret / Private Key (`const { maxPositions, privateKey, slippage } = configRef.current;`)
 - **[WARNING]** `src/components/pages/PnLPage.tsx:3514`: Hardcoded Secret / Private Key (`// Block any token starting with 'sim' if privateKey is active`)
 - **[WARNING]** `src/components/pages/PnLPage.tsx:3770`: Hardcoded Secret / Private Key (`if (isMainnet && !privateKey && !activeWalletAddress) {`)
-- **[BUG]** `src/components/pages/PnLPage.tsx:4119`: Unsafe Decimal Fallback (?? 6 or || 6) (`tokenDecimals: pos.decimals ?? 6,`)
 - **[WARNING]** `src/components/pages/PnLPage.tsx:4576`: Hardcoded Secret / Private Key (`}, [privateKey, addLog]);`)
-- **[BUG]** `src/components/pages/PnLPage.tsx:5156`: Unsafe Decimal Fallback (?? 6 or || 6) (`bondingCurveProgress: isGraduated ? 100 : ((tp as any).bondingProgress || 65),`)
 - **[WARNING]** `src/components/pages/PnLPage.tsx:5208`: Hardcoded Secret / Private Key (`if (!privateKey) {`)
 - **[WARNING]** `src/components/pages/PnLPage.tsx:6651`: Hardcoded Secret / Private Key (`const netCalc = calcNetPnl(displayPrice, pos.amount || 0, pos.solSpent || 0, slippage, pos.recoveryMode, !!privateKey);`)
 - **[WARNING]** `src/components/pages/PnLPage.tsx:6664`: Hardcoded Secret / Private Key (`const netCalc = calcNetPnl(displayPrice, pos.amount || 0, pos.solSpent || 0, slippage, pos.recoveryMode, !!privateKey);`)
@@ -144,14 +126,6 @@ Warnings: 131
 - **[WARNING]** `src/lib/crypto.ts:171`: Hardcoded Secret / Private Key (`const secretMaterial = (uid || 'default_app_offline_salt') + (sessionPassword || '');`)
 - **[WARNING]** `src/lib/crypto.ts:172`: Hardcoded Secret / Private Key (`const raw = await crypto.subtle.digest('SHA-256', enc.encode(secretMaterial));`)
 - **[WARNING]** `src/lib/crypto.ts:181`: Hardcoded Secret / Private Key (`encryptPrivateKey(decryptedPlaintext, uid, sessionPassword).then((reEncrypted) => {`)
-- **[BUG]** `src/services/PaperTradeExecutor.ts:131`: Unsafe Decimal Fallback (?? 6 or || 6) (`const decimals = tokenRegistry.get(tokenMint)?.decimals || 6;`)
-- **[BUG]** `src/services/RiskManager.ts:206`: Unsafe Decimal Fallback (?? 6 or || 6) (`decimals = tokenRegistry.getToken(params.mint)?.decimals ?? 6;`)
-- **[BUG]** `src/services/RiskManager.ts:396`: Unsafe Number Conversion on Raw Amounts (`return Number(rawBig);`)
-- **[BUG]** `src/services/StartupReconciliation.ts:50`: Unsafe Decimal Fallback (?? 6 or || 6) (`const decimals = pos.decimals ?? tokenRegistry.getToken(mint)?.decimals ?? 6;`)
-- **[BUG]** `src/services/TokenRegistry.ts:118`: Unsafe Decimal Fallback (?? 6 or || 6) (`decimals: params.decimals !== undefined ? params.decimals : (existing?.decimals ?? 6),`)
-- **[BUG]** `src/services/WalletBalanceService.ts:242`: Unsafe Number Conversion on Raw Amounts (`return Number(raw) / Math.pow(10, decimals);`)
-- **[BUG]** `src/services/jupiterService.ts:618`: Unsafe Decimal Fallback (?? 6 or || 6) (`const minMcapPump = customConfig?.minMcapPump ?? 65000;`)
-- **[BUG]** `src/services/jupiterService.ts:626`: Unsafe Decimal Fallback (?? 6 or || 6) (`const minUniqueBuyers30s = customConfig?.minUniqueBuyers30s ?? 6;`)
 - **[WARNING]** `src/utils/keypairUtils.ts:11`: Hardcoded Secret / Private Key (`export function getKeypairFromPrivateKey(input: string): Keypair {`)
 - **[WARNING]** `src/utils/keypairUtils.ts:37`: Hardcoded Secret / Private Key (`return Keypair.fromSecretKey(bytes);`)
 - **[WARNING]** `src/utils/keypairUtils.ts:39`: Hardcoded Secret / Private Key (`return Keypair.fromSeed(bytes);`)

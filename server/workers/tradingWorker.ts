@@ -42,18 +42,25 @@ async function main() {
   }
 
   // 4. Telemetry synchronizer loop
-  setInterval(async () => {
-    try {
-      const telemetry = yellowstoneConnectionManager.getTelemetry();
-      await workerStateRepository.updateMetadata('trading', {
-        transportConnected: telemetry.connected,
-        lastReceivedSlot: telemetry.lastReceivedSlot,
-        lastEventAt: telemetry.lastEventAt,
-        reconnectCount: telemetry.reconnectCount,
-      });
-    } catch {
-      // Non-blocking guard
-    }
+  let telemetryLoopRunning = false;
+  setInterval(() => {
+    if (telemetryLoopRunning) return;
+    telemetryLoopRunning = true;
+    (async () => {
+      try {
+        const telemetry = yellowstoneConnectionManager.getTelemetry();
+        await workerStateRepository.updateMetadata('trading', {
+          transportConnected: telemetry.connected,
+          lastReceivedSlot: telemetry.lastReceivedSlot,
+          lastEventAt: telemetry.lastEventAt,
+          reconnectCount: telemetry.reconnectCount,
+        });
+      } catch {
+        // Non-blocking guard
+      } finally {
+        telemetryLoopRunning = false;
+      }
+    })();
   }, 3000);
 
   // 5. Startup reconciliation

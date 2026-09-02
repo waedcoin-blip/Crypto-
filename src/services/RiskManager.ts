@@ -203,7 +203,10 @@ export class RiskManager {
       try {
         decimals = resolveTokenDecimals(params.mint);
       } catch {
-        decimals = tokenRegistry.getToken(params.mint)?.decimals ?? 6;
+        decimals = tokenRegistry.getToken(params.mint)?.decimals;
+        if (decimals === undefined) {
+          throw new Error(`UNRESOLVED_TOKEN_DECIMALS: Cannot register risk position for ${params.mint}`);
+        }
       }
     }
 
@@ -393,7 +396,8 @@ export class RiskManager {
       return Math.round(uiBal * (10 ** dec));
     }
     const rawBig = await walletBalanceService.getTokenBalanceRaw(mint);
-    return Number(rawBig);
+    const rawStr = rawBig.toString();
+    return parseInt(rawStr, 10);
   }
 
   /**
