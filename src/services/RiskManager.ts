@@ -387,17 +387,16 @@ export class RiskManager {
   /**
    * Fetches authoritative wallet token balance in raw integer units.
    */
-  public async getAuthoritativeWalletBalanceRaw(mint: string, decimals?: number): Promise<number> {
+  public async getAuthoritativeWalletBalanceRaw(mint: string, decimals?: number): Promise<string> {
     const dec = decimals ?? resolveTokenDecimals(mint);
     const net = useTradingEnvironmentStore.getState().network || 'paper';
     if (net === 'paper') {
       const { usePaperWalletStore } = await import('../store/paperWalletStore');
       const uiBal = usePaperWalletStore.getState().tokenBalances[mint] || 0;
-      return Math.round(uiBal * (10 ** dec));
+      return BigInt(Math.round(uiBal * (10 ** dec))).toString();
     }
     const rawBig = await walletBalanceService.getTokenBalanceRaw(mint);
-    const rawStr = rawBig.toString();
-    return parseInt(rawStr, 10);
+    return rawBig.toString();
   }
 
   /**

@@ -26,14 +26,14 @@ export class MainnetTradeExecutor implements TradeExecutor {
       inputMint: params.inputMint,
       outputMint: params.outputMint,
       amount: params.amount,
-      slippageBps: params.slippageBps || 250,
+      slippageBps: params.slippageBps === undefined ? 250 : params.slippageBps,
       userPublicKey: params.userPublicKey,
     });
 
     const validated = validateQuoteSafetyStrict({
       quote,
       inputAmount: params.amount,
-      slippageBps: params.slippageBps || 250,
+      slippageBps: params.slippageBps === undefined ? 250 : params.slippageBps,
       expectedInputMint: params.inputMint,
       expectedOutputMint: params.outputMint,
       isBuy: true,
@@ -54,14 +54,14 @@ export class MainnetTradeExecutor implements TradeExecutor {
       inputMint: params.inputMint,
       outputMint: params.outputMint,
       amount: params.amount,
-      slippageBps: params.slippageBps || 250,
+      slippageBps: params.slippageBps === undefined ? 250 : params.slippageBps,
       userPublicKey: params.userPublicKey,
     });
 
     const validated = validateQuoteSafetyStrict({
       quote,
       inputAmount: params.amount,
-      slippageBps: params.slippageBps || 250,
+      slippageBps: params.slippageBps === undefined ? 250 : params.slippageBps,
       expectedInputMint: params.inputMint,
       expectedOutputMint: params.outputMint,
       isBuy: false,
