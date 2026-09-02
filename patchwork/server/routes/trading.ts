@@ -4,7 +4,7 @@ import { asyncHandler } from '../middleware/errorHandler.js';
 import { tradingEngine } from '../trading/TradingEngine.js';
 import { positionManager } from '../trading/PositionManager.js';
 import { orderManager } from '../trading/OrderManager.js';
-import { criteriaRepository } from '../repositories/CriteriaRepository.js';
+import { criteriaService } from '../services/criteriaService.js';
 import { workerStateRepository } from '../repositories/WorkerStateRepository.js';
 import { tradeRepository } from '../repositories/TradeRepository.js';
 
@@ -12,7 +12,10 @@ const router = Router();
 
 // GET /api/trading/config
 router.get('/config', asyncHandler(async (req, res) => {
-  const criteria = await criteriaRepository.getActiveCriteria();
+  const userId = (req as any).user?.uid;
+  if (!userId || !(req as any).idToken) return res.status(401).json({ status: 'error', error: 'UNAUTHORIZED' });
+  const state = await criteriaService.fetchCriteriaFromFirestore(userId, (req as any).idToken);
+  const criteria = state.criteria;
   const workerState = workerStateRepository.getWorkerState('trading');
   res.json({
     status: 'success',
@@ -36,8 +39,9 @@ router.get('/config', asyncHandler(async (req, res) => {
 
 // PUT /api/trading/config & POST /api/trading/config
 const updateConfigHandler = asyncHandler(async (req, res) => {
-  const patch = req.body;
-  const updated = await criteriaRepository.updateCriteria(patch);
+  const idToken = (req as any).idToken;
+  if (!idToken) return res.status(401).json({ status: 'error', error: 'UNAUTHORIZED' });
+  const updated = await criteriaService.updateCriteria(idToken, req.body);
   res.json({
     status: 'success',
     config: updated,

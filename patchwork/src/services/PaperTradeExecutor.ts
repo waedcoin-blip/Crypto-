@@ -28,27 +28,19 @@ function isPumpMint(mint: string): boolean {
 
 export function resolveTokenDecimals(tokenMint: string): number {
   const cleanMint = (tokenMint || '').trim();
-  if (!cleanMint) return 6;
+  if (!cleanMint) throw new Error('UNRESOLVED_TOKEN_DECIMALS: token mint is required');
   if (isSolMint(cleanMint)) return 9;
-  if (isPumpMint(cleanMint)) {
-    tokenRegistry.registerOrUpdate({ mintAddress: cleanMint, decimals: 6 });
-    return 6;
-  }
   const regToken = tokenRegistry.getToken(cleanMint);
   if (regToken?.decimals !== undefined && typeof regToken.decimals === 'number') return regToken.decimals;
   const metric = useAppStore.getState()?.tokenMetrics?.[cleanMint] as any;
   if (metric?.decimals !== undefined && typeof metric.decimals === 'number') return metric.decimals;
-  return 6;
+  throw new Error(`UNRESOLVED_TOKEN_DECIMALS: Unable to resolve token decimals for mint ${cleanMint}`);
 }
 
 export async function resolveTokenDecimalsAsync(tokenMint: string): Promise<number> {
   const cleanMint = (tokenMint || '').trim();
-  if (!cleanMint) return 6;
+  if (!cleanMint) throw new Error('UNRESOLVED_TOKEN_DECIMALS: token mint is required');
   if (isSolMint(cleanMint)) return 9;
-  if (isPumpMint(cleanMint)) {
-    tokenRegistry.registerOrUpdate({ mintAddress: cleanMint, decimals: 6 });
-    return 6;
-  }
   
   // 1. Check registry & app store
   const regToken = tokenRegistry.getToken(cleanMint);
@@ -128,7 +120,8 @@ export async function resolveTokenPriceInSol(tokenMint: string): Promise<number 
 
   // 2. Query Jupiter Quote API directly (1 whole token test quote)
   try {
-    const decimals = tokenRegistry.get(tokenMint)?.decimals || 6;
+    const decimals = tokenRegistry.get(tokenMint)?.decimals;
+    if (decimals === undefined) throw new Error(`UNRESOLVED_TOKEN_DECIMALS: ${tokenMint}`);
     const testAmount = Math.floor(10 ** decimals);
     const quote = await getJupiterQuote(tokenMint, WSOL_MINT, testAmount);
     if (quote && quote.outAmount) {

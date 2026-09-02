@@ -1926,12 +1926,12 @@ function App() {
         if (position.amountLamports && position.amountLamports > 0) {
           sellRawAmount = position.amountLamports;
         } else if (position.amount && position.amount > 0) {
-          const decimals = position.decimals ?? resolveTokenDecimals(tokenAddress);
+          const decimals = position.decimals ?? (() => { throw new Error(`UNRESOLVED_TOKEN_DECIMALS: ${tokenAddress}`); })();
           sellRawAmount = Math.floor(position.amount * Math.pow(10, decimals));
         } else {
           const storeTokenBal = useBalanceStore.getState().tokenBalances[tokenAddress];
           if (storeTokenBal && storeTokenBal > 0) {
-            const decimals = position.decimals ?? resolveTokenDecimals(tokenAddress);
+            const decimals = position.decimals ?? (() => { throw new Error(`UNRESOLVED_TOKEN_DECIMALS: ${tokenAddress}`); })();
             sellRawAmount = Math.floor(storeTokenBal * Math.pow(10, decimals));
           }
         }

@@ -2,7 +2,10 @@
 import { workerStateRepository } from '../repositories/WorkerStateRepository.js';
 
 export function startWorkerHeartbeat(workerName: string = 'trading', intervalMs: number = 3000): () => void {
+  let running = false;
   const timer = setInterval(async () => {
+    if (running) return;
+    running = true;
     try {
       await workerStateRepository.heartbeat({
         worker: workerName,
@@ -11,6 +14,8 @@ export function startWorkerHeartbeat(workerName: string = 'trading', intervalMs:
       });
     } catch (err) {
       console.warn(`[WorkerHeartbeat] Failed to pulse heartbeat for ${workerName}:`, err);
+    } finally {
+      running = false;
     }
   }, intervalMs);
 

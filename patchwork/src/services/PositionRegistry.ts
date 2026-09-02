@@ -120,7 +120,10 @@ export class PositionRegistry {
     }
     const rawAmount = Math.floor(Math.max(0, params.amountRaw || 0));
     const solSpent = Math.max(0, params.solSpent || 0);
-    const decimals = params.decimals !== undefined ? params.decimals : 6;
+    if (params.decimals === undefined || !Number.isInteger(params.decimals) || params.decimals < 0 || params.decimals > 18) {
+      throw new Error(`UNRESOLVED_TOKEN_DECIMALS: Position ${mint} requires verified token decimals`);
+    }
+    const decimals = params.decimals;
 
     const existingId = this.positionsByMint.get(mint);
     if (existingId) {

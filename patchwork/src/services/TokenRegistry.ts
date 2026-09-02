@@ -110,12 +110,16 @@ export class TokenRegistry {
     const now = Date.now();
     const existing = this.tokens.get(mint);
 
+    if (params.decimals !== undefined && (!Number.isInteger(params.decimals) || params.decimals < 0 || params.decimals > 18)) {
+      throw new Error(`INVALID_TOKEN_DECIMALS: decimals must be an integer between 0 and 18 for ${mint}`);
+    }
+    const resolvedDecimals = params.decimals !== undefined ? params.decimals : existing?.decimals;
     const record: TokenRecord = {
       mintAddress: mint,
       network: params.network || existing?.network || 'paper',
       symbol: params.symbol || existing?.symbol || 'UNKNOWN',
       name: params.name || existing?.name || existing?.symbol || 'Unknown Token',
-      decimals: params.decimals !== undefined ? params.decimals : (existing?.decimals ?? 6),
+      ...(resolvedDecimals !== undefined ? { decimals: resolvedDecimals } : {}),
       priceSOL: params.priceSOL !== undefined ? params.priceSOL : existing?.priceSOL,
       priceUSD: params.priceUSD !== undefined ? params.priceUSD : existing?.priceUSD,
       liquidity: params.liquidity !== undefined ? params.liquidity : existing?.liquidity,

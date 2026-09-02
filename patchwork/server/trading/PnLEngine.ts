@@ -34,7 +34,10 @@ export class PnLEngine {
     currentMarketPriceSol: number,
     estimatedFeeSol: number = 0.0005
   ): PnLMetrics {
-    const decimals = position.decimals || 6;
+    const decimals = position.decimals;
+    if (!Number.isInteger(decimals) || decimals < 0 || decimals > 18) {
+      throw new Error(`UNRESOLVED_TOKEN_DECIMALS: Invalid persisted decimals for ${position.mint}`);
+    }
     const tokenQuantity = position.tokenAmount / (10 ** decimals);
     const averageEntryPrice = position.averageEntryPrice > 0
       ? position.averageEntryPrice

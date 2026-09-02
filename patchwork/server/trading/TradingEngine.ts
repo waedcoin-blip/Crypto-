@@ -48,7 +48,22 @@ export interface TradeEngineResponse {
 export class TradingEngine {
   private static instance: TradingEngine;
 
+  private buyLocks: Map<string, Promise<void>> = new Map();
+
   private constructor() {}
+
+  private async withBuyWalletLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this.buyLocks.get(key) || Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>(resolve => { release = resolve; });
+    const queued = previous.then(() => current);
+    this.buyLocks.set(key, queued);
+    await previous;
+    try { return await fn(); } finally {
+      release();
+      if (this.buyLocks.get(key) === queued) this.buyLocks.delete(key);
+    }
+  }
 
   public static getInstance(): TradingEngine {
     if (!TradingEngine.instance) {
@@ -62,6 +77,13 @@ export class TradingEngine {
    * Flow: TradingEngine -> RebuyGuard (Reserve) -> OrderManager -> ExecutionGateway -> PositionManager.
    */
   public async buy(params: BuyParams): Promise<TradeEngineResponse> {
+    const network = params.network || 'paper';
+    const wallet = params.wallet || 'default';
+    const lockKey = `${network}:${wallet}`;
+    return this.withBuyWalletLock(lockKey, () => this.buyUnlocked(params));
+  }
+
+  private async buyUnlocked(params: BuyParams): Promise<TradeEngineResponse> {
     const network = params.network || 'paper';
     const wallet = params.wallet || 'default';
     const mint = params.mint?.trim();

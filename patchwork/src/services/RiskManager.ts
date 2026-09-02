@@ -202,9 +202,14 @@ export class RiskManager {
     if (decimals === undefined || typeof decimals !== 'number') {
       try {
         decimals = resolveTokenDecimals(params.mint);
-      } catch {
-        decimals = tokenRegistry.getToken(params.mint)?.decimals ?? 6;
+      } catch (err) {
+        const registered = tokenRegistry.getToken(params.mint)?.decimals;
+        if (registered !== undefined && Number.isInteger(registered) && registered >= 0 && registered <= 18) decimals = registered;
+        else throw new Error(`UNRESOLVED_TOKEN_DECIMALS: Cannot evaluate position ${params.mint} safely`);
       }
+    }
+    if (!Number.isInteger(decimals) || decimals < 0 || decimals > 18) {
+      throw new Error(`UNRESOLVED_TOKEN_DECIMALS: Invalid decimals for ${params.mint}`);
     }
 
     const tokenQty = rawAmount / (10 ** decimals);

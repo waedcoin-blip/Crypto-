@@ -27,7 +27,9 @@ export class MainnetTradeExecutor implements TradeExecutor {
   private async tokenRawBalance(owner: PublicKey, mint: string): Promise<number> {
     if (mint === WSOL_MINT) return await this.connection.getBalance(owner);
     const result = await this.connection.getParsedTokenAccountsByOwner(owner, { mint: new PublicKey(mint) });
-    return result.value.reduce((sum, item: any) => sum + Number(item.account.data.parsed.info.tokenAmount.amount || 0), 0);
+    const total = result.value.reduce((sum, item: any) => sum + BigInt(item.account.data.parsed.info.tokenAmount.amount || '0'), 0n);
+    if (total > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error(`TOKEN_AMOUNT_TOO_LARGE: raw balance for ${mint} exceeds JS safe integer range`);
+    return Number(total);
   }
 
   private async decimals(mint: string): Promise<number> {

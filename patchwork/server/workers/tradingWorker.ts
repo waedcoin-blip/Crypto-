@@ -41,8 +41,11 @@ async function main() {
     console.warn('[TRADING WORKER] Yellowstone start warning:', e);
   }
 
-  // 4. Telemetry synchronizer loop
-  setInterval(async () => {
+  // 4. Telemetry synchronizer loop (single-flight; no overlapping async intervals)
+  let telemetryLoopRunning = false;
+  const syncTelemetry = async () => {
+    if (telemetryLoopRunning) return;
+    telemetryLoopRunning = true;
     try {
       const telemetry = yellowstoneConnectionManager.getTelemetry();
       await workerStateRepository.updateMetadata('trading', {
@@ -53,8 +56,12 @@ async function main() {
       });
     } catch {
       // Non-blocking guard
+    } finally {
+      telemetryLoopRunning = false;
     }
-  }, 3000);
+  };
+  setInterval(() => { void syncTelemetry(); }, 3000);
+  void syncTelemetry();
 
   // 5. Startup reconciliation
   await reconcileDatabaseWithMainnet();

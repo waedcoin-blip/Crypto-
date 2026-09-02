@@ -2091,7 +2091,7 @@ export const PnLPage = ({
                 buyPrice: p.entryPriceSOL || 0,
                 currentPrice: p.currentPriceSOL || p.entryPriceSOL || 0,
                 solSpent: p.solSpent || 0,
-                amount: p.amountRaw ? p.amountRaw / (10 ** (p.decimals || 6)) : 0,
+                amount: p.amountRaw && Number.isInteger(p.decimals) && p.decimals >= 0 && p.decimals <= 18 ? p.amountRaw / (10 ** p.decimals) : 0,
                 entryTime: p.createdAt || Date.now(),
                 txid: p.buySignature || '',
                 positionId: p.id
@@ -2481,7 +2481,8 @@ export const PnLPage = ({
           if (nowMs - lastCheck > 10000) {
             (activePos as any)._lastQuoteCheck = nowMs;
             try {
-              const rawAmount = activePos.amountLamports || Math.floor((activePos.amount || 1) * Math.pow(10, activePos.decimals || 6));
+              const rawAmount = activePos.amountLamports || (activePos.amount > 0 && Number.isInteger(activePos.decimals) && activePos.decimals >= 0 && activePos.decimals <= 18 ? Math.floor(activePos.amount * Math.pow(10, activePos.decimals)) : 0);
+              if (rawAmount <= 0) continue;
               const validationQuote = await getJupiterQuote(
                 mint,
                 'So11111111111111111111111111111111111111112',
@@ -4116,7 +4117,7 @@ const checkTokenCriteria = (mint: string): {
           solSpent: pos.solSpent || 0,
           tpPct: targetTp,
           slPct: Math.abs(targetSl),
-          tokenDecimals: pos.decimals ?? 6,
+          tokenDecimals: (() => { const d = pos.decimals; if (!Number.isInteger(d) || d < 0 || d > 18) throw new Error(`UNRESOLVED_TOKEN_DECIMALS: ${mint}`); return d; })(),
         });
         if (pos.currentPrice && pos.currentPrice > 0) {
           exitMgr.onPriceUpdate(mint, pos.currentPrice, Date.now());

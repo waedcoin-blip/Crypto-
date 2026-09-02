@@ -22,6 +22,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     }
     const decodedToken = await auth.verifyIdToken(idToken);
     (req as any).user = decodedToken;
+    (req as any).idToken = idToken;
     next();
   } catch (error) {
     securityLogger.warn({ ip: req.ip, path: req.path, error: (error as Error).message }, 'Unauthorized request: Invalid token');
