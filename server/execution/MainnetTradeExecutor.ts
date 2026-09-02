@@ -7,18 +7,36 @@ import * as jupApi from '@jup-ag/api';
 import { TradeExecutor, QuoteParams, QuoteResult, ExecuteParams, ExecutionResult } from './TradeExecutor.js';
 import { walletManager } from '../wallet/WalletManager.js';
 import { tokenProgramResolver } from '../wallet/TokenProgramResolver.js';
-import { validateQuoteSafetyStrict, normalizePriceImpact } from '../utils/quoteSafety.js';
+import { validateQuoteSafetyStrict } from '../utils/quoteSafety.js';
 
 const createJupiterApiClient = (jupApi as any).createJupiterApiClient || (jupApi as any).default?.createJupiterApiClient || (() => ({}));
 
+function getExecutionRpcUrls(): string[] {
+  return [...new Set([
+    process.env.EXECUTION_RPC_URL,
+    process.env.EXECUTION_RPC_BACKUP_URL,
+    process.env.MAINNET_RPC_URL,
+    process.env.SEARCH_RPC_URL,
+    process.env.SEARCH_RPC_BACKUP_URL,
+    'https://api.mainnet-beta.solana.com',
+  ].filter((v): v is string => !!v && v.trim().length > 0).map(v => v.trim()))];
+}
+
 export class MainnetTradeExecutor implements TradeExecutor {
   private connection: Connection;
+  private backupConnections: Connection[];
   private jupiterApi: any;
 
   constructor(options?: { rpcUrl?: string }) {
-    const rpc = options?.rpcUrl || process.env.MAINNET_RPC_URL || process.env.EXECUTION_RPC_URL || 'https://api.mainnet-beta.solana.com';
-    this.connection = new Connection(rpc, 'confirmed');
+    const urls = getExecutionRpcUrls();
+    const primaryUrl = options?.rpcUrl || urls[0] || 'https://api.mainnet-beta.solana.com';
+    this.connection = new Connection(primaryUrl, 'confirmed');
+    this.backupConnections = urls.filter(u => u !== primaryUrl).map(u => new Connection(u, 'confirmed'));
     this.jupiterApi = createJupiterApiClient();
+  }
+
+  private getAllConnections(): Connection[] {
+    return [this.connection, ...this.backupConnections];
   }
 
   async quoteBuy(params: QuoteParams): Promise<QuoteResult> {
@@ -77,6 +95,91 @@ export class MainnetTradeExecutor implements TradeExecutor {
     };
   }
 
+  /**
+   * Confirms a transaction signature using modern Solana getLatestBlockhash +
+   * block height expiration check with multi-RPC failover.
+   *
+   * Returns:
+   *  - 'CONFIRMED' if on-chain confirmation succeeded
+   *  - 'FAILED' if on-chain error or blockhash definitively expired without inclusion
+   *  - 'RECOVERY_REQUIRED' if timeout occurred and transaction may still be in-flight
+   */
+  private async verifyTransactionConfirmation(
+    txid: string,
+    blockhash: string,
+    lastValidBlockHeight: number
+  ): Promise<{ status: 'CONFIRMED' | 'FAILED' | 'RECOVERY_REQUIRED'; error?: string }> {
+    const connections = this.getAllConnections();
+
+    // 1. Try standard confirmTransaction
+    for (const conn of connections) {
+      try {
+        const confirmation = await conn.confirmTransaction(
+          {
+            signature: txid,
+            blockhash,
+            lastValidBlockHeight,
+          },
+          'confirmed'
+        );
+
+        if (confirmation.value.err) {
+          return {
+            status: 'FAILED',
+            error: `ON_CHAIN_FAILURE: ${JSON.stringify(confirmation.value.err)}`,
+          };
+        }
+        return { status: 'CONFIRMED' };
+      } catch (err: any) {
+        console.warn(`[MainnetTradeExecutor] confirmTransaction on ${conn.rpcEndpoint} threw: ${err?.message || err}`);
+      }
+    }
+
+    // 2. Poll getSignatureStatuses across all connections
+    for (const conn of connections) {
+      try {
+        const statusRes = await conn.getSignatureStatuses([txid]);
+        const status = statusRes?.value?.[0];
+        if (status) {
+          if (status.err) {
+            return {
+              status: 'FAILED',
+              error: `ON_CHAIN_FAILURE: ${JSON.stringify(status.err)}`,
+            };
+          }
+          if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized') {
+            return { status: 'CONFIRMED' };
+          }
+        }
+      } catch (err: any) {
+        console.warn(`[MainnetTradeExecutor] getSignatureStatuses on ${conn.rpcEndpoint} failed:`, err?.message || err);
+      }
+    }
+
+    // 3. Inspect block height expiration
+    for (const conn of connections) {
+      try {
+        const currentBlockHeight = await conn.getBlockHeight('confirmed');
+        if (currentBlockHeight > lastValidBlockHeight) {
+          console.warn(`[MainnetTradeExecutor] Transaction ${txid} expired: block height ${currentBlockHeight} > ${lastValidBlockHeight}`);
+          return {
+            status: 'FAILED',
+            error: `TRANSACTION_EXPIRED_UNCONFIRMED: Block height ${currentBlockHeight} exceeded lastValidBlockHeight ${lastValidBlockHeight}`,
+          };
+        }
+      } catch (err: any) {
+        console.warn(`[MainnetTradeExecutor] getBlockHeight on ${conn.rpcEndpoint} failed:`, err?.message || err);
+      }
+    }
+
+    // 4. If neither confirmed, nor definitively failed on-chain, nor expired:
+    // MUST BE MARKED RECOVERY_REQUIRED to prevent duplicate spend!
+    return {
+      status: 'RECOVERY_REQUIRED',
+      error: `CONFIRMATION_TIMEOUT: Transaction ${txid} broadcasted but not yet confirmed or expired on-chain.`,
+    };
+  }
+
   async buy(params: ExecuteParams): Promise<ExecutionResult> {
     const walletAccount = walletManager.getAccount('mainnet:default');
     if (!walletAccount.keypair) {
@@ -91,13 +194,14 @@ export class MainnetTradeExecutor implements TradeExecutor {
       userPublicKey: walletAccount.publicKey,
     }));
 
-    // If simulated or test context without active key, produce valid result
+    // If test context without active key, produce valid result
     if (process.env.NODE_ENV === 'test' && !process.env.MAINNET_PRIVATE_KEY) {
       const outAmount = Number(quoteRes.outAmount);
       const solSpent = params.amount / 1e9;
       return {
         success: true,
         signature: `mock_mainnet_buy_${Date.now()}`,
+        status: 'CONFIRMED',
         inputMint: params.inputMint,
         outputMint: params.outputMint,
         inAmountRaw: params.amount,
@@ -107,7 +211,16 @@ export class MainnetTradeExecutor implements TradeExecutor {
       };
     }
 
+    let txid: string | undefined;
+    let blockhash: string = '';
+    let lastValidBlockHeight: number = 0;
+
     try {
+      // Obtain latest blockhash to ensure accurate expiration bounds
+      const latestBlockhash = await this.connection.getLatestBlockhash('confirmed');
+      blockhash = latestBlockhash.blockhash;
+      lastValidBlockHeight = latestBlockhash.lastValidBlockHeight;
+
       const swapRes = await this.jupiterApi.swapPost({
         swapRequest: {
           quoteResponse: quoteRes.rawQuote || quoteRes,
@@ -118,43 +231,93 @@ export class MainnetTradeExecutor implements TradeExecutor {
         },
       });
 
+      if (swapRes.lastValidBlockHeight) {
+        lastValidBlockHeight = swapRes.lastValidBlockHeight;
+      }
+
       const swapTransactionBuf = Buffer.from(swapRes.swapTransaction, 'base64');
       const transaction = VersionedTransaction.deserialize(swapTransactionBuf);
       transaction.sign([walletAccount.keypair]);
 
       const rawTransaction = transaction.serialize();
-      const txid = await this.connection.sendRawTransaction(rawTransaction, {
+      txid = await this.connection.sendRawTransaction(rawTransaction, {
         skipPreflight: true,
-        maxRetries: 2,
+        maxRetries: 3,
       });
 
-      const confirmation = await this.connection.confirmTransaction(txid, 'confirmed');
-      if (confirmation.value.err) {
+      // 🔴 IMMEDIATE BROADCAST CALLBACK
+      if (params.onBroadcast) {
+        try {
+          await params.onBroadcast(txid, { blockhash, lastValidBlockHeight });
+        } catch (callbackErr) {
+          console.warn(`[MainnetTradeExecutor] onBroadcast callback failed for ${txid}:`, callbackErr);
+        }
+      }
+
+      // Verify confirmation with failover and block height check
+      const verification = await this.verifyTransactionConfirmation(txid, blockhash, lastValidBlockHeight);
+
+      if (verification.status === 'CONFIRMED') {
+        const solSpent = params.amount / 1e9;
+        const outAmountRaw = Number(quoteRes.outAmount);
+        return {
+          success: true,
+          signature: txid,
+          status: 'CONFIRMED',
+          inputMint: params.inputMint,
+          outputMint: params.outputMint,
+          inAmountRaw: params.amount,
+          outAmountRaw,
+          totalCostSol: solSpent,
+          effectivePriceSol: solSpent / (outAmountRaw / (10 ** params.decimals)),
+        };
+      } else if (verification.status === 'FAILED') {
         return {
           success: false,
+          signature: txid,
+          status: 'FAILED',
           inputMint: params.inputMint,
           outputMint: params.outputMint,
           inAmountRaw: params.amount,
           outAmountRaw: 0,
-          error: `TRANSACTION_FAILED: ${JSON.stringify(confirmation.value.err)}`,
+          error: verification.error,
+        };
+      } else {
+        // RECOVERY_REQUIRED / AMBIGUOUS
+        return {
+          success: false,
+          signature: txid,
+          status: 'RECOVERY_REQUIRED',
+          isAmbiguous: true,
+          lastValidBlockHeight,
+          blockhash,
+          inputMint: params.inputMint,
+          outputMint: params.outputMint,
+          inAmountRaw: params.amount,
+          outAmountRaw: 0,
+          error: verification.error,
         };
       }
-
-      const solSpent = params.amount / 1e9;
-      const outAmountRaw = Number(quoteRes.outAmount);
-      return {
-        success: true,
-        signature: txid,
-        inputMint: params.inputMint,
-        outputMint: params.outputMint,
-        inAmountRaw: params.amount,
-        outAmountRaw,
-        totalCostSol: solSpent,
-        effectivePriceSol: solSpent / (outAmountRaw / (10 ** params.decimals)),
-      };
     } catch (e: any) {
+      if (txid) {
+        // If broadcast succeeded but unexpected error occurred in downstream handling
+        return {
+          success: false,
+          signature: txid,
+          status: 'RECOVERY_REQUIRED',
+          isAmbiguous: true,
+          lastValidBlockHeight,
+          blockhash,
+          inputMint: params.inputMint,
+          outputMint: params.outputMint,
+          inAmountRaw: params.amount,
+          outAmountRaw: 0,
+          error: `BROADCAST_COMPLETED_BUT_ERROR: ${e?.message || e}`,
+        };
+      }
       return {
         success: false,
+        status: 'FAILED',
         inputMint: params.inputMint,
         outputMint: params.outputMint,
         inAmountRaw: params.amount,
@@ -183,6 +346,7 @@ export class MainnetTradeExecutor implements TradeExecutor {
       return {
         success: true,
         signature: `mock_mainnet_sell_${Date.now()}`,
+        status: 'CONFIRMED',
         inputMint: params.inputMint,
         outputMint: params.outputMint,
         inAmountRaw: params.amount,
@@ -191,7 +355,15 @@ export class MainnetTradeExecutor implements TradeExecutor {
       };
     }
 
+    let txid: string | undefined;
+    let blockhash: string = '';
+    let lastValidBlockHeight: number = 0;
+
     try {
+      const latestBlockhash = await this.connection.getLatestBlockhash('confirmed');
+      blockhash = latestBlockhash.blockhash;
+      lastValidBlockHeight = latestBlockhash.lastValidBlockHeight;
+
       const swapRes = await this.jupiterApi.swapPost({
         swapRequest: {
           quoteResponse: quoteRes.rawQuote || quoteRes,
@@ -202,41 +374,89 @@ export class MainnetTradeExecutor implements TradeExecutor {
         },
       });
 
+      if (swapRes.lastValidBlockHeight) {
+        lastValidBlockHeight = swapRes.lastValidBlockHeight;
+      }
+
       const swapTransactionBuf = Buffer.from(swapRes.swapTransaction, 'base64');
       const transaction = VersionedTransaction.deserialize(swapTransactionBuf);
       transaction.sign([walletAccount.keypair]);
 
       const rawTransaction = transaction.serialize();
-      const txid = await this.connection.sendRawTransaction(rawTransaction, {
+      txid = await this.connection.sendRawTransaction(rawTransaction, {
         skipPreflight: true,
-        maxRetries: 2,
+        maxRetries: 3,
       });
 
-      const confirmation = await this.connection.confirmTransaction(txid, 'confirmed');
-      if (confirmation.value.err) {
+      // 🔴 IMMEDIATE BROADCAST CALLBACK
+      if (params.onBroadcast) {
+        try {
+          await params.onBroadcast(txid, { blockhash, lastValidBlockHeight });
+        } catch (callbackErr) {
+          console.warn(`[MainnetTradeExecutor] onBroadcast callback failed for ${txid}:`, callbackErr);
+        }
+      }
+
+      const verification = await this.verifyTransactionConfirmation(txid, blockhash, lastValidBlockHeight);
+
+      if (verification.status === 'CONFIRMED') {
+        const outLamports = Number(quoteRes.outAmount);
+        return {
+          success: true,
+          signature: txid,
+          status: 'CONFIRMED',
+          inputMint: params.inputMint,
+          outputMint: params.outputMint,
+          inAmountRaw: params.amount,
+          outAmountRaw: outLamports,
+          netProceedsSol: outLamports / 1e9,
+        };
+      } else if (verification.status === 'FAILED') {
         return {
           success: false,
+          signature: txid,
+          status: 'FAILED',
           inputMint: params.inputMint,
           outputMint: params.outputMint,
           inAmountRaw: params.amount,
           outAmountRaw: 0,
-          error: `TRANSACTION_FAILED: ${JSON.stringify(confirmation.value.err)}`,
+          error: verification.error,
+        };
+      } else {
+        // RECOVERY_REQUIRED / AMBIGUOUS
+        return {
+          success: false,
+          signature: txid,
+          status: 'RECOVERY_REQUIRED',
+          isAmbiguous: true,
+          lastValidBlockHeight,
+          blockhash,
+          inputMint: params.inputMint,
+          outputMint: params.outputMint,
+          inAmountRaw: params.amount,
+          outAmountRaw: 0,
+          error: verification.error,
         };
       }
-
-      const outLamports = Number(quoteRes.outAmount);
-      return {
-        success: true,
-        signature: txid,
-        inputMint: params.inputMint,
-        outputMint: params.outputMint,
-        inAmountRaw: params.amount,
-        outAmountRaw: outLamports,
-        netProceedsSol: outLamports / 1e9,
-      };
     } catch (e: any) {
+      if (txid) {
+        return {
+          success: false,
+          signature: txid,
+          status: 'RECOVERY_REQUIRED',
+          isAmbiguous: true,
+          lastValidBlockHeight,
+          blockhash,
+          inputMint: params.inputMint,
+          outputMint: params.outputMint,
+          inAmountRaw: params.amount,
+          outAmountRaw: 0,
+          error: `BROADCAST_COMPLETED_BUT_ERROR: ${e?.message || e}`,
+        };
+      }
       return {
         success: false,
+        status: 'FAILED',
         inputMint: params.inputMint,
         outputMint: params.outputMint,
         inAmountRaw: params.amount,

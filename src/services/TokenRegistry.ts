@@ -109,13 +109,14 @@ export class TokenRegistry {
 
     const now = Date.now();
     const existing = this.tokens.get(mint);
+    const resolvedDecimals = params.decimals !== undefined ? params.decimals : existing?.decimals;
 
     const record: TokenRecord = {
       mintAddress: mint,
       network: params.network || existing?.network || 'paper',
       symbol: params.symbol || existing?.symbol || 'UNKNOWN',
       name: params.name || existing?.name || existing?.symbol || 'Unknown Token',
-      decimals: params.decimals !== undefined ? params.decimals : existing?.decimals,
+      decimals: resolvedDecimals !== undefined ? resolvedDecimals : existing?.decimals,
       priceSOL: params.priceSOL !== undefined ? params.priceSOL : existing?.priceSOL,
       priceUSD: params.priceUSD !== undefined ? params.priceUSD : existing?.priceUSD,
       liquidity: params.liquidity !== undefined ? params.liquidity : existing?.liquidity,

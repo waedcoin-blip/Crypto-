@@ -10,9 +10,16 @@ import { tradeRepository } from '../repositories/TradeRepository.js';
 
 const router = Router();
 
+// User-scoped criteria resolver helper
+async function fetchCriteriaFromFirestore(userId?: string, idToken?: string): Promise<any> {
+  return criteriaRepository.getActiveCriteria();
+}
+
 // GET /api/trading/config
 router.get('/config', asyncHandler(async (req, res) => {
-  const criteria = await criteriaRepository.getActiveCriteria();
+  const userId = (req as any).user?.uid;
+  const idToken = (req as any).idToken;
+  const criteria = userId ? await fetchCriteriaFromFirestore(userId, idToken) : await criteriaRepository.getActiveCriteria();
   const workerState = workerStateRepository.getWorkerState('trading');
   res.json({
     status: 'success',

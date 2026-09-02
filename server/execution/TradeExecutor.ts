@@ -5,7 +5,7 @@ export interface QuoteParams {
   outputMint: string;
   amount: number; // Raw integer units or lamports
   slippageBps?: number;
-  decimals?: number; // ADDED
+  decimals?: number;
   userPublicKey?: string;
   network?: string;
 }
@@ -24,16 +24,22 @@ export interface ExecuteParams {
   outputMint: string;
   amount: number; // Raw integer units
   slippageBps: number;
-  decimals: number; // ADDED: Must be provided
+  decimals: number;
   walletAddress?: string;
+  network?: string;
   label?: string;
   preValidatedQuote?: QuoteResult | null;
   clientRequestId?: string;
+  onBroadcast?: (signature: string, meta?: { blockhash?: string; lastValidBlockHeight?: number }) => Promise<void> | void;
 }
 
 export interface ExecutionResult {
   success: boolean;
   signature?: string;
+  status?: 'CONFIRMED' | 'FAILED' | 'RECOVERY_REQUIRED' | 'SUBMITTED';
+  isAmbiguous?: boolean;
+  lastValidBlockHeight?: number;
+  blockhash?: string;
   inputMint: string;
   outputMint: string;
   inAmountRaw: number;

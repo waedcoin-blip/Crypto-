@@ -134,7 +134,18 @@ export class TradingEngine {
       const execResult = await orderManager.executeOrder(order.id);
 
       if (!execResult.success) {
-        // Release reservation on failure so retry is permitted
+        if (execResult.isAmbiguous || execResult.signature || execResult.status === 'RECOVERY_REQUIRED') {
+          console.warn(`[TradingEngine] Buy transaction for ${mint} broadcasted or timed out (sig=${execResult.signature}). Retaining rebuy reservation to prevent duplicate spend.`);
+          return {
+            success: false,
+            orderId: order.id,
+            signature: execResult.signature,
+            error: `RECOVERY_REQUIRED: Transaction broadcast or confirmation timeout (${execResult.error}). Rebuy reservation retained.`,
+            result: execResult,
+          };
+        }
+
+        // Release reservation only on definite pre-broadcast failure or verified expiration
         rebuyGuard.releaseBuy(reservation.reservationId);
         return {
           success: false,
@@ -187,6 +198,16 @@ export class TradingEngine {
         result: execResult,
       };
     } catch (err: any) {
+      const orderRecord = orderManager.getOrderById(order.id);
+      if (orderRecord?.transactionSignature || orderRecord?.status === 'RECOVERY_REQUIRED') {
+        console.warn(`[TradingEngine] Buy caught error but transaction signature exists (${orderRecord.transactionSignature}). Retaining reservation.`);
+        return {
+          success: false,
+          orderId: order.id,
+          signature: orderRecord.transactionSignature,
+          error: `RECOVERY_REQUIRED: ${err?.message || String(err)}`,
+        };
+      }
       rebuyGuard.releaseBuy(reservation.reservationId);
       return {
         success: false,
@@ -243,6 +264,18 @@ export class TradingEngine {
       const execResult = await orderManager.executeOrder(order.id);
 
       if (!execResult.success) {
+        if (execResult.isAmbiguous || execResult.signature || execResult.status === 'RECOVERY_REQUIRED') {
+          console.warn(`[TradingEngine] Sell transaction for ${mint} broadcasted or timed out (sig=${execResult.signature}). Retaining exit lock to prevent duplicate sell.`);
+          return {
+            success: false,
+            orderId: order.id,
+            positionId: position.id,
+            signature: execResult.signature,
+            error: `RECOVERY_REQUIRED: Sell transaction broadcast or confirmation timeout (${execResult.error}). Position retained in EXIT_PENDING.`,
+            result: execResult,
+          };
+        }
+
         riskManager.releaseExit(position.id);
         positionManager.updatePositionStatus(network, wallet, mint, 'OPEN');
         return {
@@ -288,6 +321,18 @@ export class TradingEngine {
         result: execResult,
       };
     } catch (err: any) {
+      const orderRecord = orderManager.getOrderById(order.id);
+      if (orderRecord?.transactionSignature || orderRecord?.status === 'RECOVERY_REQUIRED') {
+        console.warn(`[TradingEngine] Sell caught error but transaction signature exists (${orderRecord.transactionSignature}). Retaining exit lock.`);
+        return {
+          success: false,
+          orderId: order.id,
+          positionId: position.id,
+          signature: orderRecord.transactionSignature,
+          error: `RECOVERY_REQUIRED: ${err?.message || String(err)}`,
+        };
+      }
+
       riskManager.releaseExit(position.id);
       positionManager.updatePositionStatus(network, wallet, mint, 'OPEN');
       return {

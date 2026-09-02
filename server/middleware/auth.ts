@@ -21,6 +21,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       return;
     }
     const decodedToken = await auth.verifyIdToken(idToken);
+    (req as any).idToken = idToken;
     (req as any).user = decodedToken;
     next();
   } catch (error) {

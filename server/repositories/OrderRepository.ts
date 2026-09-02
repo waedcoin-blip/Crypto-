@@ -1,5 +1,5 @@
 // server/repositories/OrderRepository.ts
-import { readDataFile, writeDataFile } from '../db/jsonStore.js';
+import { readDataFile, updateDataFileAtomic } from '../db/jsonStore.js';
 
 export type OrderState =
   | 'SIGNAL'
@@ -33,17 +33,15 @@ export interface OrderRecord {
   effectivePriceSol?: number;
   totalCostSol?: number;
   netProceedsSol?: number;
+  version?: number;
 }
 
 const FILE_NAME = 'orders.json';
 
 export class OrderRepository {
   private static instance: OrderRepository;
-  private orders: Map<string, OrderRecord> = new Map();
 
-  private constructor() {
-    this.load();
-  }
+  private constructor() {}
 
   public static getInstance(): OrderRepository {
     if (!OrderRepository.instance) {
@@ -52,34 +50,49 @@ export class OrderRepository {
     return OrderRepository.instance;
   }
 
-  private load(): void {
-    const list = readDataFile<OrderRecord[]>(FILE_NAME, []);
-    for (const item of list) {
-      if (item && item.order_id) {
-        this.orders.set(item.order_id, item);
-      }
-    }
-  }
-
-  private save(): void {
-    const arr = Array.from(this.orders.values()).slice(-500);
-    writeDataFile(FILE_NAME, arr);
+  private readAll(): OrderRecord[] {
+    return readDataFile<OrderRecord[]>(FILE_NAME, []);
   }
 
   public getOrder(orderId: string): OrderRecord | undefined {
-    return this.orders.get(orderId);
+    return this.readAll().find(o => o.order_id === orderId);
   }
 
   public getOrders(): OrderRecord[] {
-    return Array.from(this.orders.values());
+    return this.readAll();
   }
 
   public createOrder(record: OrderRecord): OrderRecord {
-    record.created_at = record.created_at || Date.now();
-    record.updated_at = Date.now();
-    this.orders.set(record.order_id, record);
-    this.save();
-    return record;
+    let result = record;
+    updateDataFileAtomic<OrderRecord[]>(FILE_NAME, [], (current) => {
+      const existingIdx = current.findIndex(o => o.order_id === record.order_id);
+      const now = Date.now();
+
+      if (existingIdx !== -1) {
+        const existing = current[existingIdx];
+        const merged: OrderRecord = {
+          ...existing,
+          ...record,
+          version: (existing.version || 1) + 1,
+          updated_at: now,
+        };
+        current[existingIdx] = merged;
+        result = merged;
+      } else {
+        const newRecord: OrderRecord = {
+          ...record,
+          version: 1,
+          created_at: record.created_at || now,
+          updated_at: now,
+        };
+        current.push(newRecord);
+        result = newRecord;
+      }
+
+      return current;
+    });
+
+    return result;
   }
 
   public async updateState(
@@ -94,20 +107,39 @@ export class OrderRepository {
       netProceedsSol?: number;
     }
   ): Promise<OrderRecord | undefined> {
-    const existing = this.orders.get(orderId);
-    if (!existing) return undefined;
+    let updated: OrderRecord | undefined;
 
-    existing.state = state;
-    existing.updated_at = details?.confirmedAt || Date.now();
-    if (details?.signature) existing.signature = details.signature;
-    if (details?.error) existing.error = details.error;
-    if (details?.effectivePriceSol !== undefined) existing.effectivePriceSol = details.effectivePriceSol;
-    if (details?.totalCostSol !== undefined) existing.totalCostSol = details.totalCostSol;
-    if (details?.netProceedsSol !== undefined) existing.netProceedsSol = details.netProceedsSol;
+    updateDataFileAtomic<OrderRecord[]>(FILE_NAME, [], (current) => {
+      const idx = current.findIndex(o => o.order_id === orderId);
+      if (idx === -1) return current;
 
-    this.orders.set(orderId, existing);
-    this.save();
-    return existing;
+      const existing = current[idx];
+
+      // Terminal state guard: If already CONFIRMED, do not revert to SUBMITTED or FAILED
+      if (existing.state === 'CONFIRMED' && state !== 'CONFIRMED') {
+        console.warn(`[OrderRepository] Rejected transition from CONFIRMED to ${state} for order ${orderId}`);
+        updated = existing;
+        return current;
+      }
+
+      const merged: OrderRecord = {
+        ...existing,
+        state,
+        updated_at: details?.confirmedAt || Date.now(),
+        signature: details?.signature || existing.signature,
+        error: details?.error || existing.error,
+        effectivePriceSol: details?.effectivePriceSol !== undefined ? details.effectivePriceSol : existing.effectivePriceSol,
+        totalCostSol: details?.totalCostSol !== undefined ? details.totalCostSol : existing.totalCostSol,
+        netProceedsSol: details?.netProceedsSol !== undefined ? details.netProceedsSol : existing.netProceedsSol,
+        version: (existing.version || 1) + 1,
+      };
+
+      current[idx] = merged;
+      updated = merged;
+      return current;
+    });
+
+    return updated;
   }
 }
 

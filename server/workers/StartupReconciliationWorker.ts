@@ -45,7 +45,7 @@ export async function reconcileDatabaseWithMainnet(): Promise<void> {
       } else {
         positionRepository.updatePosition(pos.id, {
           amountRaw: rawBalance,
-          state: 'OPEN',
+          state: (pos.state === 'PENDING_BUY' ? 'OPEN' : pos.state),
         });
       }
     } catch (err: any) {

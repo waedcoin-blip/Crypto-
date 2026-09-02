@@ -1,5 +1,5 @@
 // server/repositories/TokenRepository.ts
-import { readDataFile, writeDataFile } from '../db/jsonStore.js';
+import { readDataFile, updateDataFileAtomic } from '../db/jsonStore.js';
 
 export interface TokenRecord {
   mintAddress: string;
@@ -19,17 +19,15 @@ export interface TokenRecord {
   executionState?: string;
   positionId?: string;
   metadata?: Record<string, any>;
+  version?: number;
 }
 
 const FILE_NAME = 'tokens.json';
 
 export class TokenRepository {
   private static instance: TokenRepository;
-  private tokens: Map<string, TokenRecord> = new Map();
 
-  private constructor() {
-    this.load();
-  }
+  private constructor() {}
 
   public static getInstance(): TokenRepository {
     if (!TokenRepository.instance) {
@@ -38,34 +36,50 @@ export class TokenRepository {
     return TokenRepository.instance;
   }
 
-  private load(): void {
-    const list = readDataFile<TokenRecord[]>(FILE_NAME, []);
-    for (const item of list) {
-      if (item && item.mintAddress) {
-        this.tokens.set(item.mintAddress, item);
-      }
-    }
-  }
-
-  private save(): void {
-    const arr = Array.from(this.tokens.values()).slice(-200);
-    writeDataFile(FILE_NAME, arr);
+  private readAll(): TokenRecord[] {
+    return readDataFile<TokenRecord[]>(FILE_NAME, []);
   }
 
   public getToken(mint: string): TokenRecord | undefined {
-    return this.tokens.get(mint.trim());
+    const cleanMint = mint.trim();
+    return this.readAll().find(t => t.mintAddress.trim() === cleanMint);
   }
 
   public getTokens(): TokenRecord[] {
-    return Array.from(this.tokens.values());
+    return this.readAll();
   }
 
   public upsertToken(record: TokenRecord): TokenRecord {
     const mint = record.mintAddress.trim();
-    record.updatedAt = Date.now();
-    this.tokens.set(mint, record);
-    this.save();
-    return record;
+    let result = record;
+
+    updateDataFileAtomic<TokenRecord[]>(FILE_NAME, [], (current) => {
+      const idx = current.findIndex(t => t.mintAddress.trim() === mint);
+      const now = Date.now();
+      if (idx !== -1) {
+        const existing = current[idx];
+        const merged: TokenRecord = {
+          ...existing,
+          ...record,
+          version: (existing.version || 1) + 1,
+          updatedAt: now,
+        };
+        current[idx] = merged;
+        result = merged;
+      } else {
+        const newRecord: TokenRecord = {
+          ...record,
+          version: 1,
+          discoveredAt: record.discoveredAt || now,
+          updatedAt: now,
+        };
+        current.push(newRecord);
+        result = newRecord;
+      }
+      return current;
+    });
+
+    return result;
   }
 }
 

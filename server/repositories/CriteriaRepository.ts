@@ -1,5 +1,5 @@
 // server/repositories/CriteriaRepository.ts
-import { readDataFile, writeDataFile } from '../db/jsonStore.js';
+import { readDataFile, updateDataFileAtomic } from '../db/jsonStore.js';
 
 export interface TradingCriteria {
   minLiquidityUsd: number;
@@ -12,6 +12,7 @@ export interface TradingCriteria {
 
   minBondingProgress?: number;
   maxBondingProgress?: number;
+  version?: number;
 }
 
 const FILE_NAME = 'trading_criteria.json';
@@ -27,11 +28,8 @@ const DEFAULT_CRITERIA: TradingCriteria = {
 
 export class CriteriaRepository {
   private static instance: CriteriaRepository;
-  private currentCriteria: TradingCriteria;
 
-  private constructor() {
-    this.currentCriteria = readDataFile<TradingCriteria>(FILE_NAME, DEFAULT_CRITERIA);
-  }
+  private constructor() {}
 
   public static getInstance(): CriteriaRepository {
     if (!CriteriaRepository.instance) {
@@ -41,20 +39,21 @@ export class CriteriaRepository {
   }
 
   public async getActiveCriteria(): Promise<TradingCriteria> {
-    return { ...this.currentCriteria };
+    return this.getActiveCriteriaSync();
   }
 
   public getActiveCriteriaSync(): TradingCriteria {
-    return { ...this.currentCriteria };
+    return readDataFile<TradingCriteria>(FILE_NAME, DEFAULT_CRITERIA);
   }
 
   public async updateCriteria(patch: Partial<TradingCriteria>): Promise<TradingCriteria> {
-    this.currentCriteria = {
-      ...this.currentCriteria,
-      ...patch,
-    };
-    writeDataFile(FILE_NAME, this.currentCriteria);
-    return { ...this.currentCriteria };
+    return updateDataFileAtomic<TradingCriteria>(FILE_NAME, DEFAULT_CRITERIA, (current) => {
+      return {
+        ...current,
+        ...patch,
+        version: (current.version || 1) + 1,
+      };
+    });
   }
 }
 

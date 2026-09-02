@@ -343,9 +343,11 @@ export class OrderManager {
       return result;
     } catch (err: any) {
       const errorMsg = err?.message || String(err);
-      if (confirmedOnChain || submittedSignature) {
+      const sigFromErr = err?.details?.signature || (err as any)?.signature;
+      const finalSig = submittedSignature || sigFromErr;
+      if (confirmedOnChain || finalSig) {
         this.transitionState(order.id, 'RECOVERY_REQUIRED', {
-          signature: submittedSignature,
+          signature: finalSig,
           error: errorMsg,
         });
       } else {

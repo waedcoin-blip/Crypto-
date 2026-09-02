@@ -212,13 +212,14 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
           'confirmed'
         );
       } catch (confErr: any) {
-        throw new ExecutionError('transaction_failure', `Transaction confirmation RPC call failed: ${confErr?.message || String(confErr)}`);
+        throw new ExecutionError('transaction_failure', `Transaction confirmation RPC call failed: ${confErr?.message || String(confErr)}`, { signature: sig });
       }
 
       if (confirmation.value.err) {
         throw new ExecutionError(
           'transaction_failure',
-          `Mainnet transaction confirmation failed on-chain: ${JSON.stringify(confirmation.value.err)}`
+          `Mainnet transaction confirmation failed on-chain: ${JSON.stringify(confirmation.value.err)}`,
+          { signature: sig }
         );
       }
 

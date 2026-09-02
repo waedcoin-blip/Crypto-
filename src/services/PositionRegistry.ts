@@ -120,7 +120,10 @@ export class PositionRegistry {
     }
     const rawAmount = Math.floor(Math.max(0, params.amountRaw || 0));
     const solSpent = Math.max(0, params.solSpent || 0);
-    const decimals = params.decimals !== undefined ? params.decimals : 6;
+    if (params.decimals === undefined || params.decimals === null || isNaN(params.decimals)) {
+      throw new Error(`INVALID_POSITION_DECIMALS: Position entry requires verified token decimals for mint ${mint}`);
+    }
+    const decimals = params.decimals;
 
     const existingId = this.positionsByMint.get(mint);
     if (existingId) {

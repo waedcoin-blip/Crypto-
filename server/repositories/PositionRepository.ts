@@ -1,5 +1,5 @@
 // server/repositories/PositionRepository.ts
-import { readDataFile, writeDataFile } from '../db/jsonStore.js';
+import { readDataFile, updateDataFileAtomic } from '../db/jsonStore.js';
 
 export type PositionState =
   | 'PENDING_BUY'
@@ -39,17 +39,15 @@ export interface PositionRecord {
   closedAt?: number;
   realizedPnLSol?: number;
   realizedPnLPct?: number;
+  version?: number;
 }
 
 const FILE_NAME = 'positions.json';
 
 export class PositionRepository {
   private static instance: PositionRepository;
-  private positions: Map<string, PositionRecord> = new Map();
 
-  private constructor() {
-    this.load();
-  }
+  private constructor() {}
 
   public static getInstance(): PositionRepository {
     if (!PositionRepository.instance) {
@@ -58,30 +56,21 @@ export class PositionRepository {
     return PositionRepository.instance;
   }
 
-  private load(): void {
-    const list = readDataFile<PositionRecord[]>(FILE_NAME, []);
-    for (const item of list) {
-      if (item && item.id) {
-        this.positions.set(item.id, item);
-      }
-    }
+  private readAll(): PositionRecord[] {
+    return readDataFile<PositionRecord[]>(FILE_NAME, []);
   }
 
-  private save(): void {
-    const arr = Array.from(this.positions.values()).slice(-500);
-    writeDataFile(FILE_NAME, arr);
-  }
-
-  public getOpenPositions(): PositionRecord[] {
-    return Array.from(this.positions.values()).filter(p => p.state !== 'CLOSED');
-  }
-
-  public countActivePositions(network?: string): number {
-    return Array.from(this.positions.values()).filter(p => {
+  public getOpenPositions(network?: string): PositionRecord[] {
+    const all = this.readAll();
+    return all.filter(p => {
       if (p.state === 'CLOSED') return false;
       if (network && p.network !== network) return false;
       return true;
-    }).length;
+    });
+  }
+
+  public countActivePositions(network?: string): number {
+    return this.getOpenPositions(network).length;
   }
 
   public canOpenPosition(maxPositions: number, network?: string): boolean {
@@ -91,54 +80,146 @@ export class PositionRepository {
   }
 
   public getPosition(id: string): PositionRecord | undefined {
-    return this.positions.get(id);
+    return this.readAll().find(p => p.id === id);
   }
 
-  public getPositionByMint(mint: string): PositionRecord | undefined {
+  public getPositionByMint(mint: string, network?: string): PositionRecord | undefined {
     const cleanMint = mint.trim();
-    return Array.from(this.positions.values()).find(
-      p => p.mintAddress === cleanMint && p.state !== 'CLOSED'
+    return this.readAll().find(
+      p => p.mintAddress.trim() === cleanMint &&
+           p.state !== 'CLOSED' &&
+           (!network || p.network === network)
     );
   }
 
-  public upsertPosition(position: PositionRecord): PositionRecord {
-    position.updatedAt = Date.now();
-    this.positions.set(position.id, position);
-    this.save();
-    return position;
-  }
-
-  public updatePosition(id: string, patch: Partial<PositionRecord>): PositionRecord | undefined {
-    const existing = this.positions.get(id);
-    if (!existing) return undefined;
-
-    const updated = { ...existing, ...patch, updatedAt: Date.now() };
-    this.positions.set(id, updated);
-    this.save();
-    return updated;
-  }
-
-  public closePosition(id: string, data?: { exitSignature?: string; realizedPnLSol?: number; realizedPnLPct?: number }): PositionRecord | undefined {
-    const existing = this.positions.get(id);
-    if (!existing) return undefined;
-
-    const now = Date.now();
-    const updated: PositionRecord = {
-      ...existing,
-      state: 'CLOSED',
-      closedAt: now,
-      updatedAt: now,
-      exitSignature: data?.exitSignature ?? existing.exitSignature,
-      realizedPnLSol: data?.realizedPnLSol ?? existing.realizedPnLSol,
-      realizedPnLPct: data?.realizedPnLPct ?? existing.realizedPnLPct,
-    };
-    this.positions.set(id, updated);
-    this.save();
-    return updated;
-  }
-
   public getAllPositions(): PositionRecord[] {
-    return Array.from(this.positions.values());
+    return this.readAll();
+  }
+
+  /**
+   * Atomic Upsert with strict state-machine guard against resurrecting CLOSED positions.
+   */
+  public upsertPosition(position: PositionRecord): PositionRecord {
+    let resultRecord: PositionRecord = position;
+
+    updateDataFileAtomic<PositionRecord[]>(FILE_NAME, [], (current) => {
+      const now = Date.now();
+      const existingIdx = current.findIndex(p => p.id === position.id);
+
+      if (existingIdx !== -1) {
+        const existing = current[existingIdx];
+
+        // 🔴 STATE MACHINE GUARD: A position already marked CLOSED can NEVER be overwritten back to OPEN
+        if (existing.state === 'CLOSED' && position.state !== 'CLOSED') {
+          console.warn(`[PositionRepository] Prevented resurrecting CLOSED position ${position.id} to state ${position.state}`);
+          resultRecord = { ...existing };
+          return current;
+        }
+
+        const nextVersion = (existing.version || 1) + 1;
+        const merged: PositionRecord = {
+          ...existing,
+          ...position,
+          version: nextVersion,
+          updatedAt: now,
+        };
+
+        current[existingIdx] = merged;
+        resultRecord = merged;
+      } else {
+        const newRecord: PositionRecord = {
+          ...position,
+          version: 1,
+          createdAt: position.createdAt || now,
+          updatedAt: now,
+        };
+        current.push(newRecord);
+        resultRecord = newRecord;
+      }
+
+      return current;
+    });
+
+    return resultRecord;
+  }
+
+  /**
+   * Atomic surgical update with state machine validation.
+   */
+  public updatePosition(id: string, patch: Partial<PositionRecord>): PositionRecord | undefined {
+    let updatedRecord: PositionRecord | undefined;
+
+    updateDataFileAtomic<PositionRecord[]>(FILE_NAME, [], (current) => {
+      const idx = current.findIndex(p => p.id === id);
+      if (idx === -1) return current;
+
+      const existing = current[idx];
+
+      // 🔴 STATE MACHINE GUARD: Closed positions cannot be reopened or mutated by price updates
+      if (existing.state === 'CLOSED') {
+        if (patch.state && patch.state !== 'CLOSED') {
+          console.warn(`[PositionRepository] Rejected invalid transition from CLOSED to ${patch.state} for position ${id}`);
+          updatedRecord = existing;
+          return current;
+        }
+
+        // If it's a price or PnL update on a closed position, ignore it
+        if (patch.currentPriceSOL !== undefined || patch.currentPnLSol !== undefined || patch.currentPnLPct !== undefined) {
+          updatedRecord = existing;
+          return current;
+        }
+      }
+
+      const nextVersion = (existing.version || 1) + 1;
+      const updated: PositionRecord = {
+        ...existing,
+        ...patch,
+        version: nextVersion,
+        updatedAt: Date.now(),
+      };
+
+      current[idx] = updated;
+      updatedRecord = updated;
+      return current;
+    });
+
+    return updatedRecord;
+  }
+
+  /**
+   * Authoritative close position transition with file lock and atomic persistence.
+   */
+  public closePosition(
+    id: string,
+    data?: { exitSignature?: string; realizedPnLSol?: number; realizedPnLPct?: number }
+  ): PositionRecord | undefined {
+    let closedRecord: PositionRecord | undefined;
+
+    updateDataFileAtomic<PositionRecord[]>(FILE_NAME, [], (current) => {
+      const idx = current.findIndex(p => p.id === id);
+      if (idx === -1) return current;
+
+      const existing = current[idx];
+      const now = Date.now();
+      const nextVersion = (existing.version || 1) + 1;
+
+      const updated: PositionRecord = {
+        ...existing,
+        state: 'CLOSED',
+        closedAt: existing.closedAt || now,
+        updatedAt: now,
+        version: nextVersion,
+        exitSignature: data?.exitSignature ?? existing.exitSignature,
+        realizedPnLSol: data?.realizedPnLSol ?? existing.realizedPnLSol,
+        realizedPnLPct: data?.realizedPnLPct ?? existing.realizedPnLPct,
+      };
+
+      current[idx] = updated;
+      closedRecord = updated;
+      return current;
+    });
+
+    return closedRecord;
   }
 }
 

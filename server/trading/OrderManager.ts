@@ -11,7 +11,8 @@ export type OrderStatus =
   | 'FILLED'
   | 'PARTIALLY_FILLED'
   | 'FAILED'
-  | 'CANCELLED';
+  | 'CANCELLED'
+  | 'RECOVERY_REQUIRED';
 
 export interface Order {
   id: string;
@@ -20,7 +21,7 @@ export interface Order {
   mint: string;
   side: 'buy' | 'sell';
   amount: number; // Raw integer base units or lamports
-  decimals: number; // ADDED
+  decimals: number;
   slippageBps: number;
   status: OrderStatus;
   createdAt: number;
@@ -60,7 +61,7 @@ export class OrderManager {
         mint: record.mint,
         side: record.side,
         amount: Number(record.amount_raw || 0),
-        decimals: 6, // Loaded orders missing decimals fallback (historical)
+        decimals: 6,
         slippageBps: record.slippageBps || 250,
         status: this.mapRecordStateToStatus(record.state),
         createdAt: record.created_at,
@@ -87,6 +88,7 @@ export class OrderManager {
       case 'CANCELLED': return 'CANCELLED';
       case 'SUBMITTED': return 'SUBMITTED';
       case 'CONFIRMING': return 'CONFIRMING';
+      case 'RECOVERY_REQUIRED': return 'RECOVERY_REQUIRED';
       default: return 'PENDING';
     }
   }
@@ -120,7 +122,7 @@ export class OrderManager {
     mint: string;
     side: 'buy' | 'sell';
     amount: number;
-    decimals: number; // ADDED
+    decimals: number;
     slippageBps: number;
     clientRequestId: string;
     label?: string;
@@ -137,7 +139,7 @@ export class OrderManager {
     if (existingId) {
       const existing = this.orders.get(existingId);
       if (existing) {
-        return existing; // Return existing idempotent order
+        return existing;
       }
     }
 
@@ -202,9 +204,17 @@ export class OrderManager {
       slippageBps: order.slippageBps,
       decimals: order.decimals,
       walletAddress: order.wallet,
+      network: order.network,
       label: order.label,
       preValidatedQuote,
       clientRequestId: order.clientRequestId,
+      onBroadcast: async (sig: string) => {
+        order.transactionSignature = sig;
+        order.status = 'CONFIRMING';
+        order.updatedAt = Date.now();
+        this.updateOrderStatus(orderId, 'CONFIRMING');
+        await orderRepository.updateState(orderId, 'CONFIRMING', { signature: sig });
+      },
     };
 
     try {
@@ -213,24 +223,39 @@ export class OrderManager {
         ? await executor.buy(executeParams)
         : await executor.sell(executeParams);
 
-      if (result.success) {
+      if (result.signature) {
         order.transactionSignature = result.signature;
+      }
+
+      if (result.success) {
         order.effectivePriceSol = result.effectivePriceSol;
         order.totalCostSol = result.totalCostSol;
         order.netProceedsSol = result.netProceedsSol;
         this.updateOrderStatus(orderId, 'FILLED');
       } else {
         order.error = result.error;
-        this.updateOrderStatus(orderId, 'FAILED', result.error);
+        // 🔴 BUG-002: If broadcasted or ambiguous, enter RECOVERY_REQUIRED, NOT FAILED
+        if (result.status === 'RECOVERY_REQUIRED' || result.isAmbiguous || order.transactionSignature) {
+          this.updateOrderStatus(orderId, 'RECOVERY_REQUIRED', result.error);
+        } else {
+          this.updateOrderStatus(orderId, 'FAILED', result.error);
+        }
       }
 
       return result;
     } catch (err: any) {
       const errorMsg = err?.message || String(err);
       order.error = errorMsg;
-      this.updateOrderStatus(orderId, 'FAILED', errorMsg);
+      if (order.transactionSignature) {
+        this.updateOrderStatus(orderId, 'RECOVERY_REQUIRED', errorMsg);
+      } else {
+        this.updateOrderStatus(orderId, 'FAILED', errorMsg);
+      }
       return {
         success: false,
+        signature: order.transactionSignature,
+        status: order.transactionSignature ? 'RECOVERY_REQUIRED' : 'FAILED',
+        isAmbiguous: !!order.transactionSignature,
         inputMint: executeParams.inputMint,
         outputMint: executeParams.outputMint,
         inAmountRaw: order.amount,
@@ -264,6 +289,7 @@ export class OrderManager {
       case 'CANCELLED': return 'CANCELLED';
       case 'SUBMITTED': return 'SUBMITTED';
       case 'CONFIRMING': return 'CONFIRMING';
+      case 'RECOVERY_REQUIRED': return 'RECOVERY_REQUIRED';
       default: return 'SIGNAL';
     }
   }

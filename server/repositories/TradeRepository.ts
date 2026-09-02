@@ -1,5 +1,5 @@
 // server/repositories/TradeRepository.ts
-import { readDataFile, writeDataFile } from '../db/jsonStore.js';
+import { readDataFile, updateDataFileAtomic } from '../db/jsonStore.js';
 
 export interface HistoricalTradeRecord {
   id: string;
@@ -20,17 +20,15 @@ export interface HistoricalTradeRecord {
   timestamp: number;
   status: 'PENDING' | 'CONFIRMED' | 'FAILED';
   metadata?: Record<string, any>;
+  version?: number;
 }
 
 const FILE_NAME = 'trades.json';
 
 export class TradeRepository {
   private static instance: TradeRepository;
-  private trades: HistoricalTradeRecord[] = [];
 
-  private constructor() {
-    this.load();
-  }
+  private constructor() {}
 
   public static getInstance(): TradeRepository {
     if (!TradeRepository.instance) {
@@ -39,46 +37,54 @@ export class TradeRepository {
     return TradeRepository.instance;
   }
 
-  private load(): void {
-    this.trades = readDataFile<HistoricalTradeRecord[]>(FILE_NAME, []);
-  }
-
-  private save(): void {
-    writeDataFile(FILE_NAME, this.trades.slice(0, 500));
+  private readAll(): HistoricalTradeRecord[] {
+    return readDataFile<HistoricalTradeRecord[]>(FILE_NAME, []);
   }
 
   public getTrades(network?: string): HistoricalTradeRecord[] {
+    const all = this.readAll();
     if (network) {
-      return this.trades.filter(t => t.network === network);
+      return all.filter(t => t.network === network);
     }
-    return this.trades;
+    return all;
   }
 
   public recordTrade(trade: HistoricalTradeRecord): boolean {
-    const existingIdx = this.trades.findIndex(t => {
-      if (t.id === trade.id) return true;
-      if (trade.signature && trade.signature !== '' && trade.signature !== 'exit-tx' && t.signature === trade.signature) {
-        return true;
+    let success = false;
+
+    updateDataFileAtomic<HistoricalTradeRecord[]>(FILE_NAME, [], (current) => {
+      const existingIdx = current.findIndex(t => {
+        if (t.id === trade.id) return true;
+        if (trade.signature && trade.signature !== '' && trade.signature !== 'exit-tx' && t.signature === trade.signature) {
+          return true;
+        }
+        return false;
+      });
+
+      if (existingIdx !== -1) {
+        const existing = current[existingIdx];
+        if (existing.status === 'PENDING' && trade.status === 'CONFIRMED') {
+          current[existingIdx] = {
+            ...existing,
+            ...trade,
+            version: (existing.version || 1) + 1,
+          };
+          success = true;
+          return current;
+        }
+        success = false;
+        return current;
       }
-      return false;
+
+      current.unshift({
+        ...trade,
+        version: 1,
+      });
+      success = true;
+      return current;
     });
 
-    if (existingIdx !== -1) {
-      const existing = this.trades[existingIdx];
-      if (existing.status === 'PENDING' && trade.status === 'CONFIRMED') {
-        this.trades[existingIdx] = { ...existing, ...trade };
-        this.save();
-        return true;
-      }
-      return false;
-    }
-
-    this.trades.unshift(trade);
-    if (this.trades.length > 500) {
-      this.trades = this.trades.slice(0, 500);
-    }
-    this.save();
-    return true;
+    return success;
   }
 
   public addTrade(trade: HistoricalTradeRecord): boolean {
@@ -86,14 +92,28 @@ export class TradeRepository {
   }
 
   public updateTrade(idOrSignature: string, updates: Partial<HistoricalTradeRecord>): boolean {
-    const idx = this.trades.findIndex(
-      t => t.id === idOrSignature || t.signature === idOrSignature
-    );
-    if (idx === -1) return false;
+    let success = false;
 
-    this.trades[idx] = { ...this.trades[idx], ...updates };
-    this.save();
-    return true;
+    updateDataFileAtomic<HistoricalTradeRecord[]>(FILE_NAME, [], (current) => {
+      const idx = current.findIndex(
+        t => t.id === idOrSignature || (t.signature && t.signature === idOrSignature)
+      );
+      if (idx === -1) {
+        success = false;
+        return current;
+      }
+
+      const existing = current[idx];
+      current[idx] = {
+        ...existing,
+        ...updates,
+        version: (existing.version || 1) + 1,
+      };
+      success = true;
+      return current;
+    });
+
+    return success;
   }
 }
 

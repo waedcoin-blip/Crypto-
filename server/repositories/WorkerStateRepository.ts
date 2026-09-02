@@ -1,22 +1,20 @@
 // server/repositories/WorkerStateRepository.ts
-import { readDataFile, writeDataFile } from '../db/jsonStore.js';
+import { readDataFile, updateDataFileAtomic } from '../db/jsonStore.js';
 
 export interface WorkerState {
   worker: string;
   status: 'RUNNING' | 'STOPPED' | 'ERROR';
   lastHeartbeat: number;
   metadata?: Record<string, any>;
+  version?: number;
 }
 
 const FILE_NAME = 'worker_state.json';
 
 export class WorkerStateRepository {
   private static instance: WorkerStateRepository;
-  private states: Map<string, WorkerState> = new Map();
 
-  private constructor() {
-    this.load();
-  }
+  private constructor() {}
 
   public static getInstance(): WorkerStateRepository {
     if (!WorkerStateRepository.instance) {
@@ -25,40 +23,48 @@ export class WorkerStateRepository {
     return WorkerStateRepository.instance;
   }
 
-  private load(): void {
-    const list = readDataFile<WorkerState[]>(FILE_NAME, []);
-    for (const item of list) {
-      if (item && item.worker) {
-        this.states.set(item.worker, item);
-      }
-    }
-  }
-
-  private save(): void {
-    writeDataFile(FILE_NAME, Array.from(this.states.values()));
+  private readAll(): WorkerState[] {
+    return readDataFile<WorkerState[]>(FILE_NAME, []);
   }
 
   public async heartbeat(data: { worker: string; status: 'RUNNING' | 'STOPPED' | 'ERROR'; lastHeartbeat: number; metadata?: Record<string, any> }): Promise<void> {
-    const existing = this.states.get(data.worker);
-    this.states.set(data.worker, {
-      ...existing,
-      ...data,
-      metadata: { ...(existing?.metadata || {}), ...(data.metadata || {}) },
+    updateDataFileAtomic<WorkerState[]>(FILE_NAME, [], (current) => {
+      const idx = current.findIndex(w => w.worker === data.worker);
+      if (idx !== -1) {
+        const existing = current[idx];
+        current[idx] = {
+          ...existing,
+          ...data,
+          metadata: { ...(existing.metadata || {}), ...(data.metadata || {}) },
+          version: (existing.version || 1) + 1,
+        };
+      } else {
+        current.push({
+          ...data,
+          version: 1,
+        });
+      }
+      return current;
     });
-    this.save();
   }
 
   public async updateMetadata(worker: string, metadata: Record<string, any>): Promise<void> {
-    const existing = this.states.get(worker);
-    if (existing) {
-      existing.metadata = { ...(existing.metadata || {}), ...metadata };
-      this.states.set(worker, existing);
-      this.save();
-    }
+    updateDataFileAtomic<WorkerState[]>(FILE_NAME, [], (current) => {
+      const idx = current.findIndex(w => w.worker === worker);
+      if (idx !== -1) {
+        const existing = current[idx];
+        current[idx] = {
+          ...existing,
+          metadata: { ...(existing.metadata || {}), ...metadata },
+          version: (existing.version || 1) + 1,
+        };
+      }
+      return current;
+    });
   }
 
   public getWorkerState(worker: string = 'trading'): WorkerState | undefined {
-    return this.states.get(worker);
+    return this.readAll().find(w => w.worker === worker);
   }
 }
 

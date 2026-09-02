@@ -1,13 +1,10 @@
 # Final Production Audit Report
-Generated at: 2026-09-02T16:39:14.570Z
-Total Findings: 129
+Generated at: 2026-09-02T19:19:14.137Z
+Total Findings: 126
 Bugs: 0
-Warnings: 129
+Warnings: 126
 
 ## Findings Details
-- **[WARNING]** `server/repositories/OrderRepository.ts:65`: Artificial History Truncation (slice(-500)) (`const arr = Array.from(this.orders.values()).slice(-500);`)
-- **[WARNING]** `server/repositories/PositionRepository.ts:71`: Artificial History Truncation (slice(-500)) (`const arr = Array.from(this.positions.values()).slice(-500);`)
-- **[WARNING]** `server/repositories/TokenRepository.ts:51`: Artificial History Truncation (slice(-500)) (`const arr = Array.from(this.tokens.values()).slice(-200);`)
 - **[WARNING]** `server/services/JupiterTradingService.ts:11`: Hardcoded Secret / Private Key (`privateKey?: string;`)
 - **[WARNING]** `server/services/JupiterTradingService.ts:86`: Hardcoded Secret / Private Key (`walletPrivateKey: string;`)
 - **[WARNING]** `server/services/JupiterTradingService.ts:89`: Hardcoded Secret / Private Key (`const rawPrivateKey = params.walletPrivateKey.trim();`)

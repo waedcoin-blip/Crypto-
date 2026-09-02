@@ -205,7 +205,7 @@ export class RiskManager {
       } catch {
         decimals = tokenRegistry.getToken(params.mint)?.decimals;
         if (decimals === undefined) {
-          throw new Error(`UNRESOLVED_TOKEN_DECIMALS: Cannot register risk position for ${params.mint}`);
+          throw new Error(`UNRESOLVED_TOKEN_DECIMALS: Cannot evaluate position ${params.mint} safely without verified token decimals`);
         }
       }
     }
@@ -416,7 +416,8 @@ export class RiskManager {
     }
 
     const dec = pos.tokenDecimals || resolveTokenDecimals(mint);
-    const rawWalletBalance = await this.getAuthoritativeWalletBalanceRaw(mint, dec);
+    const rawWalletBalanceStr = await this.getAuthoritativeWalletBalanceRaw(mint, dec);
+    const rawWalletBalance = Number(rawWalletBalanceStr);
     const walletBalUi = rawWalletBalance / (10 ** dec);
     const prevRaw = pos.amount;
     const isDiscrepancy = Math.abs(prevRaw - rawWalletBalance) > 1;
