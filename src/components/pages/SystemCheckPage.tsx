@@ -388,26 +388,150 @@ export const SystemCheckPage = ({
             </div>
           </div>
 
+          {/* High-Throughput LaserStream Pipeline Diagnostics */}
+          <div className="bg-[#12131a] border border-[#1f212e] rounded-xl p-5 space-y-4">
+            <div className="flex items-center justify-between border-b border-[#1f212e] pb-3 flex-wrap gap-2">
+              <h4 className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-2">
+                <Activity className="w-4 h-4 text-emerald-400 animate-pulse" />
+                Real-Time High-Throughput Filtering Pipeline
+              </h4>
+              <div className="flex gap-3 text-xs">
+                <span className="flex items-center gap-1.5 text-emerald-400 font-medium">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                  Active Ingestion: {entryDiagnostics?.pipeline?.ingestRate || 0}/s
+                </span>
+                <span className="text-slate-400 border-l border-[#1f212e] pl-3">
+                  Queue Buffer: <span className={Number(entryDiagnostics?.pipeline?.queueDepth || 0) > 4000 ? 'text-red-400 font-bold' : 'text-indigo-400'}>{entryDiagnostics?.pipeline?.queueDepth || 0}/5,000</span>
+                </span>
+              </div>
+            </div>
+
+            {/* Ingestion Rates Panel */}
+            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
+              <div className="bg-[#181a26] border border-[#232638] rounded-lg p-2.5 text-center">
+                <div className="text-[9px] uppercase font-bold text-slate-500">Inflow</div>
+                <div className="text-lg font-mono font-bold text-white mt-0.5">{entryDiagnostics?.pipeline?.ingestRate || 0}/s</div>
+                <div className="text-[8px] text-slate-400 mt-0.5">Raw events</div>
+              </div>
+              <div className="bg-[#181a26] border border-[#232638] rounded-lg p-2.5 text-center">
+                <div className="text-[9px] uppercase font-bold text-slate-500">Fast Filter</div>
+                <div className="text-lg font-mono font-bold text-sky-400 mt-0.5">-{entryDiagnostics?.pipeline?.filteredRate || 0}/s</div>
+                <div className="text-[8px] text-slate-400 mt-0.5">Discarded</div>
+              </div>
+              <div className="bg-[#181a26] border border-[#232638] rounded-lg p-2.5 text-center">
+                <div className="text-[9px] uppercase font-bold text-slate-500">Mint Extract</div>
+                <div className="text-lg font-mono font-bold text-indigo-400 mt-0.5">{entryDiagnostics?.pipeline?.mintResolvedRate || 0}/s</div>
+                <div className="text-[8px] text-slate-400 mt-0.5">Parsed mints</div>
+              </div>
+              <div className="bg-[#181a26] border border-[#232638] rounded-lg p-2.5 text-center">
+                <div className="text-[9px] uppercase font-bold text-slate-500">Validations</div>
+                <div className="text-lg font-mono font-bold text-emerald-400 mt-0.5">{entryDiagnostics?.pipeline?.processedRate || 0}/s</div>
+                <div className="text-[8px] text-slate-400 mt-0.5">Passed checks</div>
+              </div>
+              <div className="bg-[#181a26] border border-[#232638] rounded-lg p-2.5 text-center">
+                <div className="text-[9px] uppercase font-bold text-slate-500">Deduplications</div>
+                <div className="text-lg font-mono font-bold text-teal-400 mt-0.5">-{entryDiagnostics?.pipeline?.duplicateRate || 0}/s</div>
+                <div className="text-[8px] text-slate-400 mt-0.5">Duplicates</div>
+              </div>
+              <div className="bg-[#181a26] border border-[#232638] rounded-lg p-2.5 text-center">
+                <div className="text-[9px] uppercase font-bold text-slate-500">Candidates</div>
+                <div className="text-lg font-mono font-bold text-pink-400 mt-0.5">{entryDiagnostics?.pipeline?.candidateRate || 0}/s</div>
+                <div className="text-[8px] text-slate-400 mt-0.5">Enqueued</div>
+              </div>
+              <div className="bg-[#181a26] border border-[#232638] rounded-lg p-2.5 text-center">
+                <div className="text-[9px] uppercase font-bold text-slate-500">Queue Depth</div>
+                <div className="text-lg font-mono font-bold text-indigo-300 mt-0.5">{entryDiagnostics?.pipeline?.queueDepth || 0}</div>
+                <div className="text-[8px] text-slate-400 mt-0.5">Bounded buffer</div>
+              </div>
+              <div className="bg-[#181a26] border border-[#232638] rounded-lg p-2.5 text-center">
+                <div className="text-[9px] uppercase font-bold text-slate-500">Dropped</div>
+                <div className="text-lg font-mono font-bold text-rose-400 mt-0.5">-{entryDiagnostics?.pipeline?.droppedRate || 0}/s</div>
+                <div className="text-[8px] text-slate-400 mt-0.5">Buffer limits</div>
+              </div>
+            </div>
+
+            {/* Pipeline Process Blockers Alerts */}
+            {Number(entryDiagnostics?.pipeline?.ingestRate || 0) > 0 && Number(entryDiagnostics?.pipeline?.mintResolvedRate || 0) === 0 && (
+              <div className="bg-amber-950/40 border border-amber-900/60 rounded-lg p-3 text-xs text-amber-300 flex items-start gap-2.5 animate-pulse">
+                <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                <div>
+                  <span className="font-semibold">Pipeline Alert:</span> LaserStream is receiving raw events successfully, but zero token mints are being extracted downstream. This usually means the stream contains general non-token transactions (not corresponding to target Pump.fun or Raydium programs) or instruction formats are unrecognized.
+                </div>
+              </div>
+            )}
+
+            {Number(entryDiagnostics?.pipeline?.candidateRate || 0) > 0 && !entryDiagnostics?.pipeline?.counters?.candidateEnriched && (
+              <div className="bg-rose-950/40 border border-rose-900/60 rounded-lg p-3 text-xs text-rose-300 flex items-start gap-2.5">
+                <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                <div>
+                  <span className="font-semibold">Pipeline Alert:</span> Candidates are generated but Enrichment loop is stalled. Ensure connection to RPC providers and DexScreener APIs is fully functional.
+                </div>
+              </div>
+            )}
+
+            {/* Pipeline Counters Step-by-Step Breakdown */}
+            <div className="bg-[#181a26] border border-[#232638] rounded-lg p-4 space-y-3">
+              <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Historical Pipeline Counters (cumulative)</div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
+                <div className="space-y-1.5">
+                  <div className="flex justify-between text-slate-400"><span>1. Inbound Packets:</span> <span className="font-mono text-white font-semibold">{entryDiagnostics?.pipeline?.counters?.wssIn?.toLocaleString() || 0}</span></div>
+                  <div className="flex justify-between text-slate-400"><span>2. Program-Matched:</span> <span className="font-mono text-white font-semibold">{entryDiagnostics?.pipeline?.counters?.fastFilterPassed?.toLocaleString() || 0}</span></div>
+                  <div className="flex justify-between text-slate-400"><span>3. Identified Protocol:</span> <span className="font-mono text-white font-semibold">{entryDiagnostics?.pipeline?.counters?.protocolRecognized?.toLocaleString() || 0}</span></div>
+                </div>
+                <div className="space-y-1.5">
+                  <div className="flex justify-between text-slate-400"><span>4. Mint Extracted:</span> <span className="font-mono text-indigo-300 font-semibold">{entryDiagnostics?.pipeline?.counters?.mintExtractionSuccess?.toLocaleString() || 0}</span></div>
+                  <div className="flex justify-between text-slate-400"><span>5. Validated SPL:</span> <span className="font-mono text-emerald-300 font-semibold">{entryDiagnostics?.pipeline?.counters?.mintValidationSuccess?.toLocaleString() || 0}</span></div>
+                  <div className="flex justify-between text-slate-400"><span>6. Unique Uniques:</span> <span className="font-mono text-teal-300 font-semibold">{entryDiagnostics?.pipeline?.counters?.candidateDeduplicated?.toLocaleString() || 0}</span></div>
+                </div>
+                <div className="space-y-1.5">
+                  <div className="flex justify-between text-slate-400"><span>7. Enqueued Candidates:</span> <span className="font-mono text-pink-300 font-semibold">{entryDiagnostics?.pipeline?.counters?.candidateCreated?.toLocaleString() || 0}</span></div>
+                  <div className="flex justify-between text-slate-400"><span>8. Enriched Mints:</span> <span className="font-mono text-amber-300 font-semibold">{entryDiagnostics?.pipeline?.counters?.candidateEnriched?.toLocaleString() || 0}</span></div>
+                  <div className="flex justify-between text-slate-400"><span>9. Evaluated Rules:</span> <span className="font-mono text-teal-400 font-semibold">{entryDiagnostics?.pipeline?.counters?.criteriaEvaluated?.toLocaleString() || 0}</span></div>
+                </div>
+                <div className="space-y-1.5">
+                  <div className="flex justify-between text-slate-400"><span>10. Criteria Passed:</span> <span className="font-mono text-emerald-400 font-semibold">{entryDiagnostics?.pipeline?.counters?.criteriaPassed?.toLocaleString() || 0}</span></div>
+                  <div className="flex justify-between text-slate-400"><span>11. Order Attempted:</span> <span className="font-mono text-orange-400 font-semibold">{entryDiagnostics?.pipeline?.counters?.buyAttempted?.toLocaleString() || 0}</span></div>
+                  <div className="flex justify-between text-slate-400"><span>12. Order Confirmed:</span> <span className="font-mono text-purple-400 font-semibold">{entryDiagnostics?.pipeline?.counters?.buyConfirmed?.toLocaleString() || 0}</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
           {/* Top Blocking Reasons & On-Demand Mint Evaluation */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {/* Top Blocking Reasons */}
             <div className="bg-[#12131a] border border-[#1f212e] rounded-xl p-5 space-y-4">
               <h4 className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-2">
                 <ShieldAlert className="w-4 h-4 text-amber-400" />
-                "Why No Trade?" — Top Blocking Reasons
+                "Why No Trade?" — Criteria Rejection Ledger
               </h4>
               <div className="space-y-2">
-                {(!entryDiagnostics?.topBlockingReasons || entryDiagnostics.topBlockingReasons.length === 0) ? (
-                  <div className="text-xs text-slate-500 py-4 text-center">No evaluations recorded yet. Ingesting stream...</div>
+                {(!entryDiagnostics?.topBlockingReasons || entryDiagnostics.topBlockingReasons.length === 0) &&
+                 (!entryDiagnostics?.pipeline?.rejectionReasons || Object.values(entryDiagnostics.pipeline.rejectionReasons).reduce((a: any, b: any) => a + b, 0) === 0) ? (
+                  <div className="text-xs text-slate-500 py-4 text-center">No evaluations or rejections recorded yet. Ingesting stream...</div>
                 ) : (
-                  entryDiagnostics.topBlockingReasons.map((item: any, idx: number) => (
-                    <div key={idx} className="flex items-center justify-between text-xs bg-[#181a26] border border-[#232638] px-3 py-2 rounded-lg">
-                      <span className="font-mono text-slate-300">{item.reason}</span>
-                      <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-rose-950/60 border border-rose-900/60 text-rose-400">
-                        {item.count} blocked
-                      </span>
-                    </div>
-                  ))
+                  <>
+                    {/* Render Real-Time Pipeline Rejections */}
+                    {entryDiagnostics?.pipeline?.rejectionReasons && Object.entries(entryDiagnostics.pipeline.rejectionReasons)
+                      .filter(([, count]) => Number(count) > 0)
+                      .map(([reason, count]: any, idx: number) => (
+                        <div key={`pipe-${idx}`} className="flex items-center justify-between text-xs bg-[#181a26] border border-[#232638] px-3 py-2 rounded-lg">
+                          <span className="font-mono text-slate-300">{reason}</span>
+                          <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-rose-950/60 border border-rose-900/60 text-rose-400 animate-pulse">
+                            {count} blocked (real-time)
+                          </span>
+                        </div>
+                      ))
+                    }
+                    {entryDiagnostics?.topBlockingReasons?.map((item: any, idx: number) => (
+                      <div key={`old-${idx}`} className="flex items-center justify-between text-xs bg-[#181a26] border border-[#232638] px-3 py-2 rounded-lg">
+                        <span className="font-mono text-slate-300">{item.reason}</span>
+                        <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-amber-950/60 border border-amber-900/60 text-amber-400">
+                          {item.count} blocked (manual)
+                        </span>
+                      </div>
+                    ))}
+                  </>
                 )}
               </div>
             </div>

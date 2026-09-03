@@ -5,6 +5,7 @@ import { tradingEngine } from '../trading/TradingEngine.js';
 import { executionGateway } from '../execution/ExecutionGateway.js';
 import { pnlEngine } from '../trading/PnLEngine.js';
 import { positionRepository } from '../repositories/PositionRepository.js';
+import { unifiedExitEngine } from '../trading/UnifiedExitEngine.js';
 
 export class TradingMonitorWorker {
   private static instance: TradingMonitorWorker;
@@ -91,25 +92,8 @@ export class TradingMonitorWorker {
             highestPnLPct: pos.highestPnlPct,
           });
 
-          // 3. RiskManager Evaluation
-          const exitDecision = await riskManager.evaluatePositionExit(pos, currentPriceSol);
-          if (exitDecision.shouldExit) {
-            console.log(`[TradingMonitorWorker] Triggering ${exitDecision.reason} for position ${pos.id} (${pos.mint}): ${exitDecision.message}`);
-
-            const sellRes = await tradingEngine.sell({
-              network: pos.network,
-              wallet: pos.wallet,
-              mint: pos.mint,
-              amountRaw: pos.tokenAmount,
-              reason: exitDecision.reason,
-            });
-
-            if (sellRes.success) {
-              console.log(`[TradingMonitorWorker] Position ${pos.id} successfully exited (${exitDecision.reason}) with sig: ${sellRes.signature}`);
-            } else {
-              console.warn(`[TradingMonitorWorker] Exit failed for position ${pos.id}: ${sellRes.error}`);
-            }
-          }
+          // 3. UnifiedExitEngine Evaluation & Execution Authority
+          await unifiedExitEngine.evaluateAndExecuteExit(pos, currentPriceSol);
         } catch (err: any) {
           console.warn(`[TradingMonitorWorker] Error monitoring position ${pos.id}:`, err?.message || err);
         }

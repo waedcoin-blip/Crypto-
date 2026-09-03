@@ -62,6 +62,7 @@ import { rpcHealthManager } from './services/rpcHealthManager';
 import { masterMonitorHealthManager } from './services/MasterMonitorHealthManager';
 import { syncManager } from './services/SyncService';
 import { orderManager } from './services/OrderManager';
+import { riskManager } from './services/RiskManager';
 import { positionExitManager } from './services/PositionExitManager';
 import { resolveTokenDecimals } from './services/PaperTradeExecutor';
 import { StartupReconciliation } from './services/StartupReconciliation';
@@ -1824,68 +1825,16 @@ function App() {
     const position = activePositions[tokenAddress];
     if (!position) return;
     
-    setTradingStatus(`Partial Sell ${symbol} (${(percent*100).toFixed(0)}%)...`);
+    setTradingStatus(`Requesting Sell for ${symbol} via Server Authority...`);
     
     try {
-      const positionTokens = position.amount || 0;
-      const tokensToSell = positionTokens * percent;
-      let sellAmountRaw: bigint;
-      if (position.amountLamports && position.amountLamports > 0) {
-        sellAmountRaw = percentOfRawAmount(BigInt(position.amountLamports), percent * 100);
-      } else {
-        const decimals = position.decimals ?? await getTokenDecimals(connection, tokenAddress);
-        const baseRaw = BigInt(Math.floor(positionTokens * Math.pow(10, decimals)));
-        sellAmountRaw = percentOfRawAmount(baseRaw, percent * 100);
-      }
-
-      if (sellAmountRaw <= 0n) {
-        setTradingStatus('Idle');
-        return;
-      }
-
-      const slippageBps = Math.round((slippage || 1) * 100);
-
-      const swapRes = await orderManager.executeOrder(
-        tokenAddress,
-        'So11111111111111111111111111111111111111112',
-        Number(sellAmountRaw),
-        slippageBps,
-        'exit_tp'
-      );
-
-      const signature = swapRes.signature;
-      const solReceived = swapRes.outputAmount ? (swapRes.outputAmount / 1e9) - (swapRes.feeSol || 0) : 0;
-      const fractionCostBasis = position.solSpent ? position.solSpent * percent : (position.entryPriceSol || 0) * positionTokens * percent;
-      const realizedPnL = fractionCostBasis > 0 ? ((solReceived - fractionCostBasis) / fractionCostBasis) * 100 : 0;
-
-      addNotification(`PARTIAL SELL SUCCESS: ${symbol} (${(percent * 100).toFixed(0)}%) - Realized: ${solReceived.toFixed(4)} SOL (${realizedPnL >= 0 ? '+' : ''}${realizedPnL.toFixed(2)}%)`);
-
-      const remainingAmount = Math.max(0, positionTokens - tokensToSell);
-      if (remainingAmount <= 0) {
-        setActivePositions(prev => {
-          const next = { ...prev };
-          delete next[tokenAddress];
-          return next;
-        });
-        optimisticPositions.current.delete(tokenAddress);
-      } else {
-        setActivePositions(prev => ({
-          ...prev,
-          [tokenAddress]: {
-            ...position,
-            amount: remainingAmount,
-            entryPriceSol: position.entryPriceSol ? position.entryPriceSol * (1 - percent) : undefined,
-            solSpent: position.solSpent ? position.solSpent * (1 - percent) : undefined,
-            entryFeesSol: position.entryFeesSol ? position.entryFeesSol * (1 - percent) : undefined,
-            soldPartial: true
-          }
-        }));
-      }
-
+      // Partial take-profit has been completely removed - manual exits trigger 100% full exit
+      await riskManager.requestExit(tokenAddress, 'MANUAL_EXIT');
+      addNotification(`SELL REQUESTED: ${symbol} full position sell submitted to server exit engine.`);
       setTradingStatus('Idle');
     } catch (e: any) {
       console.error(e);
-      addNotification(`Partial Sell failed: ${e.message}`);
+      addNotification(`Sell request failed: ${e.message || e}`);
       setTradingStatus('Idle');
     }
   };
@@ -1895,168 +1844,15 @@ function App() {
     if (pendingTrades.current.has(tokenAddress)) return;
     pendingTrades.current.add(tokenAddress);
     
-    const position = activePositions[tokenAddress];
-    if (!position) {
-      pendingTrades.current.delete(tokenAddress);
-      return;
-    }
-
-
-    // CALCULATE CENTRALIZED PNL FOR DYNAMIC SLIPPAGE
-    const metric = tokenMetrics[tokenAddress];
-    const entryRatio = position.entryPrice && position.entryPrice > 0 
-      ? position.entryPrice 
-      : (position.entryPriceSol ? position.entryPriceSol * getSolPriceUsd() : 0);
-    if (!entryRatio) {
-      console.warn(`[AutoSell Abort] Missing valid entry price for ${symbol}`);
-      pendingTrades.current.delete(tokenAddress);
-      setTradingStatus(null);
-      return;
-    }
-    const currentRatio = (metric?.priceUsd && metric?.priceUsd > 0 ? metric.priceUsd : entryRatio);
-    const curPnLPercent = ((currentRatio / entryRatio) - 1) * 100;
-    
-    setTradingStatus(`Selling ${symbol} (Take Profit/Stop Loss)...`);
+    setTradingStatus(`Requesting Sell for ${symbol} via Server Authority...`);
     
     try {
-      let signature = 'SIM_SELL_' + Math.random().toString(36).substring(7);
-      
-      const walletAddress = (true && activeAddress) 
-         ? activeAddress!
-         : '11111111111111111111111111111111';
-      let balanceRaw: string;
-      try {
-        balanceRaw = await getTokenBalanceRaw(connection, walletAddress, tokenAddress);
-      } catch (balanceErr: any) {
-        throw new Error(`AUTO_SELL_BALANCE_LOOKUP_FAILED: ${balanceErr?.message || String(balanceErr)}`);
-      }
-      
-      let sellRawAmount: bigint = BigInt(balanceRaw);
-      if (sellRawAmount <= 0n) {
-        if (position.amountLamports && position.amountLamports > 0) {
-          sellRawAmount = BigInt(position.amountLamports);
-        } else if (position.amount && position.amount > 0) {
-          const decimals = position.decimals ?? resolveTokenDecimals(tokenAddress);
-          sellRawAmount = BigInt(Math.floor(position.amount * Math.pow(10, decimals)));
-        } else {
-          const storeTokenBal = useBalanceStore.getState().tokenBalances[tokenAddress];
-          if (storeTokenBal && storeTokenBal > 0) {
-            const decimals = position.decimals ?? resolveTokenDecimals(tokenAddress);
-            sellRawAmount = BigInt(Math.floor(storeTokenBal * Math.pow(10, decimals)));
-          }
-        }
-      }
-
-      if (sellRawAmount <= 0n) {
-        console.warn(`[AutoSell Abort] No active position amount found to sell for ${symbol}`);
-        pendingTrades.current.delete(tokenAddress);
-        return;
-      }
-      let quote = cachedQuote || null;
-      if (!quote) {
-        try {
-          quote = await getJupiterQuote(
-            tokenAddress, 
-            'So11111111111111111111111111111111111111112', 
-            sellRawAmount, 
-            metric?.liquidity || 0,
-            curPnLPercent > (position.tpPct ?? minTakeProfit) ? (position.solSpent || (position.entryPriceSol || 0) * (position.amount || 0)) : undefined,
-            curPnLPercent > (position.tpPct ?? minTakeProfit) ? (position.tpPct ?? minTakeProfit) : undefined,
-            curPnLPercent
-          );
-        } catch (qErr) {
-          console.warn(`[AutoSell]: Quote attempt bypassed:`, qErr);
-        }
-      }
-
-      const currentCostBasisSol = position.solSpent || ((position.entryPriceSol || 0) * (position.amount || 0));
-      let realNetReturnSol = currentCostBasisSol * (1 + curPnLPercent / 100);
-      let realNetProfitPct = curPnLPercent;
-
-      if (quote) {
-        const guaranteedMinLamports = Number(quote.otherAmountThreshold || quote.outAmount || 0);
-        if (guaranteedMinLamports > 0) {
-          const guaranteedSolOut = guaranteedMinLamports / 1_000_000_000.0;
-          const networkFeesSol = 0.0035; // Simulated / average Jito fee
-          const calculatedNet = Math.max(0, guaranteedSolOut - networkFeesSol);
-          if (calculatedNet > 0) {
-            realNetReturnSol = calculatedNet;
-          }
-          if (currentCostBasisSol > 0) {
-            realNetProfitPct = ((realNetReturnSol - currentCostBasisSol) / currentCostBasisSol) * 100.0;
-          }
-
-          // Unify Profit Guard for Mainnet LIVE TAKE PROFIT only (never block stop losses or paper trading)
-          if (isLiveTrading && curPnLPercent >= minTakeProfit && realNetReturnSol <= currentCostBasisSol) {
-             console.log(`⚠️ REJECTED (LIVE): Paper profit drops net return into a loss (${realNetReturnSol} SOL vs ${currentCostBasisSol} SOL).`);
-             addNotification(`Profit Guard: Aborted ${symbol} sell. Network slippage overrides return.`);
-             pendingTrades.current.delete(tokenAddress);
-             setTradingStatus('Idle');
-             return;
-          }
-        }
-      }
-
-      console.log(`✅ APPROVED EXECUTION: Realized returns projected at ${realNetProfitPct.toFixed(2)}%`);
-
-      const swapRes = await orderManager.executeOrder(
-        tokenAddress,
-        'So11111111111111111111111111111111111111112',
-        position.amountLamports || sellRawAmount.toString() || position.amount || 0,
-        Math.round((slippage || 1) * 100),
-        curPnLPercent >= (position.tpPct ?? minTakeProfit) ? 'exit_tp' : 'exit_sl'
-      );
-      signature = swapRes.signature;
-      if (swapRes.outputAmount && swapRes.outputAmount > 0) {
-        realNetReturnSol = (swapRes.outputAmount / 1e9) - (swapRes.feeSol || 0);
-        if (currentCostBasisSol > 0) {
-          realNetProfitPct = ((realNetReturnSol - currentCostBasisSol) / currentCostBasisSol) * 100.0;
-        }
-      }
-      
-
-      // Standardize uniform exact final calculation mappings
-      const realizedPnL = realNetProfitPct;
-      const totalReturned = realNetReturnSol;
-
-      addNotification(`EXIT COMPLETED: ${symbol} (Realized PnL: ${realizedPnL >= 0 ? '+' : ''}${realizedPnL.toFixed(2)}%) `);
-      
-      const portLink = `${window.location.origin}${window.location.pathname}?sell=${tokenAddress}&auto=true`;
-      const pnlEmoji = realizedPnL >= 0 ? '🟢' : '🔴';
-      sendTelegramAlert(
-        `${pnlEmoji} <b>EXIT EXECUTED</b>\n\n` +
-        `Token: <b>$${symbol}</b>\n` +
-        `PnL: <b>${realizedPnL >= 0 ? '+' : ''}${realizedPnL.toFixed(2)}%</b>\n` +
-        `Realized: <b>${totalReturned.toFixed(4)} SOL</b>\n\n` +
-        `Tx: <a href="https://solscan.io/tx/${signature}">View Tx</a>\n` +
-        `<a href="${portLink}">📁 View My Portfolio</a>`,
-        true
-      ).catch((err: any) => console.warn('Telegram exit alert failed:', err));
-      
-      const newTrade: SniperTrade = {
-        id: `sniped-sell-${Date.now()}`,
-        type: 'SELL',
-        token: symbol,
-        address: tokenAddress,
-        amount: position.amount ?? 0,
-        timestamp: Date.now(),
-        pnl: realizedPnL,
-        signature: signature
-      };
-      
-      setMySniperTrades(prev => [newTrade, ...prev]);
-      
-
-      setActivePositions(prev => {
-        const next = { ...prev };
-        delete next[tokenAddress];
-        return next;
-      });
-      optimisticPositions.current.delete(tokenAddress);
+      await riskManager.requestExit(tokenAddress, 'MANUAL_EXIT');
+      addNotification(`EXIT COMPLETED: ${symbol} sell request authorized by server.`);
       setTradingStatus(null);
     } catch (e: any) {
       setTradingStatus(null);
-      addNotification(`Sell Failed: ${e.message}`);
+      addNotification(`Sell Failed: ${e.message || e}`);
     } finally {
       pendingTrades.current.delete(tokenAddress);
     }

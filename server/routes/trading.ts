@@ -8,6 +8,7 @@ import { criteriaRepository } from '../repositories/CriteriaRepository.js';
 import { workerStateRepository } from '../repositories/WorkerStateRepository.js';
 import { tradeRepository } from '../repositories/TradeRepository.js';
 import { entryEngine } from '../trading/EntryEngine.js';
+import { unifiedExitEngine } from '../trading/UnifiedExitEngine.js';
 
 import { CriteriaService } from '../services/criteriaService.js';
 
@@ -195,6 +196,26 @@ router.get('/entry-diagnostics', asyncHandler(async (req, res) => {
   res.json({
     status: 'success',
     diagnostics,
+    timestamp: Date.now(),
+  });
+}));
+
+// GET /api/trading/exit-audit
+router.get('/exit-audit', asyncHandler(async (req, res) => {
+  const auditLogs = unifiedExitEngine.getAuditTrail();
+  res.json({
+    status: 'success',
+    auditLogs,
+    timestamp: Date.now(),
+  });
+}));
+
+// GET /api/trading/exit-audit/:positionId
+router.get('/exit-audit/:positionId', asyncHandler(async (req, res) => {
+  const auditLogs = unifiedExitEngine.getAuditTrail(req.params.positionId);
+  res.json({
+    status: 'success',
+    auditLogs,
     timestamp: Date.now(),
   });
 }));

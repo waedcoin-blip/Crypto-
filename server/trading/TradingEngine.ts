@@ -8,6 +8,7 @@ import { executionGateway } from '../execution/ExecutionGateway.js';
 import { ExecutionResult } from '../execution/TradeExecutor.js';
 import { tradeRepository } from '../repositories/TradeRepository.js';
 import { tokenProgramResolver } from '../wallet/TokenProgramResolver.js';
+import { unifiedExitEngine } from './UnifiedExitEngine.js';
 
 export interface BuyParams {
   network: string;
@@ -249,113 +250,21 @@ export class TradingEngine {
       };
     }
 
-    // Atomic Exit Reservation in RiskManager
-    if (!riskManager.reserveExit(position.id)) {
-      return {
-        success: false,
-        positionId: position.id,
-        error: `EXIT_ALREADY_PENDING: Position ${position.id} is already in exit transition`,
-      };
-    }
-
-    positionManager.updatePositionStatus(network, wallet, mint, 'EXIT_PENDING');
-
-    const sellAmountRaw = params.amountRaw !== undefined ? params.amountRaw : position.tokenAmount;
-    const clientRequestId = params.clientRequestId || `sell_${mint.slice(0, 8)}_${Date.now()}`;
-    const slippageBps = params.slippageBps || (params.reason === 'TP' ? position.slippageBpsTp : position.slippageBpsSl);
-
-    const order = orderManager.createOrder({
-      network,
-      wallet,
-      mint,
-      side: 'sell',
-      amount: sellAmountRaw,
-      decimals: position.decimals, // ADDED
-      slippageBps,
-      clientRequestId,
-      label: params.reason || 'MANUAL',
-    });
-
-    try {
-      const execResult = await orderManager.executeOrder(order.id);
-
-      if (!execResult.success) {
-        if (execResult.isAmbiguous || execResult.signature || execResult.status === 'RECOVERY_REQUIRED') {
-          console.warn(`[TradingEngine] Sell transaction for ${mint} broadcasted or timed out (sig=${execResult.signature}). Retaining exit lock to prevent duplicate sell.`);
-          return {
-            success: false,
-            orderId: order.id,
-            positionId: position.id,
-            signature: execResult.signature,
-            error: `RECOVERY_REQUIRED: Sell transaction broadcast or confirmation timeout (${execResult.error}). Position retained in EXIT_PENDING.`,
-            result: execResult,
-          };
-        }
-
-        riskManager.releaseExit(position.id);
-        positionManager.updatePositionStatus(network, wallet, mint, 'OPEN');
-        return {
-          success: false,
-          orderId: order.id,
-          positionId: position.id,
-          error: execResult.error,
-          result: execResult,
-        };
-      }
-
-      // Close Position
-      positionManager.updatePositionStatus(network, wallet, mint, 'CLOSED', {
-        exitSignature: execResult.signature,
-        netProceedsSol: execResult.netProceedsSol,
-      });
-
-      tradeRepository.recordTrade({
-        id: `trade_${order.id}`,
-        orderId: order.id,
-        positionId: position.id,
-        mintAddress: mint,
-        side: 'SELL',
-        network,
-        wallet,
-        amountRaw: sellAmountRaw,
-        amountTokens: sellAmountRaw / (10 ** position.decimals),
-        solAmount: execResult.netProceedsSol || 0,
-        priceSOL: execResult.effectivePriceSol || 0,
-        pnlSol: execResult.netProceedsSol !== undefined ? execResult.netProceedsSol - position.totalSolSpent : undefined,
-        signature: execResult.signature || order.id,
-        timestamp: Date.now(),
-        status: 'CONFIRMED',
-      });
-
-      riskManager.releaseExit(position.id);
-
+    // Delegate authorization and execution entirely to UnifiedExitEngine
+    const success = await unifiedExitEngine.executeManualExit(position.id);
+    if (success) {
+      // Re-fetch the closed/closing position details to return response
+      const updatedPos = positionManager.getPositionById(position.id);
       return {
         success: true,
-        orderId: order.id,
         positionId: position.id,
-        signature: execResult.signature,
-        result: execResult,
+        signature: updatedPos?.exitSignature,
       };
-    } catch (err: any) {
-      const orderRecord = orderManager.getOrderById(order.id);
-      if (orderRecord?.transactionSignature || orderRecord?.status === 'RECOVERY_REQUIRED') {
-        console.warn(`[TradingEngine] Sell caught error but transaction signature exists (${orderRecord.transactionSignature}). Retaining exit lock.`);
-        return {
-          success: false,
-          orderId: order.id,
-          positionId: position.id,
-          signature: orderRecord.transactionSignature,
-          error: `RECOVERY_REQUIRED: ${err?.message || String(err)}`,
-        };
-      }
-
-      riskManager.releaseExit(position.id);
-      positionManager.updatePositionStatus(network, wallet, mint, 'OPEN');
+    } else {
       return {
         success: false,
-        orderId: order.id,
         positionId: position.id,
-        error: err?.message || String(err),
+        error: `EXIT_FAILED: Manual sell request rejected or already in exit pipeline.`,
       };
     }
   }

@@ -167,9 +167,6 @@ export class YellowstoneConnectionManager {
       this.lastReceivedSlot = event.slot;
     }
 
-    // Process token discovery
-    tokenDiscovery.processMarketEvent(event);
-
     // Publish to MarketEventBus
     marketEventBus.publish(event);
   }

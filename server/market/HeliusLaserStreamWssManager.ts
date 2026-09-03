@@ -365,9 +365,6 @@ export class HeliusLaserStreamWssManager implements StreamingTransport {
         // Publish to internal buses
         laserStreamWatchdog.recordQueuedUpdate();
         
-        // Token discovery
-        tokenDiscovery.processMarketEvent(normalized);
-
         // Market event bus
         marketEventBus.publish(normalized);
 

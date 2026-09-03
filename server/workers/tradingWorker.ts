@@ -7,11 +7,13 @@ import { streamingTransportManager } from '../market/StreamingTransportManager.j
 import { yellowstoneConnectionManager } from '../market/YellowstoneConnectionManager.js';
 import { marketEventBus } from '../market/MarketEventBus.js';
 import { tokenDiscovery } from '../market/TokenDiscovery.js';
+import { laserStreamPipeline } from '../market/LaserStreamPipeline.js';
 import { startWorkerHeartbeat } from '../services/WorkerHeartbeat.js';
 import { criteriaRepository } from '../repositories/CriteriaRepository.js';
 import { workerStateRepository } from '../repositories/WorkerStateRepository.js';
 import { tradingEngine } from '../trading/TradingEngine.js';
 import { entryEngine } from '../trading/EntryEngine.js';
+import { unifiedExitEngine } from '../trading/UnifiedExitEngine.js';
 import { laserLogger } from '../utils/logger.js';
 
 dotenv.config({ path: '.env.local' });
@@ -28,14 +30,12 @@ async function main() {
   startWorkerHeartbeat('trading', 3000);
   console.log('[TRADING WORKER] Worker heartbeat active.');
 
-  // 3. Connect Authoritative Helius Real-Time Ingestion (WSS / gRPC) & Start Entry Engine
+  // 3. Connect Authoritative Helius Real-Time Ingestion (WSS / gRPC), Start Entry Engine & Pipeline
   try {
-    marketEventBus.subscribe((event) => {
-      tokenDiscovery.processMarketEvent(event);
-    });
-
     entryEngine.start();
-    console.log('[TRADING WORKER] EntryEngine active and subscribed to market events.');
+    laserStreamPipeline.start();
+    unifiedExitEngine.start();
+    console.log('[TRADING WORKER] High-throughput LaserStream Pipeline, UnifiedExitEngine and EntryEngine active.');
 
     const connected = await streamingTransportManager.start();
     if (connected) {

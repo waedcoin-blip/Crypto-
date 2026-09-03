@@ -10,6 +10,8 @@ import { criteriaRepository } from '../repositories/CriteriaRepository.js';
 import { CriteriaConfig } from '../services/criteriaService.js';
 import { tokenDiscovery } from '../market/TokenDiscovery.js';
 
+import { laserStreamPipeline } from '../market/LaserStreamPipeline.js';
+
 export type PipelineStage =
   | 'DISCOVERED'
   | 'ENRICHING'
@@ -43,7 +45,6 @@ export class EntryEngine {
   private targetNetwork: string = 'paper';
   private defaultWallet: string = 'default';
   private activeEvaluationLocks: Map<string, Promise<EntryEvaluationResult>> = new Map();
-  private busUnsubscribe: (() => void) | null = null;
 
   private constructor() {
     this.autoSniperEnabled = process.env.AUTO_SNIPER_ENABLED === 'true';
@@ -59,26 +60,16 @@ export class EntryEngine {
   }
 
   /**
-   * Starts the 24/7 server-side entry engine and subscribes to authoritative market events.
+   * Starts the 24/7 server-side entry engine.
    */
   public start(): void {
     if (this.isRunning) return;
     this.isRunning = true;
 
-    this.busUnsubscribe = marketEventBus.subscribe((event: MarketEvent) => {
-      this.processMarketEvent(event).catch((err) => {
-        console.warn(`[EntryEngine] Error processing market event ${event.signature || 'unknown'}:`, err.message);
-      });
-    });
-
     console.log(`[EntryEngine] Started 24/7 server entry engine (autoSniperEnabled=${this.autoSniperEnabled}, isLiveTrading=${this.isLiveTrading}, network=${this.targetNetwork})`);
   }
 
   public stop(): void {
-    if (this.busUnsubscribe) {
-      this.busUnsubscribe();
-      this.busUnsubscribe = null;
-    }
     this.isRunning = false;
     console.log('[EntryEngine] Stopped server entry engine');
   }
@@ -117,19 +108,7 @@ export class EntryEngine {
    * Processes a normalized market event (from Helius WSS / gRPC stream).
    */
   public async processMarketEvent(event: MarketEvent): Promise<void> {
-    entryDecisionLedger.recordEventReceived();
-
-    if (event.type !== 'ON_CHAIN_TX' || !event.accountKeys || !Array.isArray(event.accountKeys)) {
-      return;
-    }
-
-    for (const key of event.accountKeys) {
-      if (!tokenDiscovery.isValidMintCandidate(key)) continue;
-      entryDecisionLedger.recordCandidateDetected();
-
-      // Fire candidate evaluation asynchronously with lock protection
-      this.evaluateAndTrade(key, 'HELIUS_WSS_STREAM').catch(() => {});
-    }
+    // Handled asynchronously by LaserStreamPipeline
   }
 
   /**
@@ -292,11 +271,17 @@ export class EntryEngine {
   }
 
   public getDiagnostics(): EntryDiagnosticsReport {
-    return entryDecisionLedger.getDiagnostics({
+    const report = entryDecisionLedger.getDiagnostics({
       autoSniperEnabled: this.autoSniperEnabled,
       isLiveTrading: this.isLiveTrading,
       network: this.targetNetwork,
     });
+
+    const pipelineMetrics = laserStreamPipeline.getMetrics();
+    return {
+      ...report,
+      pipeline: pipelineMetrics,
+    } as any;
   }
 }
 
