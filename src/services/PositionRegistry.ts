@@ -72,31 +72,33 @@ export class PositionRegistry {
   }
 
   private loadPositions(): void {
-    if (typeof window === 'undefined') {
+    if (typeof localStorage !== 'undefined') {
       try {
-        const { positionRepository } = require('../../server/repositories/PositionRepository.js');
-        const list = positionRepository.getAllPositions();
-        for (const pos of list) {
-          if (pos && pos.id && pos.mintAddress) {
-            this.positions.set(pos.id, pos);
-            if (pos.state !== 'CLOSED') {
-              this.positionsByMint.set(pos.mintAddress, pos.id);
+        const data = localStorage.getItem('app_position_registry_positions');
+        if (data) {
+          const list = JSON.parse(data);
+          for (const pos of list) {
+            if (pos && pos.id && pos.mintAddress) {
+              this.positions.set(pos.id, pos);
+              if (pos.state !== 'CLOSED') {
+                this.positionsByMint.set(pos.mintAddress, pos.id);
+              }
             }
           }
         }
       } catch (e) {
-        // Fallback for non-Node browser contexts
+        console.warn('[PositionRegistry] Failed to load positions from localStorage:', e);
       }
     }
   }
 
   private syncServer(pos: PositionRecord): void {
-    if (typeof window === 'undefined') {
+    if (typeof localStorage !== 'undefined') {
       try {
-        const { positionRepository } = require('../../server/repositories/PositionRepository.js');
-        positionRepository.upsertPosition(pos);
+        const list = Array.from(this.positions.values());
+        localStorage.setItem('app_position_registry_positions', JSON.stringify(list));
       } catch (e) {
-        // Ignored
+        console.warn('[PositionRegistry] Failed to sync positions to localStorage:', e);
       }
     }
   }

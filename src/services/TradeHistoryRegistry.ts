@@ -60,24 +60,25 @@ export class TradeHistoryRegistry {
   }
 
   private loadTrades(): void {
-    if (typeof window === 'undefined') {
+    if (typeof localStorage !== 'undefined') {
       try {
-        const { tradeRepository } = require('../../server/repositories/TradeRepository.js');
-        const list = tradeRepository.getTrades();
-        this.trades = list.filter(isValidTrade);
+        const data = localStorage.getItem('app_trade_history_trades');
+        if (data) {
+          const list = JSON.parse(data);
+          this.trades = list.filter(isValidTrade);
+        }
       } catch (e) {
-        // Ignored
+        console.warn('[TradeHistoryRegistry] Failed to load trades from localStorage:', e);
       }
     }
   }
 
   private syncServer(trade: HistoricalTrade): void {
-    if (typeof window === 'undefined') {
+    if (typeof localStorage !== 'undefined') {
       try {
-        const { tradeRepository } = require('../../server/repositories/TradeRepository.js');
-        tradeRepository.recordTrade(trade);
+        localStorage.setItem('app_trade_history_trades', JSON.stringify(this.trades));
       } catch (e) {
-        // Ignored
+        console.warn('[TradeHistoryRegistry] Failed to sync trades to localStorage:', e);
       }
     }
   }

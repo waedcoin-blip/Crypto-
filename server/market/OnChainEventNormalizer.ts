@@ -107,13 +107,46 @@ export class OnChainEventNormalizer {
       // Extract referenced accounts from log messages or signature context if present
       const accountKeys: string[] = [];
 
+      // Extract program mentions from logs
+      let programId = '';
+      for (const log of logs) {
+        if (typeof log === 'string') {
+          const match = log.match(/Program ([1-9A-HJ-NP-Za-km-z]{32,44})/);
+          if (match) {
+            const progId = match[1];
+            if (!accountKeys.includes(progId)) {
+              accountKeys.push(progId);
+            }
+            if (!programId) {
+              programId = progId;
+            }
+          }
+        }
+      }
+
       // Extract real token mint from logs using TokenMintResolver (Pump.fun / Raydium / Token Program)
       const extractedMint = tokenMintResolver.extractMintFromLogs(logs);
-      if (extractedMint) {
-        accountKeys.push(extractedMint);
+      if (extractedMint && tokenMintResolver.isValidMint(extractedMint)) {
+        if (!accountKeys.includes(extractedMint)) {
+          accountKeys.push(extractedMint);
+        }
       }
 
       const eventId = this.generateEventId('HELIUS_WSS', 'ON_CHAIN_TX', slot, signature);
+
+      const resolvedMint = (extractedMint && tokenMintResolver.isValidMint(extractedMint)) ? extractedMint : '';
+
+      console.log(`[WSS]
+event received
+signature=${signature}
+slot=${slot}
+program=${programId || 'none'}
+mint=${resolvedMint || 'none'}
+eventType=ON_CHAIN_TX`);
+
+      if (!resolvedMint) {
+        console.log('[WSS] IGNORE event: TOKEN_MINT_UNRESOLVED');
+      }
 
       return {
         eventId,
@@ -126,7 +159,7 @@ export class OnChainEventNormalizer {
         receivedAt: now,
         type: 'ON_CHAIN_TX',
         accountKeys,
-        candidateMint: extractedMint || undefined,
+        candidateMint: resolvedMint || undefined,
         logMessages: logs,
         err,
         raw: msg,
@@ -142,8 +175,21 @@ export class OnChainEventNormalizer {
       const owner = typeof account.owner === 'string' ? account.owner : '';
 
       const isMint = tokenMintResolver.isValidMint(pubkey);
+      const resolvedMint = isMint ? pubkey : '';
 
       const eventId = this.generateEventId('HELIUS_WSS', 'ACCOUNT_UPDATE', slot, undefined, pubkey);
+
+      console.log(`[WSS]
+event received
+signature=acc_${pubkey.slice(0, 8)}_${slot}
+slot=${slot}
+program=${owner || 'none'}
+mint=${resolvedMint || 'none'}
+eventType=ACCOUNT_UPDATE`);
+
+      if (!resolvedMint) {
+        console.log('[WSS] IGNORE event: TOKEN_MINT_UNRESOLVED');
+      }
 
       return {
         eventId,
@@ -155,10 +201,10 @@ export class OnChainEventNormalizer {
         timestamp: now,
         receivedAt: now,
         type: 'ACCOUNT_UPDATE',
-        mint: isMint ? pubkey : undefined,
+        mint: resolvedMint || undefined,
         owner,
-        accountKeys: isMint ? [pubkey] : [],
-        candidateMint: isMint ? pubkey : undefined,
+        accountKeys: resolvedMint ? [resolvedMint] : [],
+        candidateMint: resolvedMint || undefined,
         raw: msg,
       };
     }

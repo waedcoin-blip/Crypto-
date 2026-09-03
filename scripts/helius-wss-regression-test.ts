@@ -96,7 +96,7 @@ async function runRegressionSuite() {
       result: {
         context: { slot: 362451236 },
         value: {
-          pubkey: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+          pubkey: 'DezXAZ8z7PnrnESzzrfUg1g8v1s1gT9E1Zqh9gLrwvD',
           account: {
             data: ['dGVzdA==', 'base64'],
             executable: false,
@@ -111,7 +111,7 @@ async function runRegressionSuite() {
   };
   const normProg = OnChainEventNormalizer.normalizeWssNotification(progMsg, 'mainnet');
   assert(normProg !== null, 'Program notification normalized successfully');
-  assert(normProg?.mint === 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', 'Extracted pubkey as mint');
+  assert(normProg?.mint === 'DezXAZ8z7PnrnESzzrfUg1g8v1s1gT9E1Zqh9gLrwvD', 'Extracted pubkey as mint');
   assert(normProg?.type === 'ACCOUNT_UPDATE', 'Correct account event type');
 
   // ─── TEST 4: Live Mock WebSocket Server Interaction & Subscription Lifecycle ───

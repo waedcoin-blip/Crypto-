@@ -11,6 +11,7 @@ import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
 import { getSolPriceUsd, calcNetPnl } from '../utils/pnlCalculator';
 import { resolveTokenDecimals } from './PaperTradeExecutor';
 import { jupiterPreSellValidator } from './JupiterPreSellValidator';
+import { ultraFastExitEngine } from './UltraFastExitEngine';
 
 export interface ManagedPosition {
   mint: string;
@@ -599,7 +600,6 @@ export class RiskManager {
     positionRegistry.updatePrice(mint, priceInSol);
 
     // Forward immediately to UltraFastExitEngine
-    const { ultraFastExitEngine } = require('./UltraFastExitEngine');
     ultraFastExitEngine.onMarketPriceEvent({
       mint,
       priceSol: priceInSol,
@@ -716,7 +716,6 @@ export class RiskManager {
     this.evaluatingMints.add(mint);
     try {
       if (pos.currentPrice > 0) {
-        const { ultraFastExitEngine } = require('./UltraFastExitEngine');
         ultraFastExitEngine.onMarketPriceEvent({
           mint,
           priceSol: pos.currentPrice,
@@ -747,7 +746,6 @@ export class RiskManager {
       return;
     }
 
-    const { ultraFastExitEngine } = require('./UltraFastExitEngine');
     const success = await ultraFastExitEngine.requestExit({
       mint,
       reason: reason.includes('MANUAL') ? 'MANUAL_EXIT' : 'EMERGENCY_EXIT',

@@ -74,60 +74,30 @@ export class OrderManager {
   }
 
   private loadOrders(): void {
-    if (typeof window === 'undefined') {
+    if (typeof localStorage !== 'undefined') {
       try {
-        const { orderRepository } = require('../../server/repositories/OrderRepository.js');
-        const list = orderRepository.getOrders();
-        for (const record of list) {
-          const order: Order = {
-            id: record.order_id,
-            mint: record.mint,
-            side: record.side,
-            amount: record.amount_raw,
-            slippageBps: record.slippageBps || 250,
-            label: record.label as any,
-            network: (record.network as TradingNetwork) || 'paper',
-            state: record.state,
-            createdAt: record.created_at,
-            updatedAt: record.updated_at,
-            signature: record.signature,
-            effectivePriceSol: record.effectivePriceSol,
-            totalCostSol: record.totalCostSol,
-            netProceedsSol: record.netProceedsSol,
-            error: record.error,
-          };
-          this.orders.set(order.id, order);
+        const data = localStorage.getItem('app_order_manager_orders');
+        if (data) {
+          const list = JSON.parse(data);
+          for (const order of list) {
+            if (order && order.id) {
+              this.orders.set(order.id, order);
+            }
+          }
         }
       } catch (e) {
-        // Ignored
+        console.warn('[OrderManager] Failed to load orders from localStorage:', e);
       }
     }
   }
 
   private syncServerOrder(order: Order): void {
-    if (typeof window === 'undefined') {
+    if (typeof localStorage !== 'undefined') {
       try {
-        const { orderRepository } = require('../../server/repositories/OrderRepository.js');
-        orderRepository.createOrder({
-          order_id: order.id,
-          position_id: undefined,
-          mint: order.mint,
-          side: order.side,
-          amount_raw: order.amount,
-          slippageBps: order.slippageBps,
-          label: order.label,
-          network: order.network,
-          state: order.state,
-          signature: order.signature,
-          created_at: order.createdAt,
-          updated_at: order.updatedAt,
-          error: order.error,
-          effectivePriceSol: order.effectivePriceSol,
-          totalCostSol: order.totalCostSol,
-          netProceedsSol: order.netProceedsSol,
-        });
+        const list = Array.from(this.orders.values());
+        localStorage.setItem('app_order_manager_orders', JSON.stringify(list));
       } catch (e) {
-        // Ignored
+        console.warn('[OrderManager] Failed to sync orders to localStorage:', e);
       }
     }
   }

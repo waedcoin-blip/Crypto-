@@ -172,9 +172,14 @@ export class EntryEngine {
     triggerSource: string
   ): Promise<EntryEvaluationResult> {
     try {
+      console.log(`[PIPELINE STAGE] DISCOVERED mint=${mint}`);
+
       // 1. DISCOVERED -> ENRICHING
       entryDecisionLedger.recordEnriched();
+      console.log(`[PIPELINE STAGE] ENRICHING mint=${mint}`);
       const candidate = await candidateEnricher.enrichCandidate(mint, network);
+
+      console.log(`[PIPELINE STAGE] REAL MARKET/RISK DATA mint=${mint} mcap=${candidate.marketCapUsd.value !== null ? '$' + candidate.marketCapUsd.value.toFixed(0) : 'none'} liq=${candidate.liquidityUsd.value !== null ? '$' + candidate.liquidityUsd.value.toFixed(0) : 'none'} age=${candidate.ageMinutes.value !== null ? candidate.ageMinutes.value.toFixed(1) + 'm' : 'none'} risk=${candidate.riskScore.value !== null ? candidate.riskScore.value : 'none'} decimals=${candidate.decimals.value !== null ? candidate.decimals.value : 'none'}`);
 
       // 2. READY_FOR_EVALUATION -> Score opportunity
       entryDecisionLedger.recordScored();
@@ -190,6 +195,7 @@ export class EntryEngine {
       }
 
       // 4. Evaluate Entry Gate
+      console.log(`[PIPELINE STAGE] ServerEntryGate EVALUATING mint=${mint}`);
       const decision = await serverEntryGate.evaluateEntry({
         candidate,
         criteria: activeCriteria,
@@ -198,8 +204,11 @@ export class EntryEngine {
         autoSniperEnabled: this.autoSniperEnabled,
       });
 
+      console.log(`[PIPELINE STAGE] ServerEntryGate DECISION mint=${mint} allowed=${decision.allowed} score=${scoreBreakdown.totalScore}/100 blockingReasons=${JSON.stringify(decision.blockingReasons)}`);
+
       // 5. Record telemetry
       entryDecisionLedger.recordDecision(decision, scoreBreakdown, candidate.dataSource);
+      console.log(`[PIPELINE STAGE] EntryDecisionLedger RECORDED mint=${mint}`);
 
       // Structured logging
       console.log(
@@ -217,6 +226,7 @@ export class EntryEngine {
         );
 
         finalStage = 'BUY_SUBMITTED';
+        console.log(`[PIPELINE STAGE] TradingEngine.buy() ATTEMPT mint=${mint} amountSol=${decision.buyAmountSol}`);
         tradeResponse = await tradingEngine.buy({
           network,
           wallet,
@@ -246,11 +256,13 @@ export class EntryEngine {
 
         if (tradeResponse.success) {
           finalStage = 'POSITION_OPEN';
+          console.log(`[PIPELINE STAGE] CONFIRMED BUY mint=${mint} orderId=${tradeResponse.orderId} sig=${tradeResponse.signature}`);
           console.log(
             `[BUY CONFIRMED] mint=${mint} symbol=${candidate.symbol} orderId=${tradeResponse.orderId} sig=${tradeResponse.signature}`
           );
         } else {
           finalStage = 'BUY_FAILED';
+          console.log(`[PIPELINE STAGE] BUY FAILED mint=${mint} error=${tradeResponse.error}`);
           console.warn(
             `[BUY FAILED] mint=${mint} symbol=${candidate.symbol} error=${tradeResponse.error}`
           );

@@ -79,31 +79,13 @@ export class EntryGate {
       return { allowed: false, reason: 'UNKNOWN_DECIMALS_FAIL_CLOSED' };
     }
 
-    // Retrieve criteria thresholds from server repository or criteria config
-    let criteria = {
-      minLiquidityUsd: 5000,
-      minAgeMinutes: 0,
-      maxAgeMinutes: 1440,
-      maxDevOwnershipPct: 10,
-      maxTop10Pct: 40,
-      maxRiskScore: 22,
-    };
-
-    if (typeof window === 'undefined') {
-      try {
-        const { criteriaRepository } = require('../../server/repositories/CriteriaRepository.js');
-        criteria = criteriaRepository.getActiveCriteriaSync();
-      } catch (e) {
-        // Fail closed: defaults intentionally reject entries until criteria can be loaded.
-      }
-    }
-
-    const minLiquidity = criteria.minLiquidityUsd;
-    const minAgeMinutes = criteria.minAgeMinutes;
-    const maxAgeMinutes = criteria.maxAgeMinutes;
-    const maxDevPct = criteria.maxDevOwnershipPct ?? appState.hardenedMaxDevOwnership ?? 10;
-    const maxTop10Pct = criteria.maxTop10Pct;
-    const maxRiskScore = criteria.maxRiskScore ?? appState.hardenedMaxRiskScore ?? 22;
+    // Retrieve criteria thresholds from state or safe defaults
+    const minLiquidity = appState.hardenedLiquidityRatio ?? 5000;
+    const minAgeMinutes = 0;
+    const maxAgeMinutes = 1440;
+    const maxDevPct = appState.hardenedMaxDevOwnership ?? 10;
+    const maxTop10Pct = 40;
+    const maxRiskScore = appState.hardenedMaxRiskScore ?? 22;
 
     const now = Date.now();
 

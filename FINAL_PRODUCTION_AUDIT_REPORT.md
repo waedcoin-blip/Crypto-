@@ -1,5 +1,5 @@
 # Final Production Audit Report
-Generated at: 2026-09-03T18:13:52.955Z
+Generated at: 2026-09-03T19:40:50.911Z
 Total Findings: 129
 Bugs: 2
 Warnings: 127
@@ -96,18 +96,18 @@ Warnings: 127
 - **[WARNING]** `src/components/pages/PnLPage.tsx:3011`: Hardcoded Secret / Private Key (`lastLoggedKeyRef.current = privateKey;`)
 - **[WARNING]** `src/components/pages/PnLPage.tsx:3024`: Hardcoded Secret / Private Key (`}, [privateKey, rpcUrl, customWsUrl, addLog]);`)
 - **[WARNING]** `src/components/pages/PnLPage.tsx:3200`: Hardcoded Secret / Private Key (`if (currentMode !== 'paper' && !privateKey) throw new Error("Private Key missing");`)
-- **[WARNING]** `src/components/pages/PnLPage.tsx:3551`: Hardcoded Secret / Private Key (`const { maxPositions, privateKey, slippage } = configRef.current;`)
-- **[WARNING]** `src/components/pages/PnLPage.tsx:3552`: Hardcoded Secret / Private Key (`// Block any token starting with 'sim' if privateKey is active`)
-- **[WARNING]** `src/components/pages/PnLPage.tsx:3808`: Hardcoded Secret / Private Key (`if (isMainnet && !privateKey && !activeWalletAddress) {`)
-- **[WARNING]** `src/components/pages/PnLPage.tsx:4614`: Hardcoded Secret / Private Key (`}, [privateKey, addLog]);`)
-- **[WARNING]** `src/components/pages/PnLPage.tsx:5246`: Hardcoded Secret / Private Key (`if (!privateKey) {`)
-- **[WARNING]** `src/components/pages/PnLPage.tsx:6689`: Hardcoded Secret / Private Key (`const netCalc = calcNetPnl(displayPrice, pos.amount || 0, pos.solSpent || 0, slippage, pos.recoveryMode, !!privateKey);`)
-- **[WARNING]** `src/components/pages/PnLPage.tsx:6702`: Hardcoded Secret / Private Key (`const netCalc = calcNetPnl(displayPrice, pos.amount || 0, pos.solSpent || 0, slippage, pos.recoveryMode, !!privateKey);`)
-- **[WARNING]** `src/components/pages/PnLPage.tsx:7213`: Artificial History Truncation (slice(-500)) (`{alert.address.slice(0, 12)}...{alert.address.slice(-6)}`)
-- **[WARNING]** `src/components/pages/PnLPage.tsx:7589`: Artificial History Truncation (slice(-500)) (`<span className="text-white font-bold">{t.mint.slice(0, 6)}...{t.mint.slice(-6)}</span>`)
-- **[WARNING]** `src/components/pages/PnLPage.tsx:7802`: Artificial History Truncation (slice(-500)) (`const mintDisplay = mintStr.length > 12 ? `${mintStr.slice(0, 6)}...${mintStr.slice(-6)}` : mintStr || 'Unknown';`)
+- **[WARNING]** `src/components/pages/PnLPage.tsx:3552`: Hardcoded Secret / Private Key (`const { maxPositions, privateKey, slippage } = configRef.current;`)
+- **[WARNING]** `src/components/pages/PnLPage.tsx:3553`: Hardcoded Secret / Private Key (`// Block any token starting with 'sim' if privateKey is active`)
+- **[WARNING]** `src/components/pages/PnLPage.tsx:3809`: Hardcoded Secret / Private Key (`if (isMainnet && !privateKey && !activeWalletAddress) {`)
+- **[WARNING]** `src/components/pages/PnLPage.tsx:4616`: Hardcoded Secret / Private Key (`}, [privateKey, addLog]);`)
+- **[WARNING]** `src/components/pages/PnLPage.tsx:5248`: Hardcoded Secret / Private Key (`if (!privateKey) {`)
+- **[WARNING]** `src/components/pages/PnLPage.tsx:6691`: Hardcoded Secret / Private Key (`const netCalc = calcNetPnl(displayPrice, pos.amount || 0, pos.solSpent || 0, slippage, pos.recoveryMode, !!privateKey);`)
+- **[WARNING]** `src/components/pages/PnLPage.tsx:6704`: Hardcoded Secret / Private Key (`const netCalc = calcNetPnl(displayPrice, pos.amount || 0, pos.solSpent || 0, slippage, pos.recoveryMode, !!privateKey);`)
+- **[WARNING]** `src/components/pages/PnLPage.tsx:7215`: Artificial History Truncation (slice(-500)) (`{alert.address.slice(0, 12)}...{alert.address.slice(-6)}`)
+- **[WARNING]** `src/components/pages/PnLPage.tsx:7591`: Artificial History Truncation (slice(-500)) (`<span className="text-white font-bold">{t.mint.slice(0, 6)}...{t.mint.slice(-6)}</span>`)
+- **[WARNING]** `src/components/pages/PnLPage.tsx:7804`: Artificial History Truncation (slice(-500)) (`const mintDisplay = mintStr.length > 12 ? `${mintStr.slice(0, 6)}...${mintStr.slice(-6)}` : mintStr || 'Unknown';`)
 - **[WARNING]** `src/components/pages/SafetyPage.tsx:49`: Artificial History Truncation (slice(-500)) (`{token.address ? `${token.address.slice(0, 6)}...${token.address.slice(-4)}` : 'N/A'}`)
-- **[WARNING]** `src/components/pages/SystemCheckPage.tsx:574`: Hardcoded Secret / Private Key (`OneUptime Telemetry Token / Ingestion Secret`)
+- **[WARNING]** `src/components/pages/SystemCheckPage.tsx:827`: Hardcoded Secret / Private Key (`OneUptime Telemetry Token / Ingestion Secret`)
 - **[WARNING]** `src/lib/crypto.ts:10`: Hardcoded Secret / Private Key (`async function deriveKey(secretMaterial: string, salt: Uint8Array): Promise<CryptoKey> {`)
 - **[WARNING]** `src/lib/crypto.ts:14`: Hardcoded Secret / Private Key (`enc.encode(secretMaterial),`)
 - **[WARNING]** `src/lib/crypto.ts:34`: Hardcoded Secret / Private Key (`* Encrypts a Solana base58 private key or sensitive secret using AES-GCM (PBKDF2 600k rounds).`)

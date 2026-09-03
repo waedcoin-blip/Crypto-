@@ -60,6 +60,16 @@ export class ServerEntryGate {
       criteriaResults['MINT_VALIDITY'] = { pass: true, actualValue: mint, reason: 'VALID_MINT' };
     }
 
+    // 1b. Token Decimals Gate (Must be resolved and AVAILABLE)
+    const decimals = candidate.decimals.value;
+    if (decimals === null || candidate.decimals.state !== 'AVAILABLE' || !Number.isInteger(decimals) || decimals < 0) {
+      const r = { pass: false, actualValue: decimals, reason: 'DECIMALS_UNRESOLVED' };
+      criteriaResults['DECIMALS'] = r;
+      blockingReasons.push(r.reason);
+    } else {
+      criteriaResults['DECIMALS'] = { pass: true, actualValue: decimals, reason: 'DECIMALS_RESOLVED' };
+    }
+
     // 2. Auto Sniper Enabled
     if (!autoSniperEnabled) {
       const r = { pass: false, actualValue: autoSniperEnabled, threshold: true, reason: 'AUTO_SNIPER_DISABLED' };
@@ -188,7 +198,7 @@ export class ServerEntryGate {
     const maxAge = config.hardenedMaxAge ?? 240;
     const age = candidate.ageMinutes.value;
 
-    if (age === null) {
+    if (age === null || candidate.ageMinutes.state !== 'AVAILABLE') {
       const r = { pass: false, actualValue: null, threshold: `${minAge} - ${maxAge} min`, reason: 'TOKEN_AGE_UNAVAILABLE' };
       criteriaResults['TOKEN_AGE'] = r;
       blockingReasons.push(r.reason);

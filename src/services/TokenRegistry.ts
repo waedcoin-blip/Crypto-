@@ -61,28 +61,30 @@ export class TokenRegistry {
   }
 
   private loadTokens(): void {
-    if (typeof window === 'undefined') {
+    if (typeof localStorage !== 'undefined') {
       try {
-        const { tokenRepository } = require('../../server/repositories/TokenRepository.js');
-        const list = tokenRepository.getTokens();
-        for (const item of list) {
-          if (item && item.mintAddress) {
-            this.tokens.set(item.mintAddress, item as TokenRecord);
+        const data = localStorage.getItem('app_token_registry_tokens');
+        if (data) {
+          const list = JSON.parse(data);
+          for (const item of list) {
+            if (item && item.mintAddress) {
+              this.tokens.set(item.mintAddress, item as TokenRecord);
+            }
           }
         }
       } catch (e) {
-        // Ignored
+        console.warn('[TokenRegistry] Failed to load tokens from localStorage:', e);
       }
     }
   }
 
   private syncServer(record: TokenRecord): void {
-    if (typeof window === 'undefined') {
+    if (typeof localStorage !== 'undefined') {
       try {
-        const { tokenRepository } = require('../../server/repositories/TokenRepository.js');
-        tokenRepository.upsertToken(record as any);
+        const list = Array.from(this.tokens.values());
+        localStorage.setItem('app_token_registry_tokens', JSON.stringify(list));
       } catch (e) {
-        // Ignored
+        console.warn('[TokenRegistry] Failed to sync tokens to localStorage:', e);
       }
     }
   }
