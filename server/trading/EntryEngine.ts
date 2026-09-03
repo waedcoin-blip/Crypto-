@@ -7,12 +7,25 @@ import { serverEntryGate, ServerEntryDecision } from './ServerEntryGate.js';
 import { tradingEngine, TradeEngineResponse } from './TradingEngine.js';
 import { entryDecisionLedger, EntryDiagnosticsReport } from './EntryDecisionLedger.js';
 import { criteriaRepository } from '../repositories/CriteriaRepository.js';
-import { CriteriaService, CriteriaConfig } from '../services/criteriaService.js';
+import { CriteriaConfig } from '../services/criteriaService.js';
 import { tokenDiscovery } from '../market/TokenDiscovery.js';
+
+export type PipelineStage =
+  | 'DISCOVERED'
+  | 'ENRICHING'
+  | 'READY_FOR_EVALUATION'
+  | 'BUY_SIGNAL'
+  | 'BUY_LOCKED'
+  | 'BUY_SUBMITTED'
+  | 'BUY_CONFIRMED'
+  | 'POSITION_OPEN'
+  | 'REJECTED'
+  | 'BUY_FAILED';
 
 export interface EntryEvaluationResult {
   mintAddress: string;
   symbol: string;
+  stage: PipelineStage;
   enrichedCandidate?: EnrichedCandidate;
   scoreBreakdown?: OpportunityScoreBreakdown;
   decision?: ServerEntryDecision;
@@ -33,7 +46,6 @@ export class EntryEngine {
   private busUnsubscribe: (() => void) | null = null;
 
   private constructor() {
-    // Read initial environment defaults
     this.autoSniperEnabled = process.env.AUTO_SNIPER_ENABLED === 'true';
     this.isLiveTrading = process.env.IS_LIVE_TRADING === 'true';
     this.targetNetwork = process.env.DEFAULT_NETWORK || (this.isLiveTrading ? 'mainnet' : 'paper');
@@ -115,7 +127,7 @@ export class EntryEngine {
       if (!tokenDiscovery.isValidMintCandidate(key)) continue;
       entryDecisionLedger.recordCandidateDetected();
 
-      // Process candidate evaluation
+      // Fire candidate evaluation asynchronously with lock protection
       this.evaluateAndTrade(key, 'HELIUS_WSS_STREAM').catch(() => {});
     }
   }
@@ -134,7 +146,13 @@ export class EntryEngine {
     const lockKey = `${network}:${wallet}:${trimmedMint}`;
 
     if (this.activeEvaluationLocks.has(lockKey)) {
-      return this.activeEvaluationLocks.get(lockKey)!;
+      return {
+        mintAddress: trimmedMint,
+        symbol: 'UNKNOWN',
+        stage: 'BUY_LOCKED',
+        status: 'SKIPPED',
+        error: 'Evaluation locked due to concurrent process',
+      };
     }
 
     const evalPromise = this.executePipeline(trimmedMint, network, wallet, triggerSource);
@@ -154,11 +172,11 @@ export class EntryEngine {
     triggerSource: string
   ): Promise<EntryEvaluationResult> {
     try {
-      // 1. Enrich candidate market data
+      // 1. DISCOVERED -> ENRICHING
       entryDecisionLedger.recordEnriched();
       const candidate = await candidateEnricher.enrichCandidate(mint, network);
 
-      // 2. Score opportunity
+      // 2. READY_FOR_EVALUATION -> Score opportunity
       entryDecisionLedger.recordScored();
       const scoreBreakdown = opportunityScorer.scoreCandidate(candidate);
 
@@ -190,18 +208,21 @@ export class EntryEngine {
 
       // 6. Execute BUY if Entry Gate Passed
       let tradeResponse: TradeEngineResponse | undefined;
+      let finalStage: PipelineStage = decision.allowed ? 'BUY_SIGNAL' : 'REJECTED';
 
       if (decision.allowed) {
+        finalStage = 'BUY_LOCKED';
         console.log(
           `[BUY ATTEMPT] mint=${mint} symbol=${candidate.symbol} amountSol=${decision.buyAmountSol} network=${network} wallet=${wallet}`
         );
 
+        finalStage = 'BUY_SUBMITTED';
         tradeResponse = await tradingEngine.buy({
           network,
           wallet,
           mint,
           amountSol: decision.buyAmountSol,
-          decimals: candidate.decimals,
+          decimals: candidate.decimals.value ?? undefined,
           slippageBps: Math.round((Number(activeCriteria.slippage) || 1.0) * 100) || 250,
           maxRebuyTimes: activeCriteria.maxRebuyTimes ?? 1,
           tradeOnlyOnce: activeCriteria.tradeOnlyOnce ?? true,
@@ -224,10 +245,12 @@ export class EntryEngine {
         });
 
         if (tradeResponse.success) {
+          finalStage = 'POSITION_OPEN';
           console.log(
             `[BUY CONFIRMED] mint=${mint} symbol=${candidate.symbol} orderId=${tradeResponse.orderId} sig=${tradeResponse.signature}`
           );
         } else {
+          finalStage = 'BUY_FAILED';
           console.warn(
             `[BUY FAILED] mint=${mint} symbol=${candidate.symbol} error=${tradeResponse.error}`
           );
@@ -237,6 +260,7 @@ export class EntryEngine {
       return {
         mintAddress: mint,
         symbol: candidate.symbol,
+        stage: finalStage,
         enrichedCandidate: candidate,
         scoreBreakdown,
         decision,
@@ -248,6 +272,7 @@ export class EntryEngine {
       return {
         mintAddress: mint,
         symbol: 'UNKNOWN',
+        stage: 'BUY_FAILED',
         status: 'FAILED',
         error: err.message,
       };

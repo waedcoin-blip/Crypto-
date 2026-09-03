@@ -97,12 +97,20 @@ export class TradingEngine {
       if (existingPos?.decimals !== undefined && Number.isInteger(existingPos.decimals)) {
         decimals = existingPos.decimals;
       } else {
-        const executor = executionGateway.getExecutor(network) as any;
-        const tokenInfo = await tokenProgramResolver.resolve(
-          executor?.connection || null,
-          mint
-        );
-        decimals = tokenInfo.decimals;
+        try {
+          const executor = executionGateway.getExecutor(network) as any;
+          const tokenInfo = await tokenProgramResolver.resolve(
+            executor?.connection || null,
+            mint
+          );
+          decimals = tokenInfo.decimals;
+        } catch (err: any) {
+          if (network === 'paper') {
+            decimals = 6;
+          } else {
+            throw err;
+          }
+        }
       }
     }
 

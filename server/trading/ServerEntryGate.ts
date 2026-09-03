@@ -4,10 +4,11 @@ import { CriteriaConfig, DEFAULT_CRITERIA } from '../services/criteriaService.js
 import { positionManager } from './PositionManager.js';
 import { rebuyGuard } from './RebuyGuard.js';
 import { executionGateway } from '../execution/ExecutionGateway.js';
+import { tokenMintResolver } from '../market/TokenMintResolver.js';
 
 export interface CriterionCheckResult {
   pass: boolean;
-  actualValue?: string | number | boolean;
+  actualValue?: string | number | boolean | null;
   threshold?: string | number | boolean;
   reason: string;
 }
@@ -18,6 +19,7 @@ export interface ServerEntryDecision {
   mintAddress: string;
   symbol: string;
   buyAmountSol: number;
+  matchScorePct: number;
   criteriaResults: Record<string, CriterionCheckResult>;
   blockingReasons: string[];
   evaluatedAt: number;
@@ -48,9 +50,10 @@ export class ServerEntryGate {
     const blockingReasons: string[] = [];
     const mint = candidate.mintAddress.trim();
 
-    // 1. Mint Validity
-    if (!mint || mint === 'So11111111111111111111111111111111111111112' || mint.length < 32 || mint.length > 44) {
-      const r = { pass: false, actualValue: mint, reason: 'INVALID_MINT_ADDRESS' };
+    // 1. Mint Validity (Strict SPL/Token-2022 Token Mint Check)
+    const mintClassification = tokenMintResolver.classifyAddress(mint);
+    if (!mintClassification.isValidMint) {
+      const r = { pass: false, actualValue: mint, reason: `TOKEN_MINT_INVALID: ${mintClassification.reason}` };
       criteriaResults['MINT_VALIDITY'] = r;
       blockingReasons.push(r.reason);
     } else {
@@ -90,7 +93,8 @@ export class ServerEntryGate {
     // 4. Platform Filter
     const isPumpFun = candidate.dexId.includes('pump') || mint.toLowerCase().endsWith('pump');
     const isRaydium = candidate.dexId.includes('raydium') || candidate.isRaydiumListed;
-    const isBonding = candidate.bondingCurveProgress < 100 && isPumpFun;
+    const bondingProgressVal = candidate.bondingCurveProgress.value ?? 0;
+    const isBonding = bondingProgressVal < 100 && isPumpFun;
 
     const tradePumpFun = config.tradePumpFun ?? true;
     const tradeRaydium = config.tradeRaydium ?? true;
@@ -121,44 +125,56 @@ export class ServerEntryGate {
     };
     if (!platformAllowed) blockingReasons.push(platformReason);
 
-    // 5. Market Cap
+    // 5. Market Cap (Requires AVAILABLE Metric)
+    const mcap = candidate.marketCapUsd.value;
     const minMcap = candidate.isRaydiumListed ? config.hardenedMcapMinRaydium : config.hardenedMcapMinPump;
     const maxMcap = config.hardenedMcapMax;
-    if (candidate.marketCapUsd < minMcap || candidate.marketCapUsd > maxMcap) {
+
+    if (mcap === null || candidate.marketCapUsd.state !== 'AVAILABLE') {
+      const r = { pass: false, actualValue: null, threshold: `$${minMcap} - $${maxMcap}`, reason: 'MARKET_CAP_UNAVAILABLE' };
+      criteriaResults['MARKET_CAP'] = r;
+      blockingReasons.push(r.reason);
+    } else if (mcap < minMcap || mcap > maxMcap) {
       const r = {
         pass: false,
-        actualValue: candidate.marketCapUsd,
+        actualValue: mcap,
         threshold: `$${minMcap} - $${maxMcap}`,
-        reason: `MCAP_OUT_OF_BOUNDS: $${candidate.marketCapUsd.toFixed(0)} not in [$${minMcap}, $${maxMcap}]`,
+        reason: `MCAP_OUT_OF_BOUNDS: $${mcap.toFixed(0)} not in [$${minMcap}, $${maxMcap}]`,
       };
       criteriaResults['MARKET_CAP'] = r;
       blockingReasons.push(r.reason);
     } else {
       criteriaResults['MARKET_CAP'] = {
         pass: true,
-        actualValue: candidate.marketCapUsd,
+        actualValue: mcap,
         threshold: `$${minMcap} - $${maxMcap}`,
         reason: 'MCAP_IN_RANGE',
       };
     }
 
-    // 6. Bonding Progress
+    // 6. Bonding Progress (Requires AVAILABLE for Pump.fun)
     if (isPumpFun && !candidate.isRaydiumListed) {
       const minProgress = config.hardenedMinBondingProgress ?? 0;
       const maxProgress = config.hardenedMaxBondingProgress ?? 100;
-      if (candidate.bondingCurveProgress < minProgress || candidate.bondingCurveProgress > maxProgress) {
+      const progress = candidate.bondingCurveProgress.value;
+
+      if (progress === null) {
+        const r = { pass: false, actualValue: null, threshold: `${minProgress}% - ${maxProgress}%`, reason: 'BONDING_PROGRESS_UNAVAILABLE' };
+        criteriaResults['BONDING_PROGRESS'] = r;
+        blockingReasons.push(r.reason);
+      } else if (progress < minProgress || progress > maxProgress) {
         const r = {
           pass: false,
-          actualValue: candidate.bondingCurveProgress,
+          actualValue: progress,
           threshold: `${minProgress}% - ${maxProgress}%`,
-          reason: `BONDING_PROGRESS_OUT_OF_BOUNDS: ${candidate.bondingCurveProgress}% not in [${minProgress}%, ${maxProgress}%]`,
+          reason: `BONDING_PROGRESS_OUT_OF_BOUNDS: ${progress.toFixed(1)}% not in [${minProgress}%, ${maxProgress}%]`,
         };
         criteriaResults['BONDING_PROGRESS'] = r;
         blockingReasons.push(r.reason);
       } else {
         criteriaResults['BONDING_PROGRESS'] = {
           pass: true,
-          actualValue: candidate.bondingCurveProgress,
+          actualValue: progress,
           threshold: `${minProgress}% - ${maxProgress}%`,
           reason: 'BONDING_PROGRESS_OK',
         };
@@ -167,83 +183,108 @@ export class ServerEntryGate {
       criteriaResults['BONDING_PROGRESS'] = { pass: true, reason: 'MIGRATED_OR_RAYDIUM' };
     }
 
-    // 7. Token Age
+    // 7. Token Age (Minutes)
     const minAge = config.hardenedMinAge ?? 0;
     const maxAge = config.hardenedMaxAge ?? 240;
-    if (candidate.ageMinutes > 0 && (candidate.ageMinutes < minAge || candidate.ageMinutes > maxAge)) {
+    const age = candidate.ageMinutes.value;
+
+    if (age === null) {
+      const r = { pass: false, actualValue: null, threshold: `${minAge} - ${maxAge} min`, reason: 'TOKEN_AGE_UNAVAILABLE' };
+      criteriaResults['TOKEN_AGE'] = r;
+      blockingReasons.push(r.reason);
+    } else if (age < minAge || age > maxAge) {
       const r = {
         pass: false,
-        actualValue: Number(candidate.ageMinutes.toFixed(1)),
+        actualValue: Number(age.toFixed(1)),
         threshold: `${minAge} - ${maxAge} min`,
-        reason: `TOKEN_AGE_OUT_OF_BOUNDS: ${candidate.ageMinutes.toFixed(1)}m not in [${minAge}m, ${maxAge}m]`,
+        reason: `TOKEN_AGE_OUT_OF_BOUNDS: ${age.toFixed(1)}m not in [${minAge}m, ${maxAge}m]`,
       };
       criteriaResults['TOKEN_AGE'] = r;
       blockingReasons.push(r.reason);
     } else {
       criteriaResults['TOKEN_AGE'] = {
         pass: true,
-        actualValue: Number(candidate.ageMinutes.toFixed(1)),
+        actualValue: Number(age.toFixed(1)),
         threshold: `${minAge} - ${maxAge} min`,
         reason: 'TOKEN_AGE_OK',
       };
     }
 
-    // 8. Liquidity USD
+    // 8. Liquidity USD (Requires AVAILABLE Metric)
     const minLiq = config.hardenedLiquidityMin;
-    if (candidate.liquidityUsd < minLiq) {
+    const liq = candidate.liquidityUsd.value;
+
+    if (liq === null || candidate.liquidityUsd.state !== 'AVAILABLE') {
+      const r = { pass: false, actualValue: null, threshold: minLiq, reason: 'LIQUIDITY_UNAVAILABLE' };
+      criteriaResults['LIQUIDITY'] = r;
+      blockingReasons.push(r.reason);
+    } else if (liq < minLiq) {
       const r = {
         pass: false,
-        actualValue: candidate.liquidityUsd,
+        actualValue: liq,
         threshold: minLiq,
-        reason: `LIQUIDITY_TOO_LOW: $${candidate.liquidityUsd.toFixed(0)} < $${minLiq}`,
+        reason: `LIQUIDITY_TOO_LOW: $${liq.toFixed(0)} < $${minLiq}`,
       };
       criteriaResults['LIQUIDITY'] = r;
       blockingReasons.push(r.reason);
     } else {
       criteriaResults['LIQUIDITY'] = {
         pass: true,
-        actualValue: candidate.liquidityUsd,
+        actualValue: liq,
         threshold: minLiq,
         reason: 'LIQUIDITY_OK',
       };
     }
 
-    // 9. Liquidity Ratio
-    const liqRatio = candidate.liquidityUsd / Math.max(1, candidate.marketCapUsd);
+    // 9. Liquidity Ratio (Liq / Mcap >= minRatio)
     const minLiqRatio = (config.hardenedLiquidityRatio || 5) > 1 ? config.hardenedLiquidityRatio / 100 : config.hardenedLiquidityRatio || 0.05;
-    if (liqRatio < minLiqRatio) {
-      const r = {
-        pass: false,
-        actualValue: Number((liqRatio * 100).toFixed(1)),
-        threshold: Number((minLiqRatio * 100).toFixed(1)),
-        reason: `LIQUIDITY_RATIO_TOO_LOW: ${(liqRatio * 100).toFixed(1)}% < ${(minLiqRatio * 100).toFixed(1)}%`,
-      };
+    if (liq !== null && mcap !== null && mcap > 0) {
+      const liqRatio = liq / mcap;
+      if (liqRatio < minLiqRatio) {
+        const r = {
+          pass: false,
+          actualValue: Number((liqRatio * 100).toFixed(2)),
+          threshold: Number((minLiqRatio * 100).toFixed(2)),
+          reason: `LIQUIDITY_RATIO_TOO_LOW: ${(liqRatio * 100).toFixed(2)}% < ${(minLiqRatio * 100).toFixed(2)}%`,
+        };
+        criteriaResults['LIQUIDITY_RATIO'] = r;
+        blockingReasons.push(r.reason);
+      } else {
+        criteriaResults['LIQUIDITY_RATIO'] = {
+          pass: true,
+          actualValue: Number((liqRatio * 100).toFixed(2)),
+          threshold: Number((minLiqRatio * 100).toFixed(2)),
+          reason: 'LIQUIDITY_RATIO_OK',
+        };
+      }
+    } else {
+      const r = { pass: false, reason: 'LIQUIDITY_RATIO_UNAVAILABLE' };
       criteriaResults['LIQUIDITY_RATIO'] = r;
       blockingReasons.push(r.reason);
-    } else {
-      criteriaResults['LIQUIDITY_RATIO'] = {
-        pass: true,
-        actualValue: Number((liqRatio * 100).toFixed(1)),
-        threshold: Number((minLiqRatio * 100).toFixed(1)),
-        reason: 'LIQUIDITY_RATIO_OK',
-      };
     }
 
     // 10. Risk Score & Rug Safety
     const maxRisk = config.hardenedMaxRiskScore ?? 22;
-    if (!candidate.isRugSafe || candidate.riskScore > maxRisk) {
+    const risk = candidate.riskScore.value;
+    const rugSafe = candidate.isRugSafe.value;
+
+    if (risk === null || candidate.riskScore.state !== 'AVAILABLE') {
+      const r = { pass: false, actualValue: null, threshold: maxRisk, reason: 'SECURITY_DATA_UNAVAILABLE' };
+      criteriaResults['RISK_SCORE'] = r;
+      blockingReasons.push(r.reason);
+    } else if (risk > maxRisk || rugSafe === false) {
       const r = {
         pass: false,
-        actualValue: candidate.riskScore,
+        actualValue: risk,
         threshold: maxRisk,
-        reason: `RISK_SCORE_TOO_HIGH: risk=${candidate.riskScore} > ${maxRisk} or rugUnsafe`,
+        reason: `RISK_SCORE_TOO_HIGH: risk=${risk} > ${maxRisk} or rugUnsafe`,
       };
       criteriaResults['RISK_SCORE'] = r;
       blockingReasons.push(r.reason);
     } else {
       criteriaResults['RISK_SCORE'] = {
         pass: true,
-        actualValue: candidate.riskScore,
+        actualValue: risk,
         threshold: maxRisk,
         reason: 'RISK_SCORE_SAFE',
       };
@@ -251,19 +292,25 @@ export class ServerEntryGate {
 
     // 11. Dev Ownership (Strict 0 - 100% scale)
     const maxDev = config.hardenedMaxDevOwnership ?? 10;
-    if (candidate.devWalletOwnershipPct > maxDev) {
+    const devPct = candidate.devWalletOwnershipPct.value;
+
+    if (devPct === null || candidate.devWalletOwnershipPct.state !== 'AVAILABLE') {
+      const r = { pass: false, actualValue: null, threshold: maxDev, reason: 'DEV_OWNERSHIP_UNAVAILABLE' };
+      criteriaResults['DEV_OWNERSHIP'] = r;
+      blockingReasons.push(r.reason);
+    } else if (devPct > maxDev) {
       const r = {
         pass: false,
-        actualValue: candidate.devWalletOwnershipPct,
+        actualValue: devPct,
         threshold: maxDev,
-        reason: `DEV_OWNERSHIP_TOO_HIGH: ${candidate.devWalletOwnershipPct.toFixed(1)}% > ${maxDev}%`,
+        reason: `DEV_OWNERSHIP_TOO_HIGH: ${devPct.toFixed(1)}% > ${maxDev}%`,
       };
       criteriaResults['DEV_OWNERSHIP'] = r;
       blockingReasons.push(r.reason);
     } else {
       criteriaResults['DEV_OWNERSHIP'] = {
         pass: true,
-        actualValue: candidate.devWalletOwnershipPct,
+        actualValue: devPct,
         threshold: maxDev,
         reason: 'DEV_OWNERSHIP_SAFE',
       };
@@ -271,19 +318,25 @@ export class ServerEntryGate {
 
     // 12. Top 10 Ownership (Strict 0 - 100% scale)
     const maxTop10 = config.hardenedMaxTop10 ?? 25.0;
-    if (candidate.top10HoldersPct > maxTop10) {
+    const top10Pct = candidate.top10HoldersPct.value;
+
+    if (top10Pct === null || candidate.top10HoldersPct.state !== 'AVAILABLE') {
+      const r = { pass: false, actualValue: null, threshold: maxTop10, reason: 'TOP10_OWNERSHIP_UNAVAILABLE' };
+      criteriaResults['TOP10_OWNERSHIP'] = r;
+      blockingReasons.push(r.reason);
+    } else if (top10Pct > maxTop10) {
       const r = {
         pass: false,
-        actualValue: candidate.top10HoldersPct,
+        actualValue: top10Pct,
         threshold: maxTop10,
-        reason: `TOP10_OWNERSHIP_TOO_HIGH: ${candidate.top10HoldersPct.toFixed(1)}% > ${maxTop10}%`,
+        reason: `TOP10_OWNERSHIP_TOO_HIGH: ${top10Pct.toFixed(1)}% > ${maxTop10}%`,
       };
       criteriaResults['TOP10_OWNERSHIP'] = r;
       blockingReasons.push(r.reason);
     } else {
       criteriaResults['TOP10_OWNERSHIP'] = {
         pass: true,
-        actualValue: candidate.top10HoldersPct,
+        actualValue: top10Pct,
         threshold: maxTop10,
         reason: 'TOP10_OWNERSHIP_SAFE',
       };
@@ -291,19 +344,21 @@ export class ServerEntryGate {
 
     // 13. Unique Buyers 30s
     const minUnique = config.hardenedMinUniqueBuyers30s ?? 4;
-    if (candidate.uniqueBuyers30s < minUnique) {
+    const uniqueBuyers = candidate.uniqueBuyers30s.value;
+
+    if (uniqueBuyers !== null && uniqueBuyers < minUnique) {
       const r = {
         pass: false,
-        actualValue: candidate.uniqueBuyers30s,
+        actualValue: uniqueBuyers,
         threshold: minUnique,
-        reason: `UNIQUE_BUYERS_TOO_LOW: ${candidate.uniqueBuyers30s} < ${minUnique}`,
+        reason: `UNIQUE_BUYERS_TOO_LOW: ${uniqueBuyers} < ${minUnique}`,
       };
       criteriaResults['UNIQUE_BUYERS'] = r;
       blockingReasons.push(r.reason);
     } else {
       criteriaResults['UNIQUE_BUYERS'] = {
         pass: true,
-        actualValue: candidate.uniqueBuyers30s,
+        actualValue: uniqueBuyers,
         threshold: minUnique,
         reason: 'UNIQUE_BUYERS_OK',
       };
@@ -312,61 +367,72 @@ export class ServerEntryGate {
     // 14. Buy Count 30s
     const minBuys = config.hardenedMinBuyCount30s ?? 4;
     const maxBuys = config.hardenedMaxBuyCount30s ?? 40;
-    if (candidate.buyCount30s < minBuys || candidate.buyCount30s > maxBuys) {
+    const buyCount = candidate.buyCount30s.value;
+
+    if (buyCount !== null && (buyCount < minBuys || buyCount > maxBuys)) {
       const r = {
         pass: false,
-        actualValue: candidate.buyCount30s,
+        actualValue: buyCount,
         threshold: `${minBuys} - ${maxBuys}`,
-        reason: `BUY_COUNT_OUT_OF_BOUNDS: ${candidate.buyCount30s} not in [${minBuys}, ${maxBuys}]`,
+        reason: `BUY_COUNT_OUT_OF_BOUNDS: ${buyCount} not in [${minBuys}, ${maxBuys}]`,
       };
       criteriaResults['BUY_COUNT'] = r;
       blockingReasons.push(r.reason);
     } else {
       criteriaResults['BUY_COUNT'] = {
         pass: true,
-        actualValue: candidate.buyCount30s,
+        actualValue: buyCount,
         threshold: `${minBuys} - ${maxBuys}`,
         reason: 'BUY_COUNT_OK',
       };
     }
 
     // 15. Buy / Sell Ratio
-    const buySellRatio = candidate.totalBuys / Math.max(1, candidate.totalSells);
+    const totalBuys = candidate.totalBuys.value;
+    const totalSells = candidate.totalSells.value;
     const minRatio = config.hardenedMinBuySellRatio ?? 1.5;
     const maxRatio = config.hardenedMaxBuySellRatio ?? 15.0;
-    if (buySellRatio < minRatio || buySellRatio > maxRatio) {
-      const r = {
-        pass: false,
-        actualValue: Number(buySellRatio.toFixed(2)),
-        threshold: `${minRatio} - ${maxRatio}`,
-        reason: `BUY_SELL_RATIO_OUT_OF_BOUNDS: ${buySellRatio.toFixed(2)} not in [${minRatio}, ${maxRatio}]`,
-      };
-      criteriaResults['BUY_SELL_RATIO'] = r;
-      blockingReasons.push(r.reason);
+
+    if (totalBuys !== null && totalSells !== null) {
+      const buySellRatio = totalBuys / Math.max(1, totalSells);
+      if (buySellRatio < minRatio || buySellRatio > maxRatio) {
+        const r = {
+          pass: false,
+          actualValue: Number(buySellRatio.toFixed(2)),
+          threshold: `${minRatio} - ${maxRatio}`,
+          reason: `BUY_SELL_RATIO_OUT_OF_BOUNDS: ${buySellRatio.toFixed(2)} not in [${minRatio}, ${maxRatio}]`,
+        };
+        criteriaResults['BUY_SELL_RATIO'] = r;
+        blockingReasons.push(r.reason);
+      } else {
+        criteriaResults['BUY_SELL_RATIO'] = {
+          pass: true,
+          actualValue: Number(buySellRatio.toFixed(2)),
+          threshold: `${minRatio} - ${maxRatio}`,
+          reason: 'BUY_SELL_RATIO_OK',
+        };
+      }
     } else {
-      criteriaResults['BUY_SELL_RATIO'] = {
-        pass: true,
-        actualValue: Number(buySellRatio.toFixed(2)),
-        threshold: `${minRatio} - ${maxRatio}`,
-        reason: 'BUY_SELL_RATIO_OK',
-      };
+      criteriaResults['BUY_SELL_RATIO'] = { pass: true, reason: 'RATIO_NOT_APPLICABLE' };
     }
 
     // 16. Price Change 1m
     const maxPriceChange = config.hardenedMaxPriceChange1m ?? 15.0;
-    if (candidate.priceChange1m > maxPriceChange) {
+    const priceChange = candidate.priceChange1m.value;
+
+    if (priceChange !== null && priceChange > maxPriceChange) {
       const r = {
         pass: false,
-        actualValue: candidate.priceChange1m,
+        actualValue: priceChange,
         threshold: maxPriceChange,
-        reason: `PRICE_CHANGE_1M_TOO_HIGH: ${candidate.priceChange1m.toFixed(1)}% > ${maxPriceChange}%`,
+        reason: `PRICE_CHANGE_1M_TOO_HIGH: ${priceChange.toFixed(1)}% > ${maxPriceChange}%`,
       };
       criteriaResults['PRICE_CHANGE'] = r;
       blockingReasons.push(r.reason);
     } else {
       criteriaResults['PRICE_CHANGE'] = {
         pass: true,
-        actualValue: candidate.priceChange1m,
+        actualValue: priceChange,
         threshold: maxPriceChange,
         reason: 'PRICE_CHANGE_OK',
       };
@@ -417,6 +483,23 @@ export class ServerEntryGate {
       blockingReasons.push(r.reason);
     }
 
+    // 19. Required Criteria Match Score (Default >= 80%)
+    const totalChecks = Object.keys(criteriaResults).length;
+    const passedChecks = Object.values(criteriaResults).filter((c) => c.pass).length;
+    const matchScorePct = totalChecks > 0 ? Math.round((passedChecks / totalChecks) * 100) : 0;
+    const requiredMatchPct = 80;
+
+    if (matchScorePct < requiredMatchPct) {
+      const r = {
+        pass: false,
+        actualValue: matchScorePct,
+        threshold: requiredMatchPct,
+        reason: `MATCH_SCORE_TOO_LOW: ${matchScorePct}% < ${requiredMatchPct}%`,
+      };
+      criteriaResults['MATCH_SCORE'] = r;
+      blockingReasons.push(r.reason);
+    }
+
     const allowed = blockingReasons.length === 0;
 
     return {
@@ -425,6 +508,7 @@ export class ServerEntryGate {
       mintAddress: mint,
       symbol: candidate.symbol,
       buyAmountSol,
+      matchScorePct,
       criteriaResults,
       blockingReasons,
       evaluatedAt: Date.now(),

@@ -1,6 +1,31 @@
 // server/market/OnChainEventNormalizer.ts
 import { MarketEvent } from './EventNormalizer.js';
+import { tokenMintResolver } from './TokenMintResolver.js';
 import bs58 from 'bs58';
+
+export type TokenDiscoverySource = 'PULSE_FEED' | 'HELIUS_WSS' | 'DEXSCREENER' | 'MANUAL' | 'YELLOWSTONE_GRPC';
+export type TokenEventType =
+  | 'DISCOVERY'
+  | 'ENRICHMENT'
+  | 'CRITERIA_PASS'
+  | 'CRITERIA_FAIL'
+  | 'BUY_SIGNAL'
+  | 'BUY_ATTEMPT'
+  | 'BUY_SUBMITTED'
+  | 'BUY_CONFIRMED'
+  | 'BUY_FAILED'
+  | 'POSITION_OPENED';
+
+export interface NormalizedTokenEvent {
+  mint: string;
+  signature?: string;
+  slot?: number;
+  source: TokenDiscoverySource;
+  eventType: TokenEventType;
+  timestamp: number;
+  confidence: number;
+  raw?: unknown;
+}
 
 export interface NormalizedOnChainEvent extends MarketEvent {
   eventId: string;
@@ -13,6 +38,7 @@ export interface NormalizedOnChainEvent extends MarketEvent {
   err?: any;
   programId?: string;
   accountKeys?: string[];
+  candidateMint?: string;
 }
 
 export class OnChainEventNormalizer {
@@ -37,6 +63,7 @@ export class OnChainEventNormalizer {
 
   /**
    * Normalizes standard Solana JSON-RPC WebSocket notifications (from Helius WSS).
+   * Strictly resolves genuine token mints and rejects program IDs / sysvars.
    */
   public static normalizeWssNotification(
     msg: any,
@@ -79,15 +106,11 @@ export class OnChainEventNormalizer {
 
       // Extract referenced accounts from log messages or signature context if present
       const accountKeys: string[] = [];
-      
-      // Look for Program log or Transfer mint candidates in logs
-      for (const log of logs) {
-        if (typeof log === 'string') {
-          const match = log.match(/Program ([1-9A-HJ-NP-Za-km-z]{32,44}) (?:invoke|success)/);
-          if (match && match[1]) {
-            accountKeys.push(match[1]);
-          }
-        }
+
+      // Extract real token mint from logs using TokenMintResolver (Pump.fun / Raydium / Token Program)
+      const extractedMint = tokenMintResolver.extractMintFromLogs(logs);
+      if (extractedMint) {
+        accountKeys.push(extractedMint);
       }
 
       const eventId = this.generateEventId('HELIUS_WSS', 'ON_CHAIN_TX', slot, signature);
@@ -103,6 +126,7 @@ export class OnChainEventNormalizer {
         receivedAt: now,
         type: 'ON_CHAIN_TX',
         accountKeys,
+        candidateMint: extractedMint || undefined,
         logMessages: logs,
         err,
         raw: msg,
@@ -116,7 +140,8 @@ export class OnChainEventNormalizer {
       const pubkey = typeof value.pubkey === 'string' ? value.pubkey : result.pubkey || '';
       const account = value.account || result.account || {};
       const owner = typeof account.owner === 'string' ? account.owner : '';
-      const lamports = Number(account.lamports || 0);
+
+      const isMint = tokenMintResolver.isValidMint(pubkey);
 
       const eventId = this.generateEventId('HELIUS_WSS', 'ACCOUNT_UPDATE', slot, undefined, pubkey);
 
@@ -130,9 +155,10 @@ export class OnChainEventNormalizer {
         timestamp: now,
         receivedAt: now,
         type: 'ACCOUNT_UPDATE',
-        mint: pubkey,
+        mint: isMint ? pubkey : undefined,
         owner,
-        accountKeys: pubkey ? [pubkey] : [],
+        accountKeys: isMint ? [pubkey] : [],
+        candidateMint: isMint ? pubkey : undefined,
         raw: msg,
       };
     }
