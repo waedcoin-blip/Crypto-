@@ -59,11 +59,26 @@ export class YellowstoneConnectionManager {
 
   public async connect(): Promise<boolean> {
     if (this.isConnected || this.isConnecting) return true;
+
+    const xToken =
+      this.xToken ||
+      process.env.HELIUS_API_KEY ||
+      (this.network === 'devnet'
+        ? process.env.YELLOWSTONE_GRPC_DEVNET_X_TOKEN
+        : process.env.YELLOWSTONE_GRPC_X_TOKEN);
+
+    if (this.endpoint.includes('helius-rpc.com') && !xToken) {
+      console.log(`[YELLOWSTONE MANAGER] Yellowstone gRPC X-Token / HELIUS_API_KEY not configured for ${this.network}. Skipping gRPC connection.`);
+      this.isConnected = false;
+      this.isConnecting = false;
+      return false;
+    }
+
     this.isConnecting = true;
 
     try {
       console.log(`[YELLOWSTONE MANAGER] Connecting to ${this.network} gRPC endpoint: ${this.endpoint}`);
-      this.client = new Client(this.endpoint, this.xToken, undefined);
+      this.client = new Client(this.endpoint, xToken || undefined, undefined);
 
       this.stream = await this.client.subscribe();
       this.isConnected = true;
@@ -114,7 +129,20 @@ export class YellowstoneConnectionManager {
       return true;
     } catch (err: any) {
       this.isConnecting = false;
-      console.warn(`[YELLOWSTONE MANAGER] Connection failed on ${this.network}:`, err?.message || err);
+      this.isConnected = false;
+      const errMsg = String(err?.message || err);
+      console.log(`[YELLOWSTONE MANAGER] Could not establish gRPC connection on ${this.network}: ${errMsg}`);
+      const lower = errMsg.toLowerCase();
+      if (
+        lower.includes('failed to connect') ||
+        lower.includes('failed to open subscribe stream') ||
+        lower.includes('401') ||
+        lower.includes('permission denied') ||
+        lower.includes('unavailable')
+      ) {
+        console.log(`[YELLOWSTONE MANAGER] gRPC endpoint unavailable or unauthenticated on ${this.network}. Auto-reconnect paused.`);
+        return false;
+      }
       this.scheduleReconnect();
       return false;
     }
@@ -154,6 +182,11 @@ export class YellowstoneConnectionManager {
 
   private scheduleReconnect(): void {
     if (this.reconnectTimer) return;
+
+    if (this.reconnectCount >= 10) {
+      console.log(`[YELLOWSTONE MANAGER] Max reconnect attempts (10) reached for ${this.network}. Pausing auto-reconnect.`);
+      return;
+    }
 
     this.reconnectCount++;
     const backoffMs = Math.min(30000, 1000 * Math.pow(2, Math.min(this.reconnectCount, 5)));

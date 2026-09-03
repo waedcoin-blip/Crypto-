@@ -1,4 +1,5 @@
 // server/workers/tradingWorker.ts
+import '../utils/polyfill.js';
 import dotenv from 'dotenv';
 import { reconcileDatabaseWithMainnet } from './StartupReconciliationWorker.js';
 import { tradingMonitorWorker } from './TradingMonitorWorker.js';

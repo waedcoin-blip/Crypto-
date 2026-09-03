@@ -258,6 +258,7 @@ export function sanitizeApiKey(rawKey?: string): string {
 export function parseHeliusError(err: unknown): {
   isPlanError: boolean;
   isAuthError: boolean;
+  isConnectionError: boolean;
   message: string;
   userActionableMessage: string;
 } {
@@ -300,6 +301,19 @@ export function parseHeliusError(err: unknown): {
     lower.includes('401') ||
     lower.includes('permission denied');
 
+  const isConnectionError =
+    lower.includes('failed to connect') ||
+    lower.includes('failed to open subscribe stream') ||
+    lower.includes('connect error') ||
+    lower.includes('unavailable') ||
+    lower.includes('connection refused') ||
+    lower.includes('econnrefused') ||
+    lower.includes('econnreset') ||
+    lower.includes('etimedout') ||
+    lower.includes('deadline_exceeded') ||
+    lower.includes('dns lookup failed') ||
+    lower.includes('getaddrinfo');
+
   let userActionableMessage = errMsg;
   if (isPlanError) {
     userActionableMessage =
@@ -307,9 +321,17 @@ export function parseHeliusError(err: unknown): {
   } else if (isAuthError) {
     userActionableMessage =
       'Invalid API Key provided for gRPC streaming. Please verify your credentials.';
+  } else if (isConnectionError) {
+    if (lower.includes('failed to open subscribe stream')) {
+      userActionableMessage =
+        'Failed to open gRPC subscription stream. Please verify endpoint access and gRPC plan.';
+    } else {
+      userActionableMessage =
+        'Failed to connect to gRPC endpoint. Please check gRPC endpoint URL and API key.';
+    }
   }
 
-  return { isPlanError, isAuthError, message: errMsg, userActionableMessage };
+  return { isPlanError, isAuthError, isConnectionError, message: errMsg, userActionableMessage };
 }
 
 // ─── Transaction Normalization ───
@@ -432,8 +454,16 @@ export async function startLaserStream(
     endpoint = resolveYellowstoneEndpoint(options);
   } catch (err: any) {
     const parsed = parseHeliusError(err);
-    laserLogger.info({ error: parsed.message }, 'Yellowstone endpoint is not configured; gRPC disabled');
+    laserLogger.info({ details: parsed.message }, 'Yellowstone endpoint is not configured; gRPC disabled');
     laserStreamWatchdog.recordError(parsed.userActionableMessage);
+    laserStreamWatchdog.setTransportState(false, null, 'disabled', network);
+    return null;
+  }
+
+  if (endpoint.includes('helius-rpc.com') && !apiKey) {
+    laserLogger.info({ endpoint, network }, 'Helius gRPC API key is not configured; gRPC stream disabled');
+    state.mode = 'disabled';
+    laserStreamWatchdog.recordError('Helius gRPC API key is required for gRPC streaming.');
     laserStreamWatchdog.setTransportState(false, null, 'disabled', network);
     return null;
   }
@@ -549,10 +579,10 @@ export async function startLaserStream(
       const parsed = parseHeliusError(error);
       state.transportConnected = false;
 
-      if (parsed.isPlanError || parsed.isAuthError) {
+      if (parsed.isPlanError || parsed.isAuthError || parsed.isConnectionError) {
         laserLogger.info(
-          { error: parsed.message },
-          'Helius gRPC plan/permission error; disabling gRPC stream reconnects.'
+          { cause: parsed.message, notice: parsed.userActionableMessage },
+          'Helius gRPC stream connection error; disabling gRPC stream reconnects.'
         );
         state.mode = 'disabled';
         if (state.activeStreamHandle) {
@@ -562,9 +592,9 @@ export async function startLaserStream(
         laserStreamWatchdog.recordError(parsed.userActionableMessage);
         laserStreamWatchdog.setDisabled(parsed.userActionableMessage);
       } else {
-        laserLogger.error(
-          { error: parsed.message, userNotice: parsed.userActionableMessage },
-          'LaserStream gRPC error encountered'
+        laserLogger.info(
+          { cause: parsed.message, notice: parsed.userActionableMessage },
+          'LaserStream gRPC stream unavailable'
         );
         laserStreamWatchdog.recordError(parsed.userActionableMessage);
         laserStreamWatchdog.setDisconnected();
@@ -606,10 +636,10 @@ export async function startLaserStream(
     const parsed = parseHeliusError(err);
     state.transportConnected = false;
 
-    if (parsed.isPlanError || parsed.isAuthError) {
+    if (parsed.isPlanError || parsed.isAuthError || parsed.isConnectionError) {
       laserLogger.info(
-        { error: parsed.message },
-        'Helius gRPC plan/permission error on init; disabling gRPC stream reconnects.'
+        { cause: parsed.message, notice: parsed.userActionableMessage },
+        'Helius gRPC stream unavailable on init; disabling gRPC stream reconnects.'
       );
       state.mode = 'disabled';
       if (state.activeStreamHandle) {
@@ -620,7 +650,7 @@ export async function startLaserStream(
       laserStreamWatchdog.setDisabled(parsed.userActionableMessage);
     } else {
       laserLogger.info(
-        { error: parsed.message, userNotice: parsed.userActionableMessage },
+        { cause: parsed.message, notice: parsed.userActionableMessage },
         'LaserStream gRPC unavailable'
       );
       laserStreamWatchdog.recordError(parsed.userActionableMessage);

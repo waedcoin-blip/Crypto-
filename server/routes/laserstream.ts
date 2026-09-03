@@ -190,7 +190,7 @@ router.post('/config', asyncHandler(async (req, res) => {
     if (isActive) {
       laserLogger.info({ clients: clients.length, network: currentOptions.network }, 'LaserStream started');
     } else {
-      laserLogger.warn({ network: currentOptions.network }, 'LaserStream failed to start via config route');
+      laserLogger.info({ network: currentOptions.network }, 'LaserStream gRPC stream unavailable via config route');
     }
   } else {
     await stopLaserStream();

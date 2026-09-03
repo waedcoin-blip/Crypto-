@@ -1,3 +1,6 @@
+// server.ts
+import './server/utils/polyfill.js';
+
 // Suppress benign warnings from native addon fallbacks like bigint-buffer
 const _origWarn = console.warn;
 console.warn = function (...args: any[]) {

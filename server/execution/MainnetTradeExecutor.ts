@@ -1,7 +1,5 @@
 // server/execution/MainnetTradeExecutor.ts
-if (typeof globalThis.window === 'undefined') {
-  (globalThis as any).window = globalThis;
-}
+import '../utils/polyfill.js';
 import { Connection, PublicKey, VersionedTransaction } from '@solana/web3.js';
 import * as jupApi from '@jup-ag/api';
 import { TradeExecutor, QuoteParams, QuoteResult, ExecuteParams, ExecutionResult } from './TradeExecutor.js';

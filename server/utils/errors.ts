@@ -77,15 +77,22 @@ const BENIGN_PATTERNS = [
   'bigint: Failed to load bindings',
   'Failed to load bindings',
   'pure JS will be used',
+  'Telegram',
+  'Telegram API',
+  'telegram',
+  'bot token',
 ];
 
 export function isBenignError(error: unknown): boolean {
   let message = '';
+  let code = '';
   if (error instanceof Error) {
     message = error.message;
+    code = (error as any).code || '';
   } else if (error && typeof error === 'object') {
     try {
       message = (error as any).message || (error as any).error || JSON.stringify(error);
+      code = (error as any).code || '';
     } catch {
       message = String(error);
     }
@@ -93,7 +100,9 @@ export function isBenignError(error: unknown): boolean {
     message = String(error);
   }
 
+  const combined = `${code} ${message}`;
+
   return BENIGN_PATTERNS.some((pattern) => 
-    message.includes(pattern) || message.toLowerCase().includes(pattern.toLowerCase())
+    combined.includes(pattern) || combined.toLowerCase().includes(pattern.toLowerCase())
   );
 }

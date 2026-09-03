@@ -224,7 +224,12 @@ class LaserStreamWatchdog {
         lower.includes('invalid helius api key') ||
         lower.includes('does not have permission') ||
         lower.includes('permission denied') ||
-        lower.includes('geyser access denied')
+        lower.includes('geyser access denied') ||
+        lower.includes('failed to connect') ||
+        lower.includes('failed to open subscribe stream') ||
+        lower.includes('unavailable') ||
+        lower.includes('connection refused') ||
+        lower.includes('econnrefused')
       ) {
         this.status = 'disabled';
         this.transportConnected = false;
@@ -369,7 +374,12 @@ class LaserStreamWatchdog {
           lowerErr.includes('invalid helius api key') ||
           lowerErr.includes('does not have permission') ||
           lowerErr.includes('permission denied') ||
-          lowerErr.includes('geyser access denied');
+          lowerErr.includes('geyser access denied') ||
+          lowerErr.includes('failed to connect') ||
+          lowerErr.includes('failed to open subscribe stream') ||
+          lowerErr.includes('unavailable') ||
+          lowerErr.includes('connection refused') ||
+          lowerErr.includes('econnrefused');
 
         if (isUnrecoverable) {
           this.status = 'disabled';
