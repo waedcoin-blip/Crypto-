@@ -10,7 +10,7 @@ export interface FetchOptions extends RequestInit {
   baseBackoffMs?: number;
 }
 
-const DEFAULT_TIMEOUT = 5000;
+const DEFAULT_TIMEOUT = 8000;
 const DEFAULT_RETRIES = 3;
 const DEFAULT_BACKOFF = 1000;
 
@@ -67,7 +67,7 @@ export async function fetchWithRetry(
       lastError = error instanceof Error ? error : new Error(String(error));
 
       if (!isBenignError(lastError)) {
-        logger.error({ url, attempt: i + 1, errDetails: lastError.message }, 'Fetch attempt failed');
+        logger.warn({ url, attempt: i + 1, errDetails: lastError.message }, 'Fetch attempt retryable error');
       }
 
       if (i < retries - 1) {

@@ -3326,12 +3326,13 @@ const checkTokenCriteria = (mint: string): {
       );
 
       // 6. Dev Ownership %
-      const maxDevPct = (hardenedMaxDevOwnership !== undefined ? hardenedMaxDevOwnership : 80) / 100;
+      const maxDevPct = hardenedMaxDevOwnership !== undefined ? hardenedMaxDevOwnership : 10.0;
+      const normalizedDev = devPct <= 1.0 && devPct > 0 ? devPct * 100 : devPct;
       addCheckResult(
         "Dev Wallet Ownership %",
-        devPct <= maxDevPct,
-        `${(devPct * 100).toFixed(1)}%`,
-        `<= ${(maxDevPct * 100).toFixed(1)}%`
+        normalizedDev <= maxDevPct,
+        `${normalizedDev.toFixed(1)}%`,
+        `<= ${maxDevPct.toFixed(1)}%`
       );
 
       // 7. Security Rug Safety (MANDATORY Showstopper)
@@ -4422,7 +4423,8 @@ const checkTokenCriteria = (mint: string): {
         const maxPriceChange1m = hardenedMaxPriceChange1m;
         const minPriceChange1m = isGraduated ? 1.5 : -50.0;
         const maxRiskScore = hardenedMaxRiskScore;
-        const maxDevPct = hardenedMaxDevOwnership / 100;
+        const maxDevPct = hardenedMaxDevOwnership !== undefined ? hardenedMaxDevOwnership : 10.0;
+        const normalizedDev = devPct <= 1.0 && devPct > 0 ? devPct * 100 : devPct;
 
         const mcPass = mc >= mcMin && mc <= mcMax;
         const mcRatio = mc > 0 ? (liq / mc) : 0;
@@ -4433,7 +4435,7 @@ const checkTokenCriteria = (mint: string): {
         const blockVelocityRatio = buys15s / Math.max(sells15s, 1);
         const velocityPass = buys15s >= minBuys15s && blockVelocityRatio >= minBlockVelocityRatio && blockVelocityRatio <= maxBlockVelocityRatio;
         const peakPass = isGraduated ? (priceChange1m <= maxPriceChange1m && priceChange1m >= minPriceChange1m) : true;
-        const securityPass = metric.isRugSafe === true && (metric.riskScore ?? 100) <= maxRiskScore && devPct <= maxDevPct;
+        const securityPass = metric.isRugSafe === true && (metric.riskScore ?? 100) <= maxRiskScore && normalizedDev <= maxDevPct;
         const progress = metric.bondingCurveProgress || 0;
         const isProgressValid = isGraduated || (progress >= hardenedMinBondingProgress && progress <= hardenedMaxBondingProgress);
 

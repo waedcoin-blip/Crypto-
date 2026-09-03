@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { CheckCircle2, XCircle, Loader2, Play, Activity, Gauge, Server, Wifi, Network, Send, RefreshCw, AlertTriangle, ShieldCheck, Database } from 'lucide-react';
+import { CheckCircle2, XCircle, Loader2, Play, Activity, Gauge, Server, Wifi, Network, Send, RefreshCw, AlertTriangle, ShieldCheck, Database, Zap, Filter, ArrowRight, ShieldAlert, Check } from 'lucide-react';
 import { Connection } from '@solana/web3.js';
 import { jupiterPreSellValidator } from '../../services/JupiterPreSellValidator';
 import { pingJupiterApi } from '../../services/jupiterService';
@@ -12,13 +12,58 @@ export const SystemCheckPage = ({
   rpcUrl: string;
 }) => {
   const [isTesting, setIsTesting] = useState(false);
-  const [activeTab, setActiveTab] = useState<'tests' | 'telemetry' | 'exporter'>('telemetry');
+  const [activeTab, setActiveTab] = useState<'entry' | 'telemetry' | 'tests' | 'exporter'>('entry');
   
+  // Entry Diagnostics State
+  const [entryDiagnostics, setEntryDiagnostics] = useState<any>(null);
+  const [loadingDiagnostics, setLoadingDiagnostics] = useState(false);
+  const [evaluatingMint, setEvaluatingMint] = useState('');
+  const [evaluatingLoading, setEvaluatingLoading] = useState(false);
+  const [evaluationResult, setEvaluationResult] = useState<any>(null);
+
   // Telemetry state
   const [telemetryMetrics, setTelemetryMetrics] = useState(() => telemetryService.getMetricsSummary());
   const [recentSpans, setRecentSpans] = useState<TelemetrySpan[]>(() => telemetryService.getSpans());
   const [otlpConfig, setOtlpConfig] = useState(() => telemetryService.getOtlpConfig());
   const [exportingStatus, setExportingStatus] = useState<{ loading: boolean; msg: string; error?: boolean }>({ loading: false, msg: '' });
+
+  const fetchEntryDiagnostics = async () => {
+    try {
+      setLoadingDiagnostics(true);
+      const res = await fetch('/api/trading/entry-diagnostics');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.status === 'success') {
+          setEntryDiagnostics(data.diagnostics);
+        }
+      }
+    } catch {
+      // Benign fallback
+    } finally {
+      setLoadingDiagnostics(false);
+    }
+  };
+
+  const handleEvaluateMint = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!evaluatingMint.trim()) return;
+    setEvaluatingLoading(true);
+    setEvaluationResult(null);
+    try {
+      const res = await fetch('/api/trading/evaluate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mint: evaluatingMint.trim(), source: 'UI_SYSTEM_CHECK' }),
+      });
+      const data = await res.json();
+      setEvaluationResult(data.result);
+      fetchEntryDiagnostics();
+    } catch (err: any) {
+      setEvaluationResult({ status: 'FAILED', error: err.message });
+    } finally {
+      setEvaluatingLoading(false);
+    }
+  };
 
   const [results, setResults] = useState<{
     rpcUrl: { status: 'idle' | 'testing' | 'success' | 'error', details: string },
@@ -37,12 +82,14 @@ export const SystemCheckPage = ({
   const [marketStats, setMarketStats] = useState(() => marketDataManager.getStats());
 
   useEffect(() => {
+    fetchEntryDiagnostics();
     const unsubscribe = telemetryService.subscribe(() => {
       setTelemetryMetrics(telemetryService.getMetricsSummary());
       setRecentSpans(telemetryService.getSpans().slice(0, 30));
     });
     const interval = setInterval(() => {
       setMarketStats(marketDataManager.getStats());
+      fetchEntryDiagnostics();
     }, 2000);
     return () => {
       unsubscribe();
@@ -240,6 +287,15 @@ export const SystemCheckPage = ({
 
         <div className="flex items-center gap-2 bg-[#12131a] p-1.5 rounded-xl border border-[#1f212e]">
           <button
+            onClick={() => setActiveTab('entry')}
+            className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${
+              activeTab === 'entry' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            <Zap className="w-3.5 h-3.5" />
+            Entry Pipeline Diagnostics
+          </button>
+          <button
             onClick={() => setActiveTab('telemetry')}
             className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${
               activeTab === 'telemetry' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-white'
@@ -268,6 +324,203 @@ export const SystemCheckPage = ({
           </button>
         </div>
       </div>
+
+      {/* TAB: ENTRY PIPELINE DIAGNOSTICS */}
+      {activeTab === 'entry' && (
+        <div className="space-y-6">
+          {/* Header Status Bar */}
+          <div className="bg-[#12131a] border border-[#1f212e] rounded-xl p-4 flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className={`w-3 h-3 rounded-full ${entryDiagnostics?.autoSniperEnabled ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+              <div>
+                <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                  Server-Side 24/7 Production Entry Pipeline
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                    entryDiagnostics?.autoSniperEnabled ? 'bg-emerald-950/80 border border-emerald-800/80 text-emerald-400' : 'bg-amber-950/80 border border-amber-800/80 text-amber-400'
+                  }`}>
+                    {entryDiagnostics?.autoSniperEnabled ? 'AUTO-SNIPER ACTIVE' : 'AUTO-SNIPER DISABLED / STANDBY'}
+                  </span>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-950/80 border border-indigo-800/80 text-indigo-300">
+                    NETWORK: {entryDiagnostics?.network?.toUpperCase() || 'PAPER'}
+                  </span>
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Authoritative server-side opportunity scoring, fail-closed criteria gate, rebuy guard & execution gateway.
+                </p>
+              </div>
+            </div>
+
+            <button
+              onClick={fetchEntryDiagnostics}
+              disabled={loadingDiagnostics}
+              className="px-3 py-1.5 bg-[#181a26] hover:bg-[#202334] text-slate-200 border border-[#26293b] rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${loadingDiagnostics ? 'animate-spin' : ''}`} />
+              Refresh Diagnostics
+            </button>
+          </div>
+
+          {/* Funnel Counters */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3">
+            <div className="bg-[#12131a] border border-[#1f212e] rounded-xl p-3">
+              <div className="text-[10px] uppercase font-semibold text-slate-400">Events Ingested</div>
+              <div className="text-xl font-bold text-white mt-1">{entryDiagnostics?.counters?.eventsReceived?.toLocaleString() || 0}</div>
+            </div>
+            <div className="bg-[#12131a] border border-[#1f212e] rounded-xl p-3">
+              <div className="text-[10px] uppercase font-semibold text-slate-400">Mints Detected</div>
+              <div className="text-xl font-bold text-sky-400 mt-1">{entryDiagnostics?.counters?.candidatesDetected?.toLocaleString() || 0}</div>
+            </div>
+            <div className="bg-[#12131a] border border-[#1f212e] rounded-xl p-3">
+              <div className="text-[10px] uppercase font-semibold text-slate-400">Enriched & Scored</div>
+              <div className="text-xl font-bold text-indigo-400 mt-1">{entryDiagnostics?.counters?.scored?.toLocaleString() || 0}</div>
+            </div>
+            <div className="bg-[#12131a] border border-[#1f212e] rounded-xl p-3">
+              <div className="text-[10px] uppercase font-semibold text-slate-400">Passed Criteria</div>
+              <div className="text-xl font-bold text-emerald-400 mt-1">{entryDiagnostics?.counters?.passedCriteria?.toLocaleString() || 0}</div>
+            </div>
+            <div className="bg-[#12131a] border border-[#1f212e] rounded-xl p-3">
+              <div className="text-[10px] uppercase font-semibold text-slate-400">Gate & Rebuy Passed</div>
+              <div className="text-xl font-bold text-teal-400 mt-1">{entryDiagnostics?.counters?.entryGatePassed?.toLocaleString() || 0}</div>
+            </div>
+            <div className="bg-[#12131a] border border-[#1f212e] rounded-xl p-3">
+              <div className="text-[10px] uppercase font-semibold text-slate-400">Buy Confirmed</div>
+              <div className="text-xl font-bold text-purple-400 mt-1">{entryDiagnostics?.counters?.buyConfirmed?.toLocaleString() || 0}</div>
+            </div>
+          </div>
+
+          {/* Top Blocking Reasons & On-Demand Mint Evaluation */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Top Blocking Reasons */}
+            <div className="bg-[#12131a] border border-[#1f212e] rounded-xl p-5 space-y-4">
+              <h4 className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-2">
+                <ShieldAlert className="w-4 h-4 text-amber-400" />
+                "Why No Trade?" — Top Blocking Reasons
+              </h4>
+              <div className="space-y-2">
+                {(!entryDiagnostics?.topBlockingReasons || entryDiagnostics.topBlockingReasons.length === 0) ? (
+                  <div className="text-xs text-slate-500 py-4 text-center">No evaluations recorded yet. Ingesting stream...</div>
+                ) : (
+                  entryDiagnostics.topBlockingReasons.map((item: any, idx: number) => (
+                    <div key={idx} className="flex items-center justify-between text-xs bg-[#181a26] border border-[#232638] px-3 py-2 rounded-lg">
+                      <span className="font-mono text-slate-300">{item.reason}</span>
+                      <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-rose-950/60 border border-rose-900/60 text-rose-400">
+                        {item.count} blocked
+                      </span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            {/* Test / Evaluate Mint On Demand */}
+            <div className="bg-[#12131a] border border-[#1f212e] rounded-xl p-5 space-y-4">
+              <h4 className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-2">
+                <Play className="w-4 h-4 text-indigo-400" />
+                Diagnostic Token Evaluator (On-Demand Trace)
+              </h4>
+              <form onSubmit={handleEvaluateMint} className="space-y-3">
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="Enter Solana Token Mint to test through pipeline..."
+                    value={evaluatingMint}
+                    onChange={(e) => setEvaluatingMint(e.target.value)}
+                    className="flex-1 bg-[#181a26] border border-[#26293b] rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                  />
+                  <button
+                    type="submit"
+                    disabled={evaluatingLoading || !evaluatingMint.trim()}
+                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5 disabled:opacity-50"
+                  >
+                    {evaluatingLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5 fill-current" />}
+                    Evaluate
+                  </button>
+                </div>
+              </form>
+
+              {evaluationResult && (
+                <div className="bg-[#181a26] border border-[#232638] rounded-lg p-3 text-xs space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-white">{evaluationResult.symbol || 'TOKEN'} ({evaluationResult.mintAddress?.slice(0, 8)}...)</span>
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                      evaluationResult.decision?.decision === 'BUY' ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-rose-950 text-rose-400 border border-rose-800'
+                    }`}>
+                      DECISION: {evaluationResult.decision?.decision || evaluationResult.status}
+                    </span>
+                  </div>
+                  {evaluationResult.scoreBreakdown && (
+                    <div className="text-[11px] text-slate-400">
+                      Score: <strong className="text-white">{evaluationResult.scoreBreakdown.totalScore}/100</strong> (Action: {evaluationResult.scoreBreakdown.recommendedAction})
+                    </div>
+                  )}
+                  {evaluationResult.decision?.blockingReasons?.length > 0 && (
+                    <div className="text-[11px] text-rose-400">
+                      <strong>Blocking Reason:</strong> {evaluationResult.decision.blockingReasons[0]}
+                    </div>
+                  )}
+                  {evaluationResult.tradeResponse && (
+                    <div className="text-[11px] text-emerald-400">
+                      <strong>Trade Order:</strong> {evaluationResult.tradeResponse.orderId} (Sig: {evaluationResult.tradeResponse.signature || 'N/A'})
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Recent Decisions Feed */}
+          <div className="bg-[#12131a] border border-[#1f212e] rounded-xl overflow-hidden">
+            <div className="p-4 border-b border-[#1f212e] flex justify-between items-center">
+              <h4 className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
+                Live Server Entry Decision Feed (Authoritative Telemetry)
+              </h4>
+              <span className="text-xs text-slate-500">{entryDiagnostics?.recentDecisions?.length || 0} recorded</span>
+            </div>
+            <div className="overflow-x-auto max-h-96 overflow-y-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-[#151722] text-slate-400 font-semibold border-b border-[#1f212e]">
+                  <tr>
+                    <th className="p-3">Time</th>
+                    <th className="p-3">Token</th>
+                    <th className="p-3">Score</th>
+                    <th className="p-3">Decision</th>
+                    <th className="p-3">Primary Gate / Blocking Reason</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#1f212e]/50 font-mono text-[11px]">
+                  {(!entryDiagnostics?.recentDecisions || entryDiagnostics.recentDecisions.length === 0) ? (
+                    <tr>
+                      <td colSpan={5} className="p-4 text-center text-slate-500">
+                        Waiting for new market events to evaluate...
+                      </td>
+                    </tr>
+                  ) : (
+                    entryDiagnostics.recentDecisions.map((dec: any) => (
+                      <tr key={dec.id} className="hover:bg-[#181a26]">
+                        <td className="p-3 text-slate-400">{new Date(dec.timestamp).toLocaleTimeString()}</td>
+                        <td className="p-3 text-white font-sans font-medium">
+                          {dec.symbol} <span className="text-slate-500 font-mono text-[10px]">({dec.mintAddress?.slice(0, 6)}...)</span>
+                        </td>
+                        <td className="p-3 text-indigo-400 font-bold">{dec.score}/100</td>
+                        <td className="p-3">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                            dec.decision === 'PASS' ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-rose-950 text-rose-400 border border-rose-800'
+                          }`}>
+                            {dec.decision}
+                          </span>
+                        </td>
+                        <td className="p-3 text-slate-300">
+                          {dec.blockingReason || (dec.decision === 'PASS' ? 'CRITERIA_PASSED (BUY ORDER PLACED)' : 'BLOCKED')}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* TAB 1: OPENTELEMETRY DASHBOARD */}
       {activeTab === 'telemetry' && (

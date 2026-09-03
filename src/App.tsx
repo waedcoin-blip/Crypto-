@@ -1298,7 +1298,7 @@ function App() {
             minLiquidity: state.hardenedLiquidityMin,
             minLiquidityRatio: state.hardenedLiquidityRatio / 100, // percentage to ratio
             maxRiskScore: state.hardenedMaxRiskScore,
-            maxDevOwnership: state.hardenedMaxDevOwnership / 100, // percentage to ratio
+            maxDevOwnership: state.hardenedMaxDevOwnership, // kept as percentage (0 - 100%)
             maxTop10Ownership: state.hardenedMaxTop10, // kept as percentage
             minUniqueBuyers30s: state.hardenedMinUniqueBuyers30s,
             minBuyCount30s: state.hardenedMinBuyCount30s,

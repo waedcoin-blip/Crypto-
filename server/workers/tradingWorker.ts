@@ -11,6 +11,7 @@ import { startWorkerHeartbeat } from '../services/WorkerHeartbeat.js';
 import { criteriaRepository } from '../repositories/CriteriaRepository.js';
 import { workerStateRepository } from '../repositories/WorkerStateRepository.js';
 import { tradingEngine } from '../trading/TradingEngine.js';
+import { entryEngine } from '../trading/EntryEngine.js';
 import { laserLogger } from '../utils/logger.js';
 
 dotenv.config({ path: '.env.local' });
@@ -27,11 +28,14 @@ async function main() {
   startWorkerHeartbeat('trading', 3000);
   console.log('[TRADING WORKER] Worker heartbeat active.');
 
-  // 3. Connect Authoritative Helius Real-Time Ingestion (WSS / gRPC)
+  // 3. Connect Authoritative Helius Real-Time Ingestion (WSS / gRPC) & Start Entry Engine
   try {
     marketEventBus.subscribe((event) => {
       tokenDiscovery.processMarketEvent(event);
     });
+
+    entryEngine.start();
+    console.log('[TRADING WORKER] EntryEngine active and subscribed to market events.');
 
     const connected = await streamingTransportManager.start();
     if (connected) {

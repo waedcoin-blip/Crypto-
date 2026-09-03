@@ -54,8 +54,14 @@ const BENIGN_PATTERNS = [
   'Transaction not confirmed',
   'SIMULATION_ERROR',
   'AbortError',
+  'aborted',
+  'operation was aborted',
+  'This operation was aborted',
+  'The operation was aborted',
   'ECONNRESET',
   'ENOTFOUND',
+  'ETIMEDOUT',
+  'timeout',
   'socket hang up',
   'read ECONNRESET',
   'write ECONNRESET',
@@ -86,13 +92,16 @@ const BENIGN_PATTERNS = [
 export function isBenignError(error: unknown): boolean {
   let message = '';
   let code = '';
+  let name = '';
   if (error instanceof Error) {
-    message = error.message;
+    message = error.message || '';
     code = (error as any).code || '';
+    name = error.name || '';
   } else if (error && typeof error === 'object') {
     try {
       message = (error as any).message || (error as any).error || JSON.stringify(error);
       code = (error as any).code || '';
+      name = (error as any).name || '';
     } catch {
       message = String(error);
     }
@@ -100,9 +109,9 @@ export function isBenignError(error: unknown): boolean {
     message = String(error);
   }
 
-  const combined = `${code} ${message}`;
+  const combined = `${name} ${code} ${message}`.toLowerCase();
 
   return BENIGN_PATTERNS.some((pattern) => 
-    combined.includes(pattern) || combined.toLowerCase().includes(pattern.toLowerCase())
+    combined.includes(pattern.toLowerCase())
   );
 }

@@ -7,6 +7,7 @@ import { orderManager } from '../trading/OrderManager.js';
 import { criteriaRepository } from '../repositories/CriteriaRepository.js';
 import { workerStateRepository } from '../repositories/WorkerStateRepository.js';
 import { tradeRepository } from '../repositories/TradeRepository.js';
+import { entryEngine } from '../trading/EntryEngine.js';
 
 import { CriteriaService } from '../services/criteriaService.js';
 
@@ -184,6 +185,56 @@ router.post('/stop', asyncHandler(async (req, res) => {
   res.json({
     status: 'success',
     workerState: { worker: 'trading', status: 'STOPPED', lastHeartbeat: Date.now() },
+    timestamp: Date.now(),
+  });
+}));
+
+// GET /api/trading/entry-diagnostics
+router.get('/entry-diagnostics', asyncHandler(async (req, res) => {
+  const diagnostics = entryEngine.getDiagnostics();
+  res.json({
+    status: 'success',
+    diagnostics,
+    timestamp: Date.now(),
+  });
+}));
+
+// POST /api/trading/evaluate
+router.post('/evaluate', asyncHandler(async (req, res) => {
+  const { mint, source } = req.body;
+  if (!mint || typeof mint !== 'string') {
+    return res.status(400).json({ status: 'error', error: 'mint address is required' });
+  }
+  const result = await entryEngine.evaluateAndTrade(mint, source || 'API_ON_DEMAND');
+  res.json({
+    status: 'success',
+    result,
+    timestamp: Date.now(),
+  });
+}));
+
+// GET /api/trading/sniper-config
+router.get('/sniper-config', asyncHandler(async (req, res) => {
+  const config = entryEngine.getConfig();
+  res.json({
+    status: 'success',
+    config,
+    timestamp: Date.now(),
+  });
+}));
+
+// POST /api/trading/sniper-config
+router.post('/sniper-config', asyncHandler(async (req, res) => {
+  const { autoSniperEnabled, isLiveTrading, network, wallet } = req.body;
+  entryEngine.setConfig({
+    autoSniperEnabled: autoSniperEnabled !== undefined ? Boolean(autoSniperEnabled) : undefined,
+    isLiveTrading: isLiveTrading !== undefined ? Boolean(isLiveTrading) : undefined,
+    network: typeof network === 'string' ? network : undefined,
+    wallet: typeof wallet === 'string' ? wallet : undefined,
+  });
+  res.json({
+    status: 'success',
+    config: entryEngine.getConfig(),
     timestamp: Date.now(),
   });
 }));

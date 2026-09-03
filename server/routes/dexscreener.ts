@@ -103,7 +103,13 @@ router.get('/search', asyncHandler(async (req, res) => {
     const data = await searchCache.fetch(`search_${q}`, async () => {
       const { response, text } = await fetchWithRetry(
         `https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(q)}`,
-        { headers: { 'User-Agent': 'Mozilla/5.0' } },
+        {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Accept': 'application/json',
+          },
+          timeoutMs: 8000,
+        },
         2
       );
 
@@ -280,9 +286,10 @@ const handleDiscoveryPool = asyncHandler(async (req, res) => {
             `https://api.dexscreener.com/latest/dex/tokens/${chunk.join(',')}`,
             {
               headers: {
-                'User-Agent': 'Mozilla/5.0',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
                 'Accept': 'application/json',
               },
+              timeoutMs: 8000,
             },
             2,
             500
@@ -295,10 +302,10 @@ const handleDiscoveryPool = asyncHandler(async (req, res) => {
           if (Array.isArray(parsed?.pairs)) {
             pairs.push(...parsed.pairs);
           }
-        } catch (error) {
-          dexLogger.warn(
-            { error },
-            'Discovery batch failed'
+        } catch (error: any) {
+          dexLogger.debug(
+            { errDetails: error?.message },
+            'Discovery batch fetch bypassed'
           );
         }
       }
@@ -409,9 +416,15 @@ router.get('/tokens/:mint', asyncHandler(async (req, res) => {
       try {
         const { response, text } = await fetchWithRetry(
           `https://api.dexscreener.com/latest/dex/tokens/${ids}`,
-          { headers: { 'User-Agent': 'Mozilla/5.0' } },
-          3,
-          2000
+          {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+              'Accept': 'application/json',
+            },
+            timeoutMs: 8000,
+          },
+          2,
+          1000
         );
 
         if (response.ok) {
@@ -436,7 +449,7 @@ router.get('/tokens/:mint', asyncHandler(async (req, res) => {
           }
         }
       } catch (chunkErr: any) {
-        dexLogger.warn({ chunk: ids, errDetails: chunkErr.message }, 'Chunk fetch failed for tokens');
+        dexLogger.debug({ chunk: ids, errDetails: chunkErr.message }, 'Token chunk fetch bypassed with empty cache fallback');
         for (const m of chunk) {
           tokenCache.set(m, { schemaVersion: '1.0.0', pairs: [] });
         }
@@ -470,12 +483,13 @@ router.get('/token-profiles', asyncHandler(async (req, res) => {
             url,
             {
               headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
                 'Accept': 'application/json, text/html, */*',
               },
+              timeoutMs: 8000,
             },
-            3,
-            2000
+            2,
+            1000
           );
 
           if (!response.ok) {
@@ -569,8 +583,14 @@ router.get('/token-pairs/:mint', asyncHandler(async (req, res) => {
     const data = await pairsCache.fetch(mint, async () => {
       const { response, text } = await fetchWithRetry(
         `https://api.dexscreener.com/token-pairs/v1/solana/${mint}`,
-        { headers: { 'User-Agent': 'Mozilla/5.0' } },
-        3
+        {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Accept': 'application/json',
+          },
+          timeoutMs: 8000,
+        },
+        2
       );
 
       if (!response.ok) {

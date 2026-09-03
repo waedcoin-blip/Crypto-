@@ -52,6 +52,7 @@ import laserstreamRouter from "./server/routes/laserstream.js";
 import criteriaRouter from "./server/routes/criteria.js";
 import tradingRouter from "./server/routes/trading.js";
 import { requireAuth } from "./server/middleware/auth.js";
+import { entryEngine } from "./server/trading/EntryEngine.js";
 
 // Process level crash guard
 process.on("uncaughtException", (err: any) => {
@@ -129,6 +130,9 @@ async function startServer() {
       res.sendFile(path.join(distPath, "index.html"));
     });
   }
+
+  // Start Server-Side Authoritative EntryEngine
+  entryEngine.start();
 
   return app;
 }
