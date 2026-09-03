@@ -12,6 +12,7 @@ import { useBalanceStore, assertTradeBalance } from '../store/balanceStore';
 import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
 import { walletBalanceService } from './WalletBalanceService';
 import { useAppStore } from '../store/appStore';
+import { getTokenBalanceRaw, percentOfRawAmount } from './jupiterService';
 
 import { rpcRouting } from './rpcRouting';
 
@@ -110,7 +111,7 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
   async swap(
     inputMint: string,
     outputMint: string,
-    amount: number,
+    amount: number | string | bigint,
     slippageBps: number,
     label: 'entry' | 'exit_tp' | 'exit_sl' | 'MAX_HOLD' | 'MANUAL' | 'FORCE_EXIT' | string = 'entry',
     preValidatedQuote?: QuoteResponse | null
@@ -140,30 +141,32 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
       }
 
       const isSolBuy = inputMint === 'So11111111111111111111111111111111111111112';
+      const numAmount = typeof amount === 'bigint' ? Number(amount) : Number(amount);
 
-      await assertTradeBalance(isSolBuy ? amount / LAMPORTS_PER_SOL + 0.005 : 0.005);
+      await assertTradeBalance(isSolBuy ? numAmount / LAMPORTS_PER_SOL + 0.005 : 0.005);
 
       if (!isSolBuy) {
         const tokenBalance = await this.getTokenBalance(inputMint);
-        if (tokenBalance < amount) {
+        if (tokenBalance < numAmount) {
           throw new ExecutionError(
             'transaction_failure',
-            `Insufficient token balance for exit (Available: ${tokenBalance}, Required: ${amount})`
+            `Insufficient token balance for exit (Available: ${tokenBalance}, Required: ${numAmount})`
           );
         }
       }
 
       // Reuse preValidatedQuote if provided, otherwise fetch fresh quote from Mainnet Jupiter API
+      const rawAmount = typeof amount === 'bigint' ? amount.toString() : (typeof amount === 'string' ? amount : String(Math.trunc(amount)));
       const quote = preValidatedQuote || await this.getQuote({
         inputMint,
         outputMint,
-        amount,
+        amount: Number(rawAmount),
         slippageBps,
         restrictIntermediateTokens: true,
       });
 
       if (!preValidatedQuote) {
-        this.validateQuoteSafety(quote, amount, slippageBps);
+        this.validateQuoteSafety(quote, numAmount, slippageBps);
       }
 
       // Post swap request requesting high priority with capped priority fee of 500,000 lamports
@@ -201,29 +204,22 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
         throw new ExecutionError('transaction_failure', `Send raw transaction failed: ${sendErr?.message || String(sendErr)}`);
       }
 
-      let confirmation;
-      try {
-        confirmation = await this.connection.confirmTransaction(
-          {
-            signature: sig,
-            blockhash: tx.message.recentBlockhash,
-            lastValidBlockHeight: swapBuild.lastValidBlockHeight || (await this.connection.getLatestBlockhash()).lastValidBlockHeight,
-          },
-          'confirmed'
-        );
-      } catch (confErr: any) {
-        throw new ExecutionError('transaction_failure', `Transaction confirmation RPC call failed: ${confErr?.message || String(confErr)}`, { signature: sig });
+      let confirmationStatus: any = null;
+      const deadline = Date.now() + 90000;
+      while (Date.now() < deadline) {
+        const status = await this.connection.getSignatureStatus(sig, { searchTransactionHistory: true });
+        confirmationStatus = status.value;
+        if (confirmationStatus?.err) {
+          throw new ExecutionError('transaction_failure', `Mainnet transaction failed on-chain: ${JSON.stringify(confirmationStatus.err)}`, { signature: sig });
+        }
+        if (confirmationStatus?.confirmationStatus === 'confirmed' || confirmationStatus?.confirmationStatus === 'finalized') break;
+        await new Promise(r => setTimeout(r, 750));
+      }
+      if (!confirmationStatus || !['confirmed','finalized'].includes(confirmationStatus.confirmationStatus)) {
+        throw new ExecutionError('transaction_failure', 'Transaction confirmation timed out; signature was not confirmed.', { signature: sig });
       }
 
-      if (confirmation.value.err) {
-        throw new ExecutionError(
-          'transaction_failure',
-          `Mainnet transaction confirmation failed on-chain: ${JSON.stringify(confirmation.value.err)}`,
-          { signature: sig }
-        );
-      }
-
-      const slot = confirmation.context.slot;
+      const slot = confirmationStatus.slot || 0;
       const targetMint = isSolBuy ? outputMint : inputMint;
 
       // Non-blocking balance synchronization
@@ -283,7 +279,7 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
         signature: sig,
         inputMint,
         outputMint,
-        inputAmount: amount,
+        inputAmount: numAmount,
         outputAmount: actualOutputAmountLamports,
         feeSol: actualFee,
         slot,

@@ -74,7 +74,9 @@ import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
 import { 
   getJupiterQuote, 
   getLatestBlockhashWithFallback, pollSignatureStatus,
-  getTokenBalanceRaw, 
+  getTokenBalanceRaw,
+  getTokenDecimals,
+  percentOfRawAmount, 
   verifyHardenedScannerCriteria,
   rpcPool,
   AdvancedTokenMetrics,
@@ -1827,10 +1829,16 @@ function App() {
     try {
       const positionTokens = position.amount || 0;
       const tokensToSell = positionTokens * percent;
-      const decimals = resolveTokenDecimals(tokenAddress);
-      const sellAmountRaw = Math.floor(tokensToSell * Math.pow(10, decimals));
+      let sellAmountRaw: bigint;
+      if (position.amountLamports && position.amountLamports > 0) {
+        sellAmountRaw = percentOfRawAmount(BigInt(position.amountLamports), percent * 100);
+      } else {
+        const decimals = position.decimals ?? await getTokenDecimals(connection, tokenAddress);
+        const baseRaw = BigInt(Math.floor(positionTokens * Math.pow(10, decimals)));
+        sellAmountRaw = percentOfRawAmount(baseRaw, percent * 100);
+      }
 
-      if (sellAmountRaw <= 0) {
+      if (sellAmountRaw <= 0n) {
         setTradingStatus('Idle');
         return;
       }
@@ -1840,7 +1848,7 @@ function App() {
       const swapRes = await orderManager.executeOrder(
         tokenAddress,
         'So11111111111111111111111111111111111111112',
-        sellAmountRaw,
+        Number(sellAmountRaw),
         slippageBps,
         'exit_tp'
       );
@@ -1916,28 +1924,30 @@ function App() {
       const walletAddress = (true && activeAddress) 
          ? activeAddress!
          : '11111111111111111111111111111111';
-      let balanceRaw: string | number = 0;
+      let balanceRaw: string;
       try {
         balanceRaw = await getTokenBalanceRaw(connection, walletAddress, tokenAddress);
-      } catch {}
+      } catch (balanceErr: any) {
+        throw new Error(`AUTO_SELL_BALANCE_LOOKUP_FAILED: ${balanceErr?.message || String(balanceErr)}`);
+      }
       
-      let sellRawAmount = Math.floor(Number(balanceRaw));
-      if (sellRawAmount <= 0) {
+      let sellRawAmount: bigint = BigInt(balanceRaw);
+      if (sellRawAmount <= 0n) {
         if (position.amountLamports && position.amountLamports > 0) {
-          sellRawAmount = position.amountLamports;
+          sellRawAmount = BigInt(position.amountLamports);
         } else if (position.amount && position.amount > 0) {
           const decimals = position.decimals ?? resolveTokenDecimals(tokenAddress);
-          sellRawAmount = Math.floor(position.amount * Math.pow(10, decimals));
+          sellRawAmount = BigInt(Math.floor(position.amount * Math.pow(10, decimals)));
         } else {
           const storeTokenBal = useBalanceStore.getState().tokenBalances[tokenAddress];
           if (storeTokenBal && storeTokenBal > 0) {
             const decimals = position.decimals ?? resolveTokenDecimals(tokenAddress);
-            sellRawAmount = Math.floor(storeTokenBal * Math.pow(10, decimals));
+            sellRawAmount = BigInt(Math.floor(storeTokenBal * Math.pow(10, decimals)));
           }
         }
       }
 
-      if (sellRawAmount <= 0) {
+      if (sellRawAmount <= 0n) {
         console.warn(`[AutoSell Abort] No active position amount found to sell for ${symbol}`);
         pendingTrades.current.delete(tokenAddress);
         return;
@@ -1992,7 +2002,7 @@ function App() {
       const swapRes = await orderManager.executeOrder(
         tokenAddress,
         'So11111111111111111111111111111111111111112',
-        position.amountLamports || sellRawAmount || position.amount || 0,
+        position.amountLamports || sellRawAmount.toString() || position.amount || 0,
         Math.round((slippage || 1) * 100),
         curPnLPercent >= (position.tpPct ?? minTakeProfit) ? 'exit_tp' : 'exit_sl'
       );

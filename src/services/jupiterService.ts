@@ -7,6 +7,7 @@ import { telemetryService } from './telemetryService';
 import { getNetworkConfig } from '../config/network';
 import { getSolPriceUsd } from '../utils/pnlCalculator';
 import { normalizePriceImpact, buildSafeQuoteDiagnostic, MAX_PRICE_IMPACT_RATIO } from '../utils/quoteSafety';
+import { httpFetch } from './httpClient';
 
 // ─── RPC POOL: Smart multi-endpoint with health tracking ───────────────────
 export interface RpcEndpoint {
@@ -131,8 +132,26 @@ export const getTokenBalanceRaw = async (connection: Connection, walletAddress: 
     });
     return balance.toString();
   } catch (e) {
-    return '0';
+    throw new Error(`TOKEN_BALANCE_LOOKUP_FAILED: ${e instanceof Error ? e.message : String(e)}`);
   }
+};
+
+export const getTokenDecimals = async (connection: Connection, tokenMint: string): Promise<number> => {
+  if (tokenMint === 'So11111111111111111111111111111111111111112') return 9;
+  try {
+    const { getMint } = await import('@solana/spl-token');
+    const mint = await getMint(connection, new PublicKey(tokenMint));
+    return mint.decimals;
+  } catch (e) {
+    throw new Error(`TOKEN_DECIMALS_RESOLUTION_FAILED: Unable to resolve token decimals for mint ${tokenMint}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+};
+
+export const percentOfRawAmount = (raw: bigint, percent: number): bigint => {
+  if (raw < 0n) throw new Error('INVALID_RAW_AMOUNT');
+  if (!Number.isFinite(percent) || percent <= 0 || percent > 100) throw new Error('INVALID_SELL_PERCENT');
+  const bps = BigInt(Math.floor(percent * 100));
+  return (raw * bps) / 10000n;
 };
 
 import bs58 from 'bs58';
@@ -265,7 +284,7 @@ export const getLatestBlockhashWithFallback = getLatestBlockhashForExecution;
 
 export const getJitoTipFloor = async (): Promise<number> => {
   try {
-    const res = await fetch('https://bundles.jito.wtf/api/v1/bundles/tip_floor');
+    const res = await httpFetch('https://bundles.jito.wtf/api/v1/bundles/tip_floor');
     const data = await res.json();
     return data[0]?.landed_tips_75th_percentile || 0.00005;
   } catch {
@@ -329,7 +348,7 @@ export const calculateDynamicSlippageBps = (
 export const getJupiterQuote = async (
   inputMint: string,
   outputMint: string,
-  amount: number,
+  amount: number | string | bigint,
   liquidityUsd: number = 0,
   initialBuyCostSol?: number,
   minTargetProfitPct?: number,
@@ -370,7 +389,7 @@ export const getJupiterQuote = async (
     const queryParams = new URLSearchParams({
       inputMint,
       outputMint,
-      amount: String(Math.floor(amount)),
+      amount: typeof amount === 'bigint' ? amount.toString() : (typeof amount === 'string' ? amount : String(Math.trunc(amount))),
       slippageBps: String(determinedSlippage),
     });
     if (baseUrlParam) queryParams.set('baseUrl', baseUrlParam);
@@ -384,7 +403,7 @@ export const getJupiterQuote = async (
     const timeoutId = setTimeout(() => controller.abort(), 2500);
     let quoteRes;
     try {
-      quoteRes = await fetch(`/api/jup/quote?${queryParams.toString()}`, { headers, signal: controller.signal });
+      quoteRes = await httpFetch(`/api/jup/quote?${queryParams.toString()}`, { headers, signal: controller.signal });
     } finally {
       clearTimeout(timeoutId);
     }
@@ -399,24 +418,6 @@ export const getJupiterQuote = async (
       return null;
     }
     
-    // Expiration checks (Bypass real Solana slot numbers and protect with real-time latency guards instead)
-    let isStale = false;
-    if ((quote as any).contextSlot) {
-      const slotVal = Number((quote as any).contextSlot);
-      // Real Solana mainnet slot is below 1B, while simulated slot (Date.now()/400) is > 4B
-      if (slotVal > 1000000000) {
-        const quoteTime = slotVal * 400;
-        if (Date.now() - quoteTime > 15000) {
-          isStale = true;
-        }
-      }
-    }
-    if (isStale) {
-       console.warn(`[QUOTE REJECTED]: Quote is too stale based on context slot`);
-       return null;
-    }
-
-
     const quoteAgeMs = Date.now() - startTime;
     if (quoteAgeMs > 4000) {
       console.warn(`[QUOTE REJECTED]: Latency ${quoteAgeMs}ms`);

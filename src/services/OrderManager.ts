@@ -305,11 +305,11 @@ export class OrderManager {
       let totalCostSol = 0;
       let netProceedsSol = 0;
 
-      let decimals = 6;
+      let decimals: number;
       try {
         decimals = resolveTokenDecimals(targetMint);
-      } catch {
-        decimals = 6;
+      } catch (e) {
+        throw new Error(`UNRESOLVED_TOKEN_DECIMALS: Unable to calculate execution metrics for mint ${targetMint}. Refusing 6-decimal fallback.`);
       }
 
       if (isSolBuy) {

@@ -6,6 +6,7 @@ import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
 import { useAppStore } from '../store/appStore';
 import { tokenRegistry } from './TokenRegistry';
 import { rpcRouting } from './rpcRouting';
+import { httpFetch } from './httpClient';
 
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 
@@ -155,7 +156,7 @@ export class TokenDecimalsResolver {
       if (!resolved) console.warn(`[TOKEN] DECIMALS_RPC_EXHAUSTED mint=${cleanMint}`);
 
       try {
-        const res = await fetch(`https://tokens.jup.ag/token/${cleanMint}`);
+        const res = await httpFetch(`https://tokens.jup.ag/token/${cleanMint}`);
         if (res.ok) {
           const data = await res.json();
           if (data && typeof data.decimals === 'number' && Number.isInteger(data.decimals) && data.decimals >= 0 && data.decimals <= 255) {

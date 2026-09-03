@@ -8,20 +8,9 @@
     <meta property="og:title" content="Arina X-Ray Alpha" />
     <meta property="og:description" content="High-Frequency Meme Sniper &amp; Rug-Shield Monitor. Professional-grade automated trading tool for Solana and Base tokens using Zero-Delay Telemetry protocol." />
     <script>
-      if (typeof window !== 'undefined') {
+      // Compatibility alias only. Never redefine, freeze, or monkey-patch window.fetch.
+      if (typeof window !== 'undefined' && typeof window.global === 'undefined') {
         window.global = window;
-        // Prevent cross-fetch or other libraries from overriding fetch if it's read-only
-        const originalFetch = window.fetch;
-        try {
-          Object.defineProperty(window, 'fetch', {
-            configurable: false,
-            enumerable: true,
-            get: () => originalFetch,
-            set: () => { console.warn('Something tried to override fetch, ignored.'); }
-          });
-        } catch (e) {
-          console.error('Failed to harden fetch:', e);
-        }
       }
     </script>
   </head>
