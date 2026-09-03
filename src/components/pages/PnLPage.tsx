@@ -40,7 +40,20 @@ import { unifiedTradePipeline, NormalizedTradeEvent } from '../../engines/unifie
 import { DEFAULT_HELIUS_RPC, DEFAULT_HELIUS_WS, HELIUS_API_KEY, SOL_MINT, USDC_MINT } from '../../constants/solana';
 
 if (typeof window !== 'undefined') {
-  window.Buffer = window.Buffer || Buffer;
+  try {
+    if (!(window as any).Buffer) {
+      Object.defineProperty(window, 'Buffer', {
+        value: Buffer,
+        writable: true,
+        configurable: true,
+        enumerable: true
+      });
+    }
+  } catch {
+    try {
+      (window as any).Buffer = Buffer;
+    } catch {}
+  }
 }
 
 const JUPITER_SWAP = 'https://api.jup.ag/swap/v1/swap';

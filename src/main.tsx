@@ -18,7 +18,20 @@ import { TradeManager, TradeMode } from './services/TradeManager';
 import { TradeModeProvider } from './context/TradeModeContext';
 
 if (typeof window !== 'undefined') {
-  window.Buffer = Buffer;
+  try {
+    if (!(window as any).Buffer) {
+      Object.defineProperty(window, 'Buffer', {
+        value: Buffer,
+        writable: true,
+        configurable: true,
+        enumerable: true
+      });
+    }
+  } catch {
+    try {
+      (window as any).Buffer = Buffer;
+    } catch {}
+  }
 }
 
 // ─── MONKEY-PATCH CONSOLE TO SUPPRESS BENIGN METRIC/WS LIMITS ──────────────
@@ -180,7 +193,20 @@ if (OriginalWebSocket) {
   CustomWebSocket.CLOSING = OriginalWebSocket.CLOSING;
   CustomWebSocket.CLOSED = OriginalWebSocket.CLOSED;
   if (typeof window !== 'undefined') {
-    (window as any).WebSocket = CustomWebSocket;
+    try {
+      Object.defineProperty(window, 'WebSocket', {
+        value: CustomWebSocket,
+        writable: true,
+        configurable: true,
+        enumerable: true,
+      });
+    } catch {
+      try {
+        (window as any).WebSocket = CustomWebSocket;
+      } catch {
+        console.warn('[ARINA X-RAY] Global WebSocket assignment bypassed due to read-only window environment.');
+      }
+    }
   }
 }
 
