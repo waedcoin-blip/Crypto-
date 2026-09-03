@@ -25,6 +25,8 @@ import bs58 from 'bs58';
 import { laserLogger } from '../utils/logger.js';
 import { config } from '../config/index.js';
 import { laserStreamWatchdog, LASERSTREAM_ACTIVITY_STALE_MS } from '../services/LaserStreamWatchdog.js';
+import { heliusLaserStreamWssManager } from '../market/HeliusLaserStreamWssManager.js';
+import { MarketEvent } from '../market/EventNormalizer.js';
 
 const Client = (ClientPkg as any).default || ClientPkg;
 const CommitmentLevel = (ClientPkg as any).CommitmentLevel || { PROCESSED: 0, CONFIRMED: 1, FINALIZED: 2 };
@@ -420,7 +422,7 @@ export function resolveYellowstoneEndpoint(options: LaserStreamOptions): string 
   );
 }
 
-// ─── Main Stream Start (In-Process Persistent gRPC) ───
+// ─── Main Stream Start (Helius WSS by default, gRPC modular/optional) ───
 export async function startLaserStream(
   options: LaserStreamOptions,
   eventBusCallback: (event: SseEvent) => void
@@ -449,6 +451,61 @@ export async function startLaserStream(
   }
   asyncEventProcessor.clear();
 
+  const transportMode = process.env.HELIUS_STREAM_TRANSPORT || 'wss';
+  const isExplicitGrpc = transportMode === 'grpc' || (options.endpoint && options.endpoint.startsWith('https://grpc.'));
+
+  // 1. STANDARD HELIUS WSS PATH (Default for Free Tier & general streaming)
+  if (!isExplicitGrpc) {
+    state.mode = 'wss';
+    state.activeEndpoint = 'wss://mainnet.helius-rpc.com';
+    state.transportConnected = false;
+
+    laserStreamWatchdog.reset(false);
+    laserStreamWatchdog.setTransportState(false, state.activeEndpoint, 'wss', network);
+
+    const onWssMarketEvent = (event: MarketEvent) => {
+      if (state.currentSessionId !== sessionId) return;
+
+      const sseEvent: SseEvent = {
+        type: event.type as any,
+        slot: event.slot,
+        signature: event.signature,
+        accountKeys: event.accountKeys || (event.mint ? [event.mint] : []),
+        logMessages: (event as any).logMessages || [],
+        err: (event as any).err || null,
+        rawPayload: event.raw,
+        isFallback: false,
+        isSimulated: false,
+        network,
+        endpoint: state.activeEndpoint,
+        observationTimestamp: event.timestamp || Date.now(),
+      };
+
+      asyncEventProcessor.enqueue(sseEvent, eventBusCallback);
+    };
+
+    const connected = await heliusLaserStreamWssManager.start(onWssMarketEvent);
+    if (!connected) {
+      laserLogger.warn('[LASERSTREAM] Helius Standard WSS connection pending or credentials missing');
+      return null;
+    }
+
+    state.transportConnected = true;
+    const handle: StreamHandle = {
+      end: () => {
+        heliusLaserStreamWssManager.stop().catch(() => {});
+      },
+      cancel: () => {
+        heliusLaserStreamWssManager.stop().catch(() => {});
+      },
+      client: null,
+      stream: null,
+    };
+    state.activeStreamHandle = handle;
+    return handle;
+  }
+
+  // 2. MODULAR YELLOWSTONE GEYSER gRPC PATH (For Paid Plans with Entitlement)
   let endpoint: string;
   try {
     endpoint = resolveYellowstoneEndpoint(options);

@@ -28,6 +28,14 @@ const configSchema = z.object({
   HELIUS_API_KEY: z.string().optional(),
   VITE_HELIUS_API_KEY: z.string().optional(),
 
+  // Helius Streaming Configuration
+  HELIUS_STREAM_TRANSPORT: z.enum(['wss', 'grpc', 'auto']).default('wss'),
+  HELIUS_WSS_URL: z.string().optional(),
+  HELIUS_WSS_ENABLED: z.coerce.boolean().default(true),
+  HELIUS_WSS_HEARTBEAT_MS: z.coerce.number().default(60000),
+  HELIUS_WSS_RECONNECT_MAX_MS: z.coerce.number().default(60000),
+  HELIUS_WSS_STALE_TIMEOUT_MS: z.coerce.number().default(120000),
+
   // Yellowstone gRPC Endpoints & Token
   YELLOWSTONE_GRPC_ENDPOINT: z.string().optional(),
   YELLOWSTONE_GRPC_DEVNET_ENDPOINT: z.string().optional(),
@@ -108,4 +116,13 @@ export function getHeliusApiKey(): string | undefined {
     } catch {}
   }
   return raw;
+}
+
+export function getHeliusWssUrl(): string | undefined {
+  if (config.HELIUS_WSS_URL && config.HELIUS_WSS_URL.trim()) {
+    return config.HELIUS_WSS_URL.trim();
+  }
+  const key = getHeliusApiKey();
+  if (!key) return undefined;
+  return `wss://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(key)}`;
 }

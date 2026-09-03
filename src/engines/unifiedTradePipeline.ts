@@ -3,7 +3,7 @@ import { Trade } from '../types';
 import { systemLogger } from '../services/systemLogger';
 import { tokenLifecycleManager } from '../services/TokenLifecycleManager';
 
-export type TradeSource = 'PULSE_FEED' | 'WSS' | 'DEXSCREENER' | 'LASERSTREAM' | 'MANUAL' | 'SIMULATION';
+export type TradeSource = 'PULSE_FEED' | 'WSS' | 'HELIUS_WSS' | 'HELIUS_GRPC' | 'DEXSCREENER' | 'LASERSTREAM' | 'MANUAL' | 'SIMULATION';
 export type TradeType = 'BUY' | 'SELL';
 
 export interface NormalizedTradeEvent {

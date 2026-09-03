@@ -3,6 +3,7 @@ import '../utils/polyfill.js';
 import dotenv from 'dotenv';
 import { reconcileDatabaseWithMainnet } from './StartupReconciliationWorker.js';
 import { tradingMonitorWorker } from './TradingMonitorWorker.js';
+import { streamingTransportManager } from '../market/StreamingTransportManager.js';
 import { yellowstoneConnectionManager } from '../market/YellowstoneConnectionManager.js';
 import { marketEventBus } from '../market/MarketEventBus.js';
 import { tokenDiscovery } from '../market/TokenDiscovery.js';
@@ -26,20 +27,20 @@ async function main() {
   startWorkerHeartbeat('trading', 3000);
   console.log('[TRADING WORKER] Worker heartbeat active.');
 
-  // 3. Connect Yellowstone gRPC Ingestion
+  // 3. Connect Authoritative Helius Real-Time Ingestion (WSS / gRPC)
   try {
     marketEventBus.subscribe((event) => {
       tokenDiscovery.processMarketEvent(event);
     });
 
-    const connected = await yellowstoneConnectionManager.connect();
+    const connected = await streamingTransportManager.start();
     if (connected) {
-      console.log('[TRADING WORKER] Yellowstone gRPC ingestion active.');
+      console.log('[TRADING WORKER] Helius streaming transport active.');
     } else {
-      console.warn('[TRADING WORKER] Yellowstone gRPC connection pending auto-reconnect.');
+      console.log('[TRADING WORKER] Helius streaming transport standby/reconnecting.');
     }
   } catch (e) {
-    console.warn('[TRADING WORKER] Yellowstone start warning:', e);
+    console.warn('[TRADING WORKER] Streaming transport start warning:', e);
   }
 
   // 4. Telemetry synchronizer loop
@@ -49,11 +50,11 @@ async function main() {
     telemetryLoopRunning = true;
     (async () => {
       try {
-        const telemetry = yellowstoneConnectionManager.getTelemetry();
+        const telemetry = streamingTransportManager.getTelemetry();
         await workerStateRepository.updateMetadata('trading', {
           transportConnected: telemetry.connected,
-          lastReceivedSlot: telemetry.lastReceivedSlot,
-          lastEventAt: telemetry.lastEventAt,
+          lastReceivedSlot: telemetry.lastSlot,
+          lastEventAt: telemetry.lastMessageAt || 0,
           reconnectCount: telemetry.reconnectCount,
         });
       } catch {

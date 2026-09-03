@@ -4,12 +4,19 @@ import { TradingNetwork } from '../config/network';
 export type PositionState =
   | 'PENDING_BUY'
   | 'OPEN'
-  | 'EXIT_REQUESTED'
-  | 'EXIT_SUBMITTED'
-  | 'EXIT_CONFIRMING'
+  | 'EXIT_TRIGGERED'
+  | 'QUOTE_PENDING'
+  | 'QUOTE_READY'
+  | 'SUBMITTING'
+  | 'SUBMITTED'
+  | 'CONFIRMING'
+  | 'EXIT_CONFIRMED'
+  | 'RECONCILING'
   | 'CLOSED'
+  | 'EXIT_FAILED'
   | 'RECONCILIATION_REQUIRED'
-  | 'RECOVERY_REQUIRED';
+  | 'RECOVERY_REQUIRED'
+  | 'EXIT_REQUESTED';
 
 export interface PositionRecord {
   id: string; // Deterministic or unique UUID

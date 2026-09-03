@@ -568,15 +568,9 @@ export class RiskManager {
 
     const now = Date.now();
 
-    // Stale timestamp guard: Reject updates older than 5 seconds (stale market data)
-    if (timestamp < now - 5000) {
-      return;
-    }
-
-    // Monotonic timestamp guard: Reject older timestamps for this position
-    if (pos.lastPriceUpdate && timestamp < pos.lastPriceUpdate) {
-      return;
-    }
+    // Stale timestamp guard
+    if (timestamp < now - 5000) return;
+    if (pos.lastPriceUpdate && timestamp < pos.lastPriceUpdate) return;
 
     let priceInSol = rawPrice;
     if (quoteCurrency === 'USD') {
@@ -587,7 +581,6 @@ export class RiskManager {
 
     if (priceInSol <= 0 || !Number.isFinite(priceInSol)) return;
 
-    // Direct update: set fresh market price and track source origin
     pos.currentPrice = priceInSol;
     pos.lastPriceUpdate = timestamp;
     pos.activePriceSource = source;
@@ -601,14 +594,17 @@ export class RiskManager {
       pos.highestPnLPct = grossPnlPct;
     }
 
-    // Sync authoritative price to TokenRegistry & PositionRegistry
+    // Sync authoritative price
     tokenRegistry.updatePrice(mint, priceInSol);
     positionRegistry.updatePrice(mint, priceInSol);
 
-    // Instant TP/SL evaluation pipeline upon fresh market price arrival
-    if (this.isRunning && pos.state === 'OPEN') {
-      void this.evaluatePosition(pos);
-    }
+    // Forward immediately to UltraFastExitEngine
+    const { ultraFastExitEngine } = require('./UltraFastExitEngine');
+    ultraFastExitEngine.onMarketPriceEvent({
+      mint,
+      priceSol: priceInSol,
+      timestamp,
+    });
   }
 
   /**
@@ -719,129 +715,21 @@ export class RiskManager {
 
     this.evaluatingMints.add(mint);
     try {
-      const effectiveBuyPrice = pos.buyPrice > 0
-        ? pos.buyPrice
-        : (pos.amount > 0 && pos.solSpent > 0
-            ? pos.solSpent / (pos.amount / (10 ** pos.tokenDecimals))
-            : 0);
-
-      if (effectiveBuyPrice <= 0 || !pos.currentPrice || pos.currentPrice <= 0) {
-        return;
+      if (pos.currentPrice > 0) {
+        const { ultraFastExitEngine } = require('./UltraFastExitEngine');
+        ultraFastExitEngine.onMarketPriceEvent({
+          mint,
+          priceSol: pos.currentPrice,
+          timestamp: pos.lastPriceUpdate || Date.now(),
+        });
       }
-
-      const now = Date.now();
-      const grossPnlPct = this.calculateGrossPnLPct(pos);
-      const tpPct = pos.tpPct ?? this.config.tpPct;
-      const slPct = Math.abs(pos.slPct ?? this.config.slPct);
-      const peakPnL = pos.highestPnLPct ?? grossPnlPct;
-      const dropFromPeak = Math.max(0, peakPnL - grossPnlPct);
-      const trailingSlPct = pos.trailingSlPct ?? this.config.trailingSlPct ?? 10;
-
-      // Initialization protection: Within 1.5 seconds of creation, skip SL if price delta is negligible
-      if (now - pos.createdAt < 1500 && grossPnlPct > -0.1) {
-        return;
-      }
-
-      let candidateReason: 'tp' | 'sl' | null = null;
-      let exitType: 'TAKE_PROFIT' | 'STOP_LOSS' | 'TRAILING_STOP' | 'MAX_HOLD' = 'TAKE_PROFIT';
-
-      // 1. Max hold time check
-      if (pos.maxHoldTimeMs && pos.maxHoldTimeMs > 0 && pos.createdAt > 0 && (now - pos.createdAt >= pos.maxHoldTimeMs)) {
-        candidateReason = 'sl';
-        exitType = 'MAX_HOLD';
-      } else {
-        // 2. Priority check: Trailing stop / profit-drop protection (sell in profit before drop)
-        if (trailingSlPct > 0 && peakPnL > 0 && dropFromPeak >= trailingSlPct) {
-          candidateReason = grossPnlPct >= 0 ? 'tp' : 'sl';
-          exitType = 'TRAILING_STOP';
-
-          if (grossPnlPct > 0) {
-            this.onLogCallback?.(
-              `🛡️⚡ [PRIORITY PROFIT EXIT] ${mint.slice(0, 8)}...: Prioritizing exit in profit (+${grossPnlPct.toFixed(2)}%) to lock in gains before drop (Peak: +${peakPnL.toFixed(2)}%, Drop: -${dropFromPeak.toFixed(2)}%)`,
-              'priority',
-              'risk',
-              { mint, grossPnlPct, peakPnL, dropFromPeak, exitType: 'TRAILING_STOP', tokenAddress: mint }
-            );
-          }
-        } else if (grossPnlPct >= tpPct) {
-          candidateReason = 'tp';
-          exitType = 'TAKE_PROFIT';
-
-          this.onLogCallback?.(
-            `🎯⚡ [TAKE PROFIT PRIORITY] ${mint.slice(0, 8)}... reached target: +${grossPnlPct.toFixed(2)}% (Target: +${tpPct}%) — executing immediate exit`,
-            'priority',
-            'trade',
-            { mint, grossPnlPct, tpPct, exitType: 'TAKE_PROFIT', tokenAddress: mint }
-          );
-        } else if (grossPnlPct <= -slPct) {
-          candidateReason = 'sl';
-          exitType = 'STOP_LOSS';
-        }
-      }
-
-      if (!candidateReason) return;
-
-      // Perform Executable Pre-Sell Validation STRICTLY & ONLY by Jupiter
-      const label = candidateReason === 'tp' ? 'exit_tp' : 'exit_sl';
-      const slippageBps = candidateReason === 'tp' ? (pos.slippageBpsTp || 250) : (pos.slippageBpsSl || 1000);
-
-      const validationResult = await jupiterPreSellValidator.validatePreSell({
-        mint: pos.mint,
-        rawAmount: pos.amount,
-        totalPositionAmount: pos.amount,
-        slippageBps,
-        costBasisSol: pos.solSpent,
-        currentMarketPriceSol: pos.currentPrice,
-        // Disable target checking if this is a MAX_HOLD force exit. 
-        // We just want whatever the current market price yields.
-        targetTpPct: exitType === 'MAX_HOLD' ? undefined : (candidateReason === 'tp' ? tpPct : undefined),
-        targetSlPct: exitType === 'MAX_HOLD' ? undefined : (candidateReason === 'sl' ? slPct : undefined),
-        label: exitType === 'MAX_HOLD' ? 'MAX_HOLD' : label,
-      });
-
-      if (!validationResult.isValid) {
-        if (validationResult.reason?.includes('conflicts with PROFITABLE Jupiter')) {
-          // Revalidate: set Jupiter as active price source and update current price
-          pos.activePriceSource = 'jupiter';
-          if (validationResult.outAmountSol > 0) {
-            const tokenQty = pos.amount > 0 ? pos.amount / (10 ** pos.tokenDecimals) : 0;
-            const quotePriceSol = tokenQty > 0 ? validationResult.outAmountSol / tokenQty : pos.currentPrice;
-            pos.currentPrice = quotePriceSol;
-            pos.lastPriceUpdate = Date.now();
-            tokenRegistry.updatePrice(mint, quotePriceSol);
-            positionRegistry.updatePrice(mint, quotePriceSol);
-          }
-        }
-        console.warn(`[RiskManager] ⛔ Pre-Sell Validation failed by Jupiter for ${mint}: ${validationResult.reason}`);
-        return;
-      }
-
-      const executableSolOut = validationResult.outAmountSol;
-      const executablePnlPct = validationResult.executablePnlPct;
-      const tokenQty = pos.amount > 0 ? pos.amount / (10 ** pos.tokenDecimals) : 0;
-      const quotePriceSol = tokenQty > 0 && executableSolOut > 0 ? executableSolOut / tokenQty : pos.currentPrice;
-
-      console.log(
-        `[RiskManager] ⚡ Authorizing ${exitType} exit for ${mint} via Jupiter Pre-Sell Validation: Market PnL = ${grossPnlPct.toFixed(2)}%, ` +
-        `Jupiter Executable PnL = ${executablePnlPct.toFixed(2)}%`
-      );
-
-      await this.triggerExit(pos, candidateReason, {
-        exitType,
-        triggerPriceSol: pos.currentPrice,
-        triggerPnLPct: grossPnlPct,
-        quotePriceSol,
-        quotePnlPct: executablePnlPct,
-        configuredTpPct: tpPct,
-        configuredSlPct: slPct,
-      }, validationResult.quote);
     } finally {
       this.evaluatingMints.delete(mint);
     }
   }
 
   /**
-   * Request manual or explicit exit. Rejects untracked positions without inventing fake cost basis.
+   * Request manual or explicit exit via UltraFastExitEngine.
    */
   public async requestExit(
     mint: string,
@@ -855,39 +743,20 @@ export class RiskManager {
       throw new Error(`UNTRACKED_POSITION_EXIT: Cannot exit position for ${mint}. No active position found in RiskManager.`);
     }
 
-    if (pos.state === 'CLOSING' || pos.state === 'CLOSED') {
+    if (pos.state === 'CLOSING' || pos.state === 'CLOSED' || pos.state === 'EXIT_REQUESTED') {
       return;
     }
 
-    const pnlPct = this.calculatePnLPct(pos);
-    const side: 'tp' | 'sl' = pnlPct >= 0 ? 'tp' : 'sl';
-
-    // Perform Executable Pre-Sell Validation strictly by Jupiter before manual exit
-    const validationResult = await jupiterPreSellValidator.validatePreSell({
-      mint: pos.mint,
-      rawAmount: pos.amount,
-      totalPositionAmount: pos.amount,
-      slippageBps: side === 'tp' ? (pos.slippageBpsTp || 250) : (pos.slippageBpsSl || 1000),
-      costBasisSol: pos.solSpent,
-      currentMarketPriceSol: pos.currentPrice,
-      label: 'MANUAL_FORCE_EXIT',
+    const { ultraFastExitEngine } = require('./UltraFastExitEngine');
+    const success = await ultraFastExitEngine.requestExit({
+      mint,
+      reason: reason.includes('MANUAL') ? 'MANUAL_EXIT' : 'EMERGENCY_EXIT',
+      priority: 6,
     });
 
-    if (!validationResult.isValid) {
-      console.warn(`[RiskManager] ⛔ Explicit exit for ${mint} rejected by Jupiter Pre-Sell Validator: ${validationResult.reason}`);
-      throw new Error(`PRE_SELL_VALIDATION_FAILED: ${validationResult.reason}`);
+    if (!success) {
+      throw new Error(`EXIT_REQUEST_FAILED: UltraFastExitEngine rejected exit request for ${mint}`);
     }
-
-    console.log(`[RiskManager] 🚨 Explicit exit validated by Jupiter for ${mint} (${reason}) at estimated PnL: ${pnlPct.toFixed(2)}%`);
-    await this.triggerExit(pos, side, {
-      exitType: 'MANUAL',
-      triggerPriceSol: pos.currentPrice,
-      triggerPnLPct: pnlPct,
-      quotePriceSol: validationResult.outAmountSol > 0 ? (validationResult.outAmountSol / (pos.amount / (10 ** pos.tokenDecimals))) : pos.currentPrice,
-      quotePnlPct: validationResult.executablePnlPct,
-      configuredTpPct: pos.tpPct,
-      configuredSlPct: pos.slPct,
-    }, validationResult.quote);
   }
 
   public async triggerExit(
