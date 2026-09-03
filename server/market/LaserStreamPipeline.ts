@@ -12,6 +12,10 @@ import { entryDecisionLedger } from '../trading/EntryDecisionLedger.js';
 import { criteriaRepository } from '../repositories/CriteriaRepository.js';
 import { CriteriaConfig } from '../services/criteriaService.js';
 import { laserLogger } from '../utils/logger.js';
+import { bondingCurveFastLane } from '../trading/BondingCurveFastLane.js';
+import { migrationDetector } from '../trading/MigrationDetector.js';
+import { momentumEngine } from '../trading/MomentumEngine.js';
+
 
 // Protocols and Program IDs
 export const SUPPORTED_PROTOCOLS = {
@@ -54,6 +58,8 @@ export class LaserStreamPipeline {
   // Deduplication cache
   private dedupeCache: Map<string, { state: string; timestamp: number }> = new Map();
   private readonly DEDUPE_TTL = 30000; // 30 seconds TTL
+  private signatureDedupeCache: Set<string> = new Set();
+  private lastEvaluationTimestamp: Map<string, number> = new Map();
 
   // Micro-batching timer
   private workerTimer: NodeJS.Timeout | null = null;
@@ -209,6 +215,18 @@ export class LaserStreamPipeline {
       return;
     }
 
+    // Transaction Signature-level Deduplication
+    if (event.signature) {
+      if (this.signatureDedupeCache.has(event.signature)) {
+        return;
+      }
+      this.signatureDedupeCache.add(event.signature);
+      if (this.signatureDedupeCache.size > 20000) {
+        const arr = Array.from(this.signatureDedupeCache);
+        this.signatureDedupeCache = new Set(arr.slice(10000));
+      }
+    }
+
     // 1. FAST PROGRAM FILTER: Immediately drop if not related to any supported protocol
     const keys = event.accountKeys || [];
     const logs = (event as any).logMessages || [];
@@ -330,13 +348,30 @@ export class LaserStreamPipeline {
 
     this.counters.mintValidationSuccess++;
 
-    // 5. DEDUPLICATION & CAPACITY BOUNDS
-    const dedupeKey = `${extractedMint}:${protocol}`;
-    const cached = this.dedupeCache.get(dedupeKey);
-    if (cached && Date.now() - cached.timestamp < this.DEDUPE_TTL) {
+    // 5. UPDATE REAL-TIME ENGINES AT LINE-RATE (NON-BLOCKING)
+    const normalizedEventForEngines = {
+      ...event,
+      mint: extractedMint,
+      protocol,
+    };
+    bondingCurveFastLane.processEvent(normalizedEventForEngines);
+    migrationDetector.processEvent(normalizedEventForEngines);
+
+    const logStr = logs.join(' ');
+    const isBuy = logStr.includes('Buy') || logStr.includes('Instruction: Buy') || logStr.includes('swap') || logStr.includes('Initialize');
+    const solAmount = (event.price && event.tokenAmount) ? event.price * event.tokenAmount : 0;
+    const buyer = event.owner || 'unknown';
+    momentumEngine.recordTrade(extractedMint, event.price || 0.000001, isBuy, solAmount, buyer);
+
+    // 5b. EVALUATION THROTTLE (1.5 Seconds) & CAPACITY BOUNDS
+    const throttleKey = `${extractedMint}:${protocol}`;
+    const now = Date.now();
+    const lastEval = this.lastEvaluationTimestamp.get(throttleKey) || 0;
+    if (now - lastEval < 1500) {
       this.counters.duplicates++;
       return;
     }
+    this.lastEvaluationTimestamp.set(throttleKey, now);
 
     // Check bounded queue capacity limits
     const totalQueueSize = this.highQueue.length + this.mediumQueue.length + this.lowQueue.length;
@@ -345,6 +380,7 @@ export class LaserStreamPipeline {
       return;
     }
 
+    const dedupeKey = `${extractedMint}:${protocol}`;
     this.dedupeCache.set(dedupeKey, { state: 'DISCOVERED', timestamp: Date.now() });
     this.counters.candidateDeduplicated++;
 

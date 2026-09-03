@@ -11,6 +11,8 @@ import { CriteriaConfig } from '../services/criteriaService.js';
 import { tokenDiscovery } from '../market/TokenDiscovery.js';
 
 import { laserStreamPipeline } from '../market/LaserStreamPipeline.js';
+import { bondingCurveFastLane } from './BondingCurveFastLane.js';
+import { migrationDetector } from './MigrationDetector.js';
 
 export type PipelineStage =
   | 'DISCOVERED'
@@ -134,7 +136,22 @@ export class EntryEngine {
       };
     }
 
-    const evalPromise = this.executePipeline(trimmedMint, network, wallet, triggerSource);
+    const { priorityScheduler, PriorityLevel } = await import('./PriorityScheduler.js');
+    const bCurve = bondingCurveFastLane.getState(trimmedMint);
+    const migration = migrationDetector.getMigratedPool(trimmedMint);
+    
+    let priority = PriorityLevel.P5_NORMAL_BUY;
+    if (migration) {
+      priority = PriorityLevel.P2_MIGRATION_BUY;
+    } else if (bCurve) {
+      priority = PriorityLevel.P3_BONDING_CURVE_BUY;
+    } else if (triggerSource === 'HIGH_MOMENTUM') {
+      priority = PriorityLevel.P4_HIGH_MOMENTUM_BUY;
+    }
+
+    const evalPromise = priorityScheduler.schedule(priority, () => 
+      this.executePipeline(trimmedMint, network, wallet, triggerSource)
+    );
     this.activeEvaluationLocks.set(lockKey, evalPromise);
 
     try {
@@ -143,6 +160,7 @@ export class EntryEngine {
       this.activeEvaluationLocks.delete(lockKey);
     }
   }
+
 
   private async executePipeline(
     mint: string,

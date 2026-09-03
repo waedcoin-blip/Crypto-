@@ -464,9 +464,60 @@ export class ServerEntryGate {
       criteriaResults['REBUY_GUARD'] = { pass: true, reason: 'REBUY_GUARD_ALLOWED' };
     }
 
-    // 18. Wallet Balance Check
+    // 17b. Dynamic Momentum Evaluation
+    const { momentumEngine } = await import('./MomentumEngine.js');
+    const momentumMetrics = momentumEngine.calculateMomentum(candidate);
+    const minMomentumScore = config.hardenedMinBuyCount30s ? 40 : 50; // Use reasonable minimum threshold
+    if (momentumMetrics.momentumScore < minMomentumScore) {
+      const r = {
+        pass: false,
+        actualValue: momentumMetrics.momentumScore,
+        threshold: minMomentumScore,
+        reason: `MOMENTUM_SCORE_TOO_LOW: ${momentumMetrics.momentumScore.toFixed(1)}/100 < ${minMomentumScore}`,
+      };
+      criteriaResults['MOMENTUM'] = r;
+      blockingReasons.push(r.reason);
+    } else {
+      criteriaResults['MOMENTUM'] = {
+        pass: true,
+        actualValue: momentumMetrics.momentumScore,
+        threshold: minMomentumScore,
+        reason: 'MOMENTUM_OK',
+      };
+    }
+
+    // 17c. Dynamic Profitability Evaluation
+    const { profitabilityEngine } = await import('./ProfitabilityEngine.js');
     const buyAmountSol = Number(config.buyAmountSol) || 0.1;
+    const profitabilityMetrics = profitabilityEngine.calculateProfitability(candidate, buyAmountSol);
+    if (profitabilityMetrics.status === 'UNPROFITABLE' || profitabilityMetrics.expectedNetProfitSol <= 0) {
+      const r = {
+        pass: false,
+        actualValue: profitabilityMetrics.expectedNetProfitSol,
+        threshold: 0,
+        reason: `UNPROFITABLE_OPPORTUNITY: Expected Net SOL Profit is ${profitabilityMetrics.expectedNetProfitSol.toFixed(4)}`,
+      };
+      criteriaResults['PROFITABILITY'] = r;
+      blockingReasons.push(r.reason);
+    } else if (profitabilityMetrics.status === 'DATA_UNAVAILABLE') {
+      const r = {
+        pass: false,
+        reason: 'PROFITABILITY_DATA_UNAVAILABLE',
+      };
+      criteriaResults['PROFITABILITY'] = r;
+      blockingReasons.push(r.reason);
+    } else {
+      criteriaResults['PROFITABILITY'] = {
+        pass: true,
+        actualValue: profitabilityMetrics.expectedNetProfitSol,
+        threshold: 0,
+        reason: 'OPPORTUNITY_PROFITABLE',
+      };
+    }
+
+    // 18. Wallet Balance Check
     const requiredSol = buyAmountSol + 0.005; // Reserve 0.005 for gas/fees
+
     try {
       const executor = executionGateway.getExecutor(network);
       const balance = await executor.getBalance();
