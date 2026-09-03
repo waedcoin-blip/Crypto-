@@ -9,7 +9,7 @@ export default defineConfig(({mode}) => {
     plugins: [react(), tailwindcss()],
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-      'global': 'window',
+      'global': 'globalThis',
       'process.env': '{}',
     },
     resolve: {
@@ -17,7 +17,7 @@ export default defineConfig(({mode}) => {
         '@': path.resolve(__dirname, '.'),
         'buffer': 'buffer',
         'bigint-buffer': 'bigint-buffer/dist/browser.js',
-        'cross-fetch': 'cross-fetch/dist/browser-ponyfill.js'
+        'cross-fetch': path.resolve(__dirname, 'src/lib/crossFetchBrowser.js'),
       },
     },
         server: {
