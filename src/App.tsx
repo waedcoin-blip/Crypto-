@@ -67,6 +67,7 @@ import { resolveTokenDecimals } from './services/PaperTradeExecutor';
 import { StartupReconciliation } from './services/StartupReconciliation';
 import { entryGate } from './services/EntryGate';
 import { parseWalletTransaction } from './services/WalletTransactionParser';
+import { unifiedTradePipeline } from './engines/unifiedTradePipeline';
 
 
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
@@ -1286,7 +1287,6 @@ function App() {
 
           const tradedMints = new Set<string>([
             ...(state.mySniperTrades || []).map((t: any) => t.address || t.mint || t.tokenAddress).filter(Boolean),
-            ...(state.trades || []).map((t: any) => t.address || t.mint || t.tokenAddress).filter(Boolean),
             ...Object.keys(state.activePositions || {}),
             ...Array.from(autoBoughtTokens.current)
           ]);
@@ -3199,7 +3199,27 @@ function App() {
             });
           }
         }
-  };
+  }
+
+  const processIncomingTradeRef = useRef<(trade: Trade) => void>(() => undefined);
+  processIncomingTradeRef.current = processIncomingTrade;
+
+  useEffect(() => {
+    return unifiedTradePipeline.subscribe((event) => {
+      const trade: Trade = event.rawTrade || {
+        id: event.eventId,
+        type: event.type.toLowerCase() as 'buy' | 'sell',
+        token: event.symbol,
+        tokenAddress: event.mint,
+        amount: event.amount,
+        timestamp: new Date(event.timestamp).toISOString(),
+        signature: event.signature || 'synthetic',
+        status: 'confirmed',
+        fromAccount: event.wallet,
+      };
+      processIncomingTradeRef.current(trade);
+    });
+  }, []);
 
   const connectionRef = useRef<Connection | null>(null);
   const masterConnectionRef = useRef<Connection | null>(null);
@@ -3952,7 +3972,7 @@ function App() {
           }, ...prev.slice(0, 19)]);
 
           // Do not perform side effects inside a React state updater.
-          processIncomingTrade(newTrade);
+          unifiedTradePipeline.ingestPulseFeed(newTrade);
           setTrades(prev => prev.some(t => t.signature === signature && t.fromAccount === wallet.address)
             ? prev
             : [newTrade, ...prev].slice(0, 50));

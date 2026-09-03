@@ -35,6 +35,7 @@ import { useBalanceStore } from '../../store/balanceStore';
 import { useTradingEnvironmentStore } from '../../store/tradingEnvironmentStore';
 import { walletBalanceService } from '../../services/WalletBalanceService';
 import { resolveTokenDecimals } from '../../services/PaperTradeExecutor';
+import { unifiedTradePipeline, NormalizedTradeEvent } from '../../engines/unifiedTradePipeline';
 
 import { DEFAULT_HELIUS_RPC, DEFAULT_HELIUS_WS, HELIUS_API_KEY, SOL_MINT, USDC_MINT } from '../../constants/solana';
 
@@ -3009,6 +3010,30 @@ export const PnLPage = ({
     };
   }, [privateKey, rpcUrl, customWsUrl, addLog]);
 
+
+  // Every unified trade is mirrored into the System Log. This is deliberately
+  // independent from the Pulse Feed UI so an event cannot disappear from the audit trail.
+  useEffect(() => {
+    return unifiedTradePipeline.subscribe((event: NormalizedTradeEvent) => {
+      const { source, eventId, type, symbol, mint, amount, wallet, signature, timestamp } = event;
+      addLog(
+        `📡 [UNIFIED TRADE] ${type.toUpperCase()} $${symbol} from ${source}`,
+        'info',
+        'trade',
+        {
+          eventId,
+          source,
+          tokenAddress: mint,
+          symbol,
+          amount,
+          wallet,
+          signature,
+          observedAt: timestamp,
+        }
+      );
+    });
+  }, [addLog]);
+
   const updateUptime = useCallback(() => {
     if (!startTimeRef.current) {
         console.log("updateUptime: no start time");
@@ -4983,10 +5008,10 @@ const checkTokenCriteria = (mint: string): {
           fromAccount: `SimWallet_${Math.random().toString(36).substring(2, 7).toUpperCase()}`
         };
 
-        useAppStore.getState().setTrades(prev => {
-          if (prev.some(t => t.tokenAddress === mint && t.type === newSysTrade.type)) return prev;
-          return [newSysTrade, ...prev].slice(0, 50);
-        });
+        const accepted = unifiedTradePipeline.ingest(newSysTrade, 'DEXSCREENER');
+        if (accepted) {
+          useAppStore.getState().setTrades(prev => [newSysTrade, ...prev].slice(0, 50));
+        }
 
         updatedTokensList.push(item);
       }

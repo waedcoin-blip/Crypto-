@@ -1,5 +1,6 @@
 import { SniperTrade } from '../types';
 import { useAppStore } from '../store/appStore';
+import { tokenLifecycleManager } from '../services/TokenLifecycleManager';
 
 function normalizeAddress(addr: string | undefined): string {
   if (!addr) return '';
@@ -15,11 +16,16 @@ function normalizeSymbol(sym: string | undefined): string {
   return cleaned;
 }
 
+/**
+ * Returns the count of trades EXECUTED BY OUR SYSTEM for a given token.
+ * Crucial Fix: Public market trade observations (storeState.trades) are NEVER
+ * counted as system trades!
+ */
 export function getTradeCount(
   tokenAddress: string,
   symbol: string | undefined,
-  trades: SniperTrade[],
-  positions: Record<string, any>,
+  trades?: SniperTrade[],
+  positions?: Record<string, any>,
   pendingQueue?: Set<string>,
   network?: string
 ): number {
@@ -29,29 +35,26 @@ export function getTradeCount(
   const normSym = normalizeSymbol(symbol);
   const currentNetwork = network || (typeof localStorage !== 'undefined' ? localStorage.getItem('trade_mode') : null) || 'paper';
 
-  // Combine trades from argument AND global store to ensure no trades are missed
   let storeState: any = null;
   try {
     storeState = useAppStore.getState();
   } catch {}
 
-  const allTradesList: SniperTrade[] = [
+  // ONLY count mySniperTrades (user/system executed trades)
+  const myExecutedTrades: SniperTrade[] = [
     ...(trades || []),
-    ...(storeState?.mySniperTrades || []),
-    ...(storeState?.trades || [])
+    ...(storeState?.mySniperTrades || [])
   ];
 
-  // 1. Count completed BUY trades in trades history matching current network
   const countedSignatures = new Set<string>();
   let completedBuys = 0;
 
-  for (const t of allTradesList) {
+  for (const t of myExecutedTrades) {
     if (!t || t.type !== 'BUY') continue;
 
     const tradeNet = (t as any).network || (t as any).mode || (t.id?.startsWith('SIM') || t.signature?.startsWith('SIM') ? 'paper' : 'mainnet');
     if (tradeNet !== currentNetwork) continue;
 
-    // Avoid double counting same trade signature/id if present in multiple lists
     const uniqueKey = t.id || t.signature || `${t.address}-${t.timestamp}`;
     if (countedSignatures.has(uniqueKey)) continue;
 
@@ -67,7 +70,7 @@ export function getTradeCount(
     }
   }
 
-  // 2. Count active position matching current network
+  // Count active position matching current network
   let isActive = 0;
   const activePositionsMap = {
     ...(positions || {}),
@@ -96,7 +99,7 @@ export function getTradeCount(
     }
   }
 
-  // 3. Count pending in-flight buy attempts
+  // Count pending in-flight buy attempts
   let isPending = 0;
   if (pendingQueue) {
     for (const pendingAddr of pendingQueue) {
@@ -107,7 +110,9 @@ export function getTradeCount(
     }
   }
 
-  return Math.max(completedBuys, isActive) + isPending;
+  const systemLifecycleCount = tokenLifecycleManager.getCompletedTradeCount(tokenAddress);
+
+  return Math.max(completedBuys, systemLifecycleCount, isActive) + isPending;
 }
 
 export interface RebuyValidationOptions {
@@ -128,6 +133,21 @@ export function isRebuyAllowed(
   const isTradeOnce = options?.tradeOnlyOnce ?? storeState?.tradeOnlyOnce ?? true;
   const maxAllowed = isTradeOnce ? 1 : Math.max(1, options?.maxRebuyTimes ?? storeState?.maxRebuyTimes ?? 1);
 
+  // Check TokenLifecycleManager canonical state first
+  const eligibility = tokenLifecycleManager.canTokenBeBought(tokenAddress, {
+    tradeOnlyOnce: isTradeOnce,
+    maxRebuyTimes: maxAllowed,
+  });
+
+  if (!eligibility.allowed) {
+    return {
+      allowed: false,
+      count: eligibility.completedTrades,
+      maxAllowed,
+      reason: eligibility.reason,
+    };
+  }
+
   const count = getTradeCount(
     tokenAddress,
     symbol,
@@ -143,8 +163,8 @@ export function isRebuyAllowed(
       count,
       maxAllowed,
       reason: isTradeOnce
-        ? `TOKEN_ALREADY_TRADED_ONCE (Trade Count: ${count}, Policy: Trade Only Once / No Rebuy)`
-        : `MAX_REBUY_EXCEEDED (Trade Count: ${count} >= Limit: ${maxAllowed})`,
+        ? `TOKEN_ALREADY_TRADED_ONCE (System Trade Count: ${count}, Policy: Trade Only Once)`
+        : `MAX_REBUY_EXCEEDED (System Trade Count: ${count} >= Limit: ${maxAllowed})`,
     };
   }
 
@@ -154,5 +174,3 @@ export function isRebuyAllowed(
     maxAllowed,
   };
 }
-
-
