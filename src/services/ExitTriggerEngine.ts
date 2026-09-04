@@ -1,9 +1,10 @@
+// FULL_POSITION_EXIT_ONLY: Legacy trigger retained for compatibility; it must not execute partial exits.
 // src/services/ExitTriggerEngine.ts
 import { PositionPnLMetrics, positionPnLEngine } from './PositionPnLEngine';
 
 export type ExitReason =
   | 'TAKE_PROFIT'
-  | 'PARTIAL_TAKE_PROFIT'
+  | 'LEGACY_PARTIAL_TAKE_PROFIT_DISABLED'
   | 'TRAILING_PROFIT'
   | 'STOP_LOSS'
   | 'EMERGENCY_EXIT'
@@ -167,7 +168,7 @@ export class ExitTriggerEngine {
             if (sellRatio > 0.01) {
               return {
                 mint: metrics.mint,
-                reason: 'PARTIAL_TAKE_PROFIT',
+                reason: 'LEGACY_PARTIAL_TAKE_PROFIT_DISABLED',
                 priority: 4,
                 requestedSellRatio: sellRatio,
                 metrics,

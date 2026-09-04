@@ -34,7 +34,7 @@ export class ExitPriorityQueue {
       case 'TRAILING_PROFIT':
         return 3;
       case 'TAKE_PROFIT':
-      case 'PARTIAL_TAKE_PROFIT':
+      case 'LEGACY_PARTIAL_TAKE_PROFIT_DISABLED':
         return 4;
       case 'MAX_HOLD_TIME':
         return 5;

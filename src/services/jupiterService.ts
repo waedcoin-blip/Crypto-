@@ -310,7 +310,7 @@ export const calculateDynamicJitoTip = async (
   
   const expectedProfitPctSafe = Math.max(0, expectedProfitPct);
   const maxTipFromProfit = (tradeValueUsd * (expectedProfitPctSafe / 100) * 0.05);
-  const solPrice = getSolPriceUsd() || 150; 
+  const solPrice = getSolPriceUsd() || 0; 
   const maxTipSol = Math.min(maxTipFromProfit / solPrice, 0.5);
   
   const baseTip = floorTip * urgencyMultipliers[urgency];

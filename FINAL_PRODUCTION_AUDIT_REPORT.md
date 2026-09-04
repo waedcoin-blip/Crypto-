@@ -1,7 +1,7 @@
 # Final Production Audit Report
-Generated at: 2026-09-03T19:40:50.911Z
-Total Findings: 129
-Bugs: 2
+Generated at: 2026-09-04T17:20:45.443Z
+Total Findings: 127
+Bugs: 0
 Warnings: 127
 
 ## Findings Details
@@ -21,22 +21,22 @@ Warnings: 127
 - **[WARNING]** `server/wallet/WalletManager.ts:88`: Hardcoded Secret / Private Key (`keypairMainnet = Keypair.fromSecretKey(secret);`)
 - **[WARNING]** `src/App.tsx:3`: Hardcoded Secret / Private Key (`import { getKeypairFromPrivateKey, getSavedSessionKeypair, saveSessionKeypair } from './utils/keypairUtils';`)
 - **[WARNING]** `src/App.tsx:37`: Hardcoded Secret / Private Key (`import { encryptPrivateKey, decryptPrivateKey } from './lib/crypto';`)
-- **[WARNING]** `src/App.tsx:466`: Hardcoded Secret / Private Key (`const [privateKey, setPrivateKeyState] = useState(() => {`)
-- **[WARNING]** `src/App.tsx:468`: Hardcoded Secret / Private Key (`return saved ? bs58.encode(saved.secretKey) : '';`)
-- **[WARNING]** `src/App.tsx:473`: Hardcoded Secret / Private Key (`const setPrivateKey = useCallback((newKey: string) => {`)
-- **[WARNING]** `src/App.tsx:478`: Hardcoded Secret / Private Key (`const kp = getKeypairFromPrivateKey(newKey.trim());`)
-- **[WARNING]** `src/App.tsx:488`: Hardcoded Secret / Private Key (`const encoded = bs58.encode(sessionWallet.secretKey);`)
-- **[WARNING]** `src/App.tsx:502`: Hardcoded Secret / Private Key (`if (!privateKey) {`)
-- **[WARNING]** `src/App.tsx:508`: Hardcoded Secret / Private Key (`const encrypted = await encryptPrivateKey(privateKey, uid);`)
-- **[WARNING]** `src/App.tsx:510`: Hardcoded Secret / Private Key (`localStorage.setItem('juipter_auto_privateKey', encrypted);`)
-- **[WARNING]** `src/App.tsx:515`: Hardcoded Secret / Private Key (`}, [privateKey, user?.uid]);`)
-- **[WARNING]** `src/App.tsx:4467`: Artificial History Truncation (slice(-500)) (`<p className="text-[9px] font-mono text-slate-500 truncate">{wallet.address.slice(0, 8)}...{wallet.address.slice(-8)}</p>`)
-- **[WARNING]** `src/App.tsx:5009`: Hardcoded Secret / Private Key (`<p className="text-[8px] text-rose-400 font-bold uppercase mb-2">SECRET (PRIVATE KEY) - DO NOT SHARE</p>`)
-- **[WARNING]** `src/App.tsx:5014`: Hardcoded Secret / Private Key (`value={bs58.encode(sessionWallet.secretKey)}`)
-- **[WARNING]** `src/App.tsx:5017`: Hardcoded Secret / Private Key (`<button onClick={() => navigator.clipboard.writeText(bs58.encode(sessionWallet.secretKey))}>`)
-- **[WARNING]** `src/App.tsx:6098`: Hardcoded Secret / Private Key (`privateKey,`)
-- **[WARNING]** `src/App.tsx:6356`: Artificial History Truncation (slice(-500)) (`<span className="text-[10px] font-mono text-slate-500">{(metric.address || '').slice(0, 6)}...{(metric.address || '').slice(-4)}</span>`)
-- **[WARNING]** `src/App.tsx:6678`: Artificial History Truncation (slice(-500)) (`{(metric.address || '').slice(0, 6)}...{(metric.address || '').slice(-6)}`)
+- **[WARNING]** `src/App.tsx:467`: Hardcoded Secret / Private Key (`const [privateKey, setPrivateKeyState] = useState(() => {`)
+- **[WARNING]** `src/App.tsx:469`: Hardcoded Secret / Private Key (`return saved ? bs58.encode(saved.secretKey) : '';`)
+- **[WARNING]** `src/App.tsx:474`: Hardcoded Secret / Private Key (`const setPrivateKey = useCallback((newKey: string) => {`)
+- **[WARNING]** `src/App.tsx:479`: Hardcoded Secret / Private Key (`const kp = getKeypairFromPrivateKey(newKey.trim());`)
+- **[WARNING]** `src/App.tsx:489`: Hardcoded Secret / Private Key (`const encoded = bs58.encode(sessionWallet.secretKey);`)
+- **[WARNING]** `src/App.tsx:503`: Hardcoded Secret / Private Key (`if (!privateKey) {`)
+- **[WARNING]** `src/App.tsx:509`: Hardcoded Secret / Private Key (`const encrypted = await encryptPrivateKey(privateKey, uid);`)
+- **[WARNING]** `src/App.tsx:511`: Hardcoded Secret / Private Key (`localStorage.setItem('juipter_auto_privateKey', encrypted);`)
+- **[WARNING]** `src/App.tsx:516`: Hardcoded Secret / Private Key (`}, [privateKey, user?.uid]);`)
+- **[WARNING]** `src/App.tsx:4269`: Artificial History Truncation (slice(-500)) (`<p className="text-[9px] font-mono text-slate-500 truncate">{wallet.address.slice(0, 8)}...{wallet.address.slice(-8)}</p>`)
+- **[WARNING]** `src/App.tsx:4811`: Hardcoded Secret / Private Key (`<p className="text-[8px] text-rose-400 font-bold uppercase mb-2">SECRET (PRIVATE KEY) - DO NOT SHARE</p>`)
+- **[WARNING]** `src/App.tsx:4816`: Hardcoded Secret / Private Key (`value={bs58.encode(sessionWallet.secretKey)}`)
+- **[WARNING]** `src/App.tsx:4819`: Hardcoded Secret / Private Key (`<button onClick={() => navigator.clipboard.writeText(bs58.encode(sessionWallet.secretKey))}>`)
+- **[WARNING]** `src/App.tsx:5900`: Hardcoded Secret / Private Key (`privateKey,`)
+- **[WARNING]** `src/App.tsx:6158`: Artificial History Truncation (slice(-500)) (`<span className="text-[10px] font-mono text-slate-500">{(metric.address || '').slice(0, 6)}...{(metric.address || '').slice(-4)}</span>`)
+- **[WARNING]** `src/App.tsx:6480`: Artificial History Truncation (slice(-500)) (`{(metric.address || '').slice(0, 6)}...{(metric.address || '').slice(-6)}`)
 - **[WARNING]** `src/components/TradingSettings.tsx:1`: Hardcoded Secret / Private Key (`import { getKeypairFromPrivateKey } from "../utils/keypairUtils";`)
 - **[WARNING]** `src/components/TradingSettings.tsx:55`: Hardcoded Secret / Private Key (`const [privateKey, setPrivateKey] = useState('');`)
 - **[WARNING]** `src/components/TradingSettings.tsx:83`: Hardcoded Secret / Private Key (`if (encPrivKey) setPrivateKey('••••••••••••••••••••••••••');`)
@@ -107,7 +107,7 @@ Warnings: 127
 - **[WARNING]** `src/components/pages/PnLPage.tsx:7591`: Artificial History Truncation (slice(-500)) (`<span className="text-white font-bold">{t.mint.slice(0, 6)}...{t.mint.slice(-6)}</span>`)
 - **[WARNING]** `src/components/pages/PnLPage.tsx:7804`: Artificial History Truncation (slice(-500)) (`const mintDisplay = mintStr.length > 12 ? `${mintStr.slice(0, 6)}...${mintStr.slice(-6)}` : mintStr || 'Unknown';`)
 - **[WARNING]** `src/components/pages/SafetyPage.tsx:49`: Artificial History Truncation (slice(-500)) (`{token.address ? `${token.address.slice(0, 6)}...${token.address.slice(-4)}` : 'N/A'}`)
-- **[WARNING]** `src/components/pages/SystemCheckPage.tsx:827`: Hardcoded Secret / Private Key (`OneUptime Telemetry Token / Ingestion Secret`)
+- **[WARNING]** `src/components/pages/SystemCheckPage.tsx:951`: Hardcoded Secret / Private Key (`OneUptime Telemetry Token / Ingestion Secret`)
 - **[WARNING]** `src/lib/crypto.ts:10`: Hardcoded Secret / Private Key (`async function deriveKey(secretMaterial: string, salt: Uint8Array): Promise<CryptoKey> {`)
 - **[WARNING]** `src/lib/crypto.ts:14`: Hardcoded Secret / Private Key (`enc.encode(secretMaterial),`)
 - **[WARNING]** `src/lib/crypto.ts:34`: Hardcoded Secret / Private Key (`* Encrypts a Solana base58 private key or sensitive secret using AES-GCM (PBKDF2 600k rounds).`)
@@ -124,8 +124,6 @@ Warnings: 127
 - **[WARNING]** `src/lib/crypto.ts:171`: Hardcoded Secret / Private Key (`const secretMaterial = (uid || 'default_app_offline_salt') + (sessionPassword || '');`)
 - **[WARNING]** `src/lib/crypto.ts:172`: Hardcoded Secret / Private Key (`const raw = await crypto.subtle.digest('SHA-256', enc.encode(secretMaterial));`)
 - **[WARNING]** `src/lib/crypto.ts:181`: Hardcoded Secret / Private Key (`encryptPrivateKey(decryptedPlaintext, uid, sessionPassword).then((reEncrypted) => {`)
-- **[BUG]** `src/services/MainnetJupiterExecutor.ts:163`: Unsafe Number Conversion on Raw Amounts (`amount: Number(rawAmount),`)
-- **[BUG]** `src/services/tradingEngine.ts:67`: Unsafe Number Conversion on Raw Amounts (`const numAmount = Number(rawAmountToSell);`)
 - **[WARNING]** `src/utils/keypairUtils.ts:11`: Hardcoded Secret / Private Key (`export function getKeypairFromPrivateKey(input: string): Keypair {`)
 - **[WARNING]** `src/utils/keypairUtils.ts:37`: Hardcoded Secret / Private Key (`return Keypair.fromSecretKey(bytes);`)
 - **[WARNING]** `src/utils/keypairUtils.ts:39`: Hardcoded Secret / Private Key (`return Keypair.fromSeed(bytes);`)

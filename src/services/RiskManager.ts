@@ -77,12 +77,24 @@ export class RiskManager {
     return true;
   }
 
+  public validateTokenDecimals(decimals: any): boolean {
+    if (decimals === null || decimals === undefined || typeof decimals !== 'number' || Number.isNaN(decimals) || decimals < 0 || decimals > 18) {
+      return false;
+    }
+    return true;
+  }
+
   public addPosition(params: any): void {
+    if (!this.validateTokenDecimals(params.tokenDecimals)) {
+      systemLogger.error('SAFETY', `[RiskManager] Fail-closed: invalid or unresolved token decimals (${params.tokenDecimals}) for ${params.mint}`);
+      throw new Error(`UNRESOLVED_TOKEN_DECIMALS: Cannot evaluate position ${params.mint} safely without verified decimals.`);
+    }
+
     // Sync-only client-side position cache
     const pos: ManagedPosition = {
       mint: params.mint,
       amount: params.amount || 0,
-      tokenDecimals: params.tokenDecimals || 9,
+      tokenDecimals: params.tokenDecimals,
       buyPrice: params.buyPrice || 0,
       solSpent: params.solSpent || 0,
       tpPct: params.tpPct || this.config.tpPct,

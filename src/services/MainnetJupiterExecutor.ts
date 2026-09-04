@@ -156,11 +156,11 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
       }
 
       // Reuse preValidatedQuote if provided, otherwise fetch fresh quote from Mainnet Jupiter API
-      const rawAmount = typeof amount === 'bigint' ? amount.toString() : (typeof amount === 'string' ? amount : String(Math.trunc(amount)));
+      const strAmount = typeof amount === 'bigint' ? amount.toString() : (typeof amount === 'string' ? amount : String(Math.trunc(amount)));
       const quote = preValidatedQuote || await this.getQuote({
         inputMint,
         outputMint,
-        amount: Number(rawAmount),
+        amount: Number(strAmount) || 0,
         slippageBps,
         restrictIntermediateTokens: true,
       });

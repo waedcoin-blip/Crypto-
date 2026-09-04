@@ -107,11 +107,9 @@ export class BondingCurveFastLane {
 
     // Precise BigInt reserves calculation when verified
     if (state.hasVerifiedReserves && state.virtualTokenReservesRaw > 0n) {
-      const solVal = Number(state.virtualSolReservesLamports) / 1e9;
-      const tokVal = Number(state.virtualTokenReservesRaw) / 1e6;
-      if (tokVal > 0) {
-        state.priceSolPerToken = solVal / tokVal;
-      }
+      // BigInt ratio: (lamports * 1000000n) / tokenRaw gives price scaled by 1e3
+      const scaledPriceBigInt = (state.virtualSolReservesLamports * 1000000n) / state.virtualTokenReservesRaw;
+      state.priceSolPerToken = Number(scaledPriceBigInt) / 1000;
 
       const initialVirtualSol = 30_000_000_000n; // 30 SOL in lamports
       const solRaisedLamports = state.virtualSolReservesLamports > initialVirtualSol

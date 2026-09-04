@@ -64,7 +64,8 @@ class TradingEngine {
       throw new Error(`INSUFFICIENT_TOKEN_BALANCE: Raw amount to sell for mint ${request.mint} is zero.`);
     }
 
-    const numAmount = Number(rawAmountToSell);
+    const strUnits = rawAmountToSell.toString();
+    const numAmount = Number(strUnits);
     return orderManager.executeOrder(
       request.mint,
       SOL_MINT,

@@ -1504,7 +1504,7 @@ export const PnLPage = ({
           const solRes = await fetch('https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112');
           if (solRes.ok) {
             const solData = await solRes.json();
-            const solPrice = parseFloat(solData?.data?.['So11111111111111111111111111111111111111112']?.price || '150');
+            const solPrice = parseFloat(solData?.data?.['So11111111111111111111111111111111111111112']?.price || '');
             priceNative = priceUsd / solPrice;
           }
           } catch (err) {
@@ -2404,7 +2404,7 @@ export const PnLPage = ({
       );
       if (usdData && usdData.data) {
         const tokenUsd = parseFloat(usdData.data[tokenMint]?.price || '0');
-        const solUsd = parseFloat(usdData.data[SOL_MINT]?.price || '150');
+        const solUsd = parseFloat(usdData.data[SOL_MINT]?.price || '');
         if (tokenUsd > 0 && solUsd > 0) {
           return tokenUsd / solUsd;
         }
@@ -2423,7 +2423,7 @@ export const PnLPage = ({
       const tp = await marketDataManager.getPrice(tokenMint, 'trading');
       if (tp) {
         if (tp.priceNative && tp.priceNative > 0) return tp.priceNative;
-        if (tp.priceUsd && tp.priceUsd > 0) return tp.priceUsd / (getSolPriceUsd() || 150);
+        if (tp.priceUsd && tp.priceUsd > 0) return tp.priceUsd / (getSolPriceUsd() || 0);
       }
 
       // 5. Fallback to DexScreener Search API
@@ -2473,7 +2473,7 @@ export const PnLPage = ({
       const requestedMints = Array.from(new Set([...mints, 'So11111111111111111111111111111111111111112']));
       const marketPrices = await marketDataManager.getPrices(requestedMints, 'trading');
 
-      let solPriceInUsd = getSolPriceUsd() || 150;
+      let solPriceInUsd = getSolPriceUsd() || 0;
       const solTokenPrice = marketPrices.get('So11111111111111111111111111111111111111112');
       if (solTokenPrice && solTokenPrice.priceUsd != null && solTokenPrice.priceUsd > 0) {
         solPriceInUsd = solTokenPrice.priceUsd;
@@ -4658,7 +4658,7 @@ const checkTokenCriteria = (mint: string): {
       let qualifiedCount = 0;
       let rejectedCount = 0;
       const now = Date.now();
-      const solPriceUsd = getSolPriceUsd() || 150;
+      const solPriceUsd = getSolPriceUsd() || 0;
 
       const currentMetrics = { ...tokenMetricsRef.current };
       const tokensToUpdate: Record<string, TokenMetric> = {};
@@ -5201,7 +5201,7 @@ const checkTokenCriteria = (mint: string): {
                 riskScore: isGraduated ? 5 : 15,
                 top10Percentage: isGraduated ? 12.0 : 22.0,
                 devWalletPercentage: isGraduated ? 0.0 : 0.01,
-                buyCount: (tp as any).buyCount || 150,
+                buyCount: (tp as any).buyCount || 0,
                 sellCount: (tp as any).sellCount || 20,
                 buyVolume: vol24h * 0.8,
                 sellVolume: vol24h * 0.2,
@@ -5211,7 +5211,7 @@ const checkTokenCriteria = (mint: string): {
                 symbol,
                 name,
                 priceUsd,
-                priceNative: (tp as any).priceNative || (priceUsd / (getSolPriceUsd() || 150)),
+                priceNative: (tp as any).priceNative || (priceUsd / (getSolPriceUsd() || 0)),
                 liquidity: liquidityUsd || existing.liquidity || 10000,
                 marketCap: marketCap || existing.marketCap || 50000,
                 lastUpdated: now
@@ -6686,7 +6686,7 @@ const checkTokenCriteria = (mint: string): {
                     let displayPrice = rawPrice;
                     const entryPriceSol = pos.buyPrice || (pos.amount > 0 && pos.solSpent > 0 ? pos.solSpent / pos.amount : 0);
                     if (entryPriceSol > 0 && displayPrice > entryPriceSol * 30 && displayPrice < entryPriceSol * 400) {
-                      displayPrice = displayPrice / (getSolPriceUsd() || 150);
+                      displayPrice = displayPrice / (getSolPriceUsd() || 0);
                     }
                     const netCalc = calcNetPnl(displayPrice, pos.amount || 0, pos.solSpent || 0, slippage, pos.recoveryMode, !!privateKey);
                     const netPnlPct = (displayPrice === 0 && pos.realNetPnl !== undefined) 
@@ -6699,7 +6699,7 @@ const checkTokenCriteria = (mint: string): {
                     let displayPrice = rawPrice;
                     const entryPriceSol = pos.buyPrice || (pos.amount > 0 && pos.solSpent > 0 ? pos.solSpent / pos.amount : 0);
                     if (entryPriceSol > 0 && displayPrice > entryPriceSol * 30 && displayPrice < entryPriceSol * 400) {
-                      displayPrice = displayPrice / (getSolPriceUsd() || 150);
+                      displayPrice = displayPrice / (getSolPriceUsd() || 0);
                     }
                     const netCalc = calcNetPnl(displayPrice, pos.amount || 0, pos.solSpent || 0, slippage, pos.recoveryMode, !!privateKey);
                     const netSolIfSold = netCalc.netSol;
