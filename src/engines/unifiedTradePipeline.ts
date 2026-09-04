@@ -95,6 +95,24 @@ class UnifiedTradePipeline {
     // Update Token Lifecycle State (Observed in market feed)
     tokenLifecycleManager.markDiscovered(event.mint, event.symbol);
 
+    // Synchronize asynchronously with authoritative server-side pipeline ingress
+    fetch('/api/pipeline/ingress', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        source: event.source,
+        mint: event.mint,
+        signature: event.signature,
+        eventType: event.type === 'BUY' ? 'BUY' : 'SELL',
+        side: event.type,
+        solAmount: event.amount ? String(event.amount) : undefined,
+        priceSol: event.price,
+        symbol: event.symbol,
+        buyer: event.wallet,
+        network: 'mainnet',
+      }),
+    }).catch(() => {});
+
     // Broadcast to pipeline listeners
     for (const listener of this.listeners) {
       try {

@@ -169,3 +169,99 @@ export interface JupiterPriceResponse {
   data: Record<string, { id: string; type: string; price: string }>;
   timeTaken?: number;
 }
+
+// ─── Unified Multi-Source Token Discovery Interfaces ───
+
+export type EventSource =
+  | 'PULSE_FEED'
+  | 'LASERSTREAM'
+  | 'HELIUS_WSS'
+  | 'HELIUS_GRPC'
+  | 'PUMP_FUN'
+  | 'DEXSCREENER'
+  | 'MANUAL'
+  | 'SIMULATION';
+
+export type MarketEventType =
+  | 'TOKEN_DISCOVERED'
+  | 'TRADE'
+  | 'BUY'
+  | 'SELL'
+  | 'BONDING_TRADE'
+  | 'MIGRATION'
+  | 'LIQUIDITY'
+  | 'PRICE_UPDATE'
+  | 'ON_CHAIN_TX'
+  | 'ACCOUNT_UPDATE'
+  | 'SLOT_UPDATE';
+
+export interface UnifiedMarketEvent {
+  eventId: string;
+  correlationId: string;
+  source: EventSource;
+  mint: string;
+  signature?: string;
+  slot?: number;
+  timestamp: number;
+  eventType: MarketEventType;
+  side?: 'BUY' | 'SELL';
+  tokenAmount?: string;
+  solAmount?: string;
+  priceSol?: number;
+  buyer?: string;
+  seller?: string;
+  confidence?: number;
+  raw?: any;
+  pool?: string;
+  network?: string;
+  accountKeys?: string[];
+  protocol?: string;
+  symbol?: string;
+}
+
+export type CandidateLifecycleState =
+  | 'DISCOVERED'
+  | 'ANALYZING'
+  | 'QUALIFIED'
+  | 'BUY_AUTHORIZED'
+  | 'BUYING'
+  | 'BOUGHT'
+  | 'REJECTED'
+  | 'EXPIRED';
+
+export interface CandidatePipelineRecord {
+  mint: string;
+  network: string;
+  symbol: string;
+  firstDiscoveredSource: EventSource;
+  sources: EventSource[];
+  firstDiscoveredAt: number;
+  lastEventAt: number;
+  state: CandidateLifecycleState;
+  score?: number;
+  rejectionReason?: string;
+  buyOrderId?: string;
+  buySignature?: string;
+  positionId?: string;
+  correlationId: string;
+  metadata?: Record<string, any>;
+}
+
+export interface SourceHealthStats {
+  source: EventSource;
+  connected: boolean;
+  status: 'ONLINE' | 'DEGRADED' | 'DISCONNECTED' | 'STALE';
+  lastEventAt: number | null;
+  eventsPerSec: number;
+  totalEventsReceived: number;
+  candidatesDiscovered: number;
+  qualifiedCount: number;
+  buyAttempts: number;
+  buysConfirmed: number;
+  buysFailed: number;
+  rejectionsCount: number;
+  errorCount: number;
+  lastError?: string;
+  latencyMs?: number;
+}
+

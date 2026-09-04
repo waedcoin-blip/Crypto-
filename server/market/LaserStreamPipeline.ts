@@ -361,7 +361,31 @@ export class LaserStreamPipeline {
     const isBuy = logStr.includes('Buy') || logStr.includes('Instruction: Buy') || logStr.includes('swap') || logStr.includes('Initialize');
     const solAmount = (event.price && event.tokenAmount) ? event.price * event.tokenAmount : 0;
     const buyer = event.owner || 'unknown';
-    momentumEngine.recordTrade(extractedMint, event.price || 0.000001, isBuy, solAmount, buyer);
+    if (event.price) {
+      momentumEngine.recordTrade(extractedMint, event.price, isBuy, solAmount, buyer);
+    }
+
+    // Publish unified event to central bus
+    const eventSource = protocol === 'PUMP_FUN' ? 'PUMP_FUN' : (event.network === 'mainnet' ? 'LASERSTREAM' : 'HELIUS_WSS');
+    marketEventBus.publishUnified({
+      eventId: `${eventSource}:${event.signature || 'nosig'}:${extractedMint}:${event.slot}`,
+      correlationId: `corr_${eventSource.toLowerCase()}_${extractedMint.slice(0, 8)}_${Date.now()}`,
+      source: eventSource,
+      mint: extractedMint,
+      signature: event.signature,
+      slot: event.slot,
+      timestamp: Date.now(),
+      eventType: isNewToken ? 'TOKEN_DISCOVERED' : (isNewPool ? 'MIGRATION' : 'TRADE'),
+      side: isBuy ? 'BUY' : 'SELL',
+      priceSol: event.price,
+      solAmount: solAmount ? String(solAmount) : undefined,
+      buyer: isBuy ? buyer : undefined,
+      seller: !isBuy ? buyer : undefined,
+      protocol,
+      network: event.network || 'mainnet',
+      accountKeys: keys,
+      raw: event,
+    });
 
     // 5b. REAL-TIME EVENT DEDUPLICATION & LATEST-STATE COALESCING
     const signatureKey = `${event.signature}:${extractedMint}`;
@@ -434,13 +458,14 @@ export class LaserStreamPipeline {
 
   /**
    * Asynchronous Candidate Enrichment & Trading Evaluation Worker
+   * Delegates to authoritative EntryEngine
    */
   private async processEnrichmentAndEvaluation(event: PipelineEvent): Promise<void> {
     const dedupeKey = `${event.mint}:${event.protocol}`;
     this.dedupeCache.set(dedupeKey, { state: 'ENRICHING', timestamp: Date.now() });
 
     try {
-      // Trigger async discovery registration asynchronously
+      // Trigger async discovery registration
       tokenDiscovery.processMarketEvent({
         network: event.source,
         slot: event.slot,
@@ -450,110 +475,34 @@ export class LaserStreamPipeline {
         accountKeys: [event.mint],
       });
 
-      // 1. CANDIDATE ENRICHMENT: Fetch REAL market data
-      const candidate = await candidateEnricher.enrichCandidate(event.mint, event.source);
-      this.counters.candidateEnriched++;
-
-      // Fail-closed verification
-      if (!candidate || candidate.marketCapUsd.value === null || candidate.liquidityUsd.value === null) {
-        this.rejectionReasons.dataUnavailable++;
-        this.counters.candidateRejected++;
-        this.dedupeCache.set(dedupeKey, { state: 'REJECTED', timestamp: Date.now() });
-        return;
-      }
-
-      this.dedupeCache.set(dedupeKey, { state: 'READY', timestamp: Date.now() });
-
-      // 2. SCORING OPPORTUNITY
-      const scoreBreakdown = opportunityScorer.scoreCandidate(candidate);
-
-      // 3. LOAD CRITERIA CONFIG
-      let activeCriteria: Partial<CriteriaConfig> = {};
-      try {
-        const repoCriteria = await criteriaRepository.getActiveCriteria();
-        activeCriteria = repoCriteria || {};
-      } catch {
-        activeCriteria = {};
-      }
-
-      // 4. ENTRY GATE EVALUATION
       this.counters.criteriaEvaluated++;
-      this.dedupeCache.set(dedupeKey, { state: 'EVALUATING', timestamp: Date.now() });
+      const evalResult = await entryEngine.evaluateAndTrade(
+        event.mint,
+        event.protocol === 'PUMP_FUN' ? 'PUMP_FUN' : 'LASERSTREAM'
+      );
 
-      const decision = await serverEntryGate.evaluateEntry({
-        candidate,
-        criteria: activeCriteria,
-        network: event.source,
-        wallet: 'default',
-        autoSniperEnabled: entryEngine.getConfig().autoSniperEnabled,
-      });
-
-      // Keep track of criteria rejection reasons
-      if (!decision.allowed) {
+      if (evalResult.stage === 'REJECTED' || evalResult.status === 'SKIPPED') {
         this.counters.candidateRejected++;
         this.dedupeCache.set(dedupeKey, { state: 'REJECTED', timestamp: Date.now() });
-
-        for (const reason of decision.blockingReasons) {
-          const rawReason = reason.split(':')[0].trim();
-          if (rawReason in this.rejectionReasons) {
-            this.rejectionReasons[rawReason]++;
-          } else {
-            const key = rawReason.charAt(0).toLowerCase() + rawReason.slice(1);
-            if (key in this.rejectionReasons) {
-              this.rejectionReasons[key]++;
-            } else {
-              this.rejectionReasons[rawReason] = (this.rejectionReasons[rawReason] || 0) + 1;
-            }
-          }
-        }
+        const reason = evalResult.decision?.blockingReasons?.[0] || evalResult.error || 'REJECTED';
+        const key = reason.split(':')[0].trim();
+        this.rejectionReasons[key] = (this.rejectionReasons[key] || 0) + 1;
         return;
       }
 
-      this.counters.criteriaPassed++;
-      this.counters.buyAuthorized++;
+      if (evalResult.decision?.allowed) {
+        this.counters.criteriaPassed++;
+        this.counters.buyAuthorized++;
+        this.counters.buyAttempted++;
 
-      // 5. ATOMIC REBUY PROTECTION & EXPLICIT BUY EXECUTION SERVER-SIDE
-      this.dedupeCache.set(dedupeKey, { state: 'BUY_PENDING', timestamp: Date.now() });
-      this.counters.buyAttempted++;
-
-      const tradeResponse = await tradingEngine.buy({
-        network: event.source,
-        wallet: 'default',
-        mint: event.mint,
-        amountSol: decision.buyAmountSol,
-        decimals: candidate.decimals.value ?? undefined,
-        slippageBps: Math.round((Number(activeCriteria.slippage) || 1.0) * 100) || 250,
-        maxRebuyTimes: activeCriteria.maxRebuyTimes ?? 1,
-        tradeOnlyOnce: activeCriteria.tradeOnlyOnce ?? true,
-        label: `laserstream_pipeline`,
-        tpPct: activeCriteria.minTakeProfit ?? 25,
-        slPct: activeCriteria.stopLoss ? Math.abs(activeCriteria.stopLoss) : 15,
-      });
-
-      // Register attempt to diagnostics
-      entryDecisionLedger.recordBuyAttempt({
-        mintAddress: event.mint,
-        symbol: candidate.symbol,
-        network: event.source,
-        wallet: 'default',
-        amountSol: decision.buyAmountSol,
-        signature: tradeResponse.signature,
-        orderId: tradeResponse.orderId,
-        positionId: tradeResponse.positionId,
-        success: tradeResponse.success,
-        error: tradeResponse.error,
-      });
-
-      if (tradeResponse.success) {
-        this.counters.buyConfirmed++;
-        this.dedupeCache.set(dedupeKey, { state: 'BOUGHT', timestamp: Date.now() });
-        console.log(`[PIPELINE SUCCESS] Successfully executed trade! mint=${event.mint} sig=${tradeResponse.signature}`);
-      } else {
-        this.counters.buyFailed++;
-        this.dedupeCache.set(dedupeKey, { state: 'REJECTED', timestamp: Date.now() });
-        console.warn(`[PIPELINE FAILURE] Trade execution failed: mint=${event.mint} err=${tradeResponse.error}`);
+        if (evalResult.tradeResponse?.success) {
+          this.counters.buyConfirmed++;
+          this.dedupeCache.set(dedupeKey, { state: 'BOUGHT', timestamp: Date.now() });
+        } else {
+          this.counters.buyFailed++;
+          this.dedupeCache.set(dedupeKey, { state: 'REJECTED', timestamp: Date.now() });
+        }
       }
-
     } catch (err: any) {
       this.counters.candidateRejected++;
       this.dedupeCache.set(dedupeKey, { state: 'REJECTED', timestamp: Date.now() });

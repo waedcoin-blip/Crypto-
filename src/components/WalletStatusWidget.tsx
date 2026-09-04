@@ -98,24 +98,32 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
     const targetNetwork = envNetwork;
     if (publicKey) {
       if (activeWallet?.address !== publicKey.toBase58() || activeWallet?.network !== targetNetwork) {
-         switchActiveWallet({
-           keypair: null,
-           address: publicKey.toBase58(),
-           network: targetNetwork,
-           source: 'connected'
-         });
+         setTimeout(() => {
+           switchActiveWallet({
+             keypair: null,
+             address: publicKey.toBase58(),
+             network: targetNetwork,
+             source: 'connected'
+           });
+         }, 0);
       }
     } else if (sessionWallet) {
        if (activeWallet?.address !== sessionWallet.publicKey.toBase58() || activeWallet?.network !== targetNetwork) {
-          switchActiveWallet({
-            keypair: sessionWallet,
-            network: targetNetwork,
-            source: 'session'
-          });
+          setTimeout(() => {
+            switchActiveWallet({
+              keypair: sessionWallet,
+              network: targetNetwork,
+              source: 'session'
+            });
+          }, 0);
        }
     } else if (activeWallet?.keypair) {
        // If activeWallet already has a restored session keypair, sync it back to sessionWallet
-       setSessionWallet(activeWallet.keypair);
+       if (!sessionWallet) {
+         setTimeout(() => {
+           setSessionWallet(activeWallet.keypair);
+         }, 0);
+       }
     }
   }, [publicKey, sessionWallet, activeWallet?.address, activeWallet?.network, activeWallet?.keypair, envNetwork, setSessionWallet, switchActiveWallet]);
 

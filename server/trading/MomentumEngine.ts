@@ -102,7 +102,7 @@ export class MomentumEngine {
     const window15s = history.filter(x => now - x.timestamp <= 15000);
     const window30s = history.filter(x => now - x.timestamp <= 30000 && now - x.timestamp > 15000);
 
-    const price15s = window15s.length > 0 ? window15s[window15s.length - 1].price : (candidate.priceSol?.value || 0.000001);
+    const price15s = window15s.length > 0 ? window15s[window15s.length - 1].price : (candidate.priceSol?.value || 0);
     const price30s = window30s.length > 0 ? window30s[window30s.length - 1].price : price15s;
 
     // Price velocities and acceleration
@@ -137,8 +137,11 @@ export class MomentumEngine {
 
     const transactionVelocity = (window15s.length) / 15;
 
-    // Liquidity acceleration
-    const liquidityVelocity = (candidate as any).liquiditySol?.value || (candidate.liquidityUsd?.value ? candidate.liquidityUsd.value / 150 : 0);
+    // Liquidity acceleration using dynamic SOL/USD rate
+    const solUsdRate = (candidate.priceUsd?.value && candidate.priceSol?.value && candidate.priceSol.value > 0)
+      ? candidate.priceUsd.value / candidate.priceSol.value
+      : 180;
+    const liquidityVelocity = (candidate as any).liquiditySol?.value || (candidate.liquidityUsd?.value ? candidate.liquidityUsd.value / solUsdRate : 0);
     const prevLiqVelocity = prevMetrics?.liquidityVelocity || 0;
     const liquidityAcceleration = liquidityVelocity - prevLiqVelocity;
 

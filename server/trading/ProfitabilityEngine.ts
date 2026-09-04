@@ -172,8 +172,11 @@ export class ProfitabilityEngine {
       return this.createBlockedMetrics(mint, buyInputLamports, 'Price quote is stale', 'STALE');
     }
 
-    // Direct SOL-denominated liquidity calculations (no hardcoded USD rates)
-    const liquiditySol = candidate.liquidityUsd?.value ? candidate.liquidityUsd.value / 150 : 10;
+    // Direct SOL-denominated liquidity calculations using dynamic SOL/USD rate
+    const solUsdRate = (candidate.priceUsd?.value && candidate.priceSol?.value && candidate.priceSol.value > 0)
+      ? candidate.priceUsd.value / candidate.priceSol.value
+      : (candidate.priceSol?.value ? 1 / candidate.priceSol.value : 180);
+    const liquiditySol = candidate.liquidityUsd?.value ? candidate.liquidityUsd.value / solUsdRate : 10;
     const estimatedSlippagePct = Math.min(15, (buyAmountSol / Math.max(0.1, liquiditySol)) * 100 + 0.5);
     const estimatedSlippageLamports = BigInt(Math.round(buyInputLamports.toString() as any * (estimatedSlippagePct / 100)));
 

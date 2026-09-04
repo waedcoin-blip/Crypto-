@@ -281,4 +281,72 @@ router.post('/sniper-config', asyncHandler(async (req, res) => {
   });
 }));
 
+import { sourceHealthMonitor } from '../market/SourceHealthMonitor.js';
+import { candidateRegistry } from '../market/CandidateRegistry.js';
+import { CanonicalEventNormalizer } from '../market/CanonicalEventNormalizer.js';
+import { marketEventBus } from '../market/MarketEventBus.js';
+import { UnifiedMarketEvent } from '../types/index.js';
+
+// POST /api/trading/pipeline/ingress
+router.post('/pipeline/ingress', asyncHandler(async (req, res) => {
+  const body = req.body;
+  if (!body || !body.mint) {
+    return res.status(400).json({ status: 'error', error: 'mint is required' });
+  }
+
+  const source = body.source || 'MANUAL';
+  const event: UnifiedMarketEvent = {
+    eventId: body.eventId || CanonicalEventNormalizer.generateEventId(source, body.mint, body.signature, body.slot, body.eventType),
+    correlationId: body.correlationId || CanonicalEventNormalizer.generateCorrelationId(source, body.mint),
+    source,
+    mint: body.mint.trim(),
+    signature: body.signature,
+    slot: body.slot ? Number(body.slot) : undefined,
+    timestamp: body.timestamp || Date.now(),
+    eventType: body.eventType || 'TRADE',
+    side: body.side,
+    tokenAmount: body.tokenAmount ? String(body.tokenAmount) : undefined,
+    solAmount: body.solAmount ? String(body.solAmount) : undefined,
+    priceSol: body.priceSol ? Number(body.priceSol) : undefined,
+    buyer: body.buyer,
+    seller: body.seller,
+    confidence: body.confidence !== undefined ? Number(body.confidence) : 1.0,
+    symbol: body.symbol,
+    pool: body.pool,
+    protocol: body.protocol,
+    network: body.network || 'mainnet',
+    raw: body.raw,
+  };
+
+  marketEventBus.publishUnified(event);
+
+  res.json({
+    status: 'success',
+    eventId: event.eventId,
+    correlationId: event.correlationId,
+    timestamp: Date.now(),
+  });
+}));
+
+// GET /api/trading/pipeline/health
+router.get('/pipeline/health', asyncHandler(async (req, res) => {
+  const stats = sourceHealthMonitor.getSnapshot();
+  res.json({
+    status: 'success',
+    sources: stats,
+    timestamp: Date.now(),
+  });
+}));
+
+// GET /api/trading/pipeline/candidates
+router.get('/pipeline/candidates', asyncHandler(async (req, res) => {
+  const candidates = candidateRegistry.getAllCandidates();
+  res.json({
+    status: 'success',
+    count: candidates.length,
+    candidates,
+    timestamp: Date.now(),
+  });
+}));
+
 export default router;

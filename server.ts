@@ -103,6 +103,7 @@ async function startServer() {
   app.use("/api/laserstream", laserstreamRouter);
   app.use("/api/criteria", criteriaRouter);
   app.use("/api/trading", requireAuth, tradingRouter);
+  app.use("/api/pipeline", tradingRouter);
 
   // API Catch-all 404 Handler
   app.all("/api/*", (req, res) => {

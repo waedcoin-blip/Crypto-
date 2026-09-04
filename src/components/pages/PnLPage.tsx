@@ -167,6 +167,18 @@ interface Position {
   currentPriceUsd?: number;
   liquidityUsd?: number;
   volume24h?: number;
+
+  // Authoritative server valuation fields
+  entryCostSol?: number;
+  currentPriceSol?: number;
+  executableValueSol?: number;
+  pnlSol?: number;
+  pnlPercent?: number;
+  source?: string;
+  lastMarketPriceAt?: number;
+  lastExecutableQuoteAt?: number;
+  quoteAgeMs?: number;
+  status?: 'LIVE' | 'STALE' | 'UNAVAILABLE';
 }
 
 interface LogEvent {
@@ -2099,16 +2111,38 @@ export const PnLPage = ({
           const posData = await posRes.json();
           if (posData.openPositions && Array.isArray(posData.openPositions)) {
             const mapped: Record<string, Position> = {};
+            const valuations = posData.valuations || {};
             for (const p of posData.openPositions) {
-              mapped[p.mintAddress || p.id] = {
+              const mint = p.mintAddress || p.id;
+              const val = valuations[mint] || valuations[p.id];
+              const decimals = p.decimals !== undefined ? p.decimals : (val?.tokenDecimals ?? 6);
+              const amount = p.amountRaw ? Number(p.amountRaw) / (10 ** decimals) : 0;
+              const entryCostSol = val?.entryCostSol ?? p.solSpent ?? 0;
+              const currentPriceSol = val?.currentPriceSol ?? p.currentPriceSOL ?? p.entryPriceSOL ?? 0;
+              const executableValueSol = val?.executableValueSol ?? (amount > 0 && currentPriceSol > 0 ? amount * currentPriceSol : undefined);
+              const pnlSol = val?.pnlSol ?? (executableValueSol !== undefined && entryCostSol > 0 ? executableValueSol - entryCostSol : undefined);
+              const pnlPercent = val?.pnlPercent ?? (entryCostSol > 0 && pnlSol !== undefined ? (pnlSol / entryCostSol) * 100 : undefined);
+
+              mapped[mint] = {
                 symbol: p.mintAddress ? p.mintAddress.slice(0, 6) : 'TOKEN',
                 buyPrice: p.entryPriceSOL || 0,
-                currentPrice: p.currentPriceSOL || p.entryPriceSOL || 0,
-                solSpent: p.solSpent || 0,
-                amount: p.amountRaw ? p.amountRaw / (10 ** (p.decimals !== undefined ? p.decimals : 6)) : 0,
+                currentPrice: currentPriceSol,
+                solSpent: entryCostSol,
+                amount,
                 entryTime: p.createdAt || Date.now(),
                 txid: p.buySignature || '',
-                positionId: p.id
+                positionId: p.id,
+                decimals,
+                entryCostSol,
+                currentPriceSol,
+                executableValueSol,
+                pnlSol,
+                pnlPercent,
+                source: val?.source || 'JUPITER',
+                lastMarketPriceAt: val?.lastMarketPriceAt,
+                lastExecutableQuoteAt: val?.lastExecutableQuoteAt,
+                quoteAgeMs: val?.quoteAgeMs,
+                status: val?.status || 'LIVE',
               };
             }
             if (Object.keys(mapped).length > 0) {
@@ -2130,6 +2164,8 @@ export const PnLPage = ({
     };
 
     syncBackendTradingState();
+    const syncInterval = setInterval(syncBackendTradingState, 1000);
+    return () => clearInterval(syncInterval);
   }, []);
 
   useEffect(() => {
@@ -2720,7 +2756,7 @@ export const PnLPage = ({
         });
       }
 
-      // 4. Update Active-position PnL for display
+      // 4. Update Active-position price and valuation for display
       setPositions(prev => {
         let changed = false;
         const next = { ...prev };
@@ -2729,19 +2765,25 @@ export const PnLPage = ({
           const pos = next[mint];
           if (!pos || !(pos.amount > 0)) return;
 
-          const freshPrice = tokenPrice.priceNative || (tokenPrice.priceUsd ? tokenPrice.priceUsd / getSolPriceUsd() : 0);
+          const freshPrice = tokenPrice.priceNative || 0;
           if (freshPrice <= 0) return;
 
-          const netCalc = calcNetPnl(freshPrice, pos.amount || 0, pos.solSpent || 0, slippage, pos.recoveryMode, !!privateKey);
-          const calcNetPnlPct = netCalc.netPnlPct / 100;
-          const calcNetSol = netCalc.netPnlSol;
+          const entryCost = pos.entryCostSol ?? pos.solSpent ?? 0;
+          const execVal = pos.executableValueSol ?? ((pos.amount || 0) * freshPrice);
+          const pnlSol = pos.pnlSol !== undefined ? pos.pnlSol : (execVal - entryCost);
+          const pnlPct = pos.pnlPercent !== undefined ? pos.pnlPercent : (entryCost > 0 ? (pnlSol / entryCost) * 100 : 0);
 
           next[mint] = {
             ...pos,
             currentPrice: freshPrice,
+            currentPriceSol: freshPrice,
+            executableValueSol: execVal,
+            pnlSol,
+            pnlPercent: pnlPct,
             isStale: false,
-            realNetPnl: calcNetPnlPct,
-            realNetSol: calcNetSol,
+            realNetPnl: pnlPct / 100,
+            realNetSol: pnlSol,
+            lastMarketPriceAt: now,
           };
           changed = true;
         });
@@ -2774,19 +2816,24 @@ export const PnLPage = ({
         if (metric && next[mint]) {
           const freshPrice = metric.priceNative
             ? (typeof metric.priceNative === 'number' ? metric.priceNative : parseFloat(String(metric.priceNative)))
-            : (metric.priceUsd ? parseFloat(String(metric.priceUsd)) / getSolPriceUsd() : 0);
+            : 0;
 
           if (freshPrice > 0 && next[mint].currentPrice !== freshPrice) {
-            const netCalc = calcNetPnl(freshPrice, next[mint].amount || 0, next[mint].solSpent || 0, slippage, next[mint].recoveryMode, !!privateKey);
-            const calcNetPnlPct = netCalc.netPnlPct / 100;
-            const calcNetSol = netCalc.netPnlSol;
+            const entryCost = next[mint].entryCostSol ?? next[mint].solSpent ?? 0;
+            const execVal = next[mint].executableValueSol ?? ((next[mint].amount || 0) * freshPrice);
+            const pnlSol = next[mint].pnlSol !== undefined ? next[mint].pnlSol : (execVal - entryCost);
+            const pnlPct = next[mint].pnlPercent !== undefined ? next[mint].pnlPercent : (entryCost > 0 ? (pnlSol / entryCost) * 100 : 0);
 
             next[mint] = {
               ...next[mint],
               currentPrice: freshPrice,
+              currentPriceSol: freshPrice,
+              executableValueSol: execVal,
+              pnlSol,
+              pnlPercent: pnlPct,
               isStale: false,
-              realNetPnl: calcNetPnlPct,
-              realNetSol: calcNetSol
+              realNetPnl: pnlPct / 100,
+              realNetSol: pnlSol,
             };
             changed = true;
           }
@@ -6682,35 +6729,29 @@ const checkTokenCriteria = (mint: string): {
                     }
 
                     const token = tokenMetrics[mint];
-                    const rawPrice = (token?.priceNative ? parseFloat(String(token.priceNative)) : 0) || pos.currentPrice || pos.buyPrice || 0;
-                    let displayPrice = rawPrice;
-                    const entryPriceSol = pos.buyPrice || (pos.amount > 0 && pos.solSpent > 0 ? pos.solSpent / pos.amount : 0);
-                    if (entryPriceSol > 0 && displayPrice > entryPriceSol * 30 && displayPrice < entryPriceSol * 400) {
-                      displayPrice = displayPrice / (getSolPriceUsd() || 0);
-                    }
-                    const netCalc = calcNetPnl(displayPrice, pos.amount || 0, pos.solSpent || 0, slippage, pos.recoveryMode, !!privateKey);
-                    const netPnlPct = (displayPrice === 0 && pos.realNetPnl !== undefined) 
-                      ? (pos.realNetPnl > 1 || pos.realNetPnl < -1 ? pos.realNetPnl : pos.realNetPnl * 100) 
-                      : netCalc.netPnlPct;
-                    return !isNaN(netPnlPct) && isFinite(netPnlPct);
+                    const rawPrice = (token?.priceNative ? parseFloat(String(token.priceNative)) : 0) || pos.currentPriceSol || pos.currentPrice || pos.buyPrice || 0;
+                    const displayPrice = rawPrice;
+                    const entryCostSol = pos.entryCostSol !== undefined ? pos.entryCostSol : (pos.solSpent || 0);
+                    const currentPriceSol = pos.currentPriceSol !== undefined ? pos.currentPriceSol : displayPrice;
+                    const executableValueSol = pos.executableValueSol !== undefined ? pos.executableValueSol : (pos.amount > 0 && currentPriceSol > 0 ? pos.amount * currentPriceSol : 0);
+                    const pnlSol = pos.pnlSol !== undefined ? pos.pnlSol : (executableValueSol - entryCostSol);
+                    const pnlPercent = pos.pnlPercent !== undefined ? pos.pnlPercent : (entryCostSol > 0 ? (pnlSol / entryCostSol) * 100 : 0);
+                    return !isNaN(pnlPercent) && isFinite(pnlPercent);
                   }).map(([mint, pos]: [string, Position]) => {
                     const token = tokenMetrics[mint];
-                    const rawPrice = (token?.priceNative ? parseFloat(String(token.priceNative)) : 0) || pos.currentPrice || pos.buyPrice || 0;
-                    let displayPrice = rawPrice;
-                    const entryPriceSol = pos.buyPrice || (pos.amount > 0 && pos.solSpent > 0 ? pos.solSpent / pos.amount : 0);
-                    if (entryPriceSol > 0 && displayPrice > entryPriceSol * 30 && displayPrice < entryPriceSol * 400) {
-                      displayPrice = displayPrice / (getSolPriceUsd() || 0);
-                    }
-                    const netCalc = calcNetPnl(displayPrice, pos.amount || 0, pos.solSpent || 0, slippage, pos.recoveryMode, !!privateKey);
-                    const netSolIfSold = netCalc.netSol;
-                    const netPnlPct = (displayPrice === 0 && pos.realNetPnl !== undefined) 
-                      ? (pos.realNetPnl > 1 || pos.realNetPnl < -1 ? pos.realNetPnl : pos.realNetPnl * 100) 
-                      : netCalc.netPnlPct;
-                    const netPnlSol = (displayPrice === 0 && pos.realNetSol !== undefined) ? pos.realNetSol : netCalc.netPnlSol;
-                    const grossPnlPct = netCalc.grossPnlPct;
+                    const rawPrice = (token?.priceNative ? parseFloat(String(token.priceNative)) : 0) || pos.currentPriceSol || pos.currentPrice || pos.buyPrice || 0;
+                    const displayPrice = rawPrice;
+                    const entryCostSol = pos.entryCostSol !== undefined ? pos.entryCostSol : (pos.solSpent || 0);
+                    const currentPriceSol = pos.currentPriceSol !== undefined ? pos.currentPriceSol : displayPrice;
+                    const executableValueSol = pos.executableValueSol !== undefined ? pos.executableValueSol : (pos.amount > 0 && currentPriceSol > 0 ? pos.amount * currentPriceSol : 0);
+                    const pnlSol = pos.pnlSol !== undefined ? pos.pnlSol : (executableValueSol - entryCostSol);
+                    const pnlPercent = pos.pnlPercent !== undefined ? pos.pnlPercent : (entryCostSol > 0 ? (pnlSol / entryCostSol) * 100 : 0);
+                    const entryPriceSol = pos.amount > 0 && entryCostSol > 0 ? entryCostSol / pos.amount : (pos.buyPrice || 0);
+                    const valStatus = pos.status || (displayPrice > 0 ? 'LIVE' : 'UNAVAILABLE');
+                    const valSource = pos.source || (token?.priceNative ? 'LASERSTREAM' : 'JUPITER');
                     
-                    const isPos = netPnlPct >= 0;
-                    const isStalePos = !!pos.isStale && (!displayPrice || displayPrice === 0);
+                    const isPos = pnlPercent >= 0;
+                    const isStalePos = valStatus === 'STALE' || (!!pos.isStale && (!displayPrice || displayPrice === 0));
                     const stage = detectTokenStage({
                       address: mint,
                       dexId: token?.dexId,
@@ -6732,7 +6773,7 @@ const checkTokenCriteria = (mint: string): {
 
                     // Dynamic range calculation for target progress bar
                     const totalRange = activeTp + activeSl;
-                    const currentPosFromSl = netPnlPct + activeSl;
+                    const currentPosFromSl = pnlPercent + activeSl;
                     const progressPct = totalRange > 0 ? Math.max(0, Math.min(100, (currentPosFromSl / totalRange) * 100)) : 50;
                     const breakevenPct = totalRange > 0 ? Math.max(0, Math.min(100, (activeSl / totalRange) * 100)) : 50;
 
@@ -6766,6 +6807,15 @@ const checkTokenCriteria = (mint: string): {
                                   </span>
                                 )}
 
+                                {/* Valuation Source & Status Badge */}
+                                <span className={`px-1.5 py-0.5 rounded text-[8.5px] font-bold tracking-wider uppercase border whitespace-nowrap ${
+                                  valStatus === 'LIVE' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' :
+                                  valStatus === 'STALE' ? 'bg-amber-500/10 text-amber-400 border-amber-500/30' :
+                                  'bg-slate-500/10 text-slate-400 border-slate-500/30'
+                                }`}>
+                                  {valSource} • {valStatus}
+                                </span>
+
                                 {/* Near migration warning */}
                                 {stage.isNearMigration && (
                                   <span className="text-yellow-400 text-[9px] animate-pulse whitespace-nowrap border border-yellow-400/30 bg-yellow-400/10 px-1.5 py-0.5 rounded">
@@ -6778,25 +6828,27 @@ const checkTokenCriteria = (mint: string): {
 
                           {/* Top-Right PnL Box */}
                           <div className="text-right font-mono ml-auto">
-                            {isStalePos ? (
+                            {valStatus === 'UNAVAILABLE' ? (
                               <div className="flex flex-col items-end">
-                                <span className="text-amber-500 font-bold text-[13px] animate-pulse">MIGRATING...</span>
-                                <span className="text-[10px] text-[#64748b]">On-Chain Price Processing</span>
+                                <span className="text-slate-400 font-bold text-[13px]">UNAVAILABLE</span>
+                                <span className="text-[10px] text-[#64748b]">Awaiting Market Data</span>
                               </div>
                             ) : (
                               <div className="flex flex-col items-end">
                                 <div className={`text-[15px] font-bold tracking-tight ${isPos ? 'text-[#c7f284]' : 'text-[#ff4d4d]'}`}>
-                                  {isPos ? '+' : ''}{netPnlPct.toFixed(2)}%
+                                  {isPos ? '+' : ''}{pnlPercent.toFixed(2)}%
                                 </div>
                                 <div className="flex items-center gap-1.5 text-[11px]">
-                                  <span className={`font-semibold ${netPnlSol >= 0 ? 'text-[#c7f284]/90' : 'text-[#ff4d4d]/90'}`}>
-                                    {netPnlSol >= 0 ? '+' : '-'}{Math.abs(netPnlSol).toFixed(4)} SOL
+                                  <span className={`font-semibold ${pnlSol >= 0 ? 'text-[#c7f284]/90' : 'text-[#ff4d4d]/90'}`}>
+                                    {pnlSol >= 0 ? '+' : '-'}{Math.abs(pnlSol).toFixed(4)} SOL
                                   </span>
-                                  <span className="text-[9px] text-[#64748b] font-normal">
-                                    (Gross: {grossPnlPct >= 0 ? '+' : ''}{grossPnlPct.toFixed(1)}%)
-                                  </span>
+                                  {pos.quoteAgeMs !== undefined && (
+                                    <span className="text-[9px] text-[#64748b] font-normal">
+                                      ({pos.quoteAgeMs}ms)
+                                    </span>
+                                  )}
                                 </div>
-                                {netPnlPct <= -50 && (
+                                {pnlPercent <= -50 && (
                                   <span className="text-[9px] bg-red-950/80 text-rose-400 px-1.5 py-0.5 rounded font-semibold border border-red-500/30 animate-bounce inline-block mt-1 uppercase text-center">
                                     🔴 CRITICAL LOSS
                                   </span>
@@ -6907,23 +6959,25 @@ const checkTokenCriteria = (mint: string): {
                           <div>
                             <div className="text-[#64748b] text-[10px] uppercase font-bold tracking-wider mb-0.5">Entry Price</div>
                             <div className="text-[#e2e8f0] font-semibold text-[12px]">
-                              {entryPriceSol?.toFixed(8)} SOL
+                              {entryPriceSol > 0 ? `${entryPriceSol.toFixed(8)} SOL` : 'N/A'}
                             </div>
                             <div className="text-[10px] text-[#64748b] mt-0.5">
-                              Spent: {(pos.solSpent || 0).toFixed(4)} SOL
+                              Entry Cost: {entryCostSol.toFixed(4)} SOL
                             </div>
                           </div>
                           <div>
-                            <div className="text-[#64748b] text-[10px] uppercase font-bold tracking-wider mb-0.5">Current Price</div>
+                            <div className="text-[#64748b] text-[10px] uppercase font-bold tracking-wider mb-0.5">Current Market Price</div>
                             <div className="text-[#e2e8f0] font-semibold text-[12px]">
-                              {isStalePos ? (
-                                <span className="text-amber-500 font-bold animate-pulse text-[11px]">STALE</span>
+                              {valStatus === 'UNAVAILABLE' ? (
+                                <span className="text-slate-500 font-bold text-[11px]">UNAVAILABLE</span>
+                              ) : isStalePos ? (
+                                <span className="text-amber-500 font-bold animate-pulse text-[11px]">{displayPrice.toFixed(8)} SOL (STALE)</span>
                               ) : (
                                 `${displayPrice.toFixed(8)} SOL`
                               )}
                             </div>
                             <div className="text-[10px] text-[#64748b] mt-0.5">
-                              Net Value: {netSolIfSold.toFixed(4)} SOL
+                              Executable Value: {executableValueSol.toFixed(4)} SOL
                             </div>
                           </div>
                         </div>
@@ -6931,7 +6985,7 @@ const checkTokenCriteria = (mint: string): {
                         {/* Emergency Force Exit Button */}
                         <div className="w-full">
                           <button 
-                            onClick={() => executeSell(mint, displayPrice || pos.buyPrice, netPnlPct, 'EMERGENCY FORCE EXIT')}
+                            onClick={() => executeSell(mint, displayPrice || pos.buyPrice, pnlPercent, 'EMERGENCY FORCE EXIT')}
                             className="w-full bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 active:scale-[0.99] transition-all px-3 py-2 rounded-lg text-xs font-black uppercase tracking-wider border border-rose-500/20 flex items-center justify-center gap-2 group shadow-sm"
                           >
                             <Square className="w-3.5 h-3.5 group-hover:scale-110 transition-transform text-rose-400" />

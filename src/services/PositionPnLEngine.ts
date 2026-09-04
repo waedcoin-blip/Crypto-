@@ -81,12 +81,10 @@ export class PositionPnLEngine {
       effectiveEntryPrice = safeSolSpent / tokenQty;
     }
 
-    const netResult: NetPnlResult = calcNetPnl(
-      currentPriceSol,
-      tokenQty,
-      safeSolSpent,
-      slippageBps / 100
-    );
+    const grossPnlSol = (tokenQty * currentPriceSol) - safeSolSpent;
+    const grossPnlPct = safeSolSpent > 0 ? (grossPnlSol / safeSolSpent) * 100 : (tokenQty * currentPriceSol > 0 ? 100 : 0);
+    const netPnlSol = grossPnlSol;
+    const netPnlPct = grossPnlPct;
 
     const effectivePeakPrice = Math.max(peakPriceSol || 0, currentPriceSol, effectiveEntryPrice);
     
@@ -96,7 +94,6 @@ export class PositionPnLEngine {
       drawdownPct = ((effectivePeakPrice - currentPriceSol) / effectivePeakPrice) * 100;
     }
 
-    const grossPnlPct = netResult.grossPnlPct;
     const effectiveHighestPnl = Math.max(highestPnLPct || 0, grossPnlPct);
     const isStale = Date.now() - lastUpdateTimestamp > staleThresholdMs;
 
@@ -109,10 +106,10 @@ export class PositionPnLEngine {
       solSpent: safeSolSpent,
       currentPriceSol,
       peakPriceSol: effectivePeakPrice,
-      grossPnlSol: netResult.grossPnlSol,
+      grossPnlSol,
       grossPnlPct,
-      netPnlSol: netResult.netPnlSol,
-      netPnlPct: netResult.netPnlPct,
+      netPnlSol,
+      netPnlPct,
       peakPnLPct: effectiveHighestPnl,
       drawdownPct,
       lastUpdateTimestamp,

@@ -13,6 +13,9 @@ import { tokenDiscovery } from '../market/TokenDiscovery.js';
 import { laserStreamPipeline } from '../market/LaserStreamPipeline.js';
 import { bondingCurveFastLane } from './BondingCurveFastLane.js';
 import { migrationDetector } from './MigrationDetector.js';
+import { candidateRegistry } from '../market/CandidateRegistry.js';
+import { sourceHealthMonitor } from '../market/SourceHealthMonitor.js';
+import { EventSource } from '../types/index.js';
 
 export type PipelineStage =
   | 'DISCOVERED'
@@ -136,6 +139,19 @@ export class EntryEngine {
       };
     }
 
+    // CandidateRegistry Idempotency Check
+    const buyCheck = candidateRegistry.canAttemptBuy(network, trimmedMint);
+    if (!buyCheck.allowed) {
+      console.log(`[ENTRY ENGINE IDEMPOTENCY SKIP] mint=${trimmedMint} reason="${buyCheck.reason}"`);
+      return {
+        mintAddress: trimmedMint,
+        symbol: 'UNKNOWN',
+        stage: 'BUY_LOCKED',
+        status: 'SKIPPED',
+        error: buyCheck.reason,
+      };
+    }
+
     const { priorityScheduler, PriorityLevel } = await import('./PriorityScheduler.js');
     const bCurve = bondingCurveFastLane.getState(trimmedMint);
     const migration = migrationDetector.getMigratedPool(trimmedMint);
@@ -168,8 +184,11 @@ export class EntryEngine {
     wallet: string,
     triggerSource: string
   ): Promise<EntryEvaluationResult> {
+    const src = (triggerSource in { PULSE_FEED: 1, LASERSTREAM: 1, HELIUS_WSS: 1, HELIUS_GRPC: 1, PUMP_FUN: 1, DEXSCREENER: 1, MANUAL: 1, SIMULATION: 1 } ? triggerSource : 'MANUAL') as EventSource;
+
     try {
-      console.log(`[PIPELINE STAGE] DISCOVERED mint=${mint}`);
+      console.log(`[PIPELINE STAGE] DISCOVERED mint=${mint} (src=${triggerSource})`);
+      candidateRegistry.updateCandidateState(network, mint, 'ANALYZING');
 
       // 1. DISCOVERED -> ENRICHING
       entryDecisionLedger.recordEnriched();
@@ -216,7 +235,18 @@ export class EntryEngine {
       let tradeResponse: TradeEngineResponse | undefined;
       let finalStage: PipelineStage = decision.allowed ? 'BUY_SIGNAL' : 'REJECTED';
 
-      if (decision.allowed) {
+      if (!decision.allowed) {
+        candidateRegistry.updateCandidateState(network, mint, 'REJECTED', {
+          score: scoreBreakdown.totalScore,
+          rejectionReason: decision.blockingReasons[0] || 'CRITERIA_FAILED',
+        });
+        sourceHealthMonitor.recordRejection(src, decision.blockingReasons[0]);
+      } else {
+        candidateRegistry.updateCandidateState(network, mint, 'BUY_AUTHORIZED', {
+          score: scoreBreakdown.totalScore,
+        });
+        sourceHealthMonitor.recordQualified(src);
+
         finalStage = 'BUY_LOCKED';
         console.log(
           `[BUY ATTEMPT] mint=${mint} symbol=${candidate.symbol} amountSol=${decision.buyAmountSol} network=${network} wallet=${wallet}`
@@ -234,6 +264,10 @@ export class EntryEngine {
 
         if (!reval.allowed) {
           console.warn(`[PRE-BROADCAST REVALIDATION ABORT] mint=${mint} reason="${reval.reason}"`);
+          candidateRegistry.updateCandidateState(network, mint, 'REJECTED', {
+            rejectionReason: `REVALIDATION_ABORT: ${reval.reason}`,
+          });
+          sourceHealthMonitor.recordRejection(src, reval.reason);
           finalStage = 'REJECTED';
           return {
             mintAddress: mint,
@@ -252,6 +286,9 @@ export class EntryEngine {
         }
 
         finalStage = 'BUY_SUBMITTED';
+        candidateRegistry.updateCandidateState(network, mint, 'BUYING');
+        sourceHealthMonitor.recordBuyAttempt(src);
+
         console.log(`[PIPELINE STAGE] TradingEngine.buy() ATTEMPT mint=${mint} amountSol=${decision.buyAmountSol}`);
         tradeResponse = await tradingEngine.buy({
           network,
@@ -282,12 +319,22 @@ export class EntryEngine {
 
         if (tradeResponse.success) {
           finalStage = 'POSITION_OPEN';
+          candidateRegistry.updateCandidateState(network, mint, 'BOUGHT', {
+            orderId: tradeResponse.orderId,
+            signature: tradeResponse.signature,
+            positionId: tradeResponse.positionId,
+          });
+          sourceHealthMonitor.recordBuyConfirmed(src);
           console.log(`[PIPELINE STAGE] CONFIRMED BUY mint=${mint} orderId=${tradeResponse.orderId} sig=${tradeResponse.signature}`);
           console.log(
             `[BUY CONFIRMED] mint=${mint} symbol=${candidate.symbol} orderId=${tradeResponse.orderId} sig=${tradeResponse.signature}`
           );
         } else {
           finalStage = 'BUY_FAILED';
+          candidateRegistry.updateCandidateState(network, mint, 'REJECTED', {
+            rejectionReason: tradeResponse.error || 'BUY_FAILED',
+          });
+          sourceHealthMonitor.recordBuyFailed(src, tradeResponse.error);
           console.log(`[PIPELINE STAGE] BUY FAILED mint=${mint} error=${tradeResponse.error}`);
           console.warn(
             `[BUY FAILED] mint=${mint} symbol=${candidate.symbol} error=${tradeResponse.error}`
@@ -307,6 +354,10 @@ export class EntryEngine {
       };
     } catch (err: any) {
       console.error(`[EntryEngine Pipeline Error] mint=${mint}:`, err.message);
+      candidateRegistry.updateCandidateState(network, mint, 'REJECTED', {
+        rejectionReason: err.message,
+      });
+      sourceHealthMonitor.recordError(src, err.message);
       return {
         mintAddress: mint,
         symbol: 'UNKNOWN',

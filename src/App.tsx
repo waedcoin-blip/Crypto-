@@ -1235,10 +1235,9 @@ function App() {
           if (!amountLamports || amountLamports === 0) continue;
 
           const realCostBasis = position.solSpent || ((position.entryPriceSol || 0) * (position.amount || 0));
-          const currentPriceSol = (token.priceNative || (token.priceUsd ? token.priceUsd / getSolPriceUsd() : 0));
+          const currentPriceSol = token.priceNative || 0;
           const posTokensQty = position.amount || 0;
-          const netPnlResult = calcNetPnl(currentPriceSol, posTokensQty, realCostBasis, state.slippage, position.recoveryMode, true);
-          const currentPnLPct = netPnlResult.netPnlPct;
+          const currentPnLPct = realCostBasis > 0 ? (((currentPriceSol * posTokensQty) - realCostBasis) / realCostBasis) * 100 : 0;
 
           // ── SINGLE EXIT AUTHORITY: Forward fresh price observation to RiskManager ──
           // Market price → RiskManager → TP/SL decision → Jupiter pre-sell validation → OrderManager → execution
