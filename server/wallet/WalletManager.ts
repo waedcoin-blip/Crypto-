@@ -39,7 +39,7 @@ export class WalletManager {
     // 2. Devnet Wallet A
     const devnetKeyA = process.env.DEVNET_WALLET_A_PRIVATE_KEY || process.env.DEVNET_PRIVATE_KEY;
     let keypairDevnetA: Keypair | undefined;
-    let pubkeyDevnetA = 'DevnetWalletA111111111111111111111111111111';
+    let pubkeyDevnetA = '11111111111111111111111111111111';
     if (devnetKeyA) {
       try {
         const secret = bs58.decode(devnetKeyA);
@@ -60,7 +60,7 @@ export class WalletManager {
     // 3. Devnet Wallet B
     const devnetKeyB = process.env.DEVNET_WALLET_B_PRIVATE_KEY;
     let keypairDevnetB: Keypair | undefined;
-    let pubkeyDevnetB = 'DevnetWalletB111111111111111111111111111111';
+    let pubkeyDevnetB = '11111111111111111111111111111111';
     if (devnetKeyB) {
       try {
         const secret = bs58.decode(devnetKeyB);
@@ -81,7 +81,7 @@ export class WalletManager {
     // 4. Mainnet Wallet
     const mainnetKey = process.env.MAINNET_PRIVATE_KEY || process.env.SOLANA_PRIVATE_KEY;
     let keypairMainnet: Keypair | undefined;
-    let pubkeyMainnet = 'MainnetWallet1111111111111111111111111111111';
+    let pubkeyMainnet = '11111111111111111111111111111111';
     if (mainnetKey) {
       try {
         const secret = bs58.decode(mainnetKey);

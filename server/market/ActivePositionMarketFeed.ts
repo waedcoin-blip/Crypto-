@@ -111,8 +111,8 @@ export class ActivePositionMarketFeed {
     // 1. Check Bonding Curve Fast Lane cache if candidatePrice is absent
     if (!priceSol || priceSol <= 0) {
       const state = bondingCurveFastLane.getState(mint);
-      if (state && state.price > 0) {
-        priceSol = state.price;
+      if (state && state.priceSolPerToken > 0) {
+        priceSol = state.priceSolPerToken;
       }
     }
 

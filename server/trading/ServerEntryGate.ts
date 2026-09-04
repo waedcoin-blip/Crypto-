@@ -490,12 +490,13 @@ export class ServerEntryGate {
     const { profitabilityEngine } = await import('./ProfitabilityEngine.js');
     const buyAmountSol = Number(config.buyAmountSol) || 0.1;
     const profitabilityMetrics = profitabilityEngine.calculateProfitability(candidate, buyAmountSol);
-    if (profitabilityMetrics.status === 'UNPROFITABLE' || profitabilityMetrics.expectedNetProfitSol <= 0) {
+    const expectedNetProfitSol = Number(profitabilityMetrics.expectedNetProfitLamports) / 1e9;
+    if (profitabilityMetrics.status === 'UNPROFITABLE' || expectedNetProfitSol <= 0) {
       const r = {
         pass: false,
-        actualValue: profitabilityMetrics.expectedNetProfitSol,
+        actualValue: expectedNetProfitSol,
         threshold: 0,
-        reason: `UNPROFITABLE_OPPORTUNITY: Expected Net SOL Profit is ${profitabilityMetrics.expectedNetProfitSol.toFixed(4)}`,
+        reason: `UNPROFITABLE_OPPORTUNITY: Expected Net SOL Profit is ${expectedNetProfitSol.toFixed(4)}`,
       };
       criteriaResults['PROFITABILITY'] = r;
       blockingReasons.push(r.reason);
@@ -509,7 +510,7 @@ export class ServerEntryGate {
     } else {
       criteriaResults['PROFITABILITY'] = {
         pass: true,
-        actualValue: profitabilityMetrics.expectedNetProfitSol,
+        actualValue: expectedNetProfitSol,
         threshold: 0,
         reason: 'OPPORTUNITY_PROFITABLE',
       };

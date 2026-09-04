@@ -138,7 +138,7 @@ export class MomentumEngine {
     const transactionVelocity = (window15s.length) / 15;
 
     // Liquidity acceleration
-    const liquidityVelocity = Number(candidate.liquidityUsd?.value || 0) / 150; // estimate in SOL equivalent
+    const liquidityVelocity = (candidate as any).liquiditySol?.value || (candidate.liquidityUsd?.value ? candidate.liquidityUsd.value / 150 : 0);
     const prevLiqVelocity = prevMetrics?.liquidityVelocity || 0;
     const liquidityAcceleration = liquidityVelocity - prevLiqVelocity;
 

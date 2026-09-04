@@ -1931,9 +1931,8 @@ function App() {
 
     let actualBuyAmountSol = buyAmountSol;
     if (metric && (((metric.dexId?.includes('pump') && !metric.dexId?.toLowerCase().includes('pumpswap')) || (tokenAddress || '').endsWith('pump')))) {
-       const poolLiquidityUsd = metric.liquidity || 0;
-       const safeMaxBuyUsd = poolLiquidityUsd * 0.0025;
-       const safeMaxBuySol = safeMaxBuyUsd / 140.0; // Approx sol price
+       const poolLiquiditySol = (metric as any)?.liquiditySol || (getSolPriceUsd() > 0 ? (metric.liquidity || 0) / getSolPriceUsd() : 0);
+       const safeMaxBuySol = poolLiquiditySol * 0.0025;
        
        if (safeMaxBuySol > 0 && safeMaxBuySol < actualBuyAmountSol) {
           actualBuyAmountSol = safeMaxBuySol;

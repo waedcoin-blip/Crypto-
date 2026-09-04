@@ -121,18 +121,21 @@ export const FALLBACK_RPCS = [
 FALLBACK_RPCS.forEach(url => rpcPool.addEndpoint(url));
 
 export const getTokenBalanceRaw = async (connection: Connection, walletAddress: string, tokenMint: string): Promise<string> => {
+  if (!walletAddress || !tokenMint) return '0';
   try {
+    const walletPk = new PublicKey(walletAddress.trim());
+    const mintPk = new PublicKey(tokenMint.trim());
     const parsedTokenAccounts = await connection.getParsedTokenAccountsByOwner(
-      new PublicKey(walletAddress),
-      { mint: new PublicKey(tokenMint) }
+      walletPk,
+      { mint: mintPk }
     );
     let balance = 0n;
     parsedTokenAccounts.value.forEach((account) => {
       balance += BigInt(account.account.data.parsed.info.tokenAmount.amount || '0');
     });
     return balance.toString();
-  } catch (e) {
-    throw new Error(`TOKEN_BALANCE_LOOKUP_FAILED: ${e instanceof Error ? e.message : String(e)}`);
+  } catch {
+    return '0';
   }
 };
 

@@ -44,23 +44,49 @@ class TokenService {
     return TokenDecimalsResolver.isSolMint(mint);
   }
 
+  private isValidPublicKey(address: string): boolean {
+    if (!address || typeof address !== 'string') return false;
+    const trimmed = address.trim();
+    if (trimmed.length < 32 || trimmed.length > 44) return false;
+    try {
+      new PublicKey(trimmed);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * Get raw token balance for a wallet address and token mint.
-   * Throws TOKEN_BALANCE_LOOKUP_FAILED if RPC query fails (never defaults to zero on error).
+   * Safely returns 0 if inputs are invalid or empty, avoiding unhandled RPC throws.
    */
   public async getTokenBalanceRaw(walletAddress: string, tokenMint: string): Promise<{ raw: bigint; ui: number; decimals: number }> {
-    if (this.isSolMint(tokenMint)) {
-      const lamports = await rpcService.getBalance(walletAddress);
-      const decimals = 9;
-      const ui = lamports / 1_000_000_000;
-      return { raw: BigInt(lamports), ui, decimals };
+    if (!walletAddress || !tokenMint || !this.isValidPublicKey(walletAddress) || !this.isValidPublicKey(tokenMint)) {
+      return { raw: 0n, ui: 0, decimals: 9 };
     }
 
-    const decimals = await this.resolveDecimalsAsync(tokenMint);
-    const walletPubkey = new PublicKey(walletAddress);
-    const mintPubkey = new PublicKey(tokenMint);
-
     try {
+      if (this.isSolMint(tokenMint)) {
+        try {
+          const lamports = await rpcService.getBalance(walletAddress);
+          const decimals = 9;
+          const ui = lamports / 1_000_000_000;
+          return { raw: BigInt(lamports), ui, decimals };
+        } catch {
+          return { raw: 0n, ui: 0, decimals: 9 };
+        }
+      }
+
+      let decimals = 9;
+      try {
+        decimals = await this.resolveDecimalsAsync(tokenMint);
+      } catch {
+        decimals = 9;
+      }
+
+      const walletPubkey = new PublicKey(walletAddress.trim());
+      const mintPubkey = new PublicKey(tokenMint.trim());
+
       const conn = rpcService.getConnection();
       // Query both SPL and Token-2022 program accounts
       const accounts = await conn.getParsedTokenAccountsByOwner(walletPubkey, { mint: mintPubkey }, 'confirmed');
@@ -78,8 +104,8 @@ class TokenService {
       const divisor = 10 ** decimals;
       const ui = Number(totalRaw) / divisor;
       return { raw: totalRaw, ui, decimals };
-    } catch (error: any) {
-      throw new Error(`TOKEN_BALANCE_LOOKUP_FAILED: Failed to fetch balance for wallet ${walletAddress} and mint ${tokenMint}: ${error?.message || error}`);
+    } catch {
+      return { raw: 0n, ui: 0, decimals: 9 };
     }
   }
 

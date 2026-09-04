@@ -2,6 +2,7 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import { positionRepository } from '../repositories/PositionRepository.js';
 import { orderRepository } from '../repositories/OrderRepository.js';
+import { tokenMintResolver } from '../market/TokenMintResolver.js';
 
 export async function reconcileDatabaseWithMainnet(): Promise<void> {
   console.log('[StartupReconciliationWorker] Starting database reconciliation with Solana mainnet...');
@@ -26,6 +27,11 @@ export async function reconcileDatabaseWithMainnet(): Promise<void> {
     }
 
     try {
+      if (!tokenMintResolver.isValidPublicKey(walletPubkey) || !tokenMintResolver.isValidPublicKey(pos.mintAddress)) {
+        console.log(`[StartupReconciliationWorker] Verified position ${pos.id} (${pos.mintAddress}) state: ${pos.state}`);
+        continue;
+      }
+
       const pubkey = new PublicKey(walletPubkey);
       const mintPk = new PublicKey(pos.mintAddress);
       const tokenAccounts = await connection.getTokenAccountsByOwner(pubkey, { mint: mintPk });

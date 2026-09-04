@@ -363,15 +363,18 @@ export class LaserStreamPipeline {
     const buyer = event.owner || 'unknown';
     momentumEngine.recordTrade(extractedMint, event.price || 0.000001, isBuy, solAmount, buyer);
 
-    // 5b. EVALUATION THROTTLE (1.5 Seconds) & CAPACITY BOUNDS
-    const throttleKey = `${extractedMint}:${protocol}`;
-    const now = Date.now();
-    const lastEval = this.lastEvaluationTimestamp.get(throttleKey) || 0;
-    if (now - lastEval < 1500) {
+    // 5b. REAL-TIME EVENT DEDUPLICATION & LATEST-STATE COALESCING
+    const signatureKey = `${event.signature}:${extractedMint}`;
+    if (event.signature && this.signatureDedupeCache.has(signatureKey)) {
       this.counters.duplicates++;
       return;
     }
-    this.lastEvaluationTimestamp.set(throttleKey, now);
+    if (event.signature) {
+      this.signatureDedupeCache.add(signatureKey);
+      if (this.signatureDedupeCache.size > 20000) {
+        this.signatureDedupeCache.clear();
+      }
+    }
 
     // Check bounded queue capacity limits
     const totalQueueSize = this.highQueue.length + this.mediumQueue.length + this.lowQueue.length;

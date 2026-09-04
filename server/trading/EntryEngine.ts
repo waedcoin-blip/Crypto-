@@ -222,6 +222,35 @@ export class EntryEngine {
           `[BUY ATTEMPT] mint=${mint} symbol=${candidate.symbol} amountSol=${decision.buyAmountSol} network=${network} wallet=${wallet}`
         );
 
+        // Mandatory Final Pre-Broadcast Revalidation
+        const { riskManager } = await import('./RiskManager.js');
+        const buyAmountLamports = BigInt(Math.round(decision.buyAmountSol * 1e9));
+        const reval = await riskManager.revalidateBuyBeforeBroadcast({
+          mint,
+          buyAmountLamports,
+          network,
+          wallet,
+        });
+
+        if (!reval.allowed) {
+          console.warn(`[PRE-BROADCAST REVALIDATION ABORT] mint=${mint} reason="${reval.reason}"`);
+          finalStage = 'REJECTED';
+          return {
+            mintAddress: mint,
+            symbol: candidate.symbol,
+            stage: 'REJECTED',
+            enrichedCandidate: candidate,
+            scoreBreakdown,
+            decision: {
+              ...decision,
+              allowed: false,
+              blockingReasons: [...decision.blockingReasons, `REVALIDATION_ABORT: ${reval.reason}`],
+            },
+            status: 'SKIPPED',
+            error: reval.reason,
+          };
+        }
+
         finalStage = 'BUY_SUBMITTED';
         console.log(`[PIPELINE STAGE] TradingEngine.buy() ATTEMPT mint=${mint} amountSol=${decision.buyAmountSol}`);
         tradeResponse = await tradingEngine.buy({
@@ -229,7 +258,7 @@ export class EntryEngine {
           wallet,
           mint,
           amountSol: decision.buyAmountSol,
-          decimals: candidate.decimals.value ?? undefined,
+          decimals: reval.verifiedDecimals ?? candidate.decimals.value ?? undefined,
           slippageBps: Math.round((Number(activeCriteria.slippage) || 1.0) * 100) || 250,
           maxRebuyTimes: activeCriteria.maxRebuyTimes ?? 1,
           tradeOnlyOnce: activeCriteria.tradeOnlyOnce ?? true,

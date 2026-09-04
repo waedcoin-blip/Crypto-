@@ -54,7 +54,7 @@ export class MigrationDetector {
 
     if ((isRaydiumInit || isMeteoraInit) && !state) {
       const poolType = isRaydiumInit ? 'raydium' : 'meteora';
-      const initialLiq = 79; // Raydium standard Pump.fun migration is ~79 SOL of initial liquidity
+      const initialLiq = (event as any).liquiditySol || 0;
 
       state = {
         mint,
