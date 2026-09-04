@@ -1,0 +1,10 @@
+diff --git a/V103_TPSL_PATCH_MANIFEST.md b/V103_TPSL_PATCH_MANIFEST.md
+index 9abcea8..750ece0 100644
+--- a/V103_TPSL_PATCH_MANIFEST.md
++++ b/V103_TPSL_PATCH_MANIFEST.md
+@@ -10,3 +10,5 @@ Fixes:
+ - PnLPage no longer constructs a second PositionExitManager instance and no longer reconstructs raw token amounts using floating point for manual exits.
+ - FastExitExecutor rejects unsafe/non-positive raw amounts.
+ - Added V103 TP/SL boundary/precision regression test.
++
++Validation: global tsc was attempted, but node_modules are not installed in this environment. Existing dependency/type errors remain; no new errors were observed in the modified server files beyond missing NodeJS/dependency types.

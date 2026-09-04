@@ -4061,14 +4061,10 @@ const checkTokenCriteria = (mint: string): {
     const symbol = pos?.symbol || mint.slice(0, 6);
     if (positionExitManagerRef.current) {
       addLog(`🚨 Delegating exit request for ${symbol} to RiskManager (${reason})...`, 'info');
-      const decimals = pos?.decimals ?? resolveTokenDecimals(mint);
-      const amountLamports = pos?.amountLamports || (pos?.amount ? Math.floor(pos.amount * Math.pow(10, decimals)) : undefined);
-      await positionExitManagerRef.current.requestExit(mint, reason, amountLamports, pos?.solSpent);
+      await positionExitManagerRef.current.requestExit(mint, reason, undefined, pos?.solSpent);
     } else {
       addLog(`🚨 Requesting exit for ${symbol} via RiskManager (${reason})...`, 'sell');
-      const decimals = pos?.decimals ?? resolveTokenDecimals(mint);
-      const amountLamports = pos?.amountLamports || (pos?.amount ? Math.floor(pos.amount * Math.pow(10, decimals)) : undefined);
-      await positionExitManager.requestExit(mint, reason, amountLamports, pos?.solSpent);
+      await positionExitManager.requestExit(mint, reason, undefined, pos?.solSpent);
     }
   };
 
@@ -4098,17 +4094,8 @@ const checkTokenCriteria = (mint: string): {
     const currentJup = jupiterRpcUrl || 'https://api.jup.ag/swap/v1';
     const executor = tradeManager.getExecutor();
 
-    const exitMgr = new PositionExitManager(
-      executor,
-      currentJup,
-      currentRpc,
-      {
-        tpPct: configRef.current.minTakeProfit || 25,
-        slPct: configRef.current.stopLossPct || 15,
-        slippageBpsTp: Math.floor((configRef.current.slippage || 2.5) * 100),
-        slippageBpsSl: Math.floor((configRef.current.slippage || 10.0) * 100),
-      }
-    );
+    // Single client-side compatibility proxy; the server UnifiedExitEngine remains the authoritative execution authority.
+    const exitMgr = positionExitManager;
 
     exitMgr.setOnExitErrorCallback((mint, side, errorMessage) => {
       const pos = positionsRef.current[mint];

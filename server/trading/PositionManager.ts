@@ -2,14 +2,14 @@
 import { positionRepository, PositionRecord } from '../repositories/PositionRepository.js';
 import { positionValuationEngine } from './PositionValuationEngine.js';
 
-export type PositionStatus = 'NONE' | 'BUY_PENDING' | 'OPEN' | 'EXIT_PENDING' | 'CLOSED';
+export type PositionStatus = 'NONE' | 'BUY_PENDING' | 'OPEN' | 'EXIT_PENDING' | 'RECOVERY_REQUIRED' | 'CLOSED';
 
 export interface Position {
   id: string;
   network: string;
   wallet: string;
   mint: string;
-  tokenAmount: number; // Raw integer base units
+  tokenAmount: number; // Raw integer base units; MUST remain a safe integer in the legacy number-based execution API
   decimals: number;
   totalSolSpent: number;
   averageEntryPrice: number; // SOL per 1 whole token
@@ -58,6 +58,16 @@ export class PositionManager {
     return `${network}:${wallet}:${mint.trim()}`;
   }
 
+  private parseRawAmountSafe(value: number | string | bigint, positionId: string): number {
+    let raw: bigint;
+    try { raw = BigInt(value); } catch { throw new Error(`INVALID_POSITION_RAW_AMOUNT: ${positionId}`); }
+    if (raw <= 0n) return 0;
+    if (raw > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error(`RAW_AMOUNT_PRECISION_UNSUPPORTED: Position ${positionId} has raw token amount ${raw.toString()} above Number.MAX_SAFE_INTEGER. Execution is blocked to prevent quantity corruption.`);
+    }
+    return Number(raw);
+  }
+
   public refreshFromRepository(): void {
     const list = positionRepository.getAllPositions();
     for (const record of list) {
@@ -81,7 +91,7 @@ export class PositionManager {
       const status = this.mapRecordStateToStatus(record.state);
       if (existing) {
         existing.status = status;
-        existing.tokenAmount = Number(record.amountRaw || 0);
+        existing.tokenAmount = this.parseRawAmountSafe(record.amountRaw, record.id);
         existing.decimals = record.decimals;
         existing.totalSolSpent = record.solSpent || 0;
         existing.averageEntryPrice = record.entryPriceSOL || 0;
@@ -101,7 +111,7 @@ export class PositionManager {
           network: record.network || 'paper',
           wallet: record.wallet || 'default',
           mint: record.mintAddress,
-          tokenAmount: Number(record.amountRaw || 0),
+          tokenAmount: this.parseRawAmountSafe(record.amountRaw, record.id),
           decimals: record.decimals,
           totalSolSpent: record.solSpent || 0,
           averageEntryPrice: record.entryPriceSOL || 0,
@@ -145,6 +155,7 @@ export class PositionManager {
       case 'EXIT_REQUESTED':
       case 'EXIT_SUBMITTED':
       case 'EXIT_CONFIRMING': return 'EXIT_PENDING';
+      case 'RECOVERY_REQUIRED': return 'RECOVERY_REQUIRED';
       case 'CLOSED': return 'CLOSED';
       default: return 'OPEN';
     }
@@ -247,6 +258,14 @@ export class PositionManager {
     if (decimals === undefined) {
       throw new Error(`Cannot open position for ${params.mint}: missing decimals.`);
     }
+    if (!Number.isSafeInteger(params.tokenAmountRaw) || params.tokenAmountRaw <= 0) {
+      throw new Error(`INVALID_RAW_TOKEN_AMOUNT: tokenAmountRaw must be a positive safe integer for ${params.mint}.`);
+    }
+    const tpPct = params.tpPct ?? 25;
+    const slPct = Math.abs(params.slPct ?? 15);
+    if (!Number.isFinite(tpPct) || tpPct <= 0 || !Number.isFinite(slPct) || slPct <= 0 || slPct >= 100) {
+      throw new Error(`INVALID_TP_SL: TP must be > 0 and SL must be > 0 and < 100 for ${params.mint}.`);
+    }
 
     if (existingId) {
       const existing = this.positions.get(existingId);
@@ -254,7 +273,11 @@ export class PositionManager {
         const prevTotalCost = existing.totalSolSpent;
         const prevTotalRaw = existing.tokenAmount;
         const newTotalCost = prevTotalCost + params.solSpent;
-        const newTotalRaw = prevTotalRaw + params.tokenAmountRaw;
+        const newTotalRawBig = BigInt(prevTotalRaw) + BigInt(params.tokenAmountRaw);
+        if (newTotalRawBig > BigInt(Number.MAX_SAFE_INTEGER)) {
+          throw new Error(`RAW_AMOUNT_PRECISION_UNSUPPORTED: accumulated position ${existing.id} exceeds Number.MAX_SAFE_INTEGER; refusing to corrupt quantity.`);
+        }
+        const newTotalRaw = Number(newTotalRawBig);
         const newTotalQty = newTotalRaw / (10 ** existing.decimals);
 
         existing.tokenAmount = newTotalRaw;
@@ -266,8 +289,8 @@ export class PositionManager {
         if (params.orderId && !existing.orderIds.includes(params.orderId)) {
           existing.orderIds.push(params.orderId);
         }
-        if (params.tpPct !== undefined) existing.tpPct = params.tpPct;
-        if (params.slPct !== undefined) existing.slPct = params.slPct;
+        if (params.tpPct !== undefined) { if (!Number.isFinite(params.tpPct) || params.tpPct <= 0) throw new Error('INVALID_TP_PERCENT'); existing.tpPct = params.tpPct; }
+        if (params.slPct !== undefined) { const sl = Math.abs(params.slPct); if (!Number.isFinite(sl) || sl <= 0 || sl >= 100) throw new Error('INVALID_SL_PERCENT'); existing.slPct = sl; }
         existing.status = 'OPEN';
         existing.updatedAt = now;
 
@@ -299,8 +322,8 @@ export class PositionManager {
       status: 'OPEN',
       openedAt: now,
       updatedAt: now,
-      tpPct: params.tpPct ?? 25,
-      slPct: params.slPct ?? 15,
+      tpPct,
+      slPct,
       trailingSlPct: params.trailingSlPct,
       maxHoldTimeMs: params.maxHoldTimeMs,
       slippageBpsTp: params.slippageBpsTp ?? 250,
@@ -372,7 +395,7 @@ export class PositionManager {
       maxHoldTimeMs: pos.maxHoldTimeMs,
       slippageBpsTp: pos.slippageBpsTp,
       slippageBpsSl: pos.slippageBpsSl,
-      state: pos.status === 'CLOSED' ? 'CLOSED' : pos.status === 'EXIT_PENDING' ? 'EXIT_SUBMITTED' : pos.status === 'BUY_PENDING' ? 'PENDING_BUY' : 'OPEN',
+      state: pos.status === 'CLOSED' ? 'CLOSED' : pos.status === 'RECOVERY_REQUIRED' ? 'RECOVERY_REQUIRED' : pos.status === 'EXIT_PENDING' ? 'EXIT_SUBMITTED' : pos.status === 'BUY_PENDING' ? 'PENDING_BUY' : 'OPEN',
       orderIds: pos.orderIds,
       buySignature: pos.buySignature,
       exitSignature: pos.exitSignature,

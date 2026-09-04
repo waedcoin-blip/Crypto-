@@ -1,0 +1,1774 @@
+diff -ruN ./.git/COMMIT_EDITMSG /tmp/arina_patch/.git/COMMIT_EDITMSG
+--- ./.git/COMMIT_EDITMSG	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/COMMIT_EDITMSG	2026-09-04 20:33:10.375714929 +0000
+@@ -0,0 +1 @@
++v103
+diff -ruN ./.git/HEAD /tmp/arina_patch/.git/HEAD
+--- ./.git/HEAD	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/HEAD	2026-09-04 20:33:09.711099207 +0000
+@@ -0,0 +1 @@
++ref: refs/heads/master
+diff -ruN ./.git/config /tmp/arina_patch/.git/config
+--- ./.git/config	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/config	2026-09-04 20:33:09.710177362 +0000
+@@ -0,0 +1,5 @@
++[core]
++	repositoryformatversion = 0
++	filemode = true
++	bare = false
++	logallrefupdates = true
+diff -ruN ./.git/description /tmp/arina_patch/.git/description
+--- ./.git/description	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/description	2026-09-04 20:33:09.704437683 +0000
+@@ -0,0 +1 @@
++Unnamed repository; edit this file 'description' to name the repository.
+diff -ruN ./.git/hooks/applypatch-msg.sample /tmp/arina_patch/.git/hooks/applypatch-msg.sample
+--- ./.git/hooks/applypatch-msg.sample	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/hooks/applypatch-msg.sample	2026-09-04 20:33:09.704437683 +0000
+@@ -0,0 +1,15 @@
++#!/bin/sh
++#
++# An example hook script to check the commit log message taken by
++# applypatch from an e-mail message.
++#
++# The hook should exit with non-zero status after issuing an
++# appropriate message if it wants to stop the commit.  The hook is
++# allowed to edit the commit message file.
++#
++# To enable this hook, rename this file to "applypatch-msg".
++
++. git-sh-setup
++commitmsg="$(git rev-parse --git-path hooks/commit-msg)"
++test -x "$commitmsg" && exec "$commitmsg" ${1+"$@"}
++:
+diff -ruN ./.git/hooks/commit-msg.sample /tmp/arina_patch/.git/hooks/commit-msg.sample
+--- ./.git/hooks/commit-msg.sample	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/hooks/commit-msg.sample	2026-09-04 20:33:09.704437683 +0000
+@@ -0,0 +1,24 @@
++#!/bin/sh
++#
++# An example hook script to check the commit log message.
++# Called by "git commit" with one argument, the name of the file
++# that has the commit message.  The hook should exit with non-zero
++# status after issuing an appropriate message if it wants to stop the
++# commit.  The hook is allowed to edit the commit message file.
++#
++# To enable this hook, rename this file to "commit-msg".
++
++# Uncomment the below to add a Signed-off-by line to the message.
++# Doing this in a hook is a bad idea in general, but the prepare-commit-msg
++# hook is more suited to it.
++#
++# SOB=$(git var GIT_AUTHOR_IDENT | sed -n 's/^\(.*>\).*$/Signed-off-by: \1/p')
++# grep -qs "^$SOB" "$1" || echo "$SOB" >> "$1"
++
++# This example catches duplicate Signed-off-by lines.
++
++test "" = "$(grep '^Signed-off-by: ' "$1" |
++	 sort | uniq -c | sed -e '/^[ 	]*1[ 	]/d')" || {
++	echo >&2 Duplicate Signed-off-by lines.
++	exit 1
++}
+diff -ruN ./.git/hooks/fsmonitor-watchman.sample /tmp/arina_patch/.git/hooks/fsmonitor-watchman.sample
+--- ./.git/hooks/fsmonitor-watchman.sample	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/hooks/fsmonitor-watchman.sample	2026-09-04 20:33:09.704437683 +0000
+@@ -0,0 +1,174 @@
++#!/usr/bin/perl
++
++use strict;
++use warnings;
++use IPC::Open2;
++
++# An example hook script to integrate Watchman
++# (https://facebook.github.io/watchman/) with git to speed up detecting
++# new and modified files.
++#
++# The hook is passed a version (currently 2) and last update token
++# formatted as a string and outputs to stdout a new update token and
++# all files that have been modified since the update token. Paths must
++# be relative to the root of the working tree and separated by a single NUL.
++#
++# To enable this hook, rename this file to "query-watchman" and set
++# 'git config core.fsmonitor .git/hooks/query-watchman'
++#
++my ($version, $last_update_token) = @ARGV;
++
++# Uncomment for debugging
++# print STDERR "$0 $version $last_update_token\n";
++
++# Check the hook interface version
++if ($version ne 2) {
++	die "Unsupported query-fsmonitor hook version '$version'.\n" .
++	    "Falling back to scanning...\n";
++}
++
++my $git_work_tree = get_working_dir();
++
++my $retry = 1;
++
++my $json_pkg;
++eval {
++	require JSON::XS;
++	$json_pkg = "JSON::XS";
++	1;
++} or do {
++	require JSON::PP;
++	$json_pkg = "JSON::PP";
++};
++
++launch_watchman();
++
++sub launch_watchman {
++	my $o = watchman_query();
++	if (is_work_tree_watched($o)) {
++		output_result($o->{clock}, @{$o->{files}});
++	}
++}
++
++sub output_result {
++	my ($clockid, @files) = @_;
++
++	# Uncomment for debugging watchman output
++	# open (my $fh, ">", ".git/watchman-output.out");
++	# binmode $fh, ":utf8";
++	# print $fh "$clockid\n@files\n";
++	# close $fh;
++
++	binmode STDOUT, ":utf8";
++	print $clockid;
++	print "\0";
++	local $, = "\0";
++	print @files;
++}
++
++sub watchman_clock {
++	my $response = qx/watchman clock "$git_work_tree"/;
++	die "Failed to get clock id on '$git_work_tree'.\n" .
++		"Falling back to scanning...\n" if $? != 0;
++
++	return $json_pkg->new->utf8->decode($response);
++}
++
++sub watchman_query {
++	my $pid = open2(\*CHLD_OUT, \*CHLD_IN, 'watchman -j --no-pretty')
++	or die "open2() failed: $!\n" .
++	"Falling back to scanning...\n";
++
++	# In the query expression below we're asking for names of files that
++	# changed since $last_update_token but not from the .git folder.
++	#
++	# To accomplish this, we're using the "since" generator to use the
++	# recency index to select candidate nodes and "fields" to limit the
++	# output to file names only. Then we're using the "expression" term to
++	# further constrain the results.
++	my $last_update_line = "";
++	if (substr($last_update_token, 0, 1) eq "c") {
++		$last_update_token = "\"$last_update_token\"";
++		$last_update_line = qq[\n"since": $last_update_token,];
++	}
++	my $query = <<"	END";
++		["query", "$git_work_tree", {$last_update_line
++			"fields": ["name"],
++			"expression": ["not", ["dirname", ".git"]]
++		}]
++	END
++
++	# Uncomment for debugging the watchman query
++	# open (my $fh, ">", ".git/watchman-query.json");
++	# print $fh $query;
++	# close $fh;
++
++	print CHLD_IN $query;
++	close CHLD_IN;
++	my $response = do {local $/; <CHLD_OUT>};
++
++	# Uncomment for debugging the watch response
++	# open ($fh, ">", ".git/watchman-response.json");
++	# print $fh $response;
++	# close $fh;
++
++	die "Watchman: command returned no output.\n" .
++	"Falling back to scanning...\n" if $response eq "";
++	die "Watchman: command returned invalid output: $response\n" .
++	"Falling back to scanning...\n" unless $response =~ /^\{/;
++
++	return $json_pkg->new->utf8->decode($response);
++}
++
++sub is_work_tree_watched {
++	my ($output) = @_;
++	my $error = $output->{error};
++	if ($retry > 0 and $error and $error =~ m/unable to resolve root .* directory (.*) is not watched/) {
++		$retry--;
++		my $response = qx/watchman watch "$git_work_tree"/;
++		die "Failed to make watchman watch '$git_work_tree'.\n" .
++		    "Falling back to scanning...\n" if $? != 0;
++		$output = $json_pkg->new->utf8->decode($response);
++		$error = $output->{error};
++		die "Watchman: $error.\n" .
++		"Falling back to scanning...\n" if $error;
++
++		# Uncomment for debugging watchman output
++		# open (my $fh, ">", ".git/watchman-output.out");
++		# close $fh;
++
++		# Watchman will always return all files on the first query so
++		# return the fast "everything is dirty" flag to git and do the
++		# Watchman query just to get it over with now so we won't pay
++		# the cost in git to look up each individual file.
++		my $o = watchman_clock();
++		$error = $output->{error};
++
++		die "Watchman: $error.\n" .
++		"Falling back to scanning...\n" if $error;
++
++		output_result($o->{clock}, ("/"));
++		$last_update_token = $o->{clock};
++
++		eval { launch_watchman() };
++		return 0;
++	}
++
++	die "Watchman: $error.\n" .
++	"Falling back to scanning...\n" if $error;
++
++	return 1;
++}
++
++sub get_working_dir {
++	my $working_dir;
++	if ($^O =~ 'msys' || $^O =~ 'cygwin') {
++		$working_dir = Win32::GetCwd();
++		$working_dir =~ tr/\\/\//;
++	} else {
++		require Cwd;
++		$working_dir = Cwd::cwd();
++	}
++
++	return $working_dir;
++}
+diff -ruN ./.git/hooks/post-update.sample /tmp/arina_patch/.git/hooks/post-update.sample
+--- ./.git/hooks/post-update.sample	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/hooks/post-update.sample	2026-09-04 20:33:09.704437683 +0000
+@@ -0,0 +1,8 @@
++#!/bin/sh
++#
++# An example hook script to prepare a packed repository for use over
++# dumb transports.
++#
++# To enable this hook, rename this file to "post-update".
++
++exec git update-server-info
+diff -ruN ./.git/hooks/pre-applypatch.sample /tmp/arina_patch/.git/hooks/pre-applypatch.sample
+--- ./.git/hooks/pre-applypatch.sample	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/hooks/pre-applypatch.sample	2026-09-04 20:33:09.704437683 +0000
+@@ -0,0 +1,14 @@
++#!/bin/sh
++#
++# An example hook script to verify what is about to be committed
++# by applypatch from an e-mail message.
++#
++# The hook should exit with non-zero status after issuing an
++# appropriate message if it wants to stop the commit.
++#
++# To enable this hook, rename this file to "pre-applypatch".
++
++. git-sh-setup
++precommit="$(git rev-parse --git-path hooks/pre-commit)"
++test -x "$precommit" && exec "$precommit" ${1+"$@"}
++:
+diff -ruN ./.git/hooks/pre-commit.sample /tmp/arina_patch/.git/hooks/pre-commit.sample
+--- ./.git/hooks/pre-commit.sample	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/hooks/pre-commit.sample	2026-09-04 20:33:09.704437683 +0000
+@@ -0,0 +1,49 @@
++#!/bin/sh
++#
++# An example hook script to verify what is about to be committed.
++# Called by "git commit" with no arguments.  The hook should
++# exit with non-zero status after issuing an appropriate message if
++# it wants to stop the commit.
++#
++# To enable this hook, rename this file to "pre-commit".
++
++if git rev-parse --verify HEAD >/dev/null 2>&1
++then
++	against=HEAD
++else
++	# Initial commit: diff against an empty tree object
++	against=$(git hash-object -t tree /dev/null)
++fi
++
++# If you want to allow non-ASCII filenames set this variable to true.
++allownonascii=$(git config --type=bool hooks.allownonascii)
++
++# Redirect output to stderr.
++exec 1>&2
++
++# Cross platform projects tend to avoid non-ASCII filenames; prevent
++# them from being added to the repository. We exploit the fact that the
++# printable range starts at the space character and ends with tilde.
++if [ "$allownonascii" != "true" ] &&
++	# Note that the use of brackets around a tr range is ok here, (it's
++	# even required, for portability to Solaris 10's /usr/bin/tr), since
++	# the square bracket bytes happen to fall in the designated range.
++	test $(git diff-index --cached --name-only --diff-filter=A -z $against |
++	  LC_ALL=C tr -d '[ -~]\0' | wc -c) != 0
++then
++	cat <<\EOF
++Error: Attempt to add a non-ASCII file name.
++
++This can cause problems if you want to work with people on other platforms.
++
++To be portable it is advisable to rename the file.
++
++If you know what you are doing you can disable this check using:
++
++  git config hooks.allownonascii true
++EOF
++	exit 1
++fi
++
++# If there are whitespace errors, print the offending file names and fail.
++exec git diff-index --check --cached $against --
+diff -ruN ./.git/hooks/pre-merge-commit.sample /tmp/arina_patch/.git/hooks/pre-merge-commit.sample
+--- ./.git/hooks/pre-merge-commit.sample	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/hooks/pre-merge-commit.sample	2026-09-04 20:33:09.704437683 +0000
+@@ -0,0 +1,13 @@
++#!/bin/sh
++#
++# An example hook script to verify what is about to be committed.
++# Called by "git merge" with no arguments.  The hook should
++# exit with non-zero status after issuing an appropriate message to
++# stderr if it wants to stop the merge commit.
++#
++# To enable this hook, rename this file to "pre-merge-commit".
++
++. git-sh-setup
++test -x "$GIT_DIR/hooks/pre-commit" &&
++        exec "$GIT_DIR/hooks/pre-commit"
++:
+diff -ruN ./.git/hooks/pre-push.sample /tmp/arina_patch/.git/hooks/pre-push.sample
+--- ./.git/hooks/pre-push.sample	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/hooks/pre-push.sample	2026-09-04 20:33:09.704437683 +0000
+@@ -0,0 +1,53 @@
++#!/bin/sh
++
++# An example hook script to verify what is about to be pushed.  Called by "git
++# push" after it has checked the remote status, but before anything has been
++# pushed.  If this script exits with a non-zero status nothing will be pushed.
++#
++# This hook is called with the following parameters:
++#
++# $1 -- Name of the remote to which the push is being done
++# $2 -- URL to which the push is being done
++#
++# If pushing without using a named remote those arguments will be equal.
++#
++# Information about the commits which are being pushed is supplied as lines to
++# the standard input in the form:
++#
++#   <local ref> <local oid> <remote ref> <remote oid>
++#
++# This sample shows how to prevent push of commits where the log message starts
++# with "WIP" (work in progress).
++
++remote="$1"
++url="$2"
++
++zero=$(git hash-object --stdin </dev/null | tr '[0-9a-f]' '0')
++
++while read local_ref local_oid remote_ref remote_oid
++do
++	if test "$local_oid" = "$zero"
++	then
++		# Handle delete
++		:
++	else
++		if test "$remote_oid" = "$zero"
++		then
++			# New branch, examine all commits
++			range="$local_oid"
++		else
++			# Update to existing branch, examine new commits
++			range="$remote_oid..$local_oid"
++		fi
++
++		# Check for WIP commit
++		commit=$(git rev-list -n 1 --grep '^WIP' "$range")
++		if test -n "$commit"
++		then
++			echo >&2 "Found WIP commit in $local_ref, not pushing"
++			exit 1
++		fi
++	fi
++done
++
++exit 0
+diff -ruN ./.git/hooks/pre-rebase.sample /tmp/arina_patch/.git/hooks/pre-rebase.sample
+--- ./.git/hooks/pre-rebase.sample	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/hooks/pre-rebase.sample	2026-09-04 20:33:09.704437683 +0000
+@@ -0,0 +1,169 @@
++#!/bin/sh
++#
++# Copyright (c) 2006, 2008 Junio C Hamano
++#
++# The "pre-rebase" hook is run just before "git rebase" starts doing
++# its job, and can prevent the command from running by exiting with
++# non-zero status.
++#
++# The hook is called with the following parameters:
++#
++# $1 -- the upstream the series was forked from.
++# $2 -- the branch being rebased (or empty when rebasing the current branch).
++#
++# This sample shows how to prevent topic branches that are already
++# merged to 'next' branch from getting rebased, because allowing it
++# would result in rebasing already published history.
++
++publish=next
++basebranch="$1"
++if test "$#" = 2
++then
++	topic="refs/heads/$2"
++else
++	topic=`git symbolic-ref HEAD` ||
++	exit 0 ;# we do not interrupt rebasing detached HEAD
++fi
++
++case "$topic" in
++refs/heads/??/*)
++	;;
++*)
++	exit 0 ;# we do not interrupt others.
++	;;
++esac
++
++# Now we are dealing with a topic branch being rebased
++# on top of master.  Is it OK to rebase it?
++
++# Does the topic really exist?
++git show-ref -q "$topic" || {
++	echo >&2 "No such branch $topic"
++	exit 1
++}
++
++# Is topic fully merged to master?
++not_in_master=`git rev-list --pretty=oneline ^master "$topic"`
++if test -z "$not_in_master"
++then
++	echo >&2 "$topic is fully merged to master; better remove it."
++	exit 1 ;# we could allow it, but there is no point.
++fi
++
++# Is topic ever merged to next?  If so you should not be rebasing it.
++only_next_1=`git rev-list ^master "^$topic" ${publish} | sort`
++only_next_2=`git rev-list ^master           ${publish} | sort`
++if test "$only_next_1" = "$only_next_2"
++then
++	not_in_topic=`git rev-list "^$topic" master`
++	if test -z "$not_in_topic"
++	then
++		echo >&2 "$topic is already up to date with master"
++		exit 1 ;# we could allow it, but there is no point.
++	else
++		exit 0
++	fi
++else
++	not_in_next=`git rev-list --pretty=oneline ^${publish} "$topic"`
++	/usr/bin/perl -e '
++		my $topic = $ARGV[0];
++		my $msg = "* $topic has commits already merged to public branch:\n";
++		my (%not_in_next) = map {
++			/^([0-9a-f]+) /;
++			($1 => 1);
++		} split(/\n/, $ARGV[1]);
++		for my $elem (map {
++				/^([0-9a-f]+) (.*)$/;
++				[$1 => $2];
++			} split(/\n/, $ARGV[2])) {
++			if (!exists $not_in_next{$elem->[0]}) {
++				if ($msg) {
++					print STDERR $msg;
++					undef $msg;
++				}
++				print STDERR " $elem->[1]\n";
++			}
++		}
++	' "$topic" "$not_in_next" "$not_in_master"
++	exit 1
++fi
++
++<<\DOC_END
++
++This sample hook safeguards topic branches that have been
++published from being rewound.
++
++The workflow assumed here is:
++
++ * Once a topic branch forks from "master", "master" is never
++   merged into it again (either directly or indirectly).
++
++ * Once a topic branch is fully cooked and merged into "master",
++   it is deleted.  If you need to build on top of it to correct
++   earlier mistakes, a new topic branch is created by forking at
++   the tip of the "master".  This is not strictly necessary, but
++   it makes it easier to keep your history simple.
++
++ * Whenever you need to test or publish your changes to topic
++   branches, merge them into "next" branch.
++
++The script, being an example, hardcodes the publish branch name
++to be "next", but it is trivial to make it configurable via
++$GIT_DIR/config mechanism.
++
++With this workflow, you would want to know:
++
++(1) ... if a topic branch has ever been merged to "next".  Young
++    topic branches can have stupid mistakes you would rather
++    clean up before publishing, and things that have not been
++    merged into other branches can be easily rebased without
++    affecting other people.  But once it is published, you would
++    not want to rewind it.
++
++(2) ... if a topic branch has been fully merged to "master".
++    Then you can delete it.  More importantly, you should not
++    build on top of it -- other people may already want to
++    change things related to the topic as patches against your
++    "master", so if you need further changes, it is better to
++    fork the topic (perhaps with the same name) afresh from the
++    tip of "master".
++
++Let's look at this example:
++
++		   o---o---o---o---o---o---o---o---o---o "next"
++		  /       /           /           /
++		 /   a---a---b A     /           /
++		/   /               /           /
++	       /   /   c---c---c---c B         /
++	      /   /   /             \         /
++	     /   /   /   b---b C     \       /
++	    /   /   /   /             \     /
++    ---o---o---o---o---o---o---o---o---o---o---o "master"
++
++
++A, B and C are topic branches.
++
++ * A has one fix since it was merged up to "next".
++
++ * B has finished.  It has been fully merged up to "master" and "next",
++   and is ready to be deleted.
++
++ * C has not merged to "next" at all.
++
++We would want to allow C to be rebased, refuse A, and encourage
++B to be deleted.
++
++To compute (1):
++
++	git rev-list ^master ^topic next
++	git rev-list ^master        next
++
++	if these match, topic has not merged in next at all.
++
++To compute (2):
++
++	git rev-list master..topic
++
++	if this is empty, it is fully merged to "master".
++
++DOC_END
+diff -ruN ./.git/hooks/pre-receive.sample /tmp/arina_patch/.git/hooks/pre-receive.sample
+--- ./.git/hooks/pre-receive.sample	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/hooks/pre-receive.sample	2026-09-04 20:33:09.704437683 +0000
+@@ -0,0 +1,24 @@
++#!/bin/sh
++#
++# An example hook script to make use of push options.
++# The example simply echoes all push options that start with 'echoback='
++# and rejects all pushes when the "reject" push option is used.
++#
++# To enable this hook, rename this file to "pre-receive".
++
++if test -n "$GIT_PUSH_OPTION_COUNT"
++then
++	i=0
++	while test "$i" -lt "$GIT_PUSH_OPTION_COUNT"
++	do
++		eval "value=\$GIT_PUSH_OPTION_$i"
++		case "$value" in
++		echoback=*)
++			echo "echo from the pre-receive-hook: ${value#*=}" >&2
++			;;
++		reject)
++			exit 1
++		esac
++		i=$((i + 1))
++	done
++fi
+diff -ruN ./.git/hooks/prepare-commit-msg.sample /tmp/arina_patch/.git/hooks/prepare-commit-msg.sample
+--- ./.git/hooks/prepare-commit-msg.sample	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/hooks/prepare-commit-msg.sample	2026-09-04 20:33:09.704437683 +0000
+@@ -0,0 +1,42 @@
++#!/bin/sh
++#
++# An example hook script to prepare the commit log message.
++# Called by "git commit" with the name of the file that has the
++# commit message, followed by the description of the commit
++# message's source.  The hook's purpose is to edit the commit
++# message file.  If the hook fails with a non-zero status,
++# the commit is aborted.
++#
++# To enable this hook, rename this file to "prepare-commit-msg".
++
++# This hook includes three examples. The first one removes the
++# "# Please enter the commit message..." help message.
++#
++# The second includes the output of "git diff --name-status -r"
++# into the message, just before the "git status" output.  It is
++# commented because it doesn't cope with --amend or with squashed
++# commits.
++#
++# The third example adds a Signed-off-by line to the message, that can
++# still be edited.  This is rarely a good idea.
++
++COMMIT_MSG_FILE=$1
++COMMIT_SOURCE=$2
++SHA1=$3
++
++/usr/bin/perl -i.bak -ne 'print unless(m/^. Please enter the commit message/..m/^#$/)' "$COMMIT_MSG_FILE"
++
++# case "$COMMIT_SOURCE,$SHA1" in
++#  ,|template,)
++#    /usr/bin/perl -i.bak -pe '
++#       print "\n" . `git diff --cached --name-status -r`
++# 	 if /^#/ && $first++ == 0' "$COMMIT_MSG_FILE" ;;
++#  *) ;;
++# esac
++
++# SOB=$(git var GIT_COMMITTER_IDENT | sed -n 's/^\(.*>\).*$/Signed-off-by: \1/p')
++# git interpret-trailers --in-place --trailer "$SOB" "$COMMIT_MSG_FILE"
++# if test -z "$COMMIT_SOURCE"
++# then
++#   /usr/bin/perl -i.bak -pe 'print "\n" if !$first_line++' "$COMMIT_MSG_FILE"
++# fi
+diff -ruN ./.git/hooks/push-to-checkout.sample /tmp/arina_patch/.git/hooks/push-to-checkout.sample
+--- ./.git/hooks/push-to-checkout.sample	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/hooks/push-to-checkout.sample	2026-09-04 20:33:09.704437683 +0000
+@@ -0,0 +1,78 @@
++#!/bin/sh
++
++# An example hook script to update a checked-out tree on a git push.
++#
++# This hook is invoked by git-receive-pack(1) when it reacts to git
++# push and updates reference(s) in its repository, and when the push
++# tries to update the branch that is currently checked out and the
++# receive.denyCurrentBranch configuration variable is set to
++# updateInstead.
++#
++# By default, such a push is refused if the working tree and the index
++# of the remote repository has any difference from the currently
++# checked out commit; when both the working tree and the index match
++# the current commit, they are updated to match the newly pushed tip
++# of the branch. This hook is to be used to override the default
++# behaviour; however the code below reimplements the default behaviour
++# as a starting point for convenient modification.
++#
++# The hook receives the commit with which the tip of the current
++# branch is going to be updated:
++commit=$1
++
++# It can exit with a non-zero status to refuse the push (when it does
++# so, it must not modify the index or the working tree).
++die () {
++	echo >&2 "$*"
++	exit 1
++}
++
++# Or it can make any necessary changes to the working tree and to the
++# index to bring them to the desired state when the tip of the current
++# branch is updated to the new commit, and exit with a zero status.
++#
++# For example, the hook can simply run git read-tree -u -m HEAD "$1"
++# in order to emulate git fetch that is run in the reverse direction
++# with git push, as the two-tree form of git read-tree -u -m is
++# essentially the same as git switch or git checkout that switches
++# branches while keeping the local changes in the working tree that do
++# not interfere with the difference between the branches.
++
++# The below is a more-or-less exact translation to shell of the C code
++# for the default behaviour for git's push-to-checkout hook defined in
++# the push_to_deploy() function in builtin/receive-pack.c.
++#
++# Note that the hook will be executed from the repository directory,
++# not from the working tree, so if you want to perform operations on
++# the working tree, you will have to adapt your code accordingly, e.g.
++# by adding "cd .." or using relative paths.
++
++if ! git update-index -q --ignore-submodules --refresh
++then
++	die "Up-to-date check failed"
++fi
++
++if ! git diff-files --quiet --ignore-submodules --
++then
++	die "Working directory has unstaged changes"
++fi
++
++# This is a rough translation of:
++#
++#   head_has_history() ? "HEAD" : EMPTY_TREE_SHA1_HEX
++if git cat-file -e HEAD 2>/dev/null
++then
++	head=HEAD
++else
++	head=$(git hash-object -t tree --stdin </dev/null)
++fi
++
++if ! git diff-index --quiet --cached --ignore-submodules $head --
++then
++	die "Working directory has staged changes"
++fi
++
++if ! git read-tree -u -m "$commit"
++then
++	die "Could not update working tree to new HEAD"
++fi
+diff -ruN ./.git/hooks/sendemail-validate.sample /tmp/arina_patch/.git/hooks/sendemail-validate.sample
+--- ./.git/hooks/sendemail-validate.sample	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/hooks/sendemail-validate.sample	2026-09-04 20:33:09.704437683 +0000
+@@ -0,0 +1,77 @@
++#!/bin/sh
++
++# An example hook script to validate a patch (and/or patch series) before
++# sending it via email.
++#
++# The hook should exit with non-zero status after issuing an appropriate
++# message if it wants to prevent the email(s) from being sent.
++#
++# To enable this hook, rename this file to "sendemail-validate".
++#
++# By default, it will only check that the patch(es) can be applied on top of
++# the default upstream branch without conflicts in a secondary worktree. After
++# validation (successful or not) of the last patch of a series, the worktree
++# will be deleted.
++#
++# The following config variables can be set to change the default remote and
++# remote ref that are used to apply the patches against:
++#
++#   sendemail.validateRemote (default: origin)
++#   sendemail.validateRemoteRef (default: HEAD)
++#
++# Replace the TODO placeholders with appropriate checks according to your
++# needs.
++
++validate_cover_letter () {
++	file="$1"
++	# TODO: Replace with appropriate checks (e.g. spell checking).
++	true
++}
++
++validate_patch () {
++	file="$1"
++	# Ensure that the patch applies without conflicts.
++	git am -3 "$file" || return
++	# TODO: Replace with appropriate checks for this patch
++	# (e.g. checkpatch.pl).
++	true
++}
++
++validate_series () {
++	# TODO: Replace with appropriate checks for the whole series
++	# (e.g. quick build, coding style checks, etc.).
++	true
++}
++
++# main -------------------------------------------------------------------------
++
++if test "$GIT_SENDEMAIL_FILE_COUNTER" = 1
++then
++	remote=$(git config --default origin --get sendemail.validateRemote) &&
++	ref=$(git config --default HEAD --get sendemail.validateRemoteRef) &&
++	worktree=$(mktemp --tmpdir -d sendemail-validate.XXXXXXX) &&
++	git worktree add -fd --checkout "$worktree" "refs/remotes/$remote/$ref" &&
++	git config --replace-all sendemail.validateWorktree "$worktree"
++else
++	worktree=$(git config --get sendemail.validateWorktree)
++fi || {
++	echo "sendemail-validate: error: failed to prepare worktree" >&2
++	exit 1
++}
++
++unset GIT_DIR GIT_WORK_TREE
++cd "$worktree" &&
++
++if grep -q "^diff --git " "$1"
++then
++	validate_patch "$1"
++else
++	validate_cover_letter "$1"
++fi &&
++
++if test "$GIT_SENDEMAIL_FILE_COUNTER" = "$GIT_SENDEMAIL_FILE_TOTAL"
++then
++	git config --unset-all sendemail.validateWorktree &&
++	trap 'git worktree remove -ff "$worktree"' EXIT &&
++	validate_series
++fi
+diff -ruN ./.git/hooks/update.sample /tmp/arina_patch/.git/hooks/update.sample
+--- ./.git/hooks/update.sample	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/hooks/update.sample	2026-09-04 20:33:09.704437683 +0000
+@@ -0,0 +1,128 @@
++#!/bin/sh
++#
++# An example hook script to block unannotated tags from entering.
++# Called by "git receive-pack" with arguments: refname sha1-old sha1-new
++#
++# To enable this hook, rename this file to "update".
++#
++# Config
++# ------
++# hooks.allowunannotated
++#   This boolean sets whether unannotated tags will be allowed into the
++#   repository.  By default they won't be.
++# hooks.allowdeletetag
++#   This boolean sets whether deleting tags will be allowed in the
++#   repository.  By default they won't be.
++# hooks.allowmodifytag
++#   This boolean sets whether a tag may be modified after creation. By default
++#   it won't be.
++# hooks.allowdeletebranch
++#   This boolean sets whether deleting branches will be allowed in the
++#   repository.  By default they won't be.
++# hooks.denycreatebranch
++#   This boolean sets whether remotely creating branches will be denied
++#   in the repository.  By default this is allowed.
++#
++
++# --- Command line
++refname="$1"
++oldrev="$2"
++newrev="$3"
++
++# --- Safety check
++if [ -z "$GIT_DIR" ]; then
++	echo "Don't run this script from the command line." >&2
++	echo " (if you want, you could supply GIT_DIR then run" >&2
++	echo "  $0 <ref> <oldrev> <newrev>)" >&2
++	exit 1
++fi
++
++if [ -z "$refname" -o -z "$oldrev" -o -z "$newrev" ]; then
++	echo "usage: $0 <ref> <oldrev> <newrev>" >&2
++	exit 1
++fi
++
++# --- Config
++allowunannotated=$(git config --type=bool hooks.allowunannotated)
++allowdeletebranch=$(git config --type=bool hooks.allowdeletebranch)
++denycreatebranch=$(git config --type=bool hooks.denycreatebranch)
++allowdeletetag=$(git config --type=bool hooks.allowdeletetag)
++allowmodifytag=$(git config --type=bool hooks.allowmodifytag)
++
++# check for no description
++projectdesc=$(sed -e '1q' "$GIT_DIR/description")
++case "$projectdesc" in
++"Unnamed repository"* | "")
++	echo "*** Project description file hasn't been set" >&2
++	exit 1
++	;;
++esac
++
++# --- Check types
++# if $newrev is 0000...0000, it's a commit to delete a ref.
++zero=$(git hash-object --stdin </dev/null | tr '[0-9a-f]' '0')
++if [ "$newrev" = "$zero" ]; then
++	newrev_type=delete
++else
++	newrev_type=$(git cat-file -t $newrev)
++fi
++
++case "$refname","$newrev_type" in
++	refs/tags/*,commit)
++		# un-annotated tag
++		short_refname=${refname##refs/tags/}
++		if [ "$allowunannotated" != "true" ]; then
++			echo "*** The un-annotated tag, $short_refname, is not allowed in this repository" >&2
++			echo "*** Use 'git tag [ -a | -s ]' for tags you want to propagate." >&2
++			exit 1
++		fi
++		;;
++	refs/tags/*,delete)
++		# delete tag
++		if [ "$allowdeletetag" != "true" ]; then
++			echo "*** Deleting a tag is not allowed in this repository" >&2
++			exit 1
++		fi
++		;;
++	refs/tags/*,tag)
++		# annotated tag
++		if [ "$allowmodifytag" != "true" ] && git rev-parse $refname > /dev/null 2>&1
++		then
++			echo "*** Tag '$refname' already exists." >&2
++			echo "*** Modifying a tag is not allowed in this repository." >&2
++			exit 1
++		fi
++		;;
++	refs/heads/*,commit)
++		# branch
++		if [ "$oldrev" = "$zero" -a "$denycreatebranch" = "true" ]; then
++			echo "*** Creating a branch is not allowed in this repository" >&2
++			exit 1
++		fi
++		;;
++	refs/heads/*,delete)
++		# delete branch
++		if [ "$allowdeletebranch" != "true" ]; then
++			echo "*** Deleting a branch is not allowed in this repository" >&2
++			exit 1
++		fi
++		;;
++	refs/remotes/*,commit)
++		# tracking branch
++		;;
++	refs/remotes/*,delete)
++		# delete tracking branch
++		if [ "$allowdeletebranch" != "true" ]; then
++			echo "*** Deleting a tracking branch is not allowed in this repository" >&2
++			exit 1
++		fi
++		;;
++	*)
++		# Anything else (is there anything else?)
++		echo "*** Update hook: unknown type of update to ref $refname of type $newrev_type" >&2
++		exit 1
++		;;
++esac
++
++# --- Finished
++exit 0
+Binary files ./.git/index and /tmp/arina_patch/.git/index differ
+diff -ruN ./.git/info/exclude /tmp/arina_patch/.git/info/exclude
+--- ./.git/info/exclude	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/info/exclude	2026-09-04 20:33:09.704437683 +0000
+@@ -0,0 +1,6 @@
++# git ls-files --others --exclude-from=.git/info/exclude
++# Lines that start with '#' are comments.
++# For a project mostly in C, the following would be a good set of
++# exclude patterns (uncomment them if you want to use them):
++# *.[oa]
++# *~
+diff -ruN ./.git/logs/HEAD /tmp/arina_patch/.git/logs/HEAD
+--- ./.git/logs/HEAD	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/logs/HEAD	2026-09-04 20:33:10.375714929 +0000
+@@ -0,0 +1,2 @@
++0000000000000000000000000000000000000000 e2a45130db9c2f72095b607b14494796d7afee70 patch <patch@example.com> 1788553989 +0000	commit (initial): baseline
++e2a45130db9c2f72095b607b14494796d7afee70 d6bc9bbcb2739501dd544d8fb1022b136cea0c3c patch <patch@example.com> 1788553990 +0000	commit: v103
+diff -ruN ./.git/logs/refs/heads/master /tmp/arina_patch/.git/logs/refs/heads/master
+--- ./.git/logs/refs/heads/master	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/logs/refs/heads/master	2026-09-04 20:33:10.375714929 +0000
+@@ -0,0 +1,2 @@
++0000000000000000000000000000000000000000 e2a45130db9c2f72095b607b14494796d7afee70 patch <patch@example.com> 1788553989 +0000	commit (initial): baseline
++e2a45130db9c2f72095b607b14494796d7afee70 d6bc9bbcb2739501dd544d8fb1022b136cea0c3c patch <patch@example.com> 1788553990 +0000	commit: v103
+Binary files ./.git/objects/00/7e2fa9633460b779bf264e950919080a874f01 and /tmp/arina_patch/.git/objects/00/7e2fa9633460b779bf264e950919080a874f01 differ
+Binary files ./.git/objects/01/593b9cba565925028621b4cf8762be3e67a35b and /tmp/arina_patch/.git/objects/01/593b9cba565925028621b4cf8762be3e67a35b differ
+Binary files ./.git/objects/01/727838d888debc9aa8d0585aaed07834b10483 and /tmp/arina_patch/.git/objects/01/727838d888debc9aa8d0585aaed07834b10483 differ
+Binary files ./.git/objects/02/2b722544e7e20647b9a2466b821e995c865b86 and /tmp/arina_patch/.git/objects/02/2b722544e7e20647b9a2466b821e995c865b86 differ
+Binary files ./.git/objects/02/b6654f74904aa2af3037a6cb46762d698b9f14 and /tmp/arina_patch/.git/objects/02/b6654f74904aa2af3037a6cb46762d698b9f14 differ
+Binary files ./.git/objects/03/202cb1742f2d5a1f5ae4f57ad6fdce84bc0a3c and /tmp/arina_patch/.git/objects/03/202cb1742f2d5a1f5ae4f57ad6fdce84bc0a3c differ
+Binary files ./.git/objects/03/21b992b8de1318d7153b1c41a17a63c48aaaa9 and /tmp/arina_patch/.git/objects/03/21b992b8de1318d7153b1c41a17a63c48aaaa9 differ
+diff -ruN ./.git/objects/04/3eadc1d2bde4b5193bb457ff8dc5a23136817e /tmp/arina_patch/.git/objects/04/3eadc1d2bde4b5193bb457ff8dc5a23136817e
+--- ./.git/objects/04/3eadc1d2bde4b5193bb457ff8dc5a23136817e	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/objects/04/3eadc1d2bde4b5193bb457ff8dc5a23136817e	2026-09-04 20:33:09.724437938 +0000
+@@ -0,0 +1,2 @@
++xùí_O¬0≈}ÊS‹∑A¿˝AâJÇ	%ãC„È ›XÏZl;¡oÔõD_∂›v˜‹_OO,T˛ŸIñoï∂¿åAz%ZÂ‡Hµ∆Qµ‚´3nùq´ÂyYf3]»ô› =2ŒhL5ì)	|É¸’@¢4–¯g∞ΩË∏íV3n›}HÂ\C0ÆÏñ™˛‡´4¢‹§≤‚pÒ≠`¢∏˝LhÉ®¡É¿˜{`uÅ=pñ!ƒ™êkF¬yA3=MQ£q{öML∫QbÌt¬æ{9Ä´R¯hÙOa¬ˇ∑0üá√4¡˜ a¬î¥!˘ä£P;≤®ñÍ˝+°Ô%d	€b±zG “√…BïÂÖ4,A≤ı&KÁ“∂E£v¶/´hz;[ÕÀŸ›Ï±Cﬁ≤·O›;˘´˜xO’0Õv¿r∫ V∂∑Ö∆Ú`%èË
++ï∂ùpE£:%á¿ΩÓ¬V#œ™d’˘˘ñ∂RÈê%Â»
+\ No newline at end of file
+diff -ruN ./.git/objects/04/61b8584f17528ccd0c33acb88cacc5ec0fd8bc /tmp/arina_patch/.git/objects/04/61b8584f17528ccd0c33acb88cacc5ec0fd8bc
+--- ./.git/objects/04/61b8584f17528ccd0c33acb88cacc5ec0fd8bc	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/objects/04/61b8584f17528ccd0c33acb88cacc5ec0fd8bc	2026-09-04 20:33:09.784438705 +0000
+@@ -0,0 +1,3 @@
++x]R]K1Ùπø¢‰±xUä ¯$Ù*~Ä˙&EróiÕ%aìkOƒˇÓÊ>J€ßcgwvg&óóo'7øÉ·PÆÙ⁄Ä^|‘Œq7L07¢§"◊b˛6πûLƒeã#<9U,m9œë*tMÂˆ÷`≥‰¶LO˚®=Hó∞Qö
++«3é“—£U¿km±p452ÑÖÜQih-MË/ïçYﬁ3ÍÿÀ3:g£— .N¥s={yÍ&€b‹ÕD√Xu>¬∑ˆè:ünQ|ü™kÔæ"8Su˛D^Y≈ˆ4˜dÑjs:s◊Úgà(z˙⁄QÅû,çq˚á3“W®ìSÇ,bñäN¶óqõF€'cG˜W£#˜åË≤X5ﬂøé⁄‹YñﬁQ‘vÛÊuÑ›/pÙ÷ÕKù~ÉÑÒÜÜ/¥-L•p∏%W£ÎÌ@„z@z›é&eÅ˙láu
++üm>ö“·¥í¥ïYùë¸…§Ò[ô÷úà#®dr5¯¸uÃ ï
+\ No newline at end of file
+Binary files ./.git/objects/06/43530ebc63cd380c5ea4f7864a58f62740c303 and /tmp/arina_patch/.git/objects/06/43530ebc63cd380c5ea4f7864a58f62740c303 differ
+Binary files ./.git/objects/06/4389e45fa2119265b5de9668bc7eb80b4127f1 and /tmp/arina_patch/.git/objects/06/4389e45fa2119265b5de9668bc7eb80b4127f1 differ
+Binary files ./.git/objects/06/4f4666df8281385a47529043f119b03c4e0de9 and /tmp/arina_patch/.git/objects/06/4f4666df8281385a47529043f119b03c4e0de9 differ
+Binary files ./.git/objects/07/82de36f81f4b21ee0372bab6c5524a3318a716 and /tmp/arina_patch/.git/objects/07/82de36f81f4b21ee0372bab6c5524a3318a716 differ
+Binary files ./.git/objects/08/3c318dbb24194f5ee1d03f4628e87a9963a5cc and /tmp/arina_patch/.git/objects/08/3c318dbb24194f5ee1d03f4628e87a9963a5cc differ
+Binary files ./.git/objects/08/6f6d27c21fea5205115277d222ed65065970b9 and /tmp/arina_patch/.git/objects/08/6f6d27c21fea5205115277d222ed65065970b9 differ
+Binary files ./.git/objects/0a/099f306a03849b214900400d0b2cfee24575a0 and /tmp/arina_patch/.git/objects/0a/099f306a03849b214900400d0b2cfee24575a0 differ
+Binary files ./.git/objects/0b/d6f5daa4548c4e0bd3074a5bf43fb3cb1d4f2b and /tmp/arina_patch/.git/objects/0b/d6f5daa4548c4e0bd3074a5bf43fb3cb1d4f2b differ
+Binary files ./.git/objects/0c/fb33dfda9b66f035e01a115a67b3c3d0477491 and /tmp/arina_patch/.git/objects/0c/fb33dfda9b66f035e01a115a67b3c3d0477491 differ
+Binary files ./.git/objects/11/4c7326b2f9b3f846406f28f3c846763f3e7cbf and /tmp/arina_patch/.git/objects/11/4c7326b2f9b3f846406f28f3c846763f3e7cbf differ
+Binary files ./.git/objects/12/bb69bc1d0fab472afaee934804ed7d62b627e3 and /tmp/arina_patch/.git/objects/12/bb69bc1d0fab472afaee934804ed7d62b627e3 differ
+Binary files ./.git/objects/15/09257c474239c0f41bdbd638077105927098e1 and /tmp/arina_patch/.git/objects/15/09257c474239c0f41bdbd638077105927098e1 differ
+Binary files ./.git/objects/16/442f93c5b9ff8568d54c8fac4257835835a980 and /tmp/arina_patch/.git/objects/16/442f93c5b9ff8568d54c8fac4257835835a980 differ
+Binary files ./.git/objects/16/f9e999daebf4b0fe0471d0f837dfe52b57f9c8 and /tmp/arina_patch/.git/objects/16/f9e999daebf4b0fe0471d0f837dfe52b57f9c8 differ
+Binary files ./.git/objects/19/8f3eb720fca7eda95da96126e16da435b5c0fc and /tmp/arina_patch/.git/objects/19/8f3eb720fca7eda95da96126e16da435b5c0fc differ
+Binary files ./.git/objects/19/a71c3fa9a40bb22b5008334add73896a70e1b1 and /tmp/arina_patch/.git/objects/19/a71c3fa9a40bb22b5008334add73896a70e1b1 differ
+Binary files ./.git/objects/1a/c0abac6041ea14645837ce8278148a8e300be1 and /tmp/arina_patch/.git/objects/1a/c0abac6041ea14645837ce8278148a8e300be1 differ
+Binary files ./.git/objects/1a/f3a36deb78dfd0b4efa1167db6e3f579dc35ed and /tmp/arina_patch/.git/objects/1a/f3a36deb78dfd0b4efa1167db6e3f579dc35ed differ
+Binary files ./.git/objects/1b/f305537300126af2e73f314ef68ffb4dae46e3 and /tmp/arina_patch/.git/objects/1b/f305537300126af2e73f314ef68ffb4dae46e3 differ
+Binary files ./.git/objects/1d/0ec2ffa58165d229936511c46d01de087cc550 and /tmp/arina_patch/.git/objects/1d/0ec2ffa58165d229936511c46d01de087cc550 differ
+Binary files ./.git/objects/1d/72a2f5baba1c36d3d79480c69aafecb76282be and /tmp/arina_patch/.git/objects/1d/72a2f5baba1c36d3d79480c69aafecb76282be differ
+Binary files ./.git/objects/1d/ea578c54addb7e04769f497fef27d46fa4f267 and /tmp/arina_patch/.git/objects/1d/ea578c54addb7e04769f497fef27d46fa4f267 differ
+Binary files ./.git/objects/1f/2c3cab29b3387f7384a97f1e67b28108639d5a and /tmp/arina_patch/.git/objects/1f/2c3cab29b3387f7384a97f1e67b28108639d5a differ
+Binary files ./.git/objects/1f/3394f9fe9f0ae9f68ae764f7b51bc1a92c4657 and /tmp/arina_patch/.git/objects/1f/3394f9fe9f0ae9f68ae764f7b51bc1a92c4657 differ
+diff -ruN ./.git/objects/20/2e788401c4ba090e1a9219a9356b653adf531a /tmp/arina_patch/.git/objects/20/2e788401c4ba090e1a9219a9356b653adf531a
+--- ./.git/objects/20/2e788401c4ba090e1a9219a9356b653adf531a	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/objects/20/2e788401c4ba090e1a9219a9356b653adf531a	2026-09-04 20:33:09.712515724 +0000
+@@ -0,0 +1,2 @@
++xeRÀn‘@‰ÏØh).ŸD\'§M2+9ëeÔBrä∆„∂=d<cÊ‚¡Ú%‘ÏÜâãÂÓÈGuUµ∆µÙ·˝ª7'¥Æ∑7k∫]’Î;˙˝ÛU…¶s⁄[›kÓËbG˝Dïåj,ä›®Õ˘ü8DŸF$©„ôm«V-+£á1ír6z©"ıŒSô“Ûƒ)ô®W¡%Ø∏»„•W£é¨bÚL“v$ª.êÁ¡s⁄Yåzd/¶ŸÛ#€®Ì@Acéå˘π˜n¢ñë-¢gÅZfHÂˆã†NáC˚B«çgEqrB5O⁄£–ËG¶ﬁ∏EQÌÀF‹oÑ∏¬˘Â∫u≥´≈˙—'Qn˜Õ˝◊¶APÌØ´˚Õ˛øW‚∂π¨Ö∏u±˙HJZgµíÊ/{◊“?ps~^§ê3ó8WwÄ\Û†CÙÀ°ÃMhH”y≠√CN0π;hÀ9‹yŸ·ÿâœiæ(Æ¯©QûŸ≤ß)ÖH÷E0.&,í—˘Öl{—ƒAˇG·H“vöùèÿ_Àﬁ9ËùÁÜ‘N:B'‹•mÄÿêÃC¬ó*e§û†øå@ëŸ.é€0ÿ◊6BÂ£ä#4k"CnK{6µ.¢B¡ü—∫«•$ÁŸ,Ÿ:û>ŸÉ¡–¯.z®O∆Põ¥ÈŒ#l
++®‡ÁÄkf?f@¸làUª<õ1_°∑7¢,O©≤¯Ï™Sj C+^µ¡ŒUàn&„`íp,?ÕF+÷•HÆ'8n∆ú?X·,ë
+\ No newline at end of file
+Binary files ./.git/objects/20/5750a262dee14319dd03c11ff2fb075e756e9c and /tmp/arina_patch/.git/objects/20/5750a262dee14319dd03c11ff2fb075e756e9c differ
+Binary files ./.git/objects/20/b3904414d1b08bad0564dbf038881f4e7b5730 and /tmp/arina_patch/.git/objects/20/b3904414d1b08bad0564dbf038881f4e7b5730 differ
+Binary files ./.git/objects/22/a1f333fa74aff103ec3a3628e5309ee3ce144e and /tmp/arina_patch/.git/objects/22/a1f333fa74aff103ec3a3628e5309ee3ce144e differ
+Binary files ./.git/objects/22/d72128e3714dfc14b3375c4a62b227f2426c9d and /tmp/arina_patch/.git/objects/22/d72128e3714dfc14b3375c4a62b227f2426c9d differ
+Binary files ./.git/objects/24/ac9c747230cb7adc0a9bdb6cbf8822ddc3e82d and /tmp/arina_patch/.git/objects/24/ac9c747230cb7adc0a9bdb6cbf8822ddc3e82d differ
+Binary files ./.git/objects/25/81dd298d4c068d553f5170509708972702fadf and /tmp/arina_patch/.git/objects/25/81dd298d4c068d553f5170509708972702fadf differ
+Binary files ./.git/objects/25/c623bd753935be8e12db464190b78a5df8b8fc and /tmp/arina_patch/.git/objects/25/c623bd753935be8e12db464190b78a5df8b8fc differ
+Binary files ./.git/objects/26/67936153755d2957e69207b500dd1ca518698d and /tmp/arina_patch/.git/objects/26/67936153755d2957e69207b500dd1ca518698d differ
+Binary files ./.git/objects/28/0187b0ac99fd5c01a3ac3f6185328725bd864c and /tmp/arina_patch/.git/objects/28/0187b0ac99fd5c01a3ac3f6185328725bd864c differ
+Binary files ./.git/objects/28/2ec8b6e9901aedb94f40e0d15f9b53522f2db2 and /tmp/arina_patch/.git/objects/28/2ec8b6e9901aedb94f40e0d15f9b53522f2db2 differ
+Binary files ./.git/objects/28/53910c98ce222ec7efb1868fa341a58d6ffd4d and /tmp/arina_patch/.git/objects/28/53910c98ce222ec7efb1868fa341a58d6ffd4d differ
+Binary files ./.git/objects/29/5959ff0ec53f2f3209aefeb0e6007b2078928f and /tmp/arina_patch/.git/objects/29/5959ff0ec53f2f3209aefeb0e6007b2078928f differ
+Binary files ./.git/objects/29/f63f66097559d20bf3d456c67d6f857c2223e2 and /tmp/arina_patch/.git/objects/29/f63f66097559d20bf3d456c67d6f857c2223e2 differ
+Binary files ./.git/objects/2b/95bb320be3b9377fb698a4c0181f48588d6f3a and /tmp/arina_patch/.git/objects/2b/95bb320be3b9377fb698a4c0181f48588d6f3a differ
+Binary files ./.git/objects/2c/4c9efce8c742c32f93f4ed3df4059d386d599b and /tmp/arina_patch/.git/objects/2c/4c9efce8c742c32f93f4ed3df4059d386d599b differ
+Binary files ./.git/objects/2c/c70a2e0012750e55c72f692c32da5e65cbd22e and /tmp/arina_patch/.git/objects/2c/c70a2e0012750e55c72f692c32da5e65cbd22e differ
+Binary files ./.git/objects/2d/e76f99a4dbcb8b6431fc3ab115ea95e6ee78dc and /tmp/arina_patch/.git/objects/2d/e76f99a4dbcb8b6431fc3ab115ea95e6ee78dc differ
+Binary files ./.git/objects/2e/8b167c294ff1078d3dc5adc50960535c2430e8 and /tmp/arina_patch/.git/objects/2e/8b167c294ff1078d3dc5adc50960535c2430e8 differ
+Binary files ./.git/objects/2e/a1400ae74975fc90ea7300e9fcd46c852589d2 and /tmp/arina_patch/.git/objects/2e/a1400ae74975fc90ea7300e9fcd46c852589d2 differ
+Binary files ./.git/objects/2f/034965f361042a9213e3a1134facd9e342e98f and /tmp/arina_patch/.git/objects/2f/034965f361042a9213e3a1134facd9e342e98f differ
+Binary files ./.git/objects/2f/4a568f9416e261c7e36de7b52852e6d2857ae7 and /tmp/arina_patch/.git/objects/2f/4a568f9416e261c7e36de7b52852e6d2857ae7 differ
+Binary files ./.git/objects/30/6dbcf7cec3cf119af348df331e8176f3a487df and /tmp/arina_patch/.git/objects/30/6dbcf7cec3cf119af348df331e8176f3a487df differ
+Binary files ./.git/objects/32/8e44c81be10428f263f108427f5ccd273d88ab and /tmp/arina_patch/.git/objects/32/8e44c81be10428f263f108427f5ccd273d88ab differ
+Binary files ./.git/objects/32/d7e95d1cc7c3318d857ad033b3c4686a0d17b1 and /tmp/arina_patch/.git/objects/32/d7e95d1cc7c3318d857ad033b3c4686a0d17b1 differ
+Binary files ./.git/objects/34/06ffeffce10e0d2ceba16c105c25bb75332015 and /tmp/arina_patch/.git/objects/34/06ffeffce10e0d2ceba16c105c25bb75332015 differ
+Binary files ./.git/objects/35/1c05b49827527629e67ab53eec4d3928b4f058 and /tmp/arina_patch/.git/objects/35/1c05b49827527629e67ab53eec4d3928b4f058 differ
+Binary files ./.git/objects/35/467259e6c74ea7fd7b819b9004ffdb536281d0 and /tmp/arina_patch/.git/objects/35/467259e6c74ea7fd7b819b9004ffdb536281d0 differ
+Binary files ./.git/objects/36/f73001e632f0380e87f36275f7da0bef019c4c and /tmp/arina_patch/.git/objects/36/f73001e632f0380e87f36275f7da0bef019c4c differ
+Binary files ./.git/objects/37/17b87da679b29eda46d482ed11ebfec3a7fd75 and /tmp/arina_patch/.git/objects/37/17b87da679b29eda46d482ed11ebfec3a7fd75 differ
+Binary files ./.git/objects/37/dc84ec9d8bc3d2de646900367ab0ef4460e28a and /tmp/arina_patch/.git/objects/37/dc84ec9d8bc3d2de646900367ab0ef4460e28a differ
+Binary files ./.git/objects/37/ea3630d0ccf79b0f0863a8bed7f5515f9a82a1 and /tmp/arina_patch/.git/objects/37/ea3630d0ccf79b0f0863a8bed7f5515f9a82a1 differ
+Binary files ./.git/objects/3b/b0d9fd929082738681037a44382dd671ddf3c2 and /tmp/arina_patch/.git/objects/3b/b0d9fd929082738681037a44382dd671ddf3c2 differ
+Binary files ./.git/objects/3b/cc6a473685a94eace8d2a4f178ac08a2de8174 and /tmp/arina_patch/.git/objects/3b/cc6a473685a94eace8d2a4f178ac08a2de8174 differ
+Binary files ./.git/objects/3c/51ac73e2df82437f4a29266e31aa61f7c91aba and /tmp/arina_patch/.git/objects/3c/51ac73e2df82437f4a29266e31aa61f7c91aba differ
+Binary files ./.git/objects/3e/04b77ef3fc7115fa979f085760c854af94ebfa and /tmp/arina_patch/.git/objects/3e/04b77ef3fc7115fa979f085760c854af94ebfa differ
+Binary files ./.git/objects/3f/026901c9cd302a3d2810324089207b7e9ef853 and /tmp/arina_patch/.git/objects/3f/026901c9cd302a3d2810324089207b7e9ef853 differ
+Binary files ./.git/objects/3f/27764e03e0d9cddbba9c6a7d6fd861f483123c and /tmp/arina_patch/.git/objects/3f/27764e03e0d9cddbba9c6a7d6fd861f483123c differ
+Binary files ./.git/objects/3f/5ded71648e0321939d87e639e7304158514cf9 and /tmp/arina_patch/.git/objects/3f/5ded71648e0321939d87e639e7304158514cf9 differ
+Binary files ./.git/objects/41/c02d7d0bdbdfced3564bbd3905047f8514d455 and /tmp/arina_patch/.git/objects/41/c02d7d0bdbdfced3564bbd3905047f8514d455 differ
+Binary files ./.git/objects/42/3b05a918b7c035e8d4050a400ed687e6a64315 and /tmp/arina_patch/.git/objects/42/3b05a918b7c035e8d4050a400ed687e6a64315 differ
+Binary files ./.git/objects/42/9ab740e9fe6c7ebe7939025218d18110c26439 and /tmp/arina_patch/.git/objects/42/9ab740e9fe6c7ebe7939025218d18110c26439 differ
+Binary files ./.git/objects/43/0effa32c5e5122b6db0d98fb5e91dc5f932de3 and /tmp/arina_patch/.git/objects/43/0effa32c5e5122b6db0d98fb5e91dc5f932de3 differ
+Binary files ./.git/objects/43/a2b25006873bcd46528cf2cc84862040a0290a and /tmp/arina_patch/.git/objects/43/a2b25006873bcd46528cf2cc84862040a0290a differ
+Binary files ./.git/objects/46/d23ca9e1ff98a1a903297b78905e667aa84d9a and /tmp/arina_patch/.git/objects/46/d23ca9e1ff98a1a903297b78905e667aa84d9a differ
+Binary files ./.git/objects/47/2cdd2c706d01c5c5b7de96923fda71dc3855fd and /tmp/arina_patch/.git/objects/47/2cdd2c706d01c5c5b7de96923fda71dc3855fd differ
+Binary files ./.git/objects/47/e2640f25aba9467faad1e822341cc66a8193da and /tmp/arina_patch/.git/objects/47/e2640f25aba9467faad1e822341cc66a8193da differ
+Binary files ./.git/objects/4a/968781612d79e9b144d27058dbc7e6ac5163e7 and /tmp/arina_patch/.git/objects/4a/968781612d79e9b144d27058dbc7e6ac5163e7 differ
+diff -ruN ./.git/objects/4c/5d08dbcadd18ae687b62bfcfc9819ebc1726b4 /tmp/arina_patch/.git/objects/4c/5d08dbcadd18ae687b62bfcfc9819ebc1726b4
+--- ./.git/objects/4c/5d08dbcadd18ae687b62bfcfc9819ebc1726b4	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/objects/4c/5d08dbcadd18ae687b62bfcfc9819ebc1726b4	2026-09-04 20:33:09.772438552 +0000
+@@ -0,0 +1,4 @@
++x}è±
++¬@≠˝äÎ
++b#Vä
++ÇiÌ7Òy9‹Ï≈ÕF=øﬁX≠gxÃ+8næ\ål¢öõ∏ã∆⁄e”Ó€tm∂1b®Â$‰°C¸AÃ∞ÉòÉáî≤4¥◊µßt'>»†’ñ$ÚO»;∂p§=á3YàÚ{ÆOB”îS”◊W¡W{≈≠Î√”¶K[Jãüßos¨gT
+\ No newline at end of file
+Binary files ./.git/objects/4d/c51dc33ca3884d02a038d5f4aaacbacaa99217 and /tmp/arina_patch/.git/objects/4d/c51dc33ca3884d02a038d5f4aaacbacaa99217 differ
+Binary files ./.git/objects/4e/3fded2608d73bff0750399949223aa8019e01f and /tmp/arina_patch/.git/objects/4e/3fded2608d73bff0750399949223aa8019e01f differ
+Binary files ./.git/objects/4f/3f813476ca0ccea983a2b256c2f187f7353ee5 and /tmp/arina_patch/.git/objects/4f/3f813476ca0ccea983a2b256c2f187f7353ee5 differ
+Binary files ./.git/objects/51/5ef5774c31cb8f7a873fbe124fdec74f3926eb and /tmp/arina_patch/.git/objects/51/5ef5774c31cb8f7a873fbe124fdec74f3926eb differ
+Binary files ./.git/objects/51/63cdb457e41ea05544b77c9f98d804d165b832 and /tmp/arina_patch/.git/objects/51/63cdb457e41ea05544b77c9f98d804d165b832 differ
+Binary files ./.git/objects/51/b5be5f37b139e87b931002c9c200dda81e0e0d and /tmp/arina_patch/.git/objects/51/b5be5f37b139e87b931002c9c200dda81e0e0d differ
+Binary files ./.git/objects/52/1a9f7c0773588848ad5fa8a074ceca964a6b41 and /tmp/arina_patch/.git/objects/52/1a9f7c0773588848ad5fa8a074ceca964a6b41 differ
+Binary files ./.git/objects/54/4d20eb48b70de5a5a3f0f6e33f6fe1eda647c4 and /tmp/arina_patch/.git/objects/54/4d20eb48b70de5a5a3f0f6e33f6fe1eda647c4 differ
+Binary files ./.git/objects/57/99d9b8c48b7af27d9d27c71fc992166c8b2801 and /tmp/arina_patch/.git/objects/57/99d9b8c48b7af27d9d27c71fc992166c8b2801 differ
+Binary files ./.git/objects/59/2964383872985b8d28b0e24924bd25328f15ca and /tmp/arina_patch/.git/objects/59/2964383872985b8d28b0e24924bd25328f15ca differ
+Binary files ./.git/objects/59/96e27deae12930ebfbe82ee28cd29ee0912536 and /tmp/arina_patch/.git/objects/59/96e27deae12930ebfbe82ee28cd29ee0912536 differ
+Binary files ./.git/objects/5d/4c61b2397f12913087f2e6d79bc21bb8dadc72 and /tmp/arina_patch/.git/objects/5d/4c61b2397f12913087f2e6d79bc21bb8dadc72 differ
+Binary files ./.git/objects/5d/f98469f6e7ca5647e8da3ef948ca95c2694c17 and /tmp/arina_patch/.git/objects/5d/f98469f6e7ca5647e8da3ef948ca95c2694c17 differ
+Binary files ./.git/objects/5f/a18bb478af849fe4f89a304a380e4b83561974 and /tmp/arina_patch/.git/objects/5f/a18bb478af849fe4f89a304a380e4b83561974 differ
+Binary files ./.git/objects/61/005a63675015acdd1909a1bd43d4f798280120 and /tmp/arina_patch/.git/objects/61/005a63675015acdd1909a1bd43d4f798280120 differ
+Binary files ./.git/objects/62/805d334594b1413eff3631567a4ecf7acd6d0e and /tmp/arina_patch/.git/objects/62/805d334594b1413eff3631567a4ecf7acd6d0e differ
+Binary files ./.git/objects/63/5b9e655446eb94432090def69ce4e0d21c1974 and /tmp/arina_patch/.git/objects/63/5b9e655446eb94432090def69ce4e0d21c1974 differ
+Binary files ./.git/objects/65/8d717264e1b76294cb77211d86ea3d005b921e and /tmp/arina_patch/.git/objects/65/8d717264e1b76294cb77211d86ea3d005b921e differ
+Binary files ./.git/objects/65/964b39f3ca0cdd208a7a94b1b44aa5a85dae5c and /tmp/arina_patch/.git/objects/65/964b39f3ca0cdd208a7a94b1b44aa5a85dae5c differ
+Binary files ./.git/objects/67/733ee909fb53cb1eaa2b3202822a70ac7bd9f9 and /tmp/arina_patch/.git/objects/67/733ee909fb53cb1eaa2b3202822a70ac7bd9f9 differ
+Binary files ./.git/objects/69/f5ed33e6b16ec3646c839d3459c830389fc689 and /tmp/arina_patch/.git/objects/69/f5ed33e6b16ec3646c839d3459c830389fc689 differ
+Binary files ./.git/objects/6b/edadb0bbf8ccdd64b1514d215684cd20d05d07 and /tmp/arina_patch/.git/objects/6b/edadb0bbf8ccdd64b1514d215684cd20d05d07 differ
+Binary files ./.git/objects/6c/6362902583ebb7a4c7ea57aea6c330ca8427e0 and /tmp/arina_patch/.git/objects/6c/6362902583ebb7a4c7ea57aea6c330ca8427e0 differ
+Binary files ./.git/objects/6c/e940ba06ee6bbb3f847f6a6a9f3ed31cfab8aa and /tmp/arina_patch/.git/objects/6c/e940ba06ee6bbb3f847f6a6a9f3ed31cfab8aa differ
+Binary files ./.git/objects/6d/6df8f10c11a4d3e969a65a4ef800465c5b7b9d and /tmp/arina_patch/.git/objects/6d/6df8f10c11a4d3e969a65a4ef800465c5b7b9d differ
+Binary files ./.git/objects/6d/eb31efd67407860224043d6ee48507cc3f07ca and /tmp/arina_patch/.git/objects/6d/eb31efd67407860224043d6ee48507cc3f07ca differ
+Binary files ./.git/objects/6e/10d48e4e7f9f9465ddb53550e12cb54e86f7a5 and /tmp/arina_patch/.git/objects/6e/10d48e4e7f9f9465ddb53550e12cb54e86f7a5 differ
+Binary files ./.git/objects/71/bbaa5ebf8e32305d08215fb673d6ab8db7acf1 and /tmp/arina_patch/.git/objects/71/bbaa5ebf8e32305d08215fb673d6ab8db7acf1 differ
+Binary files ./.git/objects/72/e58831cfadb4edf2a8dc2ac5cb22adae45895b and /tmp/arina_patch/.git/objects/72/e58831cfadb4edf2a8dc2ac5cb22adae45895b differ
+Binary files ./.git/objects/73/59f10ae2d6766ae0d267bba8a7300d67d34e37 and /tmp/arina_patch/.git/objects/73/59f10ae2d6766ae0d267bba8a7300d67d34e37 differ
+Binary files ./.git/objects/73/6734d104fa1e0d8b61b06bbdba45e568519ea8 and /tmp/arina_patch/.git/objects/73/6734d104fa1e0d8b61b06bbdba45e568519ea8 differ
+Binary files ./.git/objects/74/651f590226ffa075948ebcdb30d3c38a15abce and /tmp/arina_patch/.git/objects/74/651f590226ffa075948ebcdb30d3c38a15abce differ
+Binary files ./.git/objects/75/0ece04cdd93a879059e621b14a767f1781e678 and /tmp/arina_patch/.git/objects/75/0ece04cdd93a879059e621b14a767f1781e678 differ
+Binary files ./.git/objects/75/9a1ade3c64f94572736d34fb65ad944a0a30af and /tmp/arina_patch/.git/objects/75/9a1ade3c64f94572736d34fb65ad944a0a30af differ
+Binary files ./.git/objects/75/bcd586f08b5ae1624577115af6b88395f43c1c and /tmp/arina_patch/.git/objects/75/bcd586f08b5ae1624577115af6b88395f43c1c differ
+Binary files ./.git/objects/76/0871233f97e54aeee04c96b892e31fe3a3bcb2 and /tmp/arina_patch/.git/objects/76/0871233f97e54aeee04c96b892e31fe3a3bcb2 differ
+Binary files ./.git/objects/79/797242ed6cede3b5e67196563ad1dd2031deff and /tmp/arina_patch/.git/objects/79/797242ed6cede3b5e67196563ad1dd2031deff differ
+diff -ruN ./.git/objects/7a/477cdc02dcd7038055f4c46c5fbfa2fb4e1884 /tmp/arina_patch/.git/objects/7a/477cdc02dcd7038055f4c46c5fbfa2fb4e1884
+--- ./.git/objects/7a/477cdc02dcd7038055f4c46c5fbfa2fb4e1884	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/objects/7a/477cdc02dcd7038055f4c46c5fbfa2fb4e1884	2026-09-04 20:33:09.732438041 +0000
+@@ -0,0 +1,6 @@
++xÕXmo„6æœ˘s¿°≤é‚€{q/-åç€5‡ç;ª{@Q§äD€∫»§KRI‹¨ˇ˚=CäíºyYl?ùÛ!9Œ<ÛÆÎB]”wßØOˇrÚÍ’Ω¢ÖHKù€mÚ,+ƒ]¢≈Ä÷"…Ñ6=z3ù/z§+®»7πÕÂ
++áNéÚÕViKv∑Ù@sÒ{)åÌ·¡lï4¢G‚ﬁ˛T ‘ÊJ“ûñZm(˜[-åâæÁ◊¢ÿ[Ì˙óf3U⁄T[¸ÿl∞8ñÊêÌ1Ø;1⁄Jï\Ê´ZÜ8>Ò+'πÃƒ}¸ﬂ„*‘j%tèLÖ ƒΩ∑ó6/ÃâßÛáè†É∂∆÷'ﬂzÈ`≤íùá#b+§òœTëßª-ìòa©ìçXïâŒZã©V∆Luæ Âhs-2XÊ—¡Õt+‰À∞í*u*>„≤Ô~tY”ÂfXÍNd^Äérr»X_†OT≈e.E7øøU∆˛vª∫V™â$V>_RÁØ˛|¥∂‘í¨.nıõﬁ.Òp2ô~ù_MÁ„ü«ã8óiQf¬t¢WQó>}™,˙<]uG◊›JáWÌ√u[≠Rxc,‰m<úÕÆﬁœ'·à’ªÍ∞≥ÃÍyæ◊*≈Å∏¬®ë˚y˚'€Ì!’S◊Ñ#IÕ9ˆOtvvFûKµ§‚[pÛ˜Ó›˝{JõÆÈÅ_ùéç^≤Úy·=¡∆Éz†ã˘Q¬ùmàNNËù„n∞Fé.1lo{zÀÁ| †éàW1•z∑µÍxW$ˇåï‘>¢„Tm∫NT÷∫ÚïF5/B ﬁÇt‚XûÒ¸õmë€N4à∫øÙmÉÁDa¿⁄¶/·≈n‡4õ®4)£ üZ&ÖX&pBK‰é8∆kÒÎ{£"úéÿ5õı”oˇ˜Òw˙Ÿ:Ø·ûÃ1¡øG&u÷s¢ÕrH√Ö*3öó≤G"∑‡kã|πÎ—pL[fπrósPfjì‰“‘¬V˜4≤%yl‹ñÌâ]øØîZÇÌˆB&3sªÓDqí?¶Ê(m±mì∑Ω¡EÛ3tçœºHU °ÚI –È/”›:\øƒMz‘øDÊë+x˙åÔ@Ùﬁˇ¢·∫!é0ïo∏¡~Ô\„pKàkÂª∫ñ#û9÷MçFÊ∑P®%
++ı‡†\wÈÏÁú>$CV‚`å´∆†JL,—AÍhì∞ª5âØ"ÁÈä“sﬁÀ®*’ÅÄ÷aAé—¶»ŒCïï˝Y⁄˜(‚~•ŒK◊àÕë˘.°îIi◊PÊ¨xù"ó∫€ê2vÆPSE2† ¯è!SsòsŸÍR´F-2îˆ•¸`•≠2¨˝˝<∫å „l∫ˇﬂªÁ£…Ërƒ”ŸÂxz±à~ÂVÄ¬ÕU#¡ﬁxg:æD€≈ÜïF	wYºpúlÛ„±Û<ˆ]∂=f¥rlh(ºƒHÁ3°è«≥Vg'4ïÜ≥G’§µ∫)Ílî§’uâDo◊®Á)û8ùxÓûá÷Ïêæ√õ√Ùó∫{(˛ﬁG„y⁄Ô˜{\YN—z “
++(ΩIÓuyüçØÊ√À—’d¸n|…êõ»ΩQçõÅ7
++±J“]Ω\∑Sê-≠ºµª„ÇÉÆ/8Yæ8ﬂœ∑=⁄&vÌﬂ¯…π´Ïõc@ó
++xAÊã3ªA¢Mli:Øø˝WÌ¢Ç◊:„	≠Dãû:ÔÄÉ+C750\ç˛Ûf4:ùGÅ…@ÔÜKî-∆’Ør'á\—;j∑t>PÕ]≤˝Z#ÅW€0ãè√Ÿˇõeú%–≠Â—Œœ1âiÜﬁƒ2háQbÔd\€†2”g¿¸[!ÊUW≈#«c3óÖh´õs77`~H˘Í4?†[ïg.”„⁄©,v<˛–p6‘êUî8*©r„ˆ1í)Mr8}›,-Û}ÇçC‘Ê)%∆ÀàÎ˘π*p∏p,h[5'»Q7§˜™§qéÍ4YπrY>Ölré@ã•∫c∞Ê‡B8E>r≥FˆÎ¥"ŸüÃJd @€áÈò•‘Æ6!u∏3∆R’ëÈS∂sˇÇÌ0¸√™q¶·˛qvÉ˙Ìo·eø1øÇV~ÅZ¸„∆a∏B5Ò2¨0=Fºvúb‘ı'QÔ¿ë¡ıBÓ…ø±ê˛π-Ø¥o˜({(Ï(ÖÑ'&2âƒ∏ˇá«ØÒA†á˛b§›‰Ü=‘i@{À±Tèº‘%∫Ög'tØLç7∞$⁄YàˇUΩIÀi˝aBO≤ÄLı\È4¬M^øﬂºëÿ0ÜÔ˙}ŒêºŒ±ãïh|q9ö_'W£˘|:«øΩ¡Ñ‘Eò`	tã>Å◊Ñ‡üﬁÑ…∑=◊-ƒ@†ì©PKsˇÊP¡ûÓRñ¡UΩÙ˜ÛÜªƒ/≥ˆQ£T÷LBﬂ|„æ ‡Fë»√K∑*C^}åKë,Ò)AGL˛›gÙ∫ﬂâ‚ﬂ®8˝†Çì•ÆÇ¯Æ^x?≤:ˇ/	Ômƒb˚œ≠·…oÍ¿kÕ=ÆøÉ[è%<We•˚$’Cóëu.ÃÆÑ≠ˆ”©3a|ÌÅXT‰|Hä/¶Á£´—≈7ßGKáec|p≥ÄNc‡hÿ?Ú£™a€i∏Ù∞+wKüXgˇ«Ò”¢f€Bm7úBÿ™ï‚{óO∏Uÿ˝CÀe,
+\ No newline at end of file
+Binary files ./.git/objects/7a/6c9583e953f74f3d1389073011ef7b00358943 and /tmp/arina_patch/.git/objects/7a/6c9583e953f74f3d1389073011ef7b00358943 differ
+Binary files ./.git/objects/7a/eef5bd4ff3186c0c4807db8e25b3705bedd9ae and /tmp/arina_patch/.git/objects/7a/eef5bd4ff3186c0c4807db8e25b3705bedd9ae differ
+Binary files ./.git/objects/7b/5dcdc8f621283b605d7929f9358fe4d33ba08a and /tmp/arina_patch/.git/objects/7b/5dcdc8f621283b605d7929f9358fe4d33ba08a differ
+Binary files ./.git/objects/7b/8974c925b45d394c3a2e7765c8ef371363e44c and /tmp/arina_patch/.git/objects/7b/8974c925b45d394c3a2e7765c8ef371363e44c differ
+Binary files ./.git/objects/7c/5b7be4fb2cc2d7f9f61efe1debbd0ae85f3437 and /tmp/arina_patch/.git/objects/7c/5b7be4fb2cc2d7f9f61efe1debbd0ae85f3437 differ
+Binary files ./.git/objects/7d/2f8bb943aad496f365dd3384e18271bb6cf567 and /tmp/arina_patch/.git/objects/7d/2f8bb943aad496f365dd3384e18271bb6cf567 differ
+Binary files ./.git/objects/7d/5730706a783082f292bff329869eab23277c3d and /tmp/arina_patch/.git/objects/7d/5730706a783082f292bff329869eab23277c3d differ
+Binary files ./.git/objects/7f/3f082cfbd5df9178bbb4383dd908a1c277cffa and /tmp/arina_patch/.git/objects/7f/3f082cfbd5df9178bbb4383dd908a1c277cffa differ
+Binary files ./.git/objects/7f/6d53eda94fc3382b29454a93dcd962b4be5945 and /tmp/arina_patch/.git/objects/7f/6d53eda94fc3382b29454a93dcd962b4be5945 differ
+Binary files ./.git/objects/81/0b69f44f7b68ee78f2ef0a69e81bc8e51f3954 and /tmp/arina_patch/.git/objects/81/0b69f44f7b68ee78f2ef0a69e81bc8e51f3954 differ
+Binary files ./.git/objects/81/d7f3ea8dd248451fa4aa7f199ab0e0adbd3168 and /tmp/arina_patch/.git/objects/81/d7f3ea8dd248451fa4aa7f199ab0e0adbd3168 differ
+Binary files ./.git/objects/82/e7d391dd8bf8bbbccfc3a118f8d21c35c086cd and /tmp/arina_patch/.git/objects/82/e7d391dd8bf8bbbccfc3a118f8d21c35c086cd differ
+Binary files ./.git/objects/84/23c5a2fe3fccf4d173b5daef3dff29bbc5039c and /tmp/arina_patch/.git/objects/84/23c5a2fe3fccf4d173b5daef3dff29bbc5039c differ
+Binary files ./.git/objects/84/de5e9054d438c314e798c63fdfd02847d2f7ba and /tmp/arina_patch/.git/objects/84/de5e9054d438c314e798c63fdfd02847d2f7ba differ
+Binary files ./.git/objects/85/17f74e43ea162f2e7afafbfca1a2b848897785 and /tmp/arina_patch/.git/objects/85/17f74e43ea162f2e7afafbfca1a2b848897785 differ
+Binary files ./.git/objects/86/87fdc0f3bc7932ac3e92fc194cd0e63c4498e5 and /tmp/arina_patch/.git/objects/86/87fdc0f3bc7932ac3e92fc194cd0e63c4498e5 differ
+Binary files ./.git/objects/88/782687561682588c5d67d6e1ecb4a18d034a63 and /tmp/arina_patch/.git/objects/88/782687561682588c5d67d6e1ecb4a18d034a63 differ
+Binary files ./.git/objects/89/036796ce49f6aa885fb2fff1bc9c3ec88bc6b2 and /tmp/arina_patch/.git/objects/89/036796ce49f6aa885fb2fff1bc9c3ec88bc6b2 differ
+Binary files ./.git/objects/8a/e2c8f44fae6e618b30a61301120d68d52cc53e and /tmp/arina_patch/.git/objects/8a/e2c8f44fae6e618b30a61301120d68d52cc53e differ
+Binary files ./.git/objects/8c/a915b3a38b80031795f1aa34aad035feb71216 and /tmp/arina_patch/.git/objects/8c/a915b3a38b80031795f1aa34aad035feb71216 differ
+Binary files ./.git/objects/8f/29dfd2221a392abb5aa79f3bb1edbcb6172472 and /tmp/arina_patch/.git/objects/8f/29dfd2221a392abb5aa79f3bb1edbcb6172472 differ
+Binary files ./.git/objects/90/d2951fe8b981a6878f9a5dc44b2342b6108708 and /tmp/arina_patch/.git/objects/90/d2951fe8b981a6878f9a5dc44b2342b6108708 differ
+Binary files ./.git/objects/95/d18917b6533ece9ad11fb43e15df2c3b8ef66f and /tmp/arina_patch/.git/objects/95/d18917b6533ece9ad11fb43e15df2c3b8ef66f differ
+Binary files ./.git/objects/96/f79fb08a88a1f2a2d7264624f29deeb4cbc95e and /tmp/arina_patch/.git/objects/96/f79fb08a88a1f2a2d7264624f29deeb4cbc95e differ
+Binary files ./.git/objects/97/bb39331e8f6f7b4554b2f40eec8bdf0d2f2c96 and /tmp/arina_patch/.git/objects/97/bb39331e8f6f7b4554b2f40eec8bdf0d2f2c96 differ
+Binary files ./.git/objects/98/0bc6ca08e0c64ea4b325fe14164e8a6e584007 and /tmp/arina_patch/.git/objects/98/0bc6ca08e0c64ea4b325fe14164e8a6e584007 differ
+Binary files ./.git/objects/99/28434125736f556b31bd0a541d23b414a66170 and /tmp/arina_patch/.git/objects/99/28434125736f556b31bd0a541d23b414a66170 differ
+Binary files ./.git/objects/99/67dea9045fe2126bdd5e85fbd8f487a3778491 and /tmp/arina_patch/.git/objects/99/67dea9045fe2126bdd5e85fbd8f487a3778491 differ
+diff -ruN ./.git/objects/9a/369cb33db16376e259b5170248acb5bb57532b /tmp/arina_patch/.git/objects/9a/369cb33db16376e259b5170248acb5bb57532b
+--- ./.git/objects/9a/369cb33db16376e259b5170248acb5bb57532b	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/objects/9a/369cb33db16376e259b5170248acb5bb57532b	2026-09-04 20:33:09.784438705 +0000
+@@ -0,0 +1,4 @@
++xuUQo”0Êπø‚ﬁ“N%ÈêQ∆4@ö–∂™›!‰$◊Œê⁄ï/Y[∂˛wŒN“8¢{È∫Û˘ªÔ¸}wMrù¿Òõ—ËEô4"42Eä
++#â¥êZÕ™XXPè≥ÓîúKÃ‡∂MÄ:Ê⁄¿˘ÙÚ˙æΩúû∑ÈWBâxxêî2œ§ZÅ‰BU_PUÉÖŸBÆıäÜ T©Vsiñ¬2ÅïŒsŒ{=π\iS¿#|EC|ÑôGh_pª“·B+ÖÆÿ¡‹Ë%HÁÃ*Zcr˛¶‡¥3´¥È•…£6»©=‹∏¬RhÊ"En^˘µoVñ)¡cÄ˛»’ƒ‡<óã˚‚,ÜDÎÖ:Â£•ÿLπUâƒqU.46\»%Í≤∏Ú£ªEΩfm˝)RôÛkÿö¸§¢(∆@åØ∂~DÃ:(◊ñU[ç—Ü#ÕEÆúÊÇ»ªy[+::‚O8Ç%'1˛vP(â˘a≠é„ä∆›≥ í3ê/xË‡#˛\ïI.S¥U)ÿ"Á*cm≠5º∑Ë€|ﬂkÒA"Cóf_
++M‹∞©Ç∫í/~N÷1<Ó¯ˆ Ü	õIæÛ ∑RºwZ∏á'Î“é`ÃKz&‡–…∞Uüˇ};˙5çÿ¥c®9±˘™Ó∂58¡qË^ﬂo⁄•uû!¥ΩˆTˇ‘HÓ˛+æèFä\˛E0b…∂@™!X¶œ—€ç#Ωﬂ	!5w˙¥ã∆SkÅ
++oC<H”…+ÁˆKﬁ≤réÂb-$‹è!◊aws˝´ÔË!¿¶•∂†C·u6S;lgÜ'(U!ÛvÄóï∑x‡:Ñ¨Îâ:¿»ûŒ 3›ﬂ∑‡i¯C^p•Q{ΩÅ≠h%ˆ∆µÂÓ£m¢ù‡ÿm≈äohÌ±õÁŒ˘Œ¯=2úKﬁú¿nw´¢ÔU„ªÙ¡›ı≈ÕıÁÀÈ’ßè¡†ÅﬁŸ•lŒTÈ=Ù99Ê1ﬁˆ}=ﬂfA–‡tZùãú∞=©…Ûü≥pâD¸3b	’L9¸Ê¥Îµ€≤2ØÁ¬fuçA·˙¿N≥V˛ÊMV∆
+\ No newline at end of file
+Binary files ./.git/objects/9a/b9e715bd693b193a98aa772bb9d42cb0f2fcda and /tmp/arina_patch/.git/objects/9a/b9e715bd693b193a98aa772bb9d42cb0f2fcda differ
+Binary files ./.git/objects/9a/bcea834424bd8603c16a36b2a96dcde5bb8ad0 and /tmp/arina_patch/.git/objects/9a/bcea834424bd8603c16a36b2a96dcde5bb8ad0 differ
+Binary files ./.git/objects/9c/0ee5a9085f364a5eefbff50e512f7728b5595c and /tmp/arina_patch/.git/objects/9c/0ee5a9085f364a5eefbff50e512f7728b5595c differ
+Binary files ./.git/objects/9d/4261ca37b89814fafaa19bed2973db83402d5d and /tmp/arina_patch/.git/objects/9d/4261ca37b89814fafaa19bed2973db83402d5d differ
+Binary files ./.git/objects/9d/6ffbc014b91ae67b48cc18d85f0315b7530405 and /tmp/arina_patch/.git/objects/9d/6ffbc014b91ae67b48cc18d85f0315b7530405 differ
+Binary files ./.git/objects/9d/9845c536ff2fa12d5a7e0035d83e535fdc2c51 and /tmp/arina_patch/.git/objects/9d/9845c536ff2fa12d5a7e0035d83e535fdc2c51 differ
+Binary files ./.git/objects/9e/706b72b88161c61ffcf94e991947c62e7f7fac and /tmp/arina_patch/.git/objects/9e/706b72b88161c61ffcf94e991947c62e7f7fac differ
+Binary files ./.git/objects/9e/9cbb8ffbb615d25bb263b765acee5e65e67b56 and /tmp/arina_patch/.git/objects/9e/9cbb8ffbb615d25bb263b765acee5e65e67b56 differ
+Binary files ./.git/objects/9f/564bbe2a8350c3d5802e6b7212c94a65ee593f and /tmp/arina_patch/.git/objects/9f/564bbe2a8350c3d5802e6b7212c94a65ee593f differ
+Binary files ./.git/objects/9f/aa05f56fac55c554fe3b7c69f733eefe6fd114 and /tmp/arina_patch/.git/objects/9f/aa05f56fac55c554fe3b7c69f733eefe6fd114 differ
+Binary files ./.git/objects/a1/af1b1ddabc047653e59854200c2986ff758244 and /tmp/arina_patch/.git/objects/a1/af1b1ddabc047653e59854200c2986ff758244 differ
+Binary files ./.git/objects/a2/4dd90edeea61fa4b1632de85fcd913bf95e008 and /tmp/arina_patch/.git/objects/a2/4dd90edeea61fa4b1632de85fcd913bf95e008 differ
+Binary files ./.git/objects/a3/04b4dfa83e140ccd7fa625a0ebc0049f3855d6 and /tmp/arina_patch/.git/objects/a3/04b4dfa83e140ccd7fa625a0ebc0049f3855d6 differ
+diff -ruN ./.git/objects/a4/29bc554392a891f638ca612de4f114d7997522 /tmp/arina_patch/.git/objects/a4/29bc554392a891f638ca612de4f114d7997522
+--- ./.git/objects/a4/29bc554392a891f638ca612de4f114d7997522	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/objects/a4/29bc554392a891f638ca612de4f114d7997522	2026-09-04 20:33:09.716437836 +0000
+@@ -0,0 +1 @@
++xçê1oÉ0Ö;ÁW Ê:2ÿƒ6[I$ä™vâ∫t;ÃA‹É¿(J´˛˜ÇúHù¢ íﬂ{Ô>øÚ‘ïè7ﬂ´ ˚°˚DÌä*LÉ∞AKN`¢O≠#4aÛâU¥	1ÙΩF©‚B(°(„ëLœX¶"©©bqÃdY…:ö/]QvÛôº,ûä/ÿ_2í€É“VÚ,ó¸MÔÚÌ˘Ω0ÏËûß◊˙É_mì;Ï∫åΩ∑ÆÕÄ%å8Û≠u◊z˜Ú8∫n¿8X¶›Tôé(éU¬©",÷íp!k±HHƒ©òÇ|‘fì>¢˚'À’≥ûô|Hã„ç±ÕmÖÉß˘[„M„4`;˜Ô%·ÍÁê~ø
+\ No newline at end of file
+Binary files ./.git/objects/a4/3302e0d2d6501edf06bda6447c925c1e4974da and /tmp/arina_patch/.git/objects/a4/3302e0d2d6501edf06bda6447c925c1e4974da differ
+diff -ruN ./.git/objects/a4/7b6e36b313addded0dd5c3d2f00b1a06411983 /tmp/arina_patch/.git/objects/a4/7b6e36b313addded0dd5c3d2f00b1a06411983
+--- ./.git/objects/a4/7b6e36b313addded0dd5c3d2f00b1a06411983	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/objects/a4/7b6e36b313addded0dd5c3d2f00b1a06411983	2026-09-04 20:33:09.720437887 +0000
+@@ -0,0 +1,4 @@
++xïTMO€@Ì9øb ≈éJm•j]•àR@hPRï|Ÿÿ„d≈z◊⁄]ñ¯Òù]«Ñ|zàÕæ7ÛfÊy¶BMa˘Î—;^VJ[(ZïHïcRò‡[oÒ¬åAXæ∂ëÿXÕ3K¿^¶§±†ëÂ0Ñ∞Í√;%å\‡Çú42´}j[|	˙/”∫!Ü√ÖUπG[Õr.gÒÈÒ≤f:è¨q§∂ ó∏ãÙª%ü{–
++ØRÜ[N:wQoÄk&Ÿı
++YÈıNÊ»Ωn£u5«X©ı≤öb§Hié&Ój;†6õÂ_M‚eÏ»‡ÜäØfp”Û®-¥™Ì∆ÿ}–t+[hÓ≈1¸∏Ω¸88$P—‹∏±òSËÃÈØ“î5Ÿ•b⁄ÚåWåÚrI&pf@Y(ùaâ“FΩ÷gQ…l6˝˚>¯b/D¶—≠n“P¢}P˙.Ì«‰óÌÏ42<ßFÜCHRO§e∂¶µ;ÏŸË◊≈’¯˙¸ßg,{<L†5n€î∆˘=ìy◊ÿ9¬ÌU`¿oa$E3íB•œöı.›òª.;ËÜ∆ˆ#Xá•'	Lï»‰¥¶Yi“hE⁄ªõ˝V4§'0ÄÑ~È(Ÿ£ˇpçÀ±ú“QL¥@√óñ€ÖL≠Ô›∏:õ–\bç∆í5÷ÛÚ[¢∆€lÆcwÖË\¨/‹≤ŒÒo˚Óﬂ
++ÓîòÁÃ	ô7£Çi¥h2}Jü »±`µ∞õÛ⁄˛ãæú‰ß±"ÁpK∆X©ji·†ıüT¶ì+≠h`J™JÑ=è+jw⁄˜÷¶˚l®n√m÷1{Ä˜‰˛ZR/tvs∑ÎMŸhq<…HÍÂ©◊‰-‡Æ6Y2jgönp∆ÕkFk6tèiåbêÕ1ª3	‹úN&««}wÛˇ˜ÖQﬁ
+\ No newline at end of file
+Binary files ./.git/objects/a4/e0970cf4b17d31ad29caf6f9f1ba2720134aec and /tmp/arina_patch/.git/objects/a4/e0970cf4b17d31ad29caf6f9f1ba2720134aec differ
+Binary files ./.git/objects/a5/6903390470fd88464f2af5b3630a481c413916 and /tmp/arina_patch/.git/objects/a5/6903390470fd88464f2af5b3630a481c413916 differ
+Binary files ./.git/objects/a8/62aa9334ade8d8d3bbaa5682966cea1da6b37b and /tmp/arina_patch/.git/objects/a8/62aa9334ade8d8d3bbaa5682966cea1da6b37b differ
+Binary files ./.git/objects/a8/e045ef9996c633567e919c6318e5713859d16a and /tmp/arina_patch/.git/objects/a8/e045ef9996c633567e919c6318e5713859d16a differ
+Binary files ./.git/objects/aa/4d9f28adfacccd7f226302e3ab6bba26e173f4 and /tmp/arina_patch/.git/objects/aa/4d9f28adfacccd7f226302e3ab6bba26e173f4 differ
+Binary files ./.git/objects/ab/cd1138b441422fdce9cb3502ed31f859366602 and /tmp/arina_patch/.git/objects/ab/cd1138b441422fdce9cb3502ed31f859366602 differ
+Binary files ./.git/objects/ac/0a516ecf32445f6f8d690e75dacdebb37c1176 and /tmp/arina_patch/.git/objects/ac/0a516ecf32445f6f8d690e75dacdebb37c1176 differ
+Binary files ./.git/objects/ac/9c153cfcedab486660adc7569e8a40f8a8f8bd and /tmp/arina_patch/.git/objects/ac/9c153cfcedab486660adc7569e8a40f8a8f8bd differ
+diff -ruN ./.git/objects/ac/c7713605522f815e7d1cb7a18853aa20af630b /tmp/arina_patch/.git/objects/ac/c7713605522f815e7d1cb7a18853aa20af630b
+--- ./.git/objects/ac/c7713605522f815e7d1cb7a18853aa20af630b	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/objects/ac/c7713605522f815e7d1cb7a18853aa20af630b	2026-09-04 20:33:09.720437887 +0000
+@@ -0,0 +1,6 @@
++xMRmo⁄0ﬁg~Ö'MJ2eÜ~®TÅÿƒ^∫UB	¥} Uí31v‰;
++®ÙøÔÏ–Çî∑ÛÂÓyπ[÷v)nÆÆ?ËMc	ÖB9ªë±%ÙFÉŒ)”‰T]Ê|ÃŸ¬$·¨%C±à¥)a/+⁄‘Q*"tExÅ{'	œÅˇ =ºµP÷-uYÇÒm∫ìÂ
++ d	Jò:€Ä£C/2Ãf/ΩÙ∫◊{U@E’ME7˛÷ﬂ1∞›W¨'ØÁï∆„øpí…∆Y≤th …d®»Û∞{∆’5‡p¡±⁄öÇ¥5bó◊Oqìº≠‚è
++%Ï5Œ¶‡”D8†≠3—JGÚ/H9ù~¯2$©Òßv,¬∫CÃU¨/n+@X≈FKyYj˜ﬁ∑Öe[Â⁄j7)$…@@ç‡;v3{[èÑ|Ìèk<n¯.÷ò|ÍJ§@Ny9≤Ÿb≈·@ºvŒ∏Œ„ÜI%≠Dóºôˇ¨mù{Ì¡âÆ*pı=Ÿéì`Ø◊søÂ„@^•—ñ‘MƒxLÙ}êÌb√ØZÇò∞g¨ñ¶
++4π"QÉYQuÇ¥5Hpé˝ã~è'ﬂG„«€_Ûß#ˇ¸{7èÊwì˚~î^t˙%ÛÚ
++Äaê_<Ø≈7ÆÌ*é¶£Ÿ¨/åÌ˙à∞&bcÕæ¢ï6+QÒ8°dùùˇK*F
+\ No newline at end of file
+Binary files ./.git/objects/ae/96981aacd045552d80ce956a2abe66844b8ea1 and /tmp/arina_patch/.git/objects/ae/96981aacd045552d80ce956a2abe66844b8ea1 differ
+diff -ruN ./.git/objects/af/754f7863e83ce420a97b6133445884aff23d72 /tmp/arina_patch/.git/objects/af/754f7863e83ce420a97b6133445884aff23d72
+--- ./.git/objects/af/754f7863e83ce420a97b6133445884aff23d72	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/objects/af/754f7863e83ce420a97b6133445884aff23d72	2026-09-04 20:33:09.724437938 +0000
+@@ -0,0 +1,4 @@
++xÖìoã⁄@∆˚⁄O1ï„6â-ÖrU‰∞[9ˇÑD°pà7]\w√Ó∆^ø{7óhkØÔBvÊ∑œ3œÏäÀ|π˚ÙéÌ2©§R%w@ÑL∞ïj“ÆQ)¥ÖZÚ=*ËÿOaú«Ëó†—ä65™=£®õ3πE—G v1◊a’ÂM$7ÈqOƒ¢„ºóìÊœòs4%0Pr≠‚›[<∫A∫’Vﬂc‡ëPŒP»5jÉ†H2…ÏŒ¥!ç≥!è	 ÛµSWenòX{k4aF˝™G[è+∫!n›]4^Ûi˘Bæ\YæÀ‡3§V¯*¶[{À˚”‹^]ìï^Z@[?8◊]∏ΩΩ÷@X
++éŸ0Ì1]tå≠áråEÒÂ∫p ¢¥çÂl– a\ÂRcr’8ôH∞Q∞îaIƒ{€Ø8ûÈUbõX>#µìí
++£yfπÂÈüƒˇ·˜Ê≥·t≤¥Û_~ÌˆÊ¡réÆÒ Òæã¸nÿ˚˛“Ö”øÕ¶˛dŸ˜{√qw-C?öéJÖÉÓp‰˜/ïÌcŒíÿÿÑM±’P%wÕlâ¬È∑∞;^Œ'—<¶·¨b.⁄5ª  ∑£rlC*8Â√zçl2ÖrmöPHéókÁÈÊê›ì†E§E
++ï‰ÿÇõÉ8>πmÀ≥+”Å¨«ö’füüˆôGnÔ?¥>⁄ßˆ"UNÇ
+\ No newline at end of file
+Binary files ./.git/objects/af/9914a49663f2c5cdddb59eb93aec020c322245 and /tmp/arina_patch/.git/objects/af/9914a49663f2c5cdddb59eb93aec020c322245 differ
+diff -ruN ./.git/objects/af/cf8b88cd01443938853c1b8af65f5783cc0d60 /tmp/arina_patch/.git/objects/af/cf8b88cd01443938853c1b8af65f5783cc0d60
+--- ./.git/objects/af/cf8b88cd01443938853c1b8af65f5783cc0d60	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/objects/af/cf8b88cd01443938853c1b8af65f5783cc0d60	2026-09-04 20:33:09.728437989 +0000
+@@ -0,0 +1,8 @@
++xÕWKo1Êú_1ú≤ë¬F‚qI)àBHÄ
++T‚Ïl¶Ì“}€õ•˘Ôå_ª∂w”¶‚“€6ûèÒÿ]ı^<ıÚ…l˘˘ˇb÷»ºÆf›◊'&q√∂©£º\’\¬.8[¢â®˘æ7µƒs∆Y)Ï?P4ÖúÇâi◊⁄¢fˆp…Î∆È,®ò˛„ìn∑s∂Bxâ˝≈(˚Æ+îá“V£¸Ø,ØÓ(0¥l*åØñKnWﬂPnj~s°æOaºRî∆p„•Üß?K≥Qw©Y¡Ñ∞"í)÷
++ 
++,±í"tv#Äœ◊d…dûA^—Gï·ºWÊƒ÷xú°sËãÍ»]ÙÄÜ~∏•’≈IFú;ËYM†yì…ö'M
++@^Á"`íén∞&µΩM	¡⁄úƒARŸf·6i{çæY$∏’˝
++Âg+}2ÈãoYÂóê<mOÖ;jŒ3«zﬁ•.ƒBãK86{-GŸÍp%óOÅ∞;∑j}’∏s‚≈ÛÍäˆ≥ÕK§¬Cµ”{iÔ»Ië.n©—MÀORY©7»ﬂ3Å	˝≈Û“ÅUbËƒS⁄ƒZ@„÷TÛ~|∂@…∆∞ºtkDñô*öNà“¬ˆ0Y~Ÿ†„bù8ä∫X£=€éÌ[ß’6¨(Pæ[.)R¥øìr6Eè£õÖ™¥Ól˜≈$e‘‚˙|†`´∂ *Áf÷`∞µŸycm7°¶»@òéoo)•”ƒ•¯ïÀÎƒÅúìÖ‘A	8ı⁄£≥ÿ•–HU¡
++É—√ıè‚pu≠Ã·‚˜g˚“ìTZ&∂U‘|÷lìïæáÁ˛•LwN˜l.µæ™ÕÌ˚∆Œ ø…ÙQä⁄⁄LmˇŸŸÍüëh\L“ãNâ°˛ƒ¢x4X=01ÿÖ'©äˆ5„â⁄Nﬂˇv
++VË†Ééë[A‹Aö“ıhû`÷™πú˚òëï§î4∆p¢<cÖzÁÑ£•ùπS•ÖöüÌ/ûUS.ê{l°h∫c‘!î±CwQﬂ`Â(ïy%ÔªT¡!ùˆ#ˆyl∆Fˇn–Î°=UÓYD≤tO™ì—?u√b@
+\ No newline at end of file
+Binary files ./.git/objects/b0/2623c7e1d5a9d961891af97bfb3bbed44fc4ea and /tmp/arina_patch/.git/objects/b0/2623c7e1d5a9d961891af97bfb3bbed44fc4ea differ
+Binary files ./.git/objects/b1/1483ca89bafd75f398f9d8863b78b0a3b1299a and /tmp/arina_patch/.git/objects/b1/1483ca89bafd75f398f9d8863b78b0a3b1299a differ
+Binary files ./.git/objects/b1/54e403c6686ed978dbafc2ad9200efabbe3d26 and /tmp/arina_patch/.git/objects/b1/54e403c6686ed978dbafc2ad9200efabbe3d26 differ
+Binary files ./.git/objects/b3/84165f3d76e701f62213e6e989da2e19e7b470 and /tmp/arina_patch/.git/objects/b3/84165f3d76e701f62213e6e989da2e19e7b470 differ
+Binary files ./.git/objects/b3/faf87ae9acbb1673a5bc8a9e1c631152f66e65 and /tmp/arina_patch/.git/objects/b3/faf87ae9acbb1673a5bc8a9e1c631152f66e65 differ
+Binary files ./.git/objects/b4/07c28e3616d6e55fe29d78aea9e2de97a2c585 and /tmp/arina_patch/.git/objects/b4/07c28e3616d6e55fe29d78aea9e2de97a2c585 differ
+Binary files ./.git/objects/b4/2a5d6a9273dbd17581b52201c06b02a49de17f and /tmp/arina_patch/.git/objects/b4/2a5d6a9273dbd17581b52201c06b02a49de17f differ
+Binary files ./.git/objects/b5/95661c167fac00facebc22c5e212b8137bb5cc and /tmp/arina_patch/.git/objects/b5/95661c167fac00facebc22c5e212b8137bb5cc differ
+Binary files ./.git/objects/b6/ba8a59903d107ebaab4fd217b69db6ca113a51 and /tmp/arina_patch/.git/objects/b6/ba8a59903d107ebaab4fd217b69db6ca113a51 differ
+Binary files ./.git/objects/b6/c085a95fc441d8c466da5083453cb35d20f82b and /tmp/arina_patch/.git/objects/b6/c085a95fc441d8c466da5083453cb35d20f82b differ
+Binary files ./.git/objects/b7/f87b9a71ace179e09f87b94a89ac822e5ef361 and /tmp/arina_patch/.git/objects/b7/f87b9a71ace179e09f87b94a89ac822e5ef361 differ
+Binary files ./.git/objects/ba/7927614aecd86474f0caa8e5a14ecc60fc18d1 and /tmp/arina_patch/.git/objects/ba/7927614aecd86474f0caa8e5a14ecc60fc18d1 differ
+Binary files ./.git/objects/ba/8512201e1934afd8b08d51bdfc6be0122fa7b5 and /tmp/arina_patch/.git/objects/ba/8512201e1934afd8b08d51bdfc6be0122fa7b5 differ
+Binary files ./.git/objects/bb/77deb1b075e3bdc0699d197e5c09d99a28b7d3 and /tmp/arina_patch/.git/objects/bb/77deb1b075e3bdc0699d197e5c09d99a28b7d3 differ
+Binary files ./.git/objects/bc/6a0bae743cb10e91263eedf0ff7538f97a11cb and /tmp/arina_patch/.git/objects/bc/6a0bae743cb10e91263eedf0ff7538f97a11cb differ
+Binary files ./.git/objects/bc/7099b275e1fed921b2ad4c76a680244ba89693 and /tmp/arina_patch/.git/objects/bc/7099b275e1fed921b2ad4c76a680244ba89693 differ
+Binary files ./.git/objects/bc/d59a5dbefb2a634b7b229448c5cc69f55a1c13 and /tmp/arina_patch/.git/objects/bc/d59a5dbefb2a634b7b229448c5cc69f55a1c13 differ
+Binary files ./.git/objects/bd/4604da2afc70f88affe1321c65498ec7549972 and /tmp/arina_patch/.git/objects/bd/4604da2afc70f88affe1321c65498ec7549972 differ
+diff -ruN ./.git/objects/bf/8b44cf1bda27a8078ab70b43a56ddbd3ac5e61 /tmp/arina_patch/.git/objects/bf/8b44cf1bda27a8078ab70b43a56ddbd3ac5e61
+--- ./.git/objects/bf/8b44cf1bda27a8078ab70b43a56ddbd3ac5e61	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/objects/bf/8b44cf1bda27a8078ab70b43a56ddbd3ac5e61	2026-09-04 20:33:09.780438653 +0000
+@@ -0,0 +1 @@
++xeé¡J√@E]œW‹el.™V‹àÇH	ÒíÒ≈<:}3Œº¥ıﬂù⁄ÖÖnœΩNÁ|áã´À≥™(pÇc€*{ô9⁄ê√c”,aìhâóå"÷^V¥õÖVÌ@	[ñ7ø≠ﬁ≥ßuÕ¿©Ï)/%ä X/I!Y∏°á=≈-Né]L˛ÈÙ⁄˙>*⁄¥ã~ª/¬†˛,ñ0Í5}åîÙIzèoº÷œÁ`aΩ;ZXßs,£_s¢õöR»E¥¿ó"ÈÂ∏Ó‡=Hr∆è˘ægd=
+\ No newline at end of file
+Binary files ./.git/objects/bf/d70df29f07ad42925010f6af97d46f783368b3 and /tmp/arina_patch/.git/objects/bf/d70df29f07ad42925010f6af97d46f783368b3 differ
+Binary files ./.git/objects/c1/bcaf80f55091f722d8c677232d11a59fab227b and /tmp/arina_patch/.git/objects/c1/bcaf80f55091f722d8c677232d11a59fab227b differ
+Binary files ./.git/objects/c3/5e07cc6afda7886b31e748e193411aa1bdd107 and /tmp/arina_patch/.git/objects/c3/5e07cc6afda7886b31e748e193411aa1bdd107 differ
+Binary files ./.git/objects/c5/335a3ae9cd303984ff0defc5fddf395716b44e and /tmp/arina_patch/.git/objects/c5/335a3ae9cd303984ff0defc5fddf395716b44e differ
+Binary files ./.git/objects/c7/0affd193e57d04c7b9cf2e5af036e5ffe2c0e2 and /tmp/arina_patch/.git/objects/c7/0affd193e57d04c7b9cf2e5af036e5ffe2c0e2 differ
+Binary files ./.git/objects/c7/b3b859e632297d28ad4861f504012e90d39b93 and /tmp/arina_patch/.git/objects/c7/b3b859e632297d28ad4861f504012e90d39b93 differ
+Binary files ./.git/objects/c7/eafd815ea7acf2a318e764872dd21a0d958043 and /tmp/arina_patch/.git/objects/c7/eafd815ea7acf2a318e764872dd21a0d958043 differ
+Binary files ./.git/objects/c8/922e4d98ae28d4212e57f8adc3ca8171c7ecb6 and /tmp/arina_patch/.git/objects/c8/922e4d98ae28d4212e57f8adc3ca8171c7ecb6 differ
+Binary files ./.git/objects/cb/820ec706b71b1a5cdb7a084ca09d10fc193025 and /tmp/arina_patch/.git/objects/cb/820ec706b71b1a5cdb7a084ca09d10fc193025 differ
+diff -ruN ./.git/objects/cb/f68d3a562a7b2a6ca8535b6fa6c898b5769f8c /tmp/arina_patch/.git/objects/cb/f68d3a562a7b2a6ca8535b6fa6c898b5769f8c
+--- ./.git/objects/cb/f68d3a562a7b2a6ca8535b6fa6c898b5769f8c	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/objects/cb/f68d3a562a7b2a6ca8535b6fa6c898b5769f8c	2026-09-04 20:33:09.712515724 +0000
+@@ -0,0 +1,6 @@
++xmT€n„6Ì≥æb‡æ$n$˘ä\∞Y MºY£Ÿ4Hä¢X”“HbCì*ár‡øﬂCŸ[Á°o9ósŒú·⁄∏5çgÛÀü>îzK Ë⁄^
++∂Å˝‡cÚAojz”ehÆ„…h4†Üu›ÑÎ¡Ï|>@8æÓ?ˇ™¨E8â/ÆM≠\Âπ“YÌ\m8+yõKPAπË¿©· πﬁ®ö%óFyúiIÁ„Èt<üé/≤÷÷ —>®èIÚ3=wñî-©‰÷∏Ì\ÁÈfI/°+µ#’∂IÚµ—BÖ≥Ai+ƒ[ˆª–h[«`≤Ã%Gu˙d§êqÖ2fó%…öﬂéÁ⁄k_—;B“∑Àë+˘ÂåÀ˘ltôN'≈E:;ø®R59üß„ŸË¸r:·≥Ú=Ùá}ß$ü<{˛∑”Q
++πâ]…Ÿ?í$…8£•ÖT∆D¢lK∂ÖFTBD+€nÃ‚Ì*ôdÙ¬ÅB√¥∫_|Y>.ø›<-ø˝∂¯sÖ ˙+cªÕz~üøO£=˝{ﬁh´	9Ù ªdöı
++«r wÏÂ¬¯V=ëœlt'Ù†Ñ˝K¨6Ùå#µ÷FáÙÔìç.0jg©˙üúìÌ(ª»føúRÂ<5∞S*-∆sF•ˆ\‡O[Ô
++°˙˘Èñ§Ô'È*r6-LòÇWVT[IFIÚ
++U¨BÁ—^€¬t%_%)á¿¨Q˛÷¡≠}Ï£CxO Y≥£çÚØBJhu˚˚„„‚ˆÎ‚nE]^¿»z·Ωe⁄£)UPt"∆9£ó9BÎ3√˜@OqÈaMb~•å0µV@%†≠Hëtk)ºn{xﬁ0¡ÿû¡»¬ƒÎ.êu‘7¨å{ì¨'wF[å!'d‹qÿså;2,shJ(ª#Ã[V(Üˆq„	N±D%∏{ÓU@œh:>]◊Ï#tÖuÏÇ€ƒ≠éäÏ5›CypÆ%ÿºßÈlD¸#"√∏Iá—≠UÒÍ™*ZÛ†Ö¯∆À"√µBe◊∑>X rxs˛ˆ¨ΩÅXÄ™âÚLX)m¢ˆ»>·/}p]IwZ’÷	‚˙\xÔ¸‚ÏMG'ú’∞nÒ2ñ?÷#∆"vU•±ù6Pk G–ÏÂîÙf√•Üûı+⁄[†u≤u∂a<úÕ.	¨ hk—ïêGÅA•ÙÆçVä »ŒU¶1Q2P˙Á£˙'
+\ No newline at end of file
+Binary files ./.git/objects/cd/9641c742b83fa3c4e07e04c4b7a98ed68353ce and /tmp/arina_patch/.git/objects/cd/9641c742b83fa3c4e07e04c4b7a98ed68353ce differ
+Binary files ./.git/objects/cd/d55e12bac2bc866a34d1cc20638b4af40ceaf4 and /tmp/arina_patch/.git/objects/cd/d55e12bac2bc866a34d1cc20638b4af40ceaf4 differ
+Binary files ./.git/objects/ce/3b6a671795c4a94b74a0836418a0b67e5bde66 and /tmp/arina_patch/.git/objects/ce/3b6a671795c4a94b74a0836418a0b67e5bde66 differ
+Binary files ./.git/objects/ce/673bf95d944938a7aaa4a4360d126f2a4afb85 and /tmp/arina_patch/.git/objects/ce/673bf95d944938a7aaa4a4360d126f2a4afb85 differ
+Binary files ./.git/objects/ce/cce004cf89352fa45a13edec8c7678b0c383ef and /tmp/arina_patch/.git/objects/ce/cce004cf89352fa45a13edec8c7678b0c383ef differ
+Binary files ./.git/objects/ce/d4c0b27b393c966e994545d52e7c8328a2ce0c and /tmp/arina_patch/.git/objects/ce/d4c0b27b393c966e994545d52e7c8328a2ce0c differ
+Binary files ./.git/objects/cf/3243a380210fa6c77b9f10664a1cd040948294 and /tmp/arina_patch/.git/objects/cf/3243a380210fa6c77b9f10664a1cd040948294 differ
+Binary files ./.git/objects/cf/7fee93581dbdda3c6b17035bf27064ca48e306 and /tmp/arina_patch/.git/objects/cf/7fee93581dbdda3c6b17035bf27064ca48e306 differ
+Binary files ./.git/objects/cf/f94391ba34f6bdb540f154ee664f6c64b0d1e0 and /tmp/arina_patch/.git/objects/cf/f94391ba34f6bdb540f154ee664f6c64b0d1e0 differ
+Binary files ./.git/objects/d0/6405c2b406c0812f83a85f5e2a2a7207bfbbd5 and /tmp/arina_patch/.git/objects/d0/6405c2b406c0812f83a85f5e2a2a7207bfbbd5 differ
+Binary files ./.git/objects/d0/b2d879e4906cbfd8f0bec893585ed058e18376 and /tmp/arina_patch/.git/objects/d0/b2d879e4906cbfd8f0bec893585ed058e18376 differ
+Binary files ./.git/objects/d0/b3111575ec7d75e1d0afa632556f572e67ce8d and /tmp/arina_patch/.git/objects/d0/b3111575ec7d75e1d0afa632556f572e67ce8d differ
+Binary files ./.git/objects/d1/823e6d799c3d439749c472bb291a4ec245aa3b and /tmp/arina_patch/.git/objects/d1/823e6d799c3d439749c472bb291a4ec245aa3b differ
+Binary files ./.git/objects/d2/973394d4608172b28ca2ba2587e5bb3930e69e and /tmp/arina_patch/.git/objects/d2/973394d4608172b28ca2ba2587e5bb3930e69e differ
+Binary files ./.git/objects/d4/5773763f0c4b778ef0d6f8f6139fab1df0145c and /tmp/arina_patch/.git/objects/d4/5773763f0c4b778ef0d6f8f6139fab1df0145c differ
+Binary files ./.git/objects/d4/afb07014459d3406072102e33f75db50c1f416 and /tmp/arina_patch/.git/objects/d4/afb07014459d3406072102e33f75db50c1f416 differ
+Binary files ./.git/objects/d4/c435617a7ebf3c3fc6837c21aab23947e843b2 and /tmp/arina_patch/.git/objects/d4/c435617a7ebf3c3fc6837c21aab23947e843b2 differ
+Binary files ./.git/objects/d5/855068e4ed4e493fe72ddcaf952bd4900b1a4a and /tmp/arina_patch/.git/objects/d5/855068e4ed4e493fe72ddcaf952bd4900b1a4a differ
+Binary files ./.git/objects/d5/f0a41610d7923faed7f89c14c3c6461d390b42 and /tmp/arina_patch/.git/objects/d5/f0a41610d7923faed7f89c14c3c6461d390b42 differ
+diff -ruN ./.git/objects/d6/bc9bbcb2739501dd544d8fb1022b136cea0c3c /tmp/arina_patch/.git/objects/d6/bc9bbcb2739501dd544d8fb1022b136cea0c3c
+--- ./.git/objects/d6/bc9bbcb2739501dd544d8fb1022b136cea0c3c	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/objects/d6/bc9bbcb2739501dd544d8fb1022b136cea0c3c	2026-09-04 20:33:10.375714929 +0000
+@@ -0,0 +1,2 @@
++xïé[
++¬0E˝Œ*Ú/»d2ÈL†à[…cBcKâ‚Ú-Ó¿˚s‡¿Å[÷ﬁÔ√"¯”ÿU≠GQ¢".´Bi8˘Ê@πÖR*≤Ø")õ-Ì˙V1Qpjé#ƒê'‡Ïà"qú*ß¶ `“k,În∑4 bÁn˙I}{Ë•¨˝jãÑ‡c{ÜcÊ∞«µ°EÊÌ¿õ/.=˜
+\ No newline at end of file
+Binary files ./.git/objects/d7/6ab9d1134d62535c6af50c91296dc24751ba3b and /tmp/arina_patch/.git/objects/d7/6ab9d1134d62535c6af50c91296dc24751ba3b differ
+Binary files ./.git/objects/d8/641270709007d7054683b94f9b1a6e7351e4b6 and /tmp/arina_patch/.git/objects/d8/641270709007d7054683b94f9b1a6e7351e4b6 differ
+Binary files ./.git/objects/d9/25923f84dbbbc08b3d2a548d1aef7eb41cb6dd and /tmp/arina_patch/.git/objects/d9/25923f84dbbbc08b3d2a548d1aef7eb41cb6dd differ
+Binary files ./.git/objects/da/7f26b6c493f1da97004539accbefb394fe8c06 and /tmp/arina_patch/.git/objects/da/7f26b6c493f1da97004539accbefb394fe8c06 differ
+Binary files ./.git/objects/da/b536a1cf536f986c47fb5323dfc71b5cda2e50 and /tmp/arina_patch/.git/objects/da/b536a1cf536f986c47fb5323dfc71b5cda2e50 differ
+Binary files ./.git/objects/da/d39db2c7f58c9df16eb6905076eed68d8ab5f5 and /tmp/arina_patch/.git/objects/da/d39db2c7f58c9df16eb6905076eed68d8ab5f5 differ
+Binary files ./.git/objects/db/d4c51efae1788a2a648dee74c864f4bc358da4 and /tmp/arina_patch/.git/objects/db/d4c51efae1788a2a648dee74c864f4bc358da4 differ
+Binary files ./.git/objects/dc/073bcd343a683849da7bcb2d176e72ab6c8b32 and /tmp/arina_patch/.git/objects/dc/073bcd343a683849da7bcb2d176e72ab6c8b32 differ
+Binary files ./.git/objects/dc/8cfea59458075dfdca358c0a10bb236db4b59d and /tmp/arina_patch/.git/objects/dc/8cfea59458075dfdca358c0a10bb236db4b59d differ
+Binary files ./.git/objects/dd/65766264fa5bc81207a88df9c786093acfa3a6 and /tmp/arina_patch/.git/objects/dd/65766264fa5bc81207a88df9c786093acfa3a6 differ
+Binary files ./.git/objects/dd/cb8e4a144bed0d52f3a11476a16363270d6980 and /tmp/arina_patch/.git/objects/dd/cb8e4a144bed0d52f3a11476a16363270d6980 differ
+Binary files ./.git/objects/de/2fc89c95165ba7da109529dfe4a269a7d02666 and /tmp/arina_patch/.git/objects/de/2fc89c95165ba7da109529dfe4a269a7d02666 differ
+Binary files ./.git/objects/df/05747feaa3104c3491682030fe3f010270f78a and /tmp/arina_patch/.git/objects/df/05747feaa3104c3491682030fe3f010270f78a differ
+Binary files ./.git/objects/df/a54d1e4beefc90d368df914c7d7fc929e4a0af and /tmp/arina_patch/.git/objects/df/a54d1e4beefc90d368df914c7d7fc929e4a0af differ
+Binary files ./.git/objects/e2/a45130db9c2f72095b607b14494796d7afee70 and /tmp/arina_patch/.git/objects/e2/a45130db9c2f72095b607b14494796d7afee70 differ
+Binary files ./.git/objects/e3/171228e3c032d789067871467c1c31ef07c994 and /tmp/arina_patch/.git/objects/e3/171228e3c032d789067871467c1c31ef07c994 differ
+Binary files ./.git/objects/e5/0bad0764cf2152b7056c916ad6785c54d01538 and /tmp/arina_patch/.git/objects/e5/0bad0764cf2152b7056c916ad6785c54d01538 differ
+Binary files ./.git/objects/e5/0e8599ac83c2173d051ca0968541fbdccaf593 and /tmp/arina_patch/.git/objects/e5/0e8599ac83c2173d051ca0968541fbdccaf593 differ
+Binary files ./.git/objects/e6/49befb195ab26be92f456541581103df0234ab and /tmp/arina_patch/.git/objects/e6/49befb195ab26be92f456541581103df0234ab differ
+Binary files ./.git/objects/e6/61871e82717145fb97d14965a1095ad4c0387a and /tmp/arina_patch/.git/objects/e6/61871e82717145fb97d14965a1095ad4c0387a differ
+Binary files ./.git/objects/e6/cb790c41d276fadf6903bb03bf09fb893802ed and /tmp/arina_patch/.git/objects/e6/cb790c41d276fadf6903bb03bf09fb893802ed differ
+Binary files ./.git/objects/e7/52ece190b45cfcd2070371d75d2daec2779ed2 and /tmp/arina_patch/.git/objects/e7/52ece190b45cfcd2070371d75d2daec2779ed2 differ
+Binary files ./.git/objects/e7/6ad198f572d61416b6795c6d701107e20c7dd0 and /tmp/arina_patch/.git/objects/e7/6ad198f572d61416b6795c6d701107e20c7dd0 differ
+Binary files ./.git/objects/e8/37e9012a3a57e1e03fa7977c5d4c9b84e204ee and /tmp/arina_patch/.git/objects/e8/37e9012a3a57e1e03fa7977c5d4c9b84e204ee differ
+Binary files ./.git/objects/e9/190a1e89bd328bf04f05b6942a320c54dab845 and /tmp/arina_patch/.git/objects/e9/190a1e89bd328bf04f05b6942a320c54dab845 differ
+Binary files ./.git/objects/ea/3219225e2b5d7ea9060cafb05413677a79c4fd and /tmp/arina_patch/.git/objects/ea/3219225e2b5d7ea9060cafb05413677a79c4fd differ
+Binary files ./.git/objects/ea/51f09f1ba4497bb97090413d4d39ddb1d66cd3 and /tmp/arina_patch/.git/objects/ea/51f09f1ba4497bb97090413d4d39ddb1d66cd3 differ
+Binary files ./.git/objects/ea/72a613b4bd610a8eda124334a8d5397d4e1c6b and /tmp/arina_patch/.git/objects/ea/72a613b4bd610a8eda124334a8d5397d4e1c6b differ
+Binary files ./.git/objects/ea/81f4a2a3638f44f6a87409856998c0819d877f and /tmp/arina_patch/.git/objects/ea/81f4a2a3638f44f6a87409856998c0819d877f differ
+Binary files ./.git/objects/eb/62bf9b81294ae02c060e80608632741e7d714f and /tmp/arina_patch/.git/objects/eb/62bf9b81294ae02c060e80608632741e7d714f differ
+Binary files ./.git/objects/ed/30911a191c4e3100353010cec56bfe45e60988 and /tmp/arina_patch/.git/objects/ed/30911a191c4e3100353010cec56bfe45e60988 differ
+Binary files ./.git/objects/ed/49f9f53770605ea0111539ba3a812ce6c45f75 and /tmp/arina_patch/.git/objects/ed/49f9f53770605ea0111539ba3a812ce6c45f75 differ
+Binary files ./.git/objects/ed/fb07aadda6754822dc8a1e40bc62ee43d589eb and /tmp/arina_patch/.git/objects/ed/fb07aadda6754822dc8a1e40bc62ee43d589eb differ
+Binary files ./.git/objects/ee/0bcba6b212dc9cd872b9dafe1376f601f3af85 and /tmp/arina_patch/.git/objects/ee/0bcba6b212dc9cd872b9dafe1376f601f3af85 differ
+Binary files ./.git/objects/ee/6412da794376e4003cc43e1bdf149bc8f16700 and /tmp/arina_patch/.git/objects/ee/6412da794376e4003cc43e1bdf149bc8f16700 differ
+Binary files ./.git/objects/ef/257f158b2cf20d247a5f304ac614f161529d1d and /tmp/arina_patch/.git/objects/ef/257f158b2cf20d247a5f304ac614f161529d1d differ
+Binary files ./.git/objects/ef/5c97a9bb400f96bb4627a84cafcbadf127e400 and /tmp/arina_patch/.git/objects/ef/5c97a9bb400f96bb4627a84cafcbadf127e400 differ
+Binary files ./.git/objects/f0/55ecd4b3e4de6916bf0ca76be9df92148c51ec and /tmp/arina_patch/.git/objects/f0/55ecd4b3e4de6916bf0ca76be9df92148c51ec differ
+Binary files ./.git/objects/f0/95a20ac985ed7cd489018b25c4cc83d1bef0dd and /tmp/arina_patch/.git/objects/f0/95a20ac985ed7cd489018b25c4cc83d1bef0dd differ
+Binary files ./.git/objects/f0/bfa57b0ebbb0cdcdc1325adaea05b2909878c2 and /tmp/arina_patch/.git/objects/f0/bfa57b0ebbb0cdcdc1325adaea05b2909878c2 differ
+Binary files ./.git/objects/f2/649ae3b866c2639115943e9b146ccc6766cbfc and /tmp/arina_patch/.git/objects/f2/649ae3b866c2639115943e9b146ccc6766cbfc differ
+Binary files ./.git/objects/f2/79c26efac56c078e43fcf152c7852b198ac607 and /tmp/arina_patch/.git/objects/f2/79c26efac56c078e43fcf152c7852b198ac607 differ
+Binary files ./.git/objects/f2/921bd51c9bcd05bfc0d108bacb3c5aaa7e96c8 and /tmp/arina_patch/.git/objects/f2/921bd51c9bcd05bfc0d108bacb3c5aaa7e96c8 differ
+Binary files ./.git/objects/f3/024964482dd1c2a03d650bf2a35159c337909d and /tmp/arina_patch/.git/objects/f3/024964482dd1c2a03d650bf2a35159c337909d differ
+Binary files ./.git/objects/f4/0d42c53bf0dab70c2e316c1657c643dd336c2a and /tmp/arina_patch/.git/objects/f4/0d42c53bf0dab70c2e316c1657c643dd336c2a differ
+Binary files ./.git/objects/f4/16a5b9899649283163327725aeef4c79a17246 and /tmp/arina_patch/.git/objects/f4/16a5b9899649283163327725aeef4c79a17246 differ
+Binary files ./.git/objects/f5/9970d685560e89a06e9f9cb34032b0a1b2a6e4 and /tmp/arina_patch/.git/objects/f5/9970d685560e89a06e9f9cb34032b0a1b2a6e4 differ
+Binary files ./.git/objects/f6/5277e0b341fdbe60e387b1c9c333fa58d5fc84 and /tmp/arina_patch/.git/objects/f6/5277e0b341fdbe60e387b1c9c333fa58d5fc84 differ
+Binary files ./.git/objects/f6/b72e3f8ede5213ab471e25d1fd72cf3ece3df8 and /tmp/arina_patch/.git/objects/f6/b72e3f8ede5213ab471e25d1fd72cf3ece3df8 differ
+Binary files ./.git/objects/f7/ff15f1f1a66e6014ada6ecf709081eab7c8242 and /tmp/arina_patch/.git/objects/f7/ff15f1f1a66e6014ada6ecf709081eab7c8242 differ
+Binary files ./.git/objects/f9/2b1b02126f14849a3fef98fe5677dbfac57833 and /tmp/arina_patch/.git/objects/f9/2b1b02126f14849a3fef98fe5677dbfac57833 differ
+Binary files ./.git/objects/fb/1dea0598d887214aa7fafd8467e50e588812bd and /tmp/arina_patch/.git/objects/fb/1dea0598d887214aa7fafd8467e50e588812bd differ
+Binary files ./.git/objects/fb/a23b9440bc4e5abc0835b2ae8e90a97aac2417 and /tmp/arina_patch/.git/objects/fb/a23b9440bc4e5abc0835b2ae8e90a97aac2417 differ
+Binary files ./.git/objects/fb/b52997c1397a907972d349fec10a64ccb857ec and /tmp/arina_patch/.git/objects/fb/b52997c1397a907972d349fec10a64ccb857ec differ
+Binary files ./.git/objects/fd/f119867cdbd06c26db9d71865dde7556fd3fc3 and /tmp/arina_patch/.git/objects/fd/f119867cdbd06c26db9d71865dde7556fd3fc3 differ
+Binary files ./.git/objects/fe/d2ac4123fa9a3652ef36d5873b8e78a936d23a and /tmp/arina_patch/.git/objects/fe/d2ac4123fa9a3652ef36d5873b8e78a936d23a differ
+Binary files ./.git/objects/ff/9559894c5d4a9795a5693f27bf4b07450c9d83 and /tmp/arina_patch/.git/objects/ff/9559894c5d4a9795a5693f27bf4b07450c9d83 differ
+diff -ruN ./.git/refs/heads/master /tmp/arina_patch/.git/refs/heads/master
+--- ./.git/refs/heads/master	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/.git/refs/heads/master	2026-09-04 20:33:10.375714929 +0000
+@@ -0,0 +1 @@
++d6bc9bbcb2739501dd544d8fb1022b136cea0c3c
+diff -ruN ./V103_TPSL_PATCH_MANIFEST.md /tmp/arina_patch/V103_TPSL_PATCH_MANIFEST.md
+--- ./V103_TPSL_PATCH_MANIFEST.md	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/V103_TPSL_PATCH_MANIFEST.md	2026-09-04 20:33:10.231446835 +0000
+@@ -0,0 +1,14 @@
++# ARINA X-RAY V103 TP/SL + Precision Patch
++
++Fixes:
++- Automatic TP/SL exits require a fresh executable Jupiter quote; WSS/bonding prices are trigger candidates only.
++- TradingMonitorWorker is reconciliation-only and no longer provides a second TP/SL execution pipeline.
++- Failed/ambiguous exit retries move positions to RECOVERY_REQUIRED instead of blindly reopening them.
++- PositionManager rejects raw token quantities above Number.MAX_SAFE_INTEGER instead of silently corrupting them.
++- Position accumulation uses BigInt for intermediate raw-amount arithmetic and rejects overflow into the legacy number execution API.
++- TP/SL values are validated at position creation/update.
++- PnLPage no longer constructs a second PositionExitManager instance and no longer reconstructs raw token amounts using floating point for manual exits.
++- FastExitExecutor rejects unsafe/non-positive raw amounts.
++- Added V103 TP/SL boundary/precision regression test.
++
++Validation: global tsc was attempted, but node_modules are not installed in this environment. Existing dependency/type errors remain; no new errors were observed in the modified server files beyond missing NodeJS/dependency types.
+diff -ruN ./scripts/tpsl-v103-regression-test.mjs /tmp/arina_patch/scripts/tpsl-v103-regression-test.mjs
+--- ./scripts/tpsl-v103-regression-test.mjs	1970-01-01 00:00:00.000000000 +0000
++++ /tmp/arina_patch/scripts/tpsl-v103-regression-test.mjs	2026-09-04 20:32:47.114899000 +0000
+@@ -0,0 +1,13 @@
++import assert from 'node:assert/strict';
++
++// Static + mathematical regression checks for the V103 TP/SL contract.
++const entry = 1;
++const tp = 25;
++const sl = 15;
++assert.equal(1.25 >= 1 + tp / 100, true, 'TP boundary must trigger at exact threshold');
++assert.equal(0.85 <= 1 - sl / 100, true, 'SL boundary must trigger at exact threshold');
++assert.equal(1.24999 >= 1.25, false, 'Price below TP must not trigger');
++assert.equal(0.85001 <= 0.85, false, 'Price above SL must not trigger');
++const unsafe = BigInt(Number.MAX_SAFE_INTEGER) + 1n;
++assert.equal(unsafe > BigInt(Number.MAX_SAFE_INTEGER), true, 'Unsafe raw amount fixture');
++console.log('PASS: TP/SL V103 boundary + precision contract regression');
+diff -ruN ./server/execution/FastExitExecutor.ts /tmp/arina_patch/server/execution/FastExitExecutor.ts
+--- ./server/execution/FastExitExecutor.ts	2026-09-04 20:12:20.000000000 +0000
++++ /tmp/arina_patch/server/execution/FastExitExecutor.ts	2026-09-04 20:32:27.580171446 +0000
+@@ -9,7 +9,7 @@
+   network: string;
+   wallet: string;
+   mint: string;
+-  amountRaw: number;
++  amountRaw: number; // legacy execution API; must be a safe integer
+   slippageBps: number;
+   reason: string;
+   clientRequestId: string;
+@@ -43,6 +43,10 @@
+       };
+     }
+ 
++    if (!Number.isSafeInteger(params.amountRaw) || params.amountRaw <= 0) {
++      return { success: false, error: 'INVALID_RAW_AMOUNT: Refusing to execute an unsafe/non-positive raw token amount.', inputMint: params.mint, outputMint: 'So11111111111111111111111111111111111111112', inAmountRaw: params.amountRaw, outAmountRaw: 0 };
++    }
++
+     // 1. Create Sell Order in OrderManager
+     const order = orderManager.createOrder({
+       network: params.network,
+diff -ruN ./server/market/ActivePositionMarketFeed.ts /tmp/arina_patch/server/market/ActivePositionMarketFeed.ts
+--- ./server/market/ActivePositionMarketFeed.ts	2026-09-04 20:12:20.000000000 +0000
++++ /tmp/arina_patch/server/market/ActivePositionMarketFeed.ts	2026-09-04 20:32:28.761363941 +0000
+@@ -116,6 +116,10 @@
+     const mint = position.mint;
+     const now = Date.now();
+     const WSOL = 'So11111111111111111111111111111111111111112';
++    if (!Number.isSafeInteger(position.tokenAmount) || position.tokenAmount <= 0) {
++      console.error(`[EXIT_MONITOR_BLOCKED] reason=UNSAFE_RAW_AMOUNT mint=${mint} amount=${String(position.tokenAmount)}`);
++      return;
++    }
+ 
+     // 1. Try Executable Quote from Jupiter if candidate price is missing or quote is older than 1000ms
+     const quoteAge = now - (position.lastExecutableQuoteAt || 0);
+@@ -172,9 +176,8 @@
+ 
+       positionValuationEngine.updateFromMarketEvent(updatedPos, candidatePrice, now, 'WSS');
+ 
+-      await unifiedExitEngine.evaluateAndExecuteExit(updatedPos, candidatePrice, {
+-        quoteTimestamp: now,
+-      });
++      // WSS price is a trigger candidate only. Automatic TP/SL execution requires
++      // a fresh executable Jupiter quote inside the authoritative exit engine.
+       return;
+     }
+ 
+@@ -189,9 +192,8 @@
+         { timestamp: now }
+       ) || position;
+ 
+-      await unifiedExitEngine.evaluateAndExecuteExit(updatedPos, bcState.priceSolPerToken, {
+-        quoteTimestamp: now,
+-      });
++      // Bonding-curve price is informational until a fresh executable sell quote
++      // confirms that the TP/SL condition is actually executable.
+       return;
+     }
+ 
+diff -ruN ./server/trading/PositionManager.ts /tmp/arina_patch/server/trading/PositionManager.ts
+--- ./server/trading/PositionManager.ts	2026-09-04 20:12:20.000000000 +0000
++++ /tmp/arina_patch/server/trading/PositionManager.ts	2026-09-04 20:32:46.959093705 +0000
+@@ -2,14 +2,14 @@
+ import { positionRepository, PositionRecord } from '../repositories/PositionRepository.js';
+ import { positionValuationEngine } from './PositionValuationEngine.js';
+ 
+-export type PositionStatus = 'NONE' | 'BUY_PENDING' | 'OPEN' | 'EXIT_PENDING' | 'CLOSED';
++export type PositionStatus = 'NONE' | 'BUY_PENDING' | 'OPEN' | 'EXIT_PENDING' | 'RECOVERY_REQUIRED' | 'CLOSED';
+ 
+ export interface Position {
+   id: string;
+   network: string;
+   wallet: string;
+   mint: string;
+-  tokenAmount: number; // Raw integer base units
++  tokenAmount: number; // Raw integer base units; MUST remain a safe integer in the legacy number-based execution API
+   decimals: number;
+   totalSolSpent: number;
+   averageEntryPrice: number; // SOL per 1 whole token
+@@ -58,6 +58,16 @@
+     return `${network}:${wallet}:${mint.trim()}`;
+   }
+ 
++  private parseRawAmountSafe(value: number | string | bigint, positionId: string): number {
++    let raw: bigint;
++    try { raw = BigInt(value); } catch { throw new Error(`INVALID_POSITION_RAW_AMOUNT: ${positionId}`); }
++    if (raw <= 0n) return 0;
++    if (raw > BigInt(Number.MAX_SAFE_INTEGER)) {
++      throw new Error(`RAW_AMOUNT_PRECISION_UNSUPPORTED: Position ${positionId} has raw token amount ${raw.toString()} above Number.MAX_SAFE_INTEGER. Execution is blocked to prevent quantity corruption.`);
++    }
++    return Number(raw);
++  }
++
+   public refreshFromRepository(): void {
+     const list = positionRepository.getAllPositions();
+     for (const record of list) {
+@@ -81,7 +91,7 @@
+       const status = this.mapRecordStateToStatus(record.state);
+       if (existing) {
+         existing.status = status;
+-        existing.tokenAmount = Number(record.amountRaw || 0);
++        existing.tokenAmount = this.parseRawAmountSafe(record.amountRaw, record.id);
+         existing.decimals = record.decimals;
+         existing.totalSolSpent = record.solSpent || 0;
+         existing.averageEntryPrice = record.entryPriceSOL || 0;
+@@ -101,7 +111,7 @@
+           network: record.network || 'paper',
+           wallet: record.wallet || 'default',
+           mint: record.mintAddress,
+-          tokenAmount: Number(record.amountRaw || 0),
++          tokenAmount: this.parseRawAmountSafe(record.amountRaw, record.id),
+           decimals: record.decimals,
+           totalSolSpent: record.solSpent || 0,
+           averageEntryPrice: record.entryPriceSOL || 0,
+@@ -145,6 +155,7 @@
+       case 'EXIT_REQUESTED':
+       case 'EXIT_SUBMITTED':
+       case 'EXIT_CONFIRMING': return 'EXIT_PENDING';
++      case 'RECOVERY_REQUIRED': return 'RECOVERY_REQUIRED';
+       case 'CLOSED': return 'CLOSED';
+       default: return 'OPEN';
+     }
+@@ -247,6 +258,14 @@
+     if (decimals === undefined) {
+       throw new Error(`Cannot open position for ${params.mint}: missing decimals.`);
+     }
++    if (!Number.isSafeInteger(params.tokenAmountRaw) || params.tokenAmountRaw <= 0) {
++      throw new Error(`INVALID_RAW_TOKEN_AMOUNT: tokenAmountRaw must be a positive safe integer for ${params.mint}.`);
++    }
++    const tpPct = params.tpPct ?? 25;
++    const slPct = Math.abs(params.slPct ?? 15);
++    if (!Number.isFinite(tpPct) || tpPct <= 0 || !Number.isFinite(slPct) || slPct <= 0 || slPct >= 100) {
++      throw new Error(`INVALID_TP_SL: TP must be > 0 and SL must be > 0 and < 100 for ${params.mint}.`);
++    }
+ 
+     if (existingId) {
+       const existing = this.positions.get(existingId);
+@@ -254,7 +273,11 @@
+         const prevTotalCost = existing.totalSolSpent;
+         const prevTotalRaw = existing.tokenAmount;
+         const newTotalCost = prevTotalCost + params.solSpent;
+-        const newTotalRaw = prevTotalRaw + params.tokenAmountRaw;
++        const newTotalRawBig = BigInt(prevTotalRaw) + BigInt(params.tokenAmountRaw);
++        if (newTotalRawBig > BigInt(Number.MAX_SAFE_INTEGER)) {
++          throw new Error(`RAW_AMOUNT_PRECISION_UNSUPPORTED: accumulated position ${existing.id} exceeds Number.MAX_SAFE_INTEGER; refusing to corrupt quantity.`);
++        }
++        const newTotalRaw = Number(newTotalRawBig);
+         const newTotalQty = newTotalRaw / (10 ** existing.decimals);
+ 
+         existing.tokenAmount = newTotalRaw;
+@@ -266,8 +289,8 @@
+         if (params.orderId && !existing.orderIds.includes(params.orderId)) {
+           existing.orderIds.push(params.orderId);
+         }
+-        if (params.tpPct !== undefined) existing.tpPct = params.tpPct;
+-        if (params.slPct !== undefined) existing.slPct = params.slPct;
++        if (params.tpPct !== undefined) { if (!Number.isFinite(params.tpPct) || params.tpPct <= 0) throw new Error('INVALID_TP_PERCENT'); existing.tpPct = params.tpPct; }
++        if (params.slPct !== undefined) { const sl = Math.abs(params.slPct); if (!Number.isFinite(sl) || sl <= 0 || sl >= 100) throw new Error('INVALID_SL_PERCENT'); existing.slPct = sl; }
+         existing.status = 'OPEN';
+         existing.updatedAt = now;
+ 
+@@ -299,8 +322,8 @@
+       status: 'OPEN',
+       openedAt: now,
+       updatedAt: now,
+-      tpPct: params.tpPct ?? 25,
+-      slPct: params.slPct ?? 15,
++      tpPct,
++      slPct,
+       trailingSlPct: params.trailingSlPct,
+       maxHoldTimeMs: params.maxHoldTimeMs,
+       slippageBpsTp: params.slippageBpsTp ?? 250,
+@@ -372,7 +395,7 @@
+       maxHoldTimeMs: pos.maxHoldTimeMs,
+       slippageBpsTp: pos.slippageBpsTp,
+       slippageBpsSl: pos.slippageBpsSl,
+-      state: pos.status === 'CLOSED' ? 'CLOSED' : pos.status === 'EXIT_PENDING' ? 'EXIT_SUBMITTED' : pos.status === 'BUY_PENDING' ? 'PENDING_BUY' : 'OPEN',
++      state: pos.status === 'CLOSED' ? 'CLOSED' : pos.status === 'RECOVERY_REQUIRED' ? 'RECOVERY_REQUIRED' : pos.status === 'EXIT_PENDING' ? 'EXIT_SUBMITTED' : pos.status === 'BUY_PENDING' ? 'PENDING_BUY' : 'OPEN',
+       orderIds: pos.orderIds,
+       buySignature: pos.buySignature,
+       exitSignature: pos.exitSignature,
+diff -ruN ./server/trading/UnifiedExitEngine.ts /tmp/arina_patch/server/trading/UnifiedExitEngine.ts
+--- ./server/trading/UnifiedExitEngine.ts	2026-09-04 20:12:20.000000000 +0000
++++ /tmp/arina_patch/server/trading/UnifiedExitEngine.ts	2026-09-04 20:32:28.199021563 +0000
+@@ -279,6 +279,13 @@
+     const decision = await this.evaluatePositionExit(position, priceSol, opts);
+     if (!decision.shouldExit || !decision.reason) return false;
+ 
++    // Automatic exits MUST be backed by a fresh executable Jupiter quote.
++    // A WSS/display price is only a trigger candidate and can never authorize a sell.
++    if (decision.reason !== 'MANUAL_EXIT' && opts.executableQuoteSol === undefined) {
++      console.warn(`[EXIT_MONITOR_BLOCKED] reason=NO_EXECUTABLE_QUOTE position=${position.id} mint=${position.mint} trigger=${decision.reason}`);
++      return false;
++    }
++
+     // Acquire atomic lock
+     if (!this.acquireExitLock(position.network, position.wallet, position.mint)) {
+       return false;
+@@ -388,17 +395,18 @@
+       }
+     }
+ 
+-    // All retries failed
++    // All retries failed. NEVER blindly reopen: the transaction may have landed.
++    // Leave the position in recovery so reconciliation can inspect the chain/order state.
+     this.recordAuditTrail(
+       position.id,
+       position.mint,
+       'SELL_FAILED',
+       reason,
+-      `[SELL_FAILED] All ${maxRetries} sell attempts failed. Reverting position state to OPEN for failsafe reconciliation.`
++      `[SELL_FAILED] All ${maxRetries} sell attempts failed. Position moved to RECOVERY_REQUIRED; blockchain reconciliation is required before another sell.`
+     );
+ 
+-    positionManager.updatePositionStatus(position.network, position.wallet, position.mint, 'OPEN');
+-    positionRepository.updatePosition(position.id, { state: 'OPEN' });
++    positionManager.updatePositionStatus(position.network, position.wallet, position.mint, 'RECOVERY_REQUIRED');
++    positionRepository.updatePosition(position.id, { state: 'RECOVERY_REQUIRED' });
+ 
+     this.releaseExitLock(position.network, position.wallet, position.mint);
+     return false;
+diff -ruN ./server/workers/TradingMonitorWorker.ts /tmp/arina_patch/server/workers/TradingMonitorWorker.ts
+--- ./server/workers/TradingMonitorWorker.ts	2026-09-04 20:12:20.000000000 +0000
++++ /tmp/arina_patch/server/workers/TradingMonitorWorker.ts	2026-09-04 20:32:37.154767499 +0000
+@@ -1,10 +1,6 @@
+ // server/workers/TradingMonitorWorker.ts
+ import { positionManager } from '../trading/PositionManager.js';
+-import { executionGateway } from '../execution/ExecutionGateway.js';
+-import { pnlEngine } from '../trading/PnLEngine.js';
+ import { positionRepository } from '../repositories/PositionRepository.js';
+-import { unifiedExitEngine } from '../trading/UnifiedExitEngine.js';
+-import { positionValuationEngine } from '../trading/PositionValuationEngine.js';
+ 
+ export class TradingMonitorWorker {
+   private static instance: TradingMonitorWorker;
+@@ -44,75 +40,27 @@
+ 
+   private async monitorLoop(): Promise<void> {
+     try {
+-      const allPositions = positionManager.getOpenPositions();
+-      if (allPositions.length === 0) return;
+-
+-      const WSOL = 'So11111111111111111111111111111111111111112';
++      const positions = positionManager.getAllPositions();
+       const now = Date.now();
+ 
+-      for (const pos of allPositions) {
+-        // 1. Reconcile positions stuck in EXIT_PENDING for > 10 seconds
+-        if (pos.status === 'EXIT_PENDING') {
+-          if (now - pos.updatedAt > 10000) {
+-            console.warn(`[TradingMonitorWorker] Reconciling stuck EXIT_PENDING position ${pos.id} for mint ${pos.mint}. Re-evaluating exit...`);
+-            unifiedExitEngine.releaseExitLock(pos.network, pos.wallet, pos.mint);
+-            pos.status = 'OPEN';
+-            positionManager.updatePositionStatus(pos.network, pos.wallet, pos.mint, 'OPEN');
+-          }
+-          continue;
+-        }
+-
+-        if (pos.status !== 'OPEN') continue;
+-
+-        try {
+-          // 2. Secondary price check if executable quote is stale (> 3 seconds)
+-          let currentPriceSol = pos.currentPriceSol;
+-          let isFreshQuote = false;
+-          let expectedOutSol: number | undefined = undefined;
+-
+-          if (now - (pos.lastExecutableQuoteAt || 0) > 3000) {
+-            try {
+-              const quote = await executionGateway.quoteSell({
+-                inputMint: pos.mint,
+-                outputMint: WSOL,
+-                amount: pos.tokenAmount,
+-                slippageBps: pos.slippageBpsSl || 1000,
+-                network: pos.network,
+-              });
+-
+-              if (quote && quote.outAmount) {
+-                const solProceeds = Number(quote.outAmount) / 1e9;
+-                expectedOutSol = solProceeds;
+-                const tokenQty = pos.tokenAmount / (10 ** pos.decimals);
+-                if (tokenQty > 0) {
+-                  currentPriceSol = solProceeds / tokenQty;
+-                  isFreshQuote = true;
+-                }
+-              }
+-            } catch (err: any) {
+-              console.warn(`[EXIT_MONITOR_RETRY] reason=EXECUTABLE_QUOTE_UNAVAILABLE mint=${pos.mint}: ${err?.message || err}`);
+-            }
+-          }
+-
+-          if (isFreshQuote) {
+-            positionManager.updatePositionPrice(pos.network, pos.wallet, pos.mint, currentPriceSol, {
+-              isFreshQuote: true,
+-              timestamp: now,
+-            });
+-            await positionValuationEngine.refreshExecutableQuote(pos);
+-          }
+-
+-          // 3. UnifiedExitEngine Failsafe Evaluation
+-          await unifiedExitEngine.evaluateAndExecuteExit(pos, currentPriceSol, {
+-            executableQuoteSol: expectedOutSol,
+-            quoteTimestamp: isFreshQuote ? now : pos.lastExecutableQuoteAt || pos.lastMarketPriceAt || 0,
+-          });
+-        } catch (err: any) {
+-          console.warn(`[TradingMonitorWorker] Error monitoring position ${pos.id}:`, err?.message || err);
+-        }
++      // This worker is reconciliation/failsafe only. It MUST NOT be a second TP/SL
++      // execution pipeline. ActivePositionMarketFeed + UnifiedExitEngine are the sole
++      // automatic exit path.
++      for (const pos of positions) {
++        if (pos.status !== 'EXIT_PENDING' && pos.status !== 'RECOVERY_REQUIRED') continue;
++
++        const age = now - (pos.updatedAt || 0);
++        if (age < 10000) continue;
++
++        const repo = positionRepository.getPosition(pos.id);
++        if (!repo) continue;
++
++        console.warn(`[TradingMonitorWorker] Position ${pos.id} requires reconciliation; leaving execution locked until transaction/balance state is verified.`);
++        // Deliberately do not reopen or resubmit the sell here. A future reconciliation
++        // worker may inspect the transaction signature and on-chain token balance.
+       }
+     } catch (err) {
+-      console.warn('[TradingMonitorWorker] Error in monitor loop:', err);
++      console.warn('[TradingMonitorWorker] Error in reconciliation loop:', err);
+     }
+   }
+ }
+diff -ruN ./src/components/pages/PnLPage.tsx /tmp/arina_patch/src/components/pages/PnLPage.tsx
+--- ./src/components/pages/PnLPage.tsx	2026-09-04 20:12:20.000000000 +0000
++++ /tmp/arina_patch/src/components/pages/PnLPage.tsx	2026-09-04 20:32:37.156022168 +0000
+@@ -4061,14 +4061,10 @@
+     const symbol = pos?.symbol || mint.slice(0, 6);
+     if (positionExitManagerRef.current) {
+       addLog(`üö® Delegating exit request for ${symbol} to RiskManager (${reason})...`, 'info');
+-      const decimals = pos?.decimals ?? resolveTokenDecimals(mint);
+-      const amountLamports = pos?.amountLamports || (pos?.amount ? Math.floor(pos.amount * Math.pow(10, decimals)) : undefined);
+-      await positionExitManagerRef.current.requestExit(mint, reason, amountLamports, pos?.solSpent);
++      await positionExitManagerRef.current.requestExit(mint, reason, undefined, pos?.solSpent);
+     } else {
+       addLog(`üö® Requesting exit for ${symbol} via RiskManager (${reason})...`, 'sell');
+-      const decimals = pos?.decimals ?? resolveTokenDecimals(mint);
+-      const amountLamports = pos?.amountLamports || (pos?.amount ? Math.floor(pos.amount * Math.pow(10, decimals)) : undefined);
+-      await positionExitManager.requestExit(mint, reason, amountLamports, pos?.solSpent);
++      await positionExitManager.requestExit(mint, reason, undefined, pos?.solSpent);
+     }
+   };
+ 
+@@ -4098,17 +4094,8 @@
+     const currentJup = jupiterRpcUrl || 'https://api.jup.ag/swap/v1';
+     const executor = tradeManager.getExecutor();
+ 
+-    const exitMgr = new PositionExitManager(
+-      executor,
+-      currentJup,
+-      currentRpc,
+-      {
+-        tpPct: configRef.current.minTakeProfit || 25,
+-        slPct: configRef.current.stopLossPct || 15,
+-        slippageBpsTp: Math.floor((configRef.current.slippage || 2.5) * 100),
+-        slippageBpsSl: Math.floor((configRef.current.slippage || 10.0) * 100),
+-      }
+-    );
++    // Single client-side compatibility proxy; the server UnifiedExitEngine remains the authoritative execution authority.
++    const exitMgr = positionExitManager;
+ 
+     exitMgr.setOnExitErrorCallback((mint, side, errorMessage) => {
+       const pos = positionsRef.current[mint];

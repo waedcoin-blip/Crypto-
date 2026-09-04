@@ -279,6 +279,13 @@ export class UnifiedExitEngine {
     const decision = await this.evaluatePositionExit(position, priceSol, opts);
     if (!decision.shouldExit || !decision.reason) return false;
 
+    // Automatic exits MUST be backed by a fresh executable Jupiter quote.
+    // A WSS/display price is only a trigger candidate and can never authorize a sell.
+    if (decision.reason !== 'MANUAL_EXIT' && opts.executableQuoteSol === undefined) {
+      console.warn(`[EXIT_MONITOR_BLOCKED] reason=NO_EXECUTABLE_QUOTE position=${position.id} mint=${position.mint} trigger=${decision.reason}`);
+      return false;
+    }
+
     // Acquire atomic lock
     if (!this.acquireExitLock(position.network, position.wallet, position.mint)) {
       return false;
@@ -388,17 +395,18 @@ export class UnifiedExitEngine {
       }
     }
 
-    // All retries failed
+    // All retries failed. NEVER blindly reopen: the transaction may have landed.
+    // Leave the position in recovery so reconciliation can inspect the chain/order state.
     this.recordAuditTrail(
       position.id,
       position.mint,
       'SELL_FAILED',
       reason,
-      `[SELL_FAILED] All ${maxRetries} sell attempts failed. Reverting position state to OPEN for failsafe reconciliation.`
+      `[SELL_FAILED] All ${maxRetries} sell attempts failed. Position moved to RECOVERY_REQUIRED; blockchain reconciliation is required before another sell.`
     );
 
-    positionManager.updatePositionStatus(position.network, position.wallet, position.mint, 'OPEN');
-    positionRepository.updatePosition(position.id, { state: 'OPEN' });
+    positionManager.updatePositionStatus(position.network, position.wallet, position.mint, 'RECOVERY_REQUIRED');
+    positionRepository.updatePosition(position.id, { state: 'RECOVERY_REQUIRED' });
 
     this.releaseExitLock(position.network, position.wallet, position.mint);
     return false;

@@ -116,6 +116,10 @@ export class ActivePositionMarketFeed {
     const mint = position.mint;
     const now = Date.now();
     const WSOL = 'So11111111111111111111111111111111111111112';
+    if (!Number.isSafeInteger(position.tokenAmount) || position.tokenAmount <= 0) {
+      console.error(`[EXIT_MONITOR_BLOCKED] reason=UNSAFE_RAW_AMOUNT mint=${mint} amount=${String(position.tokenAmount)}`);
+      return;
+    }
 
     // 1. Try Executable Quote from Jupiter if candidate price is missing or quote is older than 1000ms
     const quoteAge = now - (position.lastExecutableQuoteAt || 0);
@@ -172,9 +176,8 @@ export class ActivePositionMarketFeed {
 
       positionValuationEngine.updateFromMarketEvent(updatedPos, candidatePrice, now, 'WSS');
 
-      await unifiedExitEngine.evaluateAndExecuteExit(updatedPos, candidatePrice, {
-        quoteTimestamp: now,
-      });
+      // WSS price is a trigger candidate only. Automatic TP/SL execution requires
+      // a fresh executable Jupiter quote inside the authoritative exit engine.
       return;
     }
 
@@ -189,9 +192,8 @@ export class ActivePositionMarketFeed {
         { timestamp: now }
       ) || position;
 
-      await unifiedExitEngine.evaluateAndExecuteExit(updatedPos, bcState.priceSolPerToken, {
-        quoteTimestamp: now,
-      });
+      // Bonding-curve price is informational until a fresh executable sell quote
+      // confirms that the TP/SL condition is actually executable.
       return;
     }
 

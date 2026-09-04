@@ -9,7 +9,7 @@ export interface FastExitParams {
   network: string;
   wallet: string;
   mint: string;
-  amountRaw: number;
+  amountRaw: number; // legacy execution API; must be a safe integer
   slippageBps: number;
   reason: string;
   clientRequestId: string;
@@ -41,6 +41,10 @@ export class FastExitExecutor {
         inAmountRaw: params.amountRaw,
         outAmountRaw: 0,
       };
+    }
+
+    if (!Number.isSafeInteger(params.amountRaw) || params.amountRaw <= 0) {
+      return { success: false, error: 'INVALID_RAW_AMOUNT: Refusing to execute an unsafe/non-positive raw token amount.', inputMint: params.mint, outputMint: 'So11111111111111111111111111111111111111112', inAmountRaw: params.amountRaw, outAmountRaw: 0 };
     }
 
     // 1. Create Sell Order in OrderManager
