@@ -250,21 +250,39 @@ export class TradingEngine {
       };
     }
 
+    if (position.status === 'EXIT_PENDING' || position.status === 'RECOVERY_REQUIRED') {
+      return {
+        success: false,
+        error: `EXIT_ALREADY_PENDING: Position ${position.id} has status ${position.status} and is already in exit/recovery pipeline.`,
+      };
+    }
+
+    const rawAmount = params.amountRaw !== undefined ? params.amountRaw : position.tokenAmount;
+    if (rawAmount <= 0) {
+      return {
+        success: false,
+        error: `INVALID_AMOUNT: Sell amount must be greater than 0, received ${rawAmount}`,
+      };
+    }
+
     // Delegate authorization and execution entirely to UnifiedExitEngine
-    const success = await unifiedExitEngine.executeManualExit(position.id);
-    if (success) {
+    const exitRes = await unifiedExitEngine.executeManualExitDetail(position.id);
+    if (exitRes.success) {
       // Re-fetch the closed/closing position details to return response
       const updatedPos = positionManager.getPositionById(position.id);
       return {
         success: true,
         positionId: position.id,
-        signature: updatedPos?.exitSignature,
+        signature: exitRes.signature || updatedPos?.exitSignature,
+        result: exitRes.result,
       };
     } else {
       return {
         success: false,
         positionId: position.id,
-        error: `EXIT_FAILED: Manual sell request rejected or already in exit pipeline.`,
+        signature: exitRes.signature,
+        error: exitRes.error || `EXIT_FAILED: Manual sell request rejected or already in exit pipeline.`,
+        result: exitRes.result,
       };
     }
   }

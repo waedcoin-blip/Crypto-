@@ -59,13 +59,13 @@ export class PositionManager {
   }
 
   private parseRawAmountSafe(value: number | string | bigint, positionId: string): number {
-    let raw: bigint;
-    try { raw = BigInt(value); } catch { throw new Error(`INVALID_POSITION_RAW_AMOUNT: ${positionId}`); }
-    if (raw <= 0n) return 0;
-    if (raw > BigInt(Number.MAX_SAFE_INTEGER)) {
-      throw new Error(`RAW_AMOUNT_PRECISION_UNSUPPORTED: Position ${positionId} has raw token amount ${raw.toString()} above Number.MAX_SAFE_INTEGER. Execution is blocked to prevent quantity corruption.`);
+    let safeBigInt: bigint;
+    try { safeBigInt = BigInt(value); } catch { throw new Error(`INVALID_POSITION_RAW_AMOUNT: ${positionId}`); }
+    if (safeBigInt <= 0n) return 0;
+    if (safeBigInt > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error(`RAW_AMOUNT_PRECISION_UNSUPPORTED: Position ${positionId} has raw token amount ${safeBigInt.toString()} above Number.MAX_SAFE_INTEGER. Execution is blocked to prevent quantity corruption.`);
     }
-    return Number(raw);
+    return Number(safeBigInt);
   }
 
   public refreshFromRepository(): void {

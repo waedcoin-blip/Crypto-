@@ -42,18 +42,9 @@ import { DEFAULT_HELIUS_RPC, DEFAULT_HELIUS_WS, HELIUS_API_KEY, SOL_MINT, USDC_M
 if (typeof window !== 'undefined') {
   try {
     if (!(window as any).Buffer) {
-      Object.defineProperty(window, 'Buffer', {
-        value: Buffer,
-        writable: true,
-        configurable: true,
-        enumerable: true
-      });
-    }
-  } catch {
-    try {
       (window as any).Buffer = Buffer;
-    } catch {}
-  }
+    }
+  } catch {}
 }
 
 const JUPITER_SWAP = 'https://api.jup.ag/swap/v1/swap';
@@ -2115,7 +2106,7 @@ export const PnLPage = ({
             for (const p of posData.openPositions) {
               const mint = p.mintAddress || p.id;
               const val = valuations[mint] || valuations[p.id];
-              const decimals = p.decimals !== undefined ? p.decimals : (val?.tokenDecimals ?? 6);
+              const decimals = p.decimals !== undefined ? p.decimals : (val?.tokenDecimals !== undefined ? val.tokenDecimals : 0);
               const amount = p.amountRaw ? Number(p.amountRaw) / (10 ** decimals) : 0;
               const entryCostSol = val?.entryCostSol ?? p.solSpent ?? 0;
               const currentPriceSol = val?.currentPriceSol ?? p.currentPriceSOL ?? p.entryPriceSOL ?? 0;

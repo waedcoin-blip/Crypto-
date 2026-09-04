@@ -32,19 +32,20 @@ export class CanonicalEventNormalizer {
    */
   public static normalizePulseTrade(rawTrade: any, network: string = 'mainnet'): UnifiedMarketEvent | null {
     if (!rawTrade) return null;
+    const tradePayload = rawTrade;
 
-    const mint = (rawTrade.tokenAddress || rawTrade.token || rawTrade.mint || '').trim();
+    const mint = (tradePayload.tokenAddress || tradePayload.token || tradePayload.mint || '').trim();
     if (!mint || !tokenMintResolver.isValidPublicKey(mint)) {
       return null;
     }
 
     const now = Date.now();
-    const side = (rawTrade.type || rawTrade.side || 'BUY').toUpperCase() === 'SELL' ? 'SELL' : 'BUY';
-    const signature = rawTrade.signature || undefined;
-    const solAmount = rawTrade.solAmount ? String(rawTrade.solAmount) : (rawTrade.amount ? String(rawTrade.amount) : undefined);
-    const priceSol = rawTrade.priceSol ? Number(rawTrade.priceSol) : (rawTrade.price ? Number(rawTrade.price) : undefined);
+    const side = (tradePayload.type || tradePayload.side || 'BUY').toUpperCase() === 'SELL' ? 'SELL' : 'BUY';
+    const signature = tradePayload.signature || undefined;
+    const solAmount = tradePayload.solAmount ? String(tradePayload.solAmount) : (tradePayload.amount ? String(tradePayload.amount) : undefined);
+    const priceSol = tradePayload.priceSol ? Number(tradePayload.priceSol) : (tradePayload.price ? Number(tradePayload.price) : undefined);
 
-    const eventId = this.generateEventId('PULSE_FEED', mint, signature, rawTrade.slot, side);
+    const eventId = this.generateEventId('PULSE_FEED', mint, signature, tradePayload.slot, side);
     const correlationId = this.generateCorrelationId('PULSE_FEED', mint);
 
     return {
@@ -53,18 +54,18 @@ export class CanonicalEventNormalizer {
       source: 'PULSE_FEED',
       mint,
       signature,
-      slot: rawTrade.slot ? Number(rawTrade.slot) : undefined,
-      timestamp: rawTrade.timestamp || now,
+      slot: tradePayload.slot ? Number(tradePayload.slot) : undefined,
+      timestamp: tradePayload.timestamp || now,
       eventType: side === 'BUY' ? 'BUY' : 'SELL',
       side,
-      tokenAmount: rawTrade.tokenAmount ? String(rawTrade.tokenAmount) : undefined,
+      tokenAmount: tradePayload.tokenAmount ? String(tradePayload.tokenAmount) : undefined,
       solAmount,
       priceSol,
-      buyer: side === 'BUY' ? (rawTrade.fromAccount || rawTrade.buyer || rawTrade.wallet) : undefined,
-      seller: side === 'SELL' ? (rawTrade.fromAccount || rawTrade.seller || rawTrade.wallet) : undefined,
+      buyer: side === 'BUY' ? (tradePayload.fromAccount || tradePayload.buyer || tradePayload.wallet) : undefined,
+      seller: side === 'SELL' ? (tradePayload.fromAccount || tradePayload.seller || tradePayload.wallet) : undefined,
       confidence: 1.0,
-      symbol: rawTrade.symbol || rawTrade.tokenSymbol || rawTrade.name || undefined,
-      raw: rawTrade,
+      symbol: tradePayload.symbol || tradePayload.tokenSymbol || tradePayload.name || undefined,
+      raw: tradePayload,
       network,
     };
   }

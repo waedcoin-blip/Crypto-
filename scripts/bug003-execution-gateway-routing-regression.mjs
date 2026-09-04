@@ -49,6 +49,7 @@ async function main() {
   assert(paperExec.constructor.name === 'PaperTradeExecutor', 'Must return PaperTradeExecutor');
 
   console.log('ALL BUG-003 REGRESSION TESTS PASSED SUCCESSFULLY!');
+  process.exit(0);
 }
 
 main().catch(err => {

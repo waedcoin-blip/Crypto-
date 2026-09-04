@@ -291,18 +291,19 @@ export class UnifiedExitEngine {
       return false;
     }
 
-    return this.authorizeAndExecuteWithRetry(position, decision.reason, decision.message || '', 3);
+    const res = await this.authorizeAndExecuteWithRetry(position, decision.reason, decision.message || '', 3);
+    return res.success;
   }
 
   /**
    * Authorizes and executes exit with fast retry loop on transient execution failures.
    */
-  private async authorizeAndExecuteWithRetry(
+  public async authorizeAndExecuteWithRetry(
     position: Position,
     reason: string,
     message: string,
     maxRetries: number = 3
-  ): Promise<boolean> {
+  ): Promise<{ success: boolean; signature?: string; error?: string; result?: any }> {
     const startTime = Date.now();
     console.log(`[UnifiedExitEngine] [EXIT_AUTHORIZED] position=${position.id} mint=${position.mint} reason=${reason}: ${message}`);
 
@@ -315,6 +316,7 @@ export class UnifiedExitEngine {
 
     let attempt = 0;
     const slippageBps = reason === 'TAKE_PROFIT' ? position.slippageBpsTp : position.slippageBpsSl;
+    let lastResult: any = undefined;
 
     while (attempt < maxRetries) {
       attempt++;
@@ -337,6 +339,7 @@ export class UnifiedExitEngine {
           reason,
           clientRequestId: `exit_${position.mint.slice(0, 8)}_${Date.now()}_att${attempt}`,
         });
+        lastResult = result;
 
         if (result.success) {
           const elapsedMs = Date.now() - startTime;
@@ -365,10 +368,36 @@ export class UnifiedExitEngine {
           );
 
           this.releaseExitLock(position.network, position.wallet, position.mint);
-          return true;
+          return { success: true, signature: result.signature, result };
         }
 
-        // Execution failed
+        // Check if the transaction was broadcasted or entered ambiguous/recovery state
+        if (result.signature || result.status === 'RECOVERY_REQUIRED' || result.isAmbiguous) {
+          console.warn(`[UnifiedExitEngine] Sell broadcast or timed out (sig=${result.signature}). Retaining EXIT_PENDING status.`);
+          positionManager.updatePositionStatus(position.network, position.wallet, position.mint, 'EXIT_PENDING', {
+            exitSignature: result.signature,
+          });
+          positionRepository.updatePosition(position.id, {
+            state: 'EXIT_REQUESTED',
+            exitSignature: result.signature,
+          });
+          this.recordAuditTrail(
+            position.id,
+            position.mint,
+            'SELL_FAILED',
+            reason,
+            `[SELL_BROADCAST_TIMEOUT] Transaction broadcasted (${result.signature}) but confirmation timed out. Status: EXIT_PENDING.`
+          );
+          // Do not release lock to prevent double sell
+          return {
+            success: false,
+            signature: result.signature,
+            error: result.error || 'CONFIRMATION_TIMEOUT: Sell broadcast but confirmation timed out',
+            result,
+          };
+        }
+
+        // Execution failed before broadcast
         const isTransient = result.error?.includes('QUOTE_UNAVAILABLE') || result.error?.includes('TIMEOUT') || result.error?.includes('SLIPPAGE');
         this.recordAuditTrail(
           position.id,
@@ -409,20 +438,36 @@ export class UnifiedExitEngine {
     positionRepository.updatePosition(position.id, { state: 'RECOVERY_REQUIRED' });
 
     this.releaseExitLock(position.network, position.wallet, position.mint);
-    return false;
+    return {
+      success: false,
+      signature: lastResult?.signature,
+      error: lastResult?.error || `[SELL_FAILED] All ${maxRetries} sell attempts failed.`,
+      result: lastResult,
+    };
   }
 
   /**
    * Public interface to execute a manual exit request.
    */
   public async executeManualExit(positionId: string): Promise<boolean> {
+    const res = await this.executeManualExitDetail(positionId);
+    return res.success;
+  }
+
+  public async executeManualExitDetail(positionId: string): Promise<{ success: boolean; signature?: string; error?: string; result?: any }> {
     const position = positionManager.getPositionById(positionId);
     if (!position || position.status !== 'OPEN') {
-      return false;
+      return {
+        success: false,
+        error: position ? `Position in non-open status (${position.status})` : 'Position not found',
+      };
     }
 
     if (!this.acquireExitLock(position.network, position.wallet, position.mint)) {
-      return false; // Exit is already locked/running
+      return {
+        success: false,
+        error: 'EXIT_ALREADY_PENDING: Exit lock already held for this position',
+      };
     }
 
     return this.authorizeAndExecuteWithRetry(position, 'MANUAL_EXIT', 'Manual exit requested by user.', 3);
