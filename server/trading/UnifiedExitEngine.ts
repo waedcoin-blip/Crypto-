@@ -6,6 +6,7 @@ import { pnlEngine } from './PnLEngine.js';
 import { criteriaRepository } from '../repositories/CriteriaRepository.js';
 import { fastExitExecutor } from '../execution/FastExitExecutor.js';
 import { positionRepository } from '../repositories/PositionRepository.js';
+import { activePositionMarketFeed } from '../market/ActivePositionMarketFeed.js';
 
 export interface ExitConfig {
   takeProfitPercent: number;
@@ -27,7 +28,7 @@ export interface AuditTrailEntry {
   timestamp: number;
   positionId: string;
   mint: string;
-  event: 'EXIT_EVALUATED' | 'EXIT_TRIGGERED' | 'EXIT_AUTHORIZED' | 'SELL_SUBMITTED' | 'SELL_CONFIRMED' | 'SELL_FAILED' | 'POSITION_CLOSED';
+  event: 'EXIT_EVALUATED' | 'EXIT_TRIGGERED' | 'EXIT_AUTHORIZED' | 'SELL_SUBMITTED' | 'SELL_CONFIRMED' | 'SELL_FAILED' | 'SELL_RETRY' | 'POSITION_CLOSED';
   reason?: string;
   message?: string;
   metadata?: Record<string, any>;
@@ -52,20 +53,23 @@ export class UnifiedExitEngine {
   }
 
   /**
-   * Starts the UnifiedExitEngine and subscribes to the MarketEventBus for real-time triggers.
+   * Starts the UnifiedExitEngine, ActivePositionMarketFeed, and subscribes to MarketEventBus.
    */
   public start(): void {
     if (this.isRunning) return;
     this.isRunning = true;
 
-    // Subscribe to MarketEventBus
+    // 1. Start Priority P1 Active Position Market Feed
+    activePositionMarketFeed.start();
+
+    // 2. Subscribe to MarketEventBus
     this.unsubscribeBus = marketEventBus.subscribe((event: MarketEvent) => {
       this.onMarketEvent(event).catch(err => {
         console.error('[UnifiedExitEngine] Error handling market event:', err);
       });
     });
 
-    console.log('[UnifiedExitEngine] Authorized server-side Exit Engine active and subscribed to MarketEventBus.');
+    console.log('[UnifiedExitEngine] Sole authoritative server-side Exit Engine active and subscribed to MarketEventBus.');
     this.recordGlobalLog('SYSTEM', 'Exit Engine started successfully.');
   }
 
@@ -75,38 +79,55 @@ export class UnifiedExitEngine {
       this.unsubscribeBus();
       this.unsubscribeBus = null;
     }
+    activePositionMarketFeed.stop();
     console.log('[UnifiedExitEngine] Stopped.');
   }
 
   /**
-   * Main real-time handler for streaming market updates.
+   * Main real-time handler for streaming market updates from MarketEventBus.
    */
   private async onMarketEvent(event: MarketEvent): Promise<void> {
     if (!this.isRunning) return;
 
-    // Use event.mint to find any active open position
-    const mint = event.mint || (event as any).candidateMint;
-    if (!mint) return;
-
     const openPositions = positionManager.getOpenPositions();
-    const position = openPositions.find(p => p.mint.toLowerCase() === mint.toLowerCase());
-    
-    if (!position || position.status !== 'OPEN') return;
+    if (openPositions.length === 0) return;
 
-    // Determine the current price in SOL
-    let priceSol = event.price;
-    if (!priceSol || priceSol <= 0) {
-      // If price is not explicitly in the event, trigger re-evaluation using position manager's tracked price
-      priceSol = position.currentPriceSol;
+    // Check event mint or account keys against open positions
+    const activeMap = new Map<string, Position>();
+    for (const pos of openPositions) {
+      activeMap.set(pos.mint.toLowerCase(), pos);
     }
 
-    if (!priceSol || priceSol <= 0) return;
+    let targetPositions: Position[] = [];
 
-    // Update position price and recalculate PnL in the repository
-    positionManager.updatePositionPrice(position.network, position.wallet, position.mint, priceSol);
+    if (event.mint && activeMap.has(event.mint.toLowerCase())) {
+      targetPositions.push(activeMap.get(event.mint.toLowerCase())!);
+    }
 
-    // Evaluate exit
-    await this.evaluateAndExecuteExit(position, priceSol);
+    if (event.accountKeys && event.accountKeys.length > 0) {
+      for (const key of event.accountKeys) {
+        const keyLower = key.toLowerCase();
+        if (activeMap.has(keyLower)) {
+          const pos = activeMap.get(keyLower)!;
+          if (!targetPositions.includes(pos)) {
+            targetPositions.push(pos);
+          }
+        }
+      }
+    }
+
+    if (targetPositions.length === 0) return;
+
+    for (const position of targetPositions) {
+      if (position.status !== 'OPEN') continue;
+
+      let priceSol = event.price || position.currentPriceSol;
+      if (!priceSol || priceSol <= 0) continue;
+
+      // Update position price and evaluate exit immediately
+      positionManager.updatePositionPrice(position.network, position.wallet, position.mint, priceSol);
+      await this.evaluateAndExecuteExit(position, priceSol);
+    }
   }
 
   /**
@@ -128,6 +149,7 @@ export class UnifiedExitEngine {
 
   /**
    * Core exit decision-making logic evaluating all risk scenarios.
+   * STRICT: 100% full exit ONLY. No partial take profit.
    */
   public async evaluatePositionExit(
     position: Position,
@@ -140,8 +162,13 @@ export class UnifiedExitEngine {
     const pnl = pnlEngine.calculatePnL(position, currentPriceSol);
     const criteria = criteriaRepository.getActiveCriteriaSync() as any;
 
-    // Load configurations from position or criteria
-    const tpThreshold = position.tpPct !== undefined ? position.tpPct : (criteria.minTakeProfit || 25);
+    // Gross PnL percentage calculation (market price vs entry price)
+    const grossPnlPct = position.averageEntryPrice > 0
+      ? ((currentPriceSol - position.averageEntryPrice) / position.averageEntryPrice) * 100
+      : pnl.unrealizedPnlPercent;
+
+    // Load configurations from position or criteria (Standardized: positive magnitude for SL)
+    const tpThreshold = position.tpPct !== undefined ? Math.abs(position.tpPct) : (criteria.minTakeProfit || 25);
     const slThreshold = position.slPct !== undefined ? -Math.abs(position.slPct) : -(Math.abs(criteria.stopLoss || 15));
 
     // Trailing stop loss configuration
@@ -149,48 +176,48 @@ export class UnifiedExitEngine {
     const trailingStopPercent = criteria.trailingStopPercent ?? 5;
     const trailingActivationPercent = criteria.trailingActivationPercent ?? 10;
 
-    // 1. Check Max Hold Time (EMERGENCY_EXIT / MAX_HOLD)
+    // 1. Check Max Hold Time (EMERGENCY_EXIT)
     if (position.maxHoldTimeMs && position.maxHoldTimeMs > 0) {
       const heldMs = Date.now() - position.openedAt;
       if (heldMs >= position.maxHoldTimeMs) {
         return {
           shouldExit: true,
           reason: 'EMERGENCY_EXIT',
-          message: `Max hold time exceeded (${(heldMs / 1000).toFixed(0)}s >= ${(position.maxHoldTimeMs / 1000).toFixed(0)}s)`,
+          executablePnlPct: grossPnlPct,
+          message: `[EXIT_MONITOR] Max hold time exceeded (${(heldMs / 1000).toFixed(0)}s >= ${(position.maxHoldTimeMs / 1000).toFixed(0)}s)`,
         };
       }
     }
 
     // 2. Check Stop Loss threshold (STOP_LOSS)
-    if (pnl.unrealizedPnlPercent <= slThreshold) {
+    if (grossPnlPct <= slThreshold) {
       return {
         shouldExit: true,
         reason: 'STOP_LOSS',
-        executablePnlPct: pnl.unrealizedPnlPercent,
-        message: `Stop loss triggered: ${pnl.unrealizedPnlPercent.toFixed(2)}% <= ${slThreshold.toFixed(2)}%`,
+        executablePnlPct: grossPnlPct,
+        message: `[SL_TRIGGERED] Stop loss triggered: ${grossPnlPct.toFixed(2)}% <= ${slThreshold.toFixed(2)}%`,
       };
     }
 
     // 3. Check Take Profit threshold (TAKE_PROFIT)
-    // Note: No partial take-profit! Any TP triggers a 100% position sell.
-    if (pnl.unrealizedPnlPercent >= tpThreshold) {
+    if (grossPnlPct >= tpThreshold) {
       return {
         shouldExit: true,
         reason: 'TAKE_PROFIT',
-        executablePnlPct: pnl.unrealizedPnlPercent,
-        message: `Take profit triggered: +${pnl.unrealizedPnlPercent.toFixed(2)}% >= +${tpThreshold.toFixed(2)}% (100% full exit)`,
+        executablePnlPct: grossPnlPct,
+        message: `[TP_TRIGGERED] Take profit triggered: +${grossPnlPct.toFixed(2)}% >= +${tpThreshold.toFixed(2)}% (100% full exit)`,
       };
     }
 
     // 4. Check Trailing Stop (TRAILING_STOP)
     if (trailingEnabled && position.highestPnlPct >= trailingActivationPercent) {
-      const dropFromPeak = position.highestPnlPct - pnl.unrealizedPnlPercent;
+      const dropFromPeak = position.highestPnlPct - grossPnlPct;
       if (dropFromPeak >= trailingStopPercent) {
         return {
           shouldExit: true,
           reason: 'TRAILING_STOP',
-          executablePnlPct: pnl.unrealizedPnlPercent,
-          message: `Trailing stop triggered: peak +${position.highestPnlPct.toFixed(2)}%, dropped by ${dropFromPeak.toFixed(2)}% >= ${trailingStopPercent}%`,
+          executablePnlPct: grossPnlPct,
+          message: `[TRAILING_STOP] Trailing stop triggered: peak +${position.highestPnlPct.toFixed(2)}%, dropped by ${dropFromPeak.toFixed(2)}% >= ${trailingStopPercent}%`,
         };
       }
     }
@@ -210,108 +237,129 @@ export class UnifiedExitEngine {
     const decision = await this.evaluatePositionExit(position, priceSol);
     if (!decision.shouldExit || !decision.reason) return false;
 
-    // Acquire lock and authorize exit
+    // Acquire atomic lock
     if (!this.acquireExitLock(position.network, position.wallet, position.mint)) {
       return false;
     }
 
-    return this.authorizeAndExecute(position, decision.reason, decision.message || '');
+    return this.authorizeAndExecuteWithRetry(position, decision.reason, decision.message || '', 3);
   }
 
   /**
-   * Triggers an authorized exit command via FastExitExecutor.
+   * Authorizes and executes exit with fast retry loop on transient execution failures.
    */
-  private async authorizeAndExecute(
+  private async authorizeAndExecuteWithRetry(
     position: Position,
     reason: string,
-    message: string
+    message: string,
+    maxRetries: number = 3
   ): Promise<boolean> {
     const startTime = Date.now();
-    console.log(`[UnifiedExitEngine] [AUTHORIZE_EXIT] position=${position.id} mint=${position.mint} reason=${reason}: ${message}`);
+    console.log(`[UnifiedExitEngine] [EXIT_AUTHORIZED] position=${position.id} mint=${position.mint} reason=${reason}: ${message}`);
 
-    // Update position status to EXIT_PENDING to lock out any other triggers
+    // Update position status to EXIT_PENDING to lock out duplicate triggers
     positionManager.updatePositionStatus(position.network, position.wallet, position.mint, 'EXIT_PENDING');
     positionRepository.updatePosition(position.id, { state: 'EXIT_REQUESTED' });
 
     this.recordAuditTrail(position.id, position.mint, 'EXIT_TRIGGERED', reason, message);
-    this.recordAuditTrail(position.id, position.mint, 'EXIT_AUTHORIZED', reason, `Authorized for fast execution.`);
+    this.recordAuditTrail(position.id, position.mint, 'EXIT_AUTHORIZED', reason, `Authorized for 100% exit execution.`);
 
-    try {
-      this.recordAuditTrail(position.id, position.mint, 'SELL_SUBMITTED', reason, `Submitting sell order for ${position.tokenAmount} tokens.`);
-      
-      const slippageBps = reason === 'TAKE_PROFIT' ? position.slippageBpsTp : position.slippageBpsSl;
+    let attempt = 0;
+    const slippageBps = reason === 'TAKE_PROFIT' ? position.slippageBpsTp : position.slippageBpsSl;
 
-      // Delegate pure execution to FastExitExecutor
-      const result = await fastExitExecutor.executeSell({
-        positionId: position.id,
-        network: position.network,
-        wallet: position.wallet,
-        mint: position.mint,
-        amountRaw: position.tokenAmount,
-        slippageBps,
-        reason,
-        clientRequestId: `exit_${position.mint.slice(0, 8)}_${Date.now()}`,
-      });
-
-      if (result.success) {
-        this.recordAuditTrail(
-          position.id,
-          position.mint,
-          'SELL_CONFIRMED',
-          reason,
-          `On-chain sell confirmed. Sig: ${result.signature}`,
-          { signature: result.signature, elapsedMs: Date.now() - startTime }
-        );
-
-        // Authoritatively close position ONLY upon verified on-chain confirmation
-        positionManager.updatePositionStatus(position.network, position.wallet, position.mint, 'CLOSED', {
-          exitSignature: result.signature,
-          netProceedsSol: result.netProceedsSol,
-        });
-
-        this.recordAuditTrail(
-          position.id,
-          position.mint,
-          'POSITION_CLOSED',
-          reason,
-          `Position closed in local registry and database. Net Proceeds: ${result.netProceedsSol} SOL.`,
-          { netProceedsSol: result.netProceedsSol }
-        );
-
-        this.releaseExitLock(position.network, position.wallet, position.mint);
-        return true;
-      } else {
-        this.recordAuditTrail(
-          position.id,
-          position.mint,
-          'SELL_FAILED',
-          reason,
-          `On-chain sell failed: ${result.error || 'Unknown error'}`
-        );
-
-        // Revert status to OPEN to allow retries
-        positionManager.updatePositionStatus(position.network, position.wallet, position.mint, 'OPEN');
-        positionRepository.updatePosition(position.id, { state: 'OPEN' });
-        
-        this.releaseExitLock(position.network, position.wallet, position.mint);
-        return false;
-      }
-    } catch (err: any) {
+    while (attempt < maxRetries) {
+      attempt++;
       this.recordAuditTrail(
         position.id,
         position.mint,
-        'SELL_FAILED',
+        'SELL_SUBMITTED',
         reason,
-        `Unexpected error during sell execution: ${err.message || err}`
+        `[SELL_SUBMITTED] Attempt ${attempt}/${maxRetries} submitting sell order for ${position.tokenAmount} raw tokens.`
       );
 
-      // Revert status to OPEN
-      positionManager.updatePositionStatus(position.network, position.wallet, position.mint, 'OPEN');
-      positionRepository.updatePosition(position.id, { state: 'OPEN' });
+      try {
+        const result = await fastExitExecutor.executeSell({
+          positionId: position.id,
+          network: position.network,
+          wallet: position.wallet,
+          mint: position.mint,
+          amountRaw: position.tokenAmount,
+          slippageBps,
+          reason,
+          clientRequestId: `exit_${position.mint.slice(0, 8)}_${Date.now()}_att${attempt}`,
+        });
 
-      this.releaseExitLock(position.network, position.wallet, position.mint);
-      return false;
+        if (result.success) {
+          const elapsedMs = Date.now() - startTime;
+          this.recordAuditTrail(
+            position.id,
+            position.mint,
+            'SELL_CONFIRMED',
+            reason,
+            `[SELL_CONFIRMED] On-chain sell confirmed in ${elapsedMs}ms. Signature: ${result.signature}`,
+            { signature: result.signature, elapsedMs }
+          );
+
+          // Authoritatively close position ONLY upon verified on-chain confirmation
+          positionManager.updatePositionStatus(position.network, position.wallet, position.mint, 'CLOSED', {
+            exitSignature: result.signature,
+            netProceedsSol: result.netProceedsSol,
+          });
+
+          this.recordAuditTrail(
+            position.id,
+            position.mint,
+            'POSITION_CLOSED',
+            reason,
+            `[POSITION_CLOSED] Position closed authoritatively. Realized PnL: ${result.netProceedsSol !== undefined ? (result.netProceedsSol - position.totalSolSpent).toFixed(4) : 0} SOL.`,
+            { netProceedsSol: result.netProceedsSol }
+          );
+
+          this.releaseExitLock(position.network, position.wallet, position.mint);
+          return true;
+        }
+
+        // Execution failed
+        const isTransient = result.error?.includes('QUOTE_UNAVAILABLE') || result.error?.includes('TIMEOUT') || result.error?.includes('SLIPPAGE');
+        this.recordAuditTrail(
+          position.id,
+          position.mint,
+          'SELL_RETRY',
+          reason,
+          `[TP_SL_RETRY: ${isTransient ? 'EXECUTABLE_QUOTE_UNAVAILABLE' : 'SELL_FAILED'}] Attempt ${attempt} failed: ${result.error}. Retrying...`
+        );
+
+        if (attempt < maxRetries) {
+          await new Promise(r => setTimeout(r, 200 * attempt)); // Short backoff
+        }
+      } catch (err: any) {
+        this.recordAuditTrail(
+          position.id,
+          position.mint,
+          'SELL_RETRY',
+          reason,
+          `[TP_SL_RETRY: UNEXPECTED_ERROR] Unexpected error on attempt ${attempt}: ${err.message || err}. Retrying...`
+        );
+        if (attempt < maxRetries) {
+          await new Promise(r => setTimeout(r, 200 * attempt));
+        }
+      }
     }
+
+    // All retries failed
+    this.recordAuditTrail(
+      position.id,
+      position.mint,
+      'SELL_FAILED',
+      reason,
+      `[SELL_FAILED] All ${maxRetries} sell attempts failed. Reverting position state to OPEN for failsafe reconciliation.`
+    );
+
+    positionManager.updatePositionStatus(position.network, position.wallet, position.mint, 'OPEN');
+    positionRepository.updatePosition(position.id, { state: 'OPEN' });
+
+    this.releaseExitLock(position.network, position.wallet, position.mint);
+    return false;
   }
 
   /**
@@ -327,7 +375,7 @@ export class UnifiedExitEngine {
       return false; // Exit is already locked/running
     }
 
-    return this.authorizeAndExecute(position, 'MANUAL_EXIT', 'Manual exit requested by user.');
+    return this.authorizeAndExecuteWithRetry(position, 'MANUAL_EXIT', 'Manual exit requested by user.', 3);
   }
 
   /**

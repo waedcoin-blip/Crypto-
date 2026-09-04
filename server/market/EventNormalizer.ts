@@ -1,4 +1,5 @@
 // server/market/EventNormalizer.ts
+import { tokenMintResolver } from './TokenMintResolver.js';
 
 export interface MarketEvent {
   network: string;
@@ -34,12 +35,28 @@ export class EventNormalizer {
         else if (k && typeof k.toString === 'function') accountKeys.push(k.toString());
       }
 
+      const logs: string[] = tx.meta?.logMessages || tx.transaction?.meta?.logMessages || tx.logs || [];
+      let extractedMint: string | undefined = undefined;
+
+      // 1. Try log extraction
+      const logMint = tokenMintResolver.extractMintFromLogs(logs);
+      if (logMint) {
+        extractedMint = logMint;
+      } else {
+        // 2. Scan account keys for first valid candidate mint
+        const candidates = tokenMintResolver.extractCandidateMintsFromAccountKeys(accountKeys);
+        if (candidates.length > 0) {
+          extractedMint = candidates[0];
+        }
+      }
+
       return {
         network,
         slot,
         signature: typeof signature === 'string' ? signature : String(signature),
         timestamp: now,
         type: 'ON_CHAIN_TX',
+        mint: extractedMint,
         accountKeys,
         raw: update,
       };
@@ -60,3 +77,4 @@ export class EventNormalizer {
     return null;
   }
 }
+

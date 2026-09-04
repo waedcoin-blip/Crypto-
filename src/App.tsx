@@ -842,14 +842,21 @@ function App() {
         if (!silent) setTradingStatus('✅ Telegram Alert Sent Successfully');
       } else {
         const errorMsg = data.error || data.description || 'Unknown error';
-        if (!silent) setTradingStatus(`❌ Telegram Error: ${errorMsg}`);
-        console.error('Telegram API error response:', data);
-        throw new Error(`Telegram Error: ${errorMsg}`);
+        if (!silent) {
+          setTradingStatus(`❌ Telegram Error: ${errorMsg}`);
+          throw new Error(`Telegram Error: ${errorMsg}`);
+        } else {
+          console.warn('Telegram API notification suppressed:', errorMsg);
+        }
       }
     } catch (err: any) {
-      if (!silent) setTradingStatus('❌ Local Proxy Connection Error');
-      console.error('Telegram Proxy Fetch failed. This usually means the backend server is unreachable or the request was blocked by the browser. Details:', err);
-      throw err;
+      if (!silent) {
+        setTradingStatus('❌ Telegram Alert Failed');
+        console.error('Telegram Proxy Fetch failed:', err);
+        throw err;
+      } else {
+        console.warn('Silent Telegram alert caught:', err.message || err);
+      }
     } finally {
       if (!silent) setTimeout(() => setTradingStatus(null), 5000);
     }

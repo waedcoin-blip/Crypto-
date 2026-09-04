@@ -27,13 +27,27 @@ router.post('/', asyncHandler(async (req, res) => {
     throw new BadGatewayError('Telegram proxying requires valid CORS origin');
   }
 
-  const token = (typeof req.body?.token === 'string' && req.body.token.trim())
+  let token = (typeof req.body?.token === 'string' && req.body.token.trim())
     ? req.body.token.trim()
     : (process.env.TELEGRAM_BOT_TOKEN || '').trim();
+
+  // Clean up user token input if they included URLs or 'bot' prefix
+  if (token.includes('telegram.org/bot') || token.includes('t.me/bot')) {
+    token = token.replace(/.*bot/i, '');
+  } else {
+    token = token.replace(/^bot_?/i, '');
+  }
+  token = token.replace(/^["']|["']$/g, '').trim();
 
   if (!token) {
     throw new ValidationError('Telegram bot token not configured (specify in settings or TELEGRAM_BOT_TOKEN)');
   }
+
+  // Telegram bot token format check: <digits>:<alphanumeric>
+  if (!/^\d+:[A-Za-z0-9_-]{20,}$/.test(token)) {
+    throw new ValidationError('Invalid Telegram Bot Token format. Bot tokens from @BotFather look like 123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ');
+  }
+
   const chatId = validateRequiredString(req.body.chatId, 'chatId');
   const text = validateRequiredString(req.body.text, 'text');
 
@@ -66,8 +80,15 @@ router.post('/', asyncHandler(async (req, res) => {
     }
 
     if (!response.ok) {
-      const description = result?.description || result?.error || `HTTP ${response.status}`;
-      const errMsg = `Telegram API error (${response.status}): ${description}`;
+      let description = result?.description || result?.error;
+      if (response.status === 404) {
+        description = 'Telegram Bot Token not found. Please check your Bot Token from @BotFather in settings.';
+      } else if (response.status === 401) {
+        description = 'Unauthorized Telegram Bot Token. Please check your Bot Token from @BotFather.';
+      } else if (response.status === 400 && (description?.includes('chat not found') || description?.includes('chat_id'))) {
+        description = 'Telegram Chat ID not found or invalid. Make sure you started a conversation with the bot first.';
+      }
+      const errMsg = description || `Telegram API error (${response.status})`;
       if (response.status === 404 || response.status === 401 || response.status === 400 || response.status === 403) {
         throw new ValidationError(errMsg);
       }

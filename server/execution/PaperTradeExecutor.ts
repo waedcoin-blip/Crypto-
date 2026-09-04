@@ -87,7 +87,12 @@ export class PaperTradeExecutor implements TradeExecutor {
   }
 
   async sell(params: ExecuteParams): Promise<ExecutionResult> {
-    const currentTokenRaw = this.paperTokenBalances.get(params.inputMint) || 0;
+    let currentTokenRaw = this.paperTokenBalances.get(params.inputMint) || 0;
+    if (currentTokenRaw < params.amount) {
+      // Auto-credit paper token balance for paper positions
+      currentTokenRaw = params.amount;
+      this.paperTokenBalances.set(params.inputMint, currentTokenRaw);
+    }
     const sellAmountRaw = Math.min(params.amount, currentTokenRaw);
 
     if (sellAmountRaw <= 0) {

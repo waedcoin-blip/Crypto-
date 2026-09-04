@@ -1,7 +1,5 @@
 // server/workers/TradingMonitorWorker.ts
 import { positionManager } from '../trading/PositionManager.js';
-import { riskManager } from '../trading/RiskManager.js';
-import { tradingEngine } from '../trading/TradingEngine.js';
 import { executionGateway } from '../execution/ExecutionGateway.js';
 import { pnlEngine } from '../trading/PnLEngine.js';
 import { positionRepository } from '../repositories/PositionRepository.js';
@@ -23,7 +21,7 @@ export class TradingMonitorWorker {
   public async start(): Promise<void> {
     if (this.isRunning) return;
     this.isRunning = true;
-    console.log('[TradingMonitorWorker] Trading Monitor Worker initialized with RiskManager & TradingEngine.');
+    console.log('[TradingMonitorWorker] Failsafe Reconciliation Worker started (2s interval).');
 
     this.timer = setInterval(() => {
       if (this.monitorLoopRunning) return;
@@ -45,38 +43,52 @@ export class TradingMonitorWorker {
 
   private async monitorLoop(): Promise<void> {
     try {
-      const openPositions = positionManager.getOpenPositions();
-      if (openPositions.length === 0) return;
+      const allPositions = positionManager.getOpenPositions();
+      if (allPositions.length === 0) return;
 
       const WSOL = 'So11111111111111111111111111111111111111112';
+      const now = Date.now();
 
-      for (const pos of openPositions) {
+      for (const pos of allPositions) {
+        // 1. Reconcile positions stuck in EXIT_PENDING for > 10 seconds
+        if (pos.status === 'EXIT_PENDING') {
+          if (now - pos.updatedAt > 10000) {
+            console.warn(`[TradingMonitorWorker] Reconciling stuck EXIT_PENDING position ${pos.id} for mint ${pos.mint}. Re-evaluating exit...`);
+            unifiedExitEngine.releaseExitLock(pos.network, pos.wallet, pos.mint);
+            pos.status = 'OPEN';
+            positionManager.updatePositionStatus(pos.network, pos.wallet, pos.mint, 'OPEN');
+          }
+          continue;
+        }
+
         if (pos.status !== 'OPEN') continue;
 
         try {
-          // 1. Fetch current market quote to determine live price
+          // 2. Secondary price check if position price is stale (> 3 seconds)
           let currentPriceSol = pos.currentPriceSol;
-          try {
-            const quote = await executionGateway.quoteSell({
-              inputMint: pos.mint,
-              outputMint: WSOL,
-              amount: pos.tokenAmount,
-              slippageBps: pos.slippageBpsTp,
-              network: pos.network,
-            });
+          if (now - pos.updatedAt > 3000) {
+            try {
+              const quote = await executionGateway.quoteSell({
+                inputMint: pos.mint,
+                outputMint: WSOL,
+                amount: pos.tokenAmount,
+                slippageBps: pos.slippageBpsSl || 1000,
+                network: pos.network,
+              });
 
-            if (quote && quote.outAmount) {
-              const solProceeds = Number(quote.outAmount) / 1e9;
-              const tokenQty = pos.tokenAmount / (10 ** pos.decimals);
-              if (tokenQty > 0) {
-                currentPriceSol = solProceeds / tokenQty;
+              if (quote && quote.outAmount) {
+                const solProceeds = Number(quote.outAmount) / 1e9;
+                const tokenQty = pos.tokenAmount / (10 ** pos.decimals);
+                if (tokenQty > 0) {
+                  currentPriceSol = solProceeds / tokenQty;
+                }
               }
+            } catch {
+              // Use existing price if quote fails temporarily
             }
-          } catch {
-            // Use existing price if quote fails temporarily
           }
 
-          // 2. Update PnL metrics & repository
+          // 3. Update PnL metrics & repository
           const pnl = pnlEngine.calculatePnL(pos, currentPriceSol);
           pos.currentPriceSol = currentPriceSol;
           pos.unrealizedPnl = pnl.unrealizedPnlSol;
@@ -92,7 +104,7 @@ export class TradingMonitorWorker {
             highestPnLPct: pos.highestPnlPct,
           });
 
-          // 3. UnifiedExitEngine Evaluation & Execution Authority
+          // 4. UnifiedExitEngine Failsafe Evaluation
           await unifiedExitEngine.evaluateAndExecuteExit(pos, currentPriceSol);
         } catch (err: any) {
           console.warn(`[TradingMonitorWorker] Error monitoring position ${pos.id}:`, err?.message || err);
@@ -105,4 +117,5 @@ export class TradingMonitorWorker {
 }
 
 export const tradingMonitorWorker = TradingMonitorWorker.getInstance();
+
 

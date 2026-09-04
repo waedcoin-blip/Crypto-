@@ -53,6 +53,8 @@ import criteriaRouter from "./server/routes/criteria.js";
 import tradingRouter from "./server/routes/trading.js";
 import { requireAuth } from "./server/middleware/auth.js";
 import { entryEngine } from "./server/trading/EntryEngine.js";
+import { unifiedExitEngine } from "./server/trading/UnifiedExitEngine.js";
+import { tradingMonitorWorker } from "./server/workers/TradingMonitorWorker.js";
 
 // Process level crash guard
 process.on("uncaughtException", (err: any) => {
@@ -131,8 +133,10 @@ async function startServer() {
     });
   }
 
-  // Start Server-Side Authoritative EntryEngine
+  // Start Server-Side Authoritative Engines
   entryEngine.start();
+  unifiedExitEngine.start();
+  tradingMonitorWorker.start();
 
   return app;
 }
