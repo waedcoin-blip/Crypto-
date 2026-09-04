@@ -813,8 +813,8 @@ const TerminalConsole: React.FC<TerminalConsoleProps> = ({ logs, setLogs, retent
             const activePos = tokenInfo && positions ? positions[tokenInfo.mint] : undefined;
             const isPositionOpen = activePos && (activePos.state === 'OPEN' || activePos.amount > 0);
             const posPnlPct = activePos ? (
-              activePos.pnlPercent !== undefined 
-                ? activePos.pnlPercent 
+              activePos.realNetPnl !== undefined 
+                ? activePos.realNetPnl 
                 : (activePos.buyPrice > 0 && activePos.currentPrice > 0 ? ((activePos.currentPrice - activePos.buyPrice) / activePos.buyPrice) * 100 : 0)
             ) : 0;
             const isPosProfit = posPnlPct > 0;
@@ -2110,9 +2110,9 @@ export const PnLPage = ({
               const amount = p.amountRaw ? Number(p.amountRaw) / (10 ** decimals) : 0;
               const entryCostSol = val?.entryCostSol ?? p.solSpent ?? 0;
               const currentPriceSol = val?.currentPriceSol ?? p.currentPriceSOL ?? p.entryPriceSOL ?? 0;
-              const executableValueSol = amount > 0 && currentPriceSol > 0 ? amount * currentPriceSol : (val?.executableValueSol ?? 0);
-              const pnlSol = entryCostSol > 0 ? executableValueSol - entryCostSol : (val?.pnlSol ?? 0);
-              const pnlPercent = entryCostSol > 0 ? (pnlSol / entryCostSol) * 100 : (val?.pnlPercent ?? 0);
+              const executableValueSol = val?.executableValueSol ?? (amount > 0 && currentPriceSol > 0 ? amount * currentPriceSol : undefined);
+              const pnlSol = val?.pnlSol ?? (executableValueSol !== undefined && entryCostSol > 0 ? executableValueSol - entryCostSol : undefined);
+              const pnlPercent = val?.pnlPercent ?? (entryCostSol > 0 && pnlSol !== undefined ? (pnlSol / entryCostSol) * 100 : undefined);
 
               mapped[mint] = {
                 symbol: p.mintAddress ? p.mintAddress.slice(0, 6) : 'TOKEN',
@@ -6707,24 +6707,23 @@ const checkTokenCriteria = (mint: string): {
                     }
 
                     const token = tokenMetrics[mint];
-                    const liveMarketPrice = token?.priceNative ? (typeof token.priceNative === 'number' ? token.priceNative : parseFloat(String(token.priceNative))) : 0;
-                    const displayPrice = (liveMarketPrice > 0 ? liveMarketPrice : 0) || pos.currentPriceSol || pos.currentPrice || pos.buyPrice || 0;
-                    const entryCostSol = pos.entryCostSol !== undefined && pos.entryCostSol > 0 ? pos.entryCostSol : (pos.solSpent || 0);
-                    const currentPriceSol = displayPrice > 0 ? displayPrice : (pos.currentPriceSol || pos.buyPrice || 0);
-                    const currentValueSol = pos.amount > 0 && currentPriceSol > 0 ? pos.amount * currentPriceSol : 0;
-                    const pnlSol = entryCostSol > 0 ? currentValueSol - entryCostSol : 0;
-                    const pnlPercent = entryCostSol > 0 ? (pnlSol / entryCostSol) * 100 : 0;
+                    const rawPrice = (token?.priceNative ? parseFloat(String(token.priceNative)) : 0) || pos.currentPriceSol || pos.currentPrice || pos.buyPrice || 0;
+                    const displayPrice = rawPrice;
+                    const entryCostSol = pos.entryCostSol !== undefined ? pos.entryCostSol : (pos.solSpent || 0);
+                    const currentPriceSol = pos.currentPriceSol !== undefined ? pos.currentPriceSol : displayPrice;
+                    const executableValueSol = pos.executableValueSol !== undefined ? pos.executableValueSol : (pos.amount > 0 && currentPriceSol > 0 ? pos.amount * currentPriceSol : 0);
+                    const pnlSol = pos.pnlSol !== undefined ? pos.pnlSol : (executableValueSol - entryCostSol);
+                    const pnlPercent = pos.pnlPercent !== undefined ? pos.pnlPercent : (entryCostSol > 0 ? (pnlSol / entryCostSol) * 100 : 0);
                     return !isNaN(pnlPercent) && isFinite(pnlPercent);
                   }).map(([mint, pos]: [string, Position]) => {
                     const token = tokenMetrics[mint];
-                    const liveMarketPrice = token?.priceNative ? (typeof token.priceNative === 'number' ? token.priceNative : parseFloat(String(token.priceNative))) : 0;
-                    const displayPrice = (liveMarketPrice > 0 ? liveMarketPrice : 0) || pos.currentPriceSol || pos.currentPrice || pos.buyPrice || 0;
-                    const entryCostSol = pos.entryCostSol !== undefined && pos.entryCostSol > 0 ? pos.entryCostSol : (pos.solSpent || 0);
-                    const currentPriceSol = displayPrice > 0 ? displayPrice : (pos.currentPriceSol || pos.buyPrice || 0);
-                    const currentValueSol = pos.amount > 0 && currentPriceSol > 0 ? pos.amount * currentPriceSol : 0;
-                    const executableValueSol = currentValueSol;
-                    const pnlSol = entryCostSol > 0 ? currentValueSol - entryCostSol : 0;
-                    const pnlPercent = entryCostSol > 0 ? (pnlSol / entryCostSol) * 100 : 0;
+                    const rawPrice = (token?.priceNative ? parseFloat(String(token.priceNative)) : 0) || pos.currentPriceSol || pos.currentPrice || pos.buyPrice || 0;
+                    const displayPrice = rawPrice;
+                    const entryCostSol = pos.entryCostSol !== undefined ? pos.entryCostSol : (pos.solSpent || 0);
+                    const currentPriceSol = pos.currentPriceSol !== undefined ? pos.currentPriceSol : displayPrice;
+                    const executableValueSol = pos.executableValueSol !== undefined ? pos.executableValueSol : (pos.amount > 0 && currentPriceSol > 0 ? pos.amount * currentPriceSol : 0);
+                    const pnlSol = pos.pnlSol !== undefined ? pos.pnlSol : (executableValueSol - entryCostSol);
+                    const pnlPercent = pos.pnlPercent !== undefined ? pos.pnlPercent : (entryCostSol > 0 ? (pnlSol / entryCostSol) * 100 : 0);
                     const entryPriceSol = pos.amount > 0 && entryCostSol > 0 ? entryCostSol / pos.amount : (pos.buyPrice || 0);
                     const valStatus = pos.status || (displayPrice > 0 ? 'LIVE' : 'UNAVAILABLE');
                     const valSource = pos.source || (token?.priceNative ? 'LASERSTREAM' : 'JUPITER');
