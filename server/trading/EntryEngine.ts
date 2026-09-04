@@ -16,6 +16,7 @@ import { migrationDetector } from './MigrationDetector.js';
 import { candidateRegistry } from '../market/CandidateRegistry.js';
 import { sourceHealthMonitor } from '../market/SourceHealthMonitor.js';
 import { EventSource } from '../types/index.js';
+import { canAuthorizeLiveBuy, isLiveDiscoverySource } from '../patches/unifiedBuyContract.js';
 
 export type PipelineStage =
   | 'DISCOVERED'
@@ -187,7 +188,24 @@ export class EntryEngine {
     const src = (triggerSource in { PULSE_FEED: 1, LASERSTREAM: 1, HELIUS_WSS: 1, HELIUS_GRPC: 1, PUMP_FUN: 1, DEXSCREENER: 1, MANUAL: 1, SIMULATION: 1 } ? triggerSource : 'MANUAL') as EventSource;
 
     try {
-      console.log(`[PIPELINE STAGE] DISCOVERED mint=${mint} (src=${triggerSource})`);
+      // Invariant: Simulation/Mock data must never authorize LIVE BUY
+      if (network === 'mainnet' || this.isLiveTrading) {
+        if (triggerSource === 'SIMULATION' || !canAuthorizeLiveBuy(triggerSource, 'LIVE')) {
+          console.warn(`[${src} BUY BLOCKED] mint=${mint} source=${src} correlationId=none timestamp=${Date.now()} reason="Simulation/invalid source cannot authorize live BUY"`);
+          candidateRegistry.updateCandidateState(network, mint, 'REJECTED', {
+            rejectionReason: `SOURCE_NOT_AUTHORIZED_FOR_LIVE_BUY: ${triggerSource}`,
+          });
+          return {
+            mintAddress: mint,
+            symbol: 'UNKNOWN',
+            stage: 'REJECTED',
+            status: 'SKIPPED',
+            error: `Simulation/invalid source ${triggerSource} cannot authorize live BUY`,
+          };
+        }
+      }
+
+      console.log(`[${src} CANDIDATE] mint=${mint} source=${src} correlationId=none timestamp=${Date.now()} reason="Registered in candidate registry"`);
       candidateRegistry.updateCandidateState(network, mint, 'ANALYZING');
 
       // 1. DISCOVERED -> ENRICHING
@@ -200,6 +218,7 @@ export class EntryEngine {
       // 2. READY_FOR_EVALUATION -> Score opportunity
       entryDecisionLedger.recordScored();
       const scoreBreakdown = opportunityScorer.scoreCandidate(candidate);
+      console.log(`[${src} MOMENTUM] mint=${mint} source=${src} correlationId=none timestamp=${Date.now()} reason="Opportunity score ${scoreBreakdown.totalScore}/100 calculated"`);
 
       // 3. Load active criteria
       let activeCriteria: Partial<CriteriaConfig> = {};
@@ -220,6 +239,7 @@ export class EntryEngine {
         autoSniperEnabled: this.autoSniperEnabled,
       });
 
+      console.log(`[${src} CRITERIA] mint=${mint} source=${src} correlationId=none timestamp=${Date.now()} reason="${decision.decision}"`);
       console.log(`[PIPELINE STAGE] ServerEntryGate DECISION mint=${mint} allowed=${decision.allowed} score=${scoreBreakdown.totalScore}/100 blockingReasons=${JSON.stringify(decision.blockingReasons)}`);
 
       // 5. Record telemetry
@@ -236,12 +256,14 @@ export class EntryEngine {
       let finalStage: PipelineStage = decision.allowed ? 'BUY_SIGNAL' : 'REJECTED';
 
       if (!decision.allowed) {
+        console.log(`[${src} BUY BLOCKED] mint=${mint} source=${src} correlationId=none timestamp=${Date.now()} reason="${decision.blockingReasons[0] || 'CRITERIA_FAILED'}"`);
         candidateRegistry.updateCandidateState(network, mint, 'REJECTED', {
           score: scoreBreakdown.totalScore,
           rejectionReason: decision.blockingReasons[0] || 'CRITERIA_FAILED',
         });
         sourceHealthMonitor.recordRejection(src, decision.blockingReasons[0]);
       } else {
+        console.log(`[${src} BUY AUTH] mint=${mint} source=${src} correlationId=none timestamp=${Date.now()} reason="Entry gate passed with score ${scoreBreakdown.totalScore}"`);
         candidateRegistry.updateCandidateState(network, mint, 'BUY_AUTHORIZED', {
           score: scoreBreakdown.totalScore,
         });
@@ -249,7 +271,7 @@ export class EntryEngine {
 
         finalStage = 'BUY_LOCKED';
         console.log(
-          `[BUY ATTEMPT] mint=${mint} symbol=${candidate.symbol} amountSol=${decision.buyAmountSol} network=${network} wallet=${wallet}`
+          `[${src} BUY ATTEMPT] mint=${mint} symbol=${candidate.symbol} amountSol=${decision.buyAmountSol} network=${network} wallet=${wallet}`
         );
 
         // Mandatory Final Pre-Broadcast Revalidation
@@ -263,7 +285,7 @@ export class EntryEngine {
         });
 
         if (!reval.allowed) {
-          console.warn(`[PRE-BROADCAST REVALIDATION ABORT] mint=${mint} reason="${reval.reason}"`);
+          console.warn(`[${src} BUY BLOCKED] mint=${mint} source=${src} correlationId=none timestamp=${Date.now()} reason="REVALIDATION_ABORT: ${reval.reason}"`);
           candidateRegistry.updateCandidateState(network, mint, 'REJECTED', {
             rejectionReason: `REVALIDATION_ABORT: ${reval.reason}`,
           });
@@ -325,7 +347,7 @@ export class EntryEngine {
             positionId: tradeResponse.positionId,
           });
           sourceHealthMonitor.recordBuyConfirmed(src);
-          console.log(`[PIPELINE STAGE] CONFIRMED BUY mint=${mint} orderId=${tradeResponse.orderId} sig=${tradeResponse.signature}`);
+          console.log(`[${src} BUY CONFIRMED] mint=${mint} source=${src} correlationId=none timestamp=${Date.now()} reason="Order ${tradeResponse.orderId} confirmed, signature ${tradeResponse.signature}"`);
           console.log(
             `[BUY CONFIRMED] mint=${mint} symbol=${candidate.symbol} orderId=${tradeResponse.orderId} sig=${tradeResponse.signature}`
           );
@@ -335,7 +357,7 @@ export class EntryEngine {
             rejectionReason: tradeResponse.error || 'BUY_FAILED',
           });
           sourceHealthMonitor.recordBuyFailed(src, tradeResponse.error);
-          console.log(`[PIPELINE STAGE] BUY FAILED mint=${mint} error=${tradeResponse.error}`);
+          console.log(`[${src} BUY BLOCKED] mint=${mint} source=${src} correlationId=none timestamp=${Date.now()} reason="${tradeResponse.error || 'BUY_FAILED'}"`);
           console.warn(
             `[BUY FAILED] mint=${mint} symbol=${candidate.symbol} error=${tradeResponse.error}`
           );

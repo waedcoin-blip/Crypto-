@@ -3,8 +3,8 @@ import { Trade } from '../types';
 import { systemLogger } from '../services/systemLogger';
 import { tokenLifecycleManager } from '../services/TokenLifecycleManager';
 
-export type TradeSource = 'PULSE_FEED' | 'WSS' | 'HELIUS_WSS' | 'HELIUS_GRPC' | 'DEXSCREENER' | 'LASERSTREAM' | 'MANUAL' | 'SIMULATION';
-export type TradeType = 'BUY' | 'SELL';
+export type TradeSource = 'PULSE_FEED' | 'WSS' | 'HELIUS_WSS' | 'HELIUS_GRPC' | 'DEXSCREENER' | 'LASERSTREAM' | 'PUMP_FUN' | 'MANUAL' | 'SIMULATION';
+export type TradeType = 'BUY' | 'SELL' | 'TOKEN_DISCOVERED' | 'TRADE' | 'MIGRATION';
 
 export interface NormalizedTradeEvent {
   eventId: string;
@@ -13,7 +13,7 @@ export interface NormalizedTradeEvent {
   mint: string;
   symbol: string;
   wallet?: string;
-  amount: number;
+  amount?: number;
   decimals?: number;
   price?: number;
   liquidity?: number;

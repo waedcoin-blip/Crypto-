@@ -51,6 +51,7 @@ import telegramRouter from "./server/routes/telegram.js";
 import laserstreamRouter from "./server/routes/laserstream.js";
 import criteriaRouter from "./server/routes/criteria.js";
 import tradingRouter from "./server/routes/trading.js";
+import pipelineRouter from "./server/routes/pipeline.js";
 import { requireAuth } from "./server/middleware/auth.js";
 import { entryEngine } from "./server/trading/EntryEngine.js";
 import { unifiedExitEngine } from "./server/trading/UnifiedExitEngine.js";
@@ -102,8 +103,9 @@ async function startServer() {
   app.use("/api/telegram", telegramRouter);
   app.use("/api/laserstream", laserstreamRouter);
   app.use("/api/criteria", criteriaRouter);
+  app.use("/api/trading/pipeline", pipelineRouter);
   app.use("/api/trading", requireAuth, tradingRouter);
-  app.use("/api/pipeline", tradingRouter);
+  app.use("/api/pipeline", pipelineRouter);
 
   // API Catch-all 404 Handler
   app.all("/api/*", (req, res) => {

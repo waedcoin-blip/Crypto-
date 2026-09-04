@@ -358,11 +358,13 @@ export class LaserStreamPipeline {
     migrationDetector.processEvent(normalizedEventForEngines);
 
     const logStr = logs.join(' ');
-    const isBuy = logStr.includes('Buy') || logStr.includes('Instruction: Buy') || logStr.includes('swap') || logStr.includes('Initialize');
-    const solAmount = (event.price && event.tokenAmount) ? event.price * event.tokenAmount : 0;
+    const isBuy = logs.some(l => typeof l === 'string' && (l.includes('Instruction: Buy') || l.includes('Program log: Instruction: Buy')));
+    const isSell = logs.some(l => typeof l === 'string' && (l.includes('Instruction: Sell') || l.includes('Program log: Instruction: Sell')));
+    const side = isBuy ? 'BUY' : (isSell ? 'SELL' : undefined);
+    const solAmount = (event.price && event.tokenAmount) ? event.price * event.tokenAmount : undefined;
     const buyer = event.owner || 'unknown';
-    if (event.price) {
-      momentumEngine.recordTrade(extractedMint, event.price, isBuy, solAmount, buyer);
+    if (event.price && side) {
+      momentumEngine.recordTrade(extractedMint, event.price, isBuy, solAmount || 0, buyer);
     }
 
     // Publish unified event to central bus
@@ -375,12 +377,12 @@ export class LaserStreamPipeline {
       signature: event.signature,
       slot: event.slot,
       timestamp: Date.now(),
-      eventType: isNewToken ? 'TOKEN_DISCOVERED' : (isNewPool ? 'MIGRATION' : 'TRADE'),
-      side: isBuy ? 'BUY' : 'SELL',
+      eventType: isNewToken ? 'TOKEN_DISCOVERED' : (isNewPool ? 'MIGRATION' : (side ? 'TRADE' : 'TOKEN_DISCOVERED')),
+      side,
       priceSol: event.price,
       solAmount: solAmount ? String(solAmount) : undefined,
       buyer: isBuy ? buyer : undefined,
-      seller: !isBuy ? buyer : undefined,
+      seller: isSell ? buyer : undefined,
       protocol,
       network: event.network || 'mainnet',
       accountKeys: keys,
