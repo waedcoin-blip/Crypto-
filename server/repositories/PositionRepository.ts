@@ -36,6 +36,10 @@ export interface PositionRecord {
   exitSignature?: string;
   createdAt: number;
   updatedAt: number;
+  lastMarketPriceAt?: number;
+  lastExecutableQuoteAt?: number;
+  lastMarketEventAt?: number;
+  lastExitEvaluationAt?: number;
   closedAt?: number;
   realizedPnLSol?: number;
   realizedPnLPct?: number;

@@ -93,8 +93,62 @@ export async function runExitEngineTests(): Promise<void> {
   const closedPos = positionManager.getPositionById(pos.id);
   assert(closedPos?.status === 'CLOSED', 'Position status is authoritatively CLOSED');
 
-  // TEST 8: Repository Persistence & Recovery
-  console.log('\n--- TEST 8: Repository Persistence & Recovery Test ---');
+  // TEST 8: Stale Price Rejection Test
+  console.log('\n--- TEST 8: Stale Price Rejection Test ---');
+  const stalePos = positionManager.openOrAccumulatePosition({
+    network: testNetwork,
+    wallet: testWallet,
+    mint: 'StaleMint11111111111111111111111111111111111',
+    tokenAmountRaw: 1000000000,
+    decimals: 9,
+    solSpent: 1.0,
+    tpPct: 25,
+    slPct: 15,
+  });
+  // Simulate stale market data timestamp (60 seconds ago)
+  stalePos.lastMarketPriceAt = Date.now() - 60000;
+  stalePos.lastExecutableQuoteAt = Date.now() - 60000;
+
+  const staleDecision = await unifiedExitEngine.evaluatePositionExit(stalePos, 1.30, { maxDataAgeMs: 5000 });
+  assert(!staleDecision.shouldExit, 'Stale price data (60s old) correctly blocks exit authorization');
+  assert(staleDecision.message?.includes('STALE_MARKET_DATA') === true, 'Message indicates STALE_MARKET_DATA blocking');
+
+  // TEST 9: Fresh Quote Evaluation Test
+  console.log('\n--- TEST 9: Fresh Quote Evaluation Test ---');
+  stalePos.lastExecutableQuoteAt = Date.now();
+  const freshDecision = await unifiedExitEngine.evaluatePositionExit(stalePos, 1.30, {
+    executableQuoteSol: 1.30,
+    quoteTimestamp: Date.now(),
+    maxDataAgeMs: 5000,
+  });
+  assert(freshDecision.shouldExit === true, 'Fresh quote data (+30% PnL) authorizes TAKE_PROFIT exit');
+  assert(freshDecision.reason === 'TAKE_PROFIT', 'Exit reason is TAKE_PROFIT');
+
+  // TEST 10: Trailing Stop Evaluation Test
+  console.log('\n--- TEST 10: Trailing Stop Evaluation Test ---');
+  const trailingPos = positionManager.openOrAccumulatePosition({
+    network: testNetwork,
+    wallet: testWallet,
+    mint: 'TrailingMint11111111111111111111111111111111',
+    tokenAmountRaw: 1000000000,
+    decimals: 9,
+    solSpent: 1.0,
+    tpPct: 100,
+    slPct: 50,
+  });
+  trailingPos.lastExecutableQuoteAt = Date.now();
+  trailingPos.highestPnlPct = 40; // Reached +40% peak
+  
+  // Price drops back to +25% (a 15% drop from peak of +40%)
+  const trailingDecision = await unifiedExitEngine.evaluatePositionExit(trailingPos, 1.25, {
+    executableQuoteSol: 1.25,
+    quoteTimestamp: Date.now(),
+  });
+  assert(trailingDecision.shouldExit === true, 'Trailing stop triggered when price drops 15% from peak');
+  assert(trailingDecision.reason === 'TRAILING_STOP', 'Exit reason is TRAILING_STOP');
+
+  // TEST 11: Repository Persistence & Recovery
+  console.log('\n--- TEST 11: Repository Persistence & Recovery Test ---');
   const freshPos = positionManager.openOrAccumulatePosition({
     network: testNetwork,
     wallet: testWallet,
@@ -113,6 +167,8 @@ export async function runExitEngineTests(): Promise<void> {
   assert(recovered?.slPct === 20, 'Recovered SL % matches persisted value (20%)');
 
   // Cleanup
+  positionManager.updatePositionStatus(stalePos.network, stalePos.wallet, stalePos.mint, 'CLOSED');
+  positionManager.updatePositionStatus(trailingPos.network, trailingPos.wallet, trailingPos.mint, 'CLOSED');
   positionManager.updatePositionStatus(recovered!.network, recovered!.wallet, recovered!.mint, 'CLOSED');
 
   console.log('\n==================================================');

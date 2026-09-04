@@ -153,37 +153,66 @@ export class UnifiedExitEngine {
    */
   public async evaluatePositionExit(
     position: Position,
-    currentPriceSol: number
+    currentPriceSol: number,
+    opts: {
+      executableQuoteSol?: number;
+      quoteTimestamp?: number;
+      maxDataAgeMs?: number;
+    } = {}
   ): Promise<ExitDecision> {
     if (position.status !== 'OPEN') {
       return { shouldExit: false, message: `Position status is ${position.status}, not OPEN` };
     }
 
+    const now = Date.now();
+    position.lastExitEvaluationAt = now;
+
+    // Data freshness verification
+    const maxAge = opts.maxDataAgeMs ?? 5000;
+    const lastDataAt = opts.quoteTimestamp || position.lastExecutableQuoteAt || position.lastMarketPriceAt || 0;
+    if (lastDataAt > 0 && (now - lastDataAt > maxAge)) {
+      console.warn(`[EXIT_MONITOR_BLOCKED] reason=STALE_MARKET_DATA position=${position.id} mint=${position.mint} ageMs=${now - lastDataAt}`);
+      return {
+        shouldExit: false,
+        message: `[EXIT_MONITOR_BLOCKED] reason=STALE_MARKET_DATA ageMs=${now - lastDataAt}`,
+      };
+    }
+
     const pnl = pnlEngine.calculatePnL(position, currentPriceSol);
     const criteria = criteriaRepository.getActiveCriteriaSync() as any;
 
-    // Gross PnL percentage calculation (market price vs entry price)
-    const grossPnlPct = position.averageEntryPrice > 0
-      ? ((currentPriceSol - position.averageEntryPrice) / position.averageEntryPrice) * 100
-      : pnl.unrealizedPnlPercent;
+    // Calculate gross PnL percentage using actual executable SOL proceeds if provided, else current market price
+    let grossPnlPct: number;
+    if (opts.executableQuoteSol !== undefined && position.totalSolSpent > 0) {
+      grossPnlPct = ((opts.executableQuoteSol - position.totalSolSpent) / position.totalSolSpent) * 100;
+    } else if (position.averageEntryPrice > 0) {
+      grossPnlPct = ((currentPriceSol - position.averageEntryPrice) / position.averageEntryPrice) * 100;
+    } else {
+      grossPnlPct = pnl.unrealizedPnlPercent;
+    }
 
-    // Load configurations from position or criteria (Standardized: positive magnitude for SL)
-    const tpThreshold = position.tpPct !== undefined ? Math.abs(position.tpPct) : (criteria.minTakeProfit || 25);
-    const slThreshold = position.slPct !== undefined ? -Math.abs(position.slPct) : -(Math.abs(criteria.stopLoss || 15));
+    // Load configurations with explicit finite checks (Standardized: positive magnitude for TP/SL)
+    const tpThreshold = Number.isFinite(position.tpPct) ? Math.abs(position.tpPct) : Math.abs(criteria.minTakeProfit || 25);
+    const slThreshold = Number.isFinite(position.slPct) ? -Math.abs(position.slPct) : -Math.abs(criteria.stopLoss || 15);
 
     // Trailing stop loss configuration
     const trailingEnabled = criteria.trailingEnabled ?? true;
     const trailingStopPercent = criteria.trailingStopPercent ?? 5;
     const trailingActivationPercent = criteria.trailingActivationPercent ?? 10;
 
+    console.log(
+      `[EXIT_MONITOR] position=${position.id} mint=${position.mint} entryPrice=${position.averageEntryPrice.toFixed(6)} currentPrice=${currentPriceSol.toFixed(6)} pnlPct=${grossPnlPct.toFixed(2)}% tpThreshold=+${tpThreshold.toFixed(2)}% slThreshold=${slThreshold.toFixed(2)}%`
+    );
+
     // 1. Check Max Hold Time (EMERGENCY_EXIT)
     if (position.maxHoldTimeMs && position.maxHoldTimeMs > 0) {
-      const heldMs = Date.now() - position.openedAt;
+      const heldMs = now - position.openedAt;
       if (heldMs >= position.maxHoldTimeMs) {
         return {
           shouldExit: true,
           reason: 'EMERGENCY_EXIT',
           executablePnlPct: grossPnlPct,
+          expectedOutSol: opts.executableQuoteSol,
           message: `[EXIT_MONITOR] Max hold time exceeded (${(heldMs / 1000).toFixed(0)}s >= ${(position.maxHoldTimeMs / 1000).toFixed(0)}s)`,
         };
       }
@@ -191,20 +220,24 @@ export class UnifiedExitEngine {
 
     // 2. Check Stop Loss threshold (STOP_LOSS)
     if (grossPnlPct <= slThreshold) {
+      console.log(`[SL_TRIGGERED] Stop loss triggered for ${position.mint}: ${grossPnlPct.toFixed(2)}% <= ${slThreshold.toFixed(2)}%`);
       return {
         shouldExit: true,
         reason: 'STOP_LOSS',
         executablePnlPct: grossPnlPct,
+        expectedOutSol: opts.executableQuoteSol,
         message: `[SL_TRIGGERED] Stop loss triggered: ${grossPnlPct.toFixed(2)}% <= ${slThreshold.toFixed(2)}%`,
       };
     }
 
     // 3. Check Take Profit threshold (TAKE_PROFIT)
     if (grossPnlPct >= tpThreshold) {
+      console.log(`[TP_TRIGGERED] Take profit triggered for ${position.mint}: +${grossPnlPct.toFixed(2)}% >= +${tpThreshold.toFixed(2)}% (100% full exit)`);
       return {
         shouldExit: true,
         reason: 'TAKE_PROFIT',
         executablePnlPct: grossPnlPct,
+        expectedOutSol: opts.executableQuoteSol,
         message: `[TP_TRIGGERED] Take profit triggered: +${grossPnlPct.toFixed(2)}% >= +${tpThreshold.toFixed(2)}% (100% full exit)`,
       };
     }
@@ -217,6 +250,7 @@ export class UnifiedExitEngine {
           shouldExit: true,
           reason: 'TRAILING_STOP',
           executablePnlPct: grossPnlPct,
+          expectedOutSol: opts.executableQuoteSol,
           message: `[TRAILING_STOP] Trailing stop triggered: peak +${position.highestPnlPct.toFixed(2)}%, dropped by ${dropFromPeak.toFixed(2)}% >= ${trailingStopPercent}%`,
         };
       }
@@ -228,13 +262,21 @@ export class UnifiedExitEngine {
   /**
    * Main driver to evaluate and execute exits atomically.
    */
-  public async evaluateAndExecuteExit(position: Position, priceSol: number): Promise<boolean> {
+  public async evaluateAndExecuteExit(
+    position: Position,
+    priceSol: number,
+    opts: {
+      executableQuoteSol?: number;
+      quoteTimestamp?: number;
+      maxDataAgeMs?: number;
+    } = {}
+  ): Promise<boolean> {
     const lockKey = `${position.network}:${position.wallet}:${position.mint.toLowerCase()}`;
     if (this.exitLocks.has(lockKey)) {
       return false; // Exit process already ongoing
     }
 
-    const decision = await this.evaluatePositionExit(position, priceSol);
+    const decision = await this.evaluatePositionExit(position, priceSol, opts);
     if (!decision.shouldExit || !decision.reason) return false;
 
     // Acquire atomic lock

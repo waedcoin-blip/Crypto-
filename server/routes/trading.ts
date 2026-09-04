@@ -9,6 +9,7 @@ import { workerStateRepository } from '../repositories/WorkerStateRepository.js'
 import { tradeRepository } from '../repositories/TradeRepository.js';
 import { entryEngine } from '../trading/EntryEngine.js';
 import { unifiedExitEngine } from '../trading/UnifiedExitEngine.js';
+import { positionValuationEngine } from '../trading/PositionValuationEngine.js';
 
 import { CriteriaService } from '../services/criteriaService.js';
 
@@ -117,10 +118,30 @@ router.get('/positions', asyncHandler(async (req, res) => {
   const { network, wallet } = req.query;
   const openPositions = positionManager.getOpenPositions(network as string, wallet as string);
   const allPositions = positionManager.getAllPositions();
+
+  const valuationsMap: Record<string, any> = {};
+  for (const pos of openPositions) {
+    const val = positionValuationEngine.getValuation(pos.network, pos.wallet, pos.mint);
+    if (val) {
+      valuationsMap[pos.mint] = val;
+    }
+  }
+
   res.json({
     status: 'success',
     openPositions,
     allPositions,
+    valuations: valuationsMap,
+    timestamp: Date.now(),
+  });
+}));
+
+// GET /api/trading/valuations
+router.get('/valuations', asyncHandler(async (req, res) => {
+  const valuations = positionValuationEngine.getAllValuations();
+  res.json({
+    status: 'success',
+    valuations,
     timestamp: Date.now(),
   });
 }));

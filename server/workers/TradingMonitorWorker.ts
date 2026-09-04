@@ -4,6 +4,7 @@ import { executionGateway } from '../execution/ExecutionGateway.js';
 import { pnlEngine } from '../trading/PnLEngine.js';
 import { positionRepository } from '../repositories/PositionRepository.js';
 import { unifiedExitEngine } from '../trading/UnifiedExitEngine.js';
+import { positionValuationEngine } from '../trading/PositionValuationEngine.js';
 
 export class TradingMonitorWorker {
   private static instance: TradingMonitorWorker;
@@ -64,9 +65,12 @@ export class TradingMonitorWorker {
         if (pos.status !== 'OPEN') continue;
 
         try {
-          // 2. Secondary price check if position price is stale (> 3 seconds)
+          // 2. Secondary price check if executable quote is stale (> 3 seconds)
           let currentPriceSol = pos.currentPriceSol;
-          if (now - pos.updatedAt > 3000) {
+          let isFreshQuote = false;
+          let expectedOutSol: number | undefined = undefined;
+
+          if (now - (pos.lastExecutableQuoteAt || 0) > 3000) {
             try {
               const quote = await executionGateway.quoteSell({
                 inputMint: pos.mint,
@@ -78,34 +82,31 @@ export class TradingMonitorWorker {
 
               if (quote && quote.outAmount) {
                 const solProceeds = Number(quote.outAmount) / 1e9;
+                expectedOutSol = solProceeds;
                 const tokenQty = pos.tokenAmount / (10 ** pos.decimals);
                 if (tokenQty > 0) {
                   currentPriceSol = solProceeds / tokenQty;
+                  isFreshQuote = true;
                 }
               }
-            } catch {
-              // Use existing price if quote fails temporarily
+            } catch (err: any) {
+              console.warn(`[EXIT_MONITOR_RETRY] reason=EXECUTABLE_QUOTE_UNAVAILABLE mint=${pos.mint}: ${err?.message || err}`);
             }
           }
 
-          // 3. Update PnL metrics & repository
-          const pnl = pnlEngine.calculatePnL(pos, currentPriceSol);
-          pos.currentPriceSol = currentPriceSol;
-          pos.unrealizedPnl = pnl.unrealizedPnlSol;
-          pos.unrealizedPnlPct = pnl.unrealizedPnlPercent;
-          pos.peakPriceSol = Math.max(pos.peakPriceSol, currentPriceSol);
-          pos.highestPnlPct = Math.max(pos.highestPnlPct, pnl.unrealizedPnlPercent);
+          if (isFreshQuote) {
+            positionManager.updatePositionPrice(pos.network, pos.wallet, pos.mint, currentPriceSol, {
+              isFreshQuote: true,
+              timestamp: now,
+            });
+            await positionValuationEngine.refreshExecutableQuote(pos);
+          }
 
-          positionRepository.updatePosition(pos.id, {
-            currentPriceSOL: currentPriceSol,
-            currentPnLSol: pnl.unrealizedPnlSol,
-            currentPnLPct: pnl.unrealizedPnlPercent,
-            peakPriceSOL: pos.peakPriceSol,
-            highestPnLPct: pos.highestPnlPct,
+          // 3. UnifiedExitEngine Failsafe Evaluation
+          await unifiedExitEngine.evaluateAndExecuteExit(pos, currentPriceSol, {
+            executableQuoteSol: expectedOutSol,
+            quoteTimestamp: isFreshQuote ? now : pos.lastExecutableQuoteAt || pos.lastMarketPriceAt || 0,
           });
-
-          // 4. UnifiedExitEngine Failsafe Evaluation
-          await unifiedExitEngine.evaluateAndExecuteExit(pos, currentPriceSol);
         } catch (err: any) {
           console.warn(`[TradingMonitorWorker] Error monitoring position ${pos.id}:`, err?.message || err);
         }

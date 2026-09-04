@@ -1,5 +1,6 @@
 // server/trading/PositionManager.ts
 import { positionRepository, PositionRecord } from '../repositories/PositionRepository.js';
+import { positionValuationEngine } from './PositionValuationEngine.js';
 
 export type PositionStatus = 'NONE' | 'BUY_PENDING' | 'OPEN' | 'EXIT_PENDING' | 'CLOSED';
 
@@ -21,6 +22,10 @@ export interface Position {
   status: PositionStatus;
   openedAt: number;
   updatedAt: number;
+  lastMarketPriceAt?: number;
+  lastExecutableQuoteAt?: number;
+  lastMarketEventAt?: number;
+  lastExitEvaluationAt?: number;
   closedAt?: number;
   tpPct: number;
   slPct: number;
@@ -86,6 +91,10 @@ export class PositionManager {
         existing.unrealizedPnl = record.currentPnLSol || 0;
         existing.unrealizedPnlPct = record.currentPnLPct || 0;
         existing.updatedAt = record.updatedAt;
+        existing.lastMarketPriceAt = record.lastMarketPriceAt ?? existing.lastMarketPriceAt;
+        existing.lastExecutableQuoteAt = record.lastExecutableQuoteAt ?? existing.lastExecutableQuoteAt;
+        existing.lastMarketEventAt = record.lastMarketEventAt ?? existing.lastMarketEventAt;
+        existing.lastExitEvaluationAt = record.lastExitEvaluationAt ?? existing.lastExitEvaluationAt;
       } else {
         const pos: Position = {
           id: record.id,
@@ -105,9 +114,13 @@ export class PositionManager {
           status,
           openedAt: record.createdAt,
           updatedAt: record.updatedAt,
+          lastMarketPriceAt: record.lastMarketPriceAt,
+          lastExecutableQuoteAt: record.lastExecutableQuoteAt,
+          lastMarketEventAt: record.lastMarketEventAt,
+          lastExitEvaluationAt: record.lastExitEvaluationAt,
           closedAt: record.closedAt,
-          tpPct: record.tpPct || 25,
-          slPct: record.slPct || 15,
+          tpPct: Number.isFinite(record.tpPct) ? record.tpPct : 25,
+          slPct: Number.isFinite(record.slPct) ? record.slPct : 15,
           trailingSlPct: record.trailingSlPct,
           maxHoldTimeMs: record.maxHoldTimeMs,
           slippageBpsTp: record.slippageBpsTp || 250,
@@ -172,12 +185,26 @@ export class PositionManager {
     network: string,
     wallet: string,
     mint: string,
-    currentPriceSol: number
+    currentPriceSol: number,
+    opts: {
+      isFreshQuote?: boolean;
+      isMarketEvent?: boolean;
+      timestamp?: number;
+    } = {}
   ): Position | undefined {
     const pos = this.getPosition(network, wallet, mint);
     if (!pos || pos.status === 'CLOSED') return undefined;
 
+    const now = opts.timestamp || Date.now();
     pos.currentPriceSol = currentPriceSol;
+    pos.lastMarketPriceAt = now;
+    if (opts.isFreshQuote) {
+      pos.lastExecutableQuoteAt = now;
+    }
+    if (opts.isMarketEvent) {
+      pos.lastMarketEventAt = now;
+    }
+
     if (currentPriceSol > pos.peakPriceSol) {
       pos.peakPriceSol = currentPriceSol;
     }
@@ -191,7 +218,7 @@ export class PositionManager {
       pos.highestPnlPct = pos.unrealizedPnlPct;
     }
 
-    pos.updatedAt = Date.now();
+    pos.updatedAt = now;
     this.syncRepository(pos);
     return pos;
   }
@@ -310,6 +337,7 @@ export class PositionManager {
       }
       const key = this.getPositionKey(network, wallet, mint);
       this.positionKeys.delete(key);
+      positionValuationEngine.removeValuation(network, wallet, mint);
 
       positionRepository.closePosition(pos.id, {
         exitSignature: pos.exitSignature,
@@ -350,6 +378,10 @@ export class PositionManager {
       exitSignature: pos.exitSignature,
       createdAt: pos.openedAt,
       updatedAt: pos.updatedAt,
+      lastMarketPriceAt: pos.lastMarketPriceAt,
+      lastExecutableQuoteAt: pos.lastExecutableQuoteAt,
+      lastMarketEventAt: pos.lastMarketEventAt,
+      lastExitEvaluationAt: pos.lastExitEvaluationAt,
       closedAt: pos.closedAt,
       realizedPnLSol: pos.realizedPnl,
     };
