@@ -1,12 +1,11 @@
 // server/trading/UnifiedExitEngine.ts
-import { marketEventBus } from '../market/MarketEventBus.js';
-import { MarketEvent } from '../market/EventNormalizer.js';
 import { Position, positionManager } from './PositionManager.js';
 import { pnlEngine } from './PnLEngine.js';
 import { criteriaRepository } from '../repositories/CriteriaRepository.js';
 import { fastExitExecutor } from '../execution/FastExitExecutor.js';
 import { positionRepository } from '../repositories/PositionRepository.js';
 import { activePositionMarketFeed } from '../market/ActivePositionMarketFeed.js';
+import { executionGateway } from '../execution/ExecutionGateway.js';
 
 export interface ExitConfig {
   takeProfitPercent: number;
@@ -37,7 +36,6 @@ export interface AuditTrailEntry {
 export class UnifiedExitEngine {
   private static instance: UnifiedExitEngine;
   private isRunning: boolean = false;
-  private unsubscribeBus: (() => void) | null = null;
   private auditTrail: AuditTrailEntry[] = [];
   
   // High-throughput execution locks by wallet:mint to prevent duplicate sell signals
@@ -62,75 +60,23 @@ export class UnifiedExitEngine {
     // 1. Start Priority P1 Active Position Market Feed
     activePositionMarketFeed.start();
 
-    // 2. Subscribe to MarketEventBus
-    this.unsubscribeBus = marketEventBus.subscribe((event: MarketEvent) => {
-      this.onMarketEvent(event).catch(err => {
-        console.error('[UnifiedExitEngine] Error handling market event:', err);
-      });
-    });
-
-    console.log('[UnifiedExitEngine] Sole authoritative server-side Exit Engine active and subscribed to MarketEventBus.');
+    console.log('[UnifiedExitEngine] Sole authoritative server-side Exit Engine active; ActivePositionMarketFeed owns market-event ingestion.');
     this.recordGlobalLog('SYSTEM', 'Exit Engine started successfully.');
   }
 
   public stop(): void {
     this.isRunning = false;
-    if (this.unsubscribeBus) {
-      this.unsubscribeBus();
-      this.unsubscribeBus = null;
-    }
     activePositionMarketFeed.stop();
     console.log('[UnifiedExitEngine] Stopped.');
   }
 
   /**
-   * Main real-time handler for streaming market updates from MarketEventBus.
+   * Market events are handled by ActivePositionMarketFeed. That component owns the
+   * market-event -> fresh executable Jupiter quote -> UnifiedExitEngine handoff.
+   * Keeping a second evaluator here caused duplicate/stale evaluations and could
+   * consume WSS candidate prices without an executable quote.
    */
-  private async onMarketEvent(event: MarketEvent): Promise<void> {
-    if (!this.isRunning) return;
-
-    const openPositions = positionManager.getOpenPositions();
-    if (openPositions.length === 0) return;
-
-    // Check event mint or account keys against open positions
-    const activeMap = new Map<string, Position>();
-    for (const pos of openPositions) {
-      activeMap.set(pos.mint.toLowerCase(), pos);
-    }
-
-    let targetPositions: Position[] = [];
-
-    if (event.mint && activeMap.has(event.mint.toLowerCase())) {
-      targetPositions.push(activeMap.get(event.mint.toLowerCase())!);
-    }
-
-    if (event.accountKeys && event.accountKeys.length > 0) {
-      for (const key of event.accountKeys) {
-        const keyLower = key.toLowerCase();
-        if (activeMap.has(keyLower)) {
-          const pos = activeMap.get(keyLower)!;
-          if (!targetPositions.includes(pos)) {
-            targetPositions.push(pos);
-          }
-        }
-      }
-    }
-
-    if (targetPositions.length === 0) return;
-
-    for (const position of targetPositions) {
-      if (position.status !== 'OPEN') continue;
-
-      let priceSol = event.price || position.currentPriceSol;
-      if (!priceSol || priceSol <= 0) continue;
-
-      // Update position price and evaluate exit immediately
-      positionManager.updatePositionPrice(position.network, position.wallet, position.mint, priceSol);
-      await this.evaluateAndExecuteExit(position, priceSol);
-    }
-  }
-
-  /**
+/**
    * Atomic lock acquisition to protect against duplicate sell pipelines
    */
   public acquireExitLock(network: string, wallet: string, mint: string): boolean {
@@ -276,13 +222,83 @@ export class UnifiedExitEngine {
       return false; // Exit process already ongoing
     }
 
-    const decision = await this.evaluatePositionExit(position, priceSol, opts);
+    if (priceSol > 0) {
+      positionManager.updatePositionPrice(position.network, position.wallet, position.mint, priceSol, {
+        isMarketEvent: true,
+        timestamp: Date.now(),
+      });
+      position.currentPriceSol = priceSol;
+    }
+
+    let decision = await this.evaluatePositionExit(position, priceSol, opts);
     if (!decision.shouldExit || !decision.reason) return false;
 
-    // Automatic exits MUST be backed by a fresh executable Jupiter quote.
+    // Verify raw amount safety
+    if (!Number.isSafeInteger(position.tokenAmount) || position.tokenAmount <= 0) {
+      console.error(`[TP/SL] REJECTED mint=${position.mint} reason=INVALID_RAW_AMOUNT amount=${position.tokenAmount}`);
+      return false;
+    }
+
+    // Automatic exits MUST be backed by a fresh executable quote.
     // A WSS/display price is only a trigger candidate and can never authorize a sell.
-    if (decision.reason !== 'MANUAL_EXIT' && opts.executableQuoteSol === undefined) {
-      console.warn(`[EXIT_MONITOR_BLOCKED] reason=NO_EXECUTABLE_QUOTE position=${position.id} mint=${position.mint} trigger=${decision.reason}`);
+    let executableQuoteSol = opts.executableQuoteSol;
+    let quoteTimestamp = opts.quoteTimestamp;
+    const now = Date.now();
+    const maxAge = opts.maxDataAgeMs ?? 2000;
+    const isFreshQuote = executableQuoteSol !== undefined && quoteTimestamp !== undefined && (now - quoteTimestamp <= maxAge);
+
+    if (decision.reason !== 'MANUAL_EXIT' && !isFreshQuote) {
+      console.log(`[TP/SL] REQUEST_EXECUTABLE_QUOTE mint=${position.mint} rawAmount=${position.tokenAmount}`);
+      try {
+        const WSOL = 'So11111111111111111111111111111111111111112';
+        const slippageBps = decision.reason === 'TAKE_PROFIT' ? (position.slippageBpsTp || 250) : (position.slippageBpsSl || 1000);
+        const quote = await executionGateway.quoteSell({
+          inputMint: position.mint,
+          outputMint: WSOL,
+          amount: position.tokenAmount,
+          decimals: position.decimals !== undefined ? position.decimals : 9,
+          slippageBps,
+          network: position.network,
+          walletAddress: position.wallet,
+        });
+
+        if (!quote || !quote.outAmount) {
+          console.warn(`[TP/SL] QUOTE_REJECTED mint=${position.mint} reason=EMPTY_QUOTE`);
+          return false;
+        }
+
+        const outLamports = BigInt(quote.outAmount);
+        if (outLamports <= 0n) {
+          console.warn(`[TP/SL] QUOTE_REJECTED mint=${position.mint} reason=NON_POSITIVE_OUT_AMOUNT`);
+          return false;
+        }
+
+        executableQuoteSol = Number(outLamports) / 1e9;
+        quoteTimestamp = Date.now();
+
+        // Re-evaluate with the fresh executable quote
+        const recheckDecision = await this.evaluatePositionExit(position, priceSol, {
+          executableQuoteSol,
+          quoteTimestamp,
+          maxDataAgeMs: maxAge,
+        });
+
+        if (!recheckDecision.shouldExit) {
+          console.warn(`[TP/SL] QUOTE_REJECTED mint=${position.mint} reason=THRESHOLD_NOT_MET_AFTER_QUOTE`);
+          return false;
+        }
+
+        decision = recheckDecision;
+      } catch (err: any) {
+        console.warn(`[TP/SL] QUOTE_REJECTED mint=${position.mint} reason=${err?.message || err}`);
+        return false;
+      }
+    }
+
+    // Confirm position is STILL OPEN
+    const currentPos = positionManager.getPositionById(position.id);
+    if (!currentPos || currentPos.status !== 'OPEN') {
+      console.warn(`[TP/SL] REJECTED mint=${position.mint} reason=POSITION_NOT_OPEN status=${currentPos?.status}`);
       return false;
     }
 
@@ -320,6 +336,7 @@ export class UnifiedExitEngine {
 
     while (attempt < maxRetries) {
       attempt++;
+      console.log(`[TP/SL] SELL_SUBMITTED mint=${position.mint} attempt=${attempt}`);
       this.recordAuditTrail(
         position.id,
         position.mint,
@@ -343,6 +360,7 @@ export class UnifiedExitEngine {
 
         if (result.success) {
           const elapsedMs = Date.now() - startTime;
+          console.log(`[TP/SL] SELL_CONFIRMED mint=${position.mint} signature=${result.signature}`);
           this.recordAuditTrail(
             position.id,
             position.mint,
@@ -426,6 +444,7 @@ export class UnifiedExitEngine {
 
     // All retries failed. NEVER blindly reopen: the transaction may have landed.
     // Leave the position in recovery so reconciliation can inspect the chain/order state.
+    console.error(`[TP/SL] RECOVERY_REQUIRED mint=${position.mint} reason=${lastResult?.error || 'RETRIES_EXHAUSTED'}`);
     this.recordAuditTrail(
       position.id,
       position.mint,

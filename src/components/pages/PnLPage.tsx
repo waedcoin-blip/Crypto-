@@ -2700,7 +2700,7 @@ export const PnLPage = ({
   const activePositionMintsKey = Object.keys(positions)
     .filter(k => {
       const p = positions[k];
-      return p && typeof p === 'object' && p.symbol && typeof p.amount === 'number' && p.amount > 0;
+      return p && typeof p === 'object' && typeof p.amount === 'number' && p.amount > 0;
     })
     .sort()
     .join(',');
@@ -2756,8 +2756,8 @@ export const PnLPage = ({
           const pos = next[mint];
           if (!pos || !(pos.amount > 0)) return;
 
-          const freshPrice = tokenPrice.priceNative || 0;
-          if (freshPrice <= 0) return;
+          const freshPrice = tokenPrice.priceNative || (tokenPrice.priceUsd ? tokenPrice.priceUsd / getSolPriceUsd() : 0);
+          if (freshPrice <= 0 || !Number.isFinite(freshPrice)) return;
 
           const entryCost = pos.entryCostSol ?? pos.solSpent ?? 0;
           const execVal = (pos.amount || 0) * freshPrice;
@@ -2795,7 +2795,7 @@ export const PnLPage = ({
   useEffect(() => {
     const activeMintsList = Object.keys(positions).filter(k => {
       const p = positions[k];
-      return p && typeof p === 'object' && p.symbol && typeof p.amount === 'number' && p.amount > 0;
+      return p && typeof p === 'object' && typeof p.amount === 'number' && p.amount > 0;
     });
     if (activeMintsList.length === 0) return;
 

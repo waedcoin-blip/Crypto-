@@ -1,5 +1,6 @@
 // server/execution/PaperTradeExecutor.ts
 import { TradeExecutor, QuoteParams, QuoteResult, ExecuteParams, ExecutionResult } from './TradeExecutor.js';
+import { positionManager } from '../trading/PositionManager.js';
 
 export class PaperTradeExecutor implements TradeExecutor {
   private paperSolBalance = 100.0; // 100 SOL simulated balance
@@ -7,10 +8,7 @@ export class PaperTradeExecutor implements TradeExecutor {
 
   async quoteBuy(params: QuoteParams): Promise<QuoteResult> {
     const solAmount = params.amount / 1e9;
-    const decs = params.decimals;
-    if (decs === undefined) {
-      throw new Error('Decimals must be provided for quote');
-    }
+    const decs = params.decimals !== undefined ? params.decimals : 9;
     const simulatedTokensRaw = Math.floor(solAmount * 1_000_000 * (10 ** decs));
     const slippage = params.slippageBps ? params.slippageBps / 10000 : 0.025;
     const minOutputRaw = Math.floor(simulatedTokensRaw * (1 - slippage));
@@ -26,12 +24,21 @@ export class PaperTradeExecutor implements TradeExecutor {
 
   async quoteSell(params: QuoteParams): Promise<QuoteResult> {
     // Input is raw token base units
-    const decs = params.decimals;
-    if (decs === undefined) {
-      throw new Error('Decimals must be provided for quote');
-    }
+    const decs = params.decimals !== undefined ? params.decimals : 9;
     const tokenQty = params.amount / (10 ** decs);
-    const solProceeds = tokenQty * 0.000001; // 1M tokens = 1 SOL
+
+    // Look up position's live/market price if available in Paper mode
+    const pos = (positionManager.getOpenPositions(params.network, params.walletAddress) || [])
+      .find(p => p.mint === params.inputMint)
+      || positionManager.getPosition(params.network || 'paper', params.walletAddress || 'default', params.inputMint);
+
+    const unitPrice = (pos && pos.currentPriceSol && pos.currentPriceSol > 0)
+      ? pos.currentPriceSol
+      : (pos && (pos as any).currentPriceSOL && (pos as any).currentPriceSOL > 0)
+        ? (pos as any).currentPriceSOL
+        : 0.000001; // 1M tokens = 1 SOL fallback
+
+    const solProceeds = tokenQty * unitPrice;
     const lamports = Math.floor(solProceeds * 1e9);
     const slippage = params.slippageBps ? params.slippageBps / 10000 : 0.025;
     const minLamports = Math.floor(lamports * (1 - slippage));

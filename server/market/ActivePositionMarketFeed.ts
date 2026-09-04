@@ -121,22 +121,42 @@ export class ActivePositionMarketFeed {
       return;
     }
 
-    // 1. Try Executable Quote from Jupiter if candidate price is missing or quote is older than 1000ms
+    // 1. A market event is only a trigger/candidate. TP/SL can execute only after
+    //    a fresh executable SELL quote is obtained. This is the critical bridge that
+    //    was previously missing: the WSS candidate path updated PnL and returned, so
+    //    TP/SL never reached the authoritative exit engine.
     const quoteAge = now - (position.lastExecutableQuoteAt || 0);
-    if (!candidatePrice || candidatePrice <= 0 || quoteAge > 1000) {
+    const candidatePnlPct = candidatePrice && candidatePrice > 0 && position.averageEntryPrice > 0
+      ? ((candidatePrice - position.averageEntryPrice) / position.averageEntryPrice) * 100
+      : undefined;
+    const tpThreshold = Number.isFinite(position.tpPct) ? Math.abs(position.tpPct) : 25;
+    const slThreshold = Number.isFinite(position.slPct) ? -Math.abs(position.slPct) : -15;
+    const thresholdCrossing = candidatePnlPct !== undefined &&
+      (candidatePnlPct >= tpThreshold || candidatePnlPct <= slThreshold);
+
+    // Quote on threshold-crossing WSS events immediately. Otherwise refresh at most
+    // every 750ms. This keeps TP/SL responsive without turning every WSS tick into a
+    // Jupiter request. The 500ms polling loop remains a fallback.
+    const shouldRefreshExecutableQuote =
+      !candidatePrice || candidatePrice <= 0 ||
+      quoteAge > 750 || thresholdCrossing;
+
+    if (shouldRefreshExecutableQuote) {
       try {
         const quote = await executionGateway.quoteSell({
           inputMint: mint,
           outputMint: WSOL,
           amount: position.tokenAmount,
+          decimals: position.decimals !== undefined ? position.decimals : 9,
           slippageBps: position.slippageBpsSl || 1000,
           network: position.network,
+          walletAddress: position.wallet,
         });
 
         if (quote && quote.outAmount) {
           const outLamports = BigInt(quote.outAmount);
           const expectedOutSol = Number(outLamports) / 1e9;
-          const tokenQty = position.tokenAmount / (10 ** position.decimals);
+          const tokenQty = position.tokenAmount / (10 ** (position.decimals !== undefined ? position.decimals : 9));
           const executablePriceSol = tokenQty > 0 ? expectedOutSol / tokenQty : 0;
 
           if (executablePriceSol > 0) {
@@ -176,8 +196,10 @@ export class ActivePositionMarketFeed {
 
       positionValuationEngine.updateFromMarketEvent(updatedPos, candidatePrice, now, 'WSS');
 
-      // WSS price is a trigger candidate only. Automatic TP/SL execution requires
-      // a fresh executable Jupiter quote inside the authoritative exit engine.
+      // Send market event to UnifiedExitEngine (which safely fetches an executable quote before any sell)
+      await unifiedExitEngine.evaluateAndExecuteExit(updatedPos, candidatePrice, {
+        quoteTimestamp: now,
+      });
       return;
     }
 
@@ -192,8 +214,11 @@ export class ActivePositionMarketFeed {
         { timestamp: now }
       ) || position;
 
-      // Bonding-curve price is informational until a fresh executable sell quote
-      // confirms that the TP/SL condition is actually executable.
+      positionValuationEngine.updateFromMarketEvent(updatedPos, bcState.priceSolPerToken, now, 'WSS');
+
+      await unifiedExitEngine.evaluateAndExecuteExit(updatedPos, bcState.priceSolPerToken, {
+        quoteTimestamp: now,
+      });
       return;
     }
 
