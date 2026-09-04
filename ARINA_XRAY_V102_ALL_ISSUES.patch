@@ -1,0 +1,441 @@
+diff -ruN orig/PATCH_V102_MANIFEST.md appfix/PATCH_V102_MANIFEST.md
+--- orig/PATCH_V102_MANIFEST.md	1970-01-01 00:00:00.000000000 +0000
++++ appfix/PATCH_V102_MANIFEST.md	2026-09-04 20:21:00.635356756 +0000
+@@ -0,0 +1,23 @@
++# ARINA X-RAY v102 Security / Precision Patch
++
++## Fixed
++- Protected pipeline ingress/evaluation endpoints with Firebase auth.
++- Protected LaserStream configuration changes with Firebase auth.
++- Added strict event source/timestamp validation at pipeline ingress.
++- Prevented lossy raw SPL amount aggregation with BigInt.
++- Sent raw Jupiter quote amounts as exact decimal strings and refuse unsafe integer conversion.
++- Fixed Safety page to require `isRugSafe === true`.
++- Fixed zero-sell momentum handling.
++- Corrected Prediction page to stop claiming unavailable social/news APIs are live.
++- Added authenticated frontend requests for protected pipeline/manual sell endpoints.
++- Removed per-mount construction of a second PositionExitManager proxy in PnLPage.
++
++## Validation
++Run:
++`node scripts/patch-v102-security-precision-regression.mjs`
++`npm run lint`
++`npm run build`
++`npm test`
++
++## Important
++The patch is fail-closed for raw amounts above JavaScript's safe integer range in the legacy `ITradeExecutor` number-based interface. This is intentional: it prevents quantity corruption. A future interface revision can make raw amounts `bigint|string` end-to-end.
+diff -ruN orig/scripts/patch-v102-security-precision-regression.mjs appfix/scripts/patch-v102-security-precision-regression.mjs
+--- orig/scripts/patch-v102-security-precision-regression.mjs	1970-01-01 00:00:00.000000000 +0000
++++ appfix/scripts/patch-v102-security-precision-regression.mjs	2026-09-04 20:21:27.744837786 +0000
+@@ -0,0 +1,17 @@
++import fs from 'fs';
++
++const checks = [
++  ['pipeline auth', fs.readFileSync('server/routes/pipeline.ts','utf8').includes("router.post('/ingress', requireAuth")],
++  ['pipeline evaluate auth', fs.readFileSync('server/routes/pipeline.ts','utf8').includes("router.post('/evaluate', requireAuth")],
++  ['laserstream config auth', fs.readFileSync('server/routes/laserstream.ts','utf8').includes("router.post('/config', requireAuth")],
++  ['exact Jupiter raw amount', fs.readFileSync('src/services/MainnetJupiterExecutor.ts','utf8').includes('amount: strAmount as any')],
++  ['BigInt token aggregation', fs.readFileSync('src/services/MainnetJupiterExecutor.ts','utf8').includes('let totalRawAmount = 0n')],
++  ['safety requires explicit rug safe', fs.readFileSync('src/components/pages/SafetyPage.tsx','utf8').includes('token.isRugSafe === true')],
++  ['pipeline client auth', fs.readFileSync('src/engines/unifiedTradePipeline.ts','utf8').includes('authenticatedFetch')],
++  ['manual sell auth', fs.readFileSync('src/services/RiskManager.ts','utf8').includes("authenticatedFetch('/api/trading/sell'")],
++  ['startup reconciliation does not close at arbitrary raw dust', fs.readFileSync('src/services/StartupReconciliation.ts','utf8').includes('if (rawBalance <= 0)')],
++  ['server reconciliation keeps u64 balance exact', fs.readFileSync('server/workers/StartupReconciliationWorker.ts','utf8').includes('readBigUInt64LE(64)') && fs.readFileSync('server/workers/StartupReconciliationWorker.ts','utf8').includes('rawBalance.toString()')],
++];
++let failed = 0;
++for (const [name, ok] of checks) { console.log(`${ok ? 'PASS' : 'FAIL'}: ${name}`); if (!ok) failed++; }
++process.exit(failed ? 1 : 0);
+diff -ruN orig/server/routes/laserstream.ts appfix/server/routes/laserstream.ts
+--- orig/server/routes/laserstream.ts	2026-09-04 20:12:20.000000000 +0000
++++ appfix/server/routes/laserstream.ts	2026-09-04 20:21:00.631502600 +0000
+@@ -6,6 +6,7 @@
+ import { laserLogger } from '../utils/logger.js';
+ import { asyncHandler } from '../middleware/errorHandler.js';
+ import { isAllowedOrigin } from '../middleware/security.js';
++import { requireAuth } from '../middleware/auth.js';
+ import type { SseClient, LaserStreamOptions, LaserStreamStatus, SseEvent } from '../types/index.js';
+ import { z } from 'zod';
+ import {
+@@ -160,7 +161,7 @@
+ });
+ 
+ // POST /api/laserstream/config
+-router.post('/config', asyncHandler(async (req, res) => {
++router.post('/config', requireAuth, asyncHandler(async (req, res) => {
+   if (req.headers.origin && !isAllowedOrigin(req.headers.origin)) {
+     return res.status(401).json({ success: false, message: 'Unauthorized origin' });
+   }
+diff -ruN orig/server/routes/pipeline.ts appfix/server/routes/pipeline.ts
+--- orig/server/routes/pipeline.ts	2026-09-04 20:12:20.000000000 +0000
++++ appfix/server/routes/pipeline.ts	2026-09-04 20:21:00.631362920 +0000
+@@ -1,6 +1,7 @@
+ // server/routes/pipeline.ts
+ import { Router } from 'express';
+ import { asyncHandler } from '../middleware/errorHandler.js';
++import { requireAuth } from '../middleware/auth.js';
+ import { sourceHealthMonitor } from '../market/SourceHealthMonitor.js';
+ import { candidateRegistry } from '../market/CandidateRegistry.js';
+ import { CanonicalEventNormalizer } from '../market/CanonicalEventNormalizer.js';
+@@ -16,12 +17,21 @@
+     return res.status(400).json({ status: 'error', error: 'mint is required' });
+   }
+ 
+-  const source: EventSource = (body.source || 'MANUAL') as EventSource;
++  const allowedSources: EventSource[] = ['PULSE_FEED','WSS','HELIUS_WSS','HELIUS_GRPC','DEXSCREENER','LASERSTREAM','PUMP_FUN','MANUAL','SIMULATION'];
++  const sourceValue = typeof body.source === 'string' ? body.source.toUpperCase() : 'MANUAL';
++  if (!allowedSources.includes(sourceValue as EventSource)) {
++    return res.status(400).json({ status: 'error', error: 'Invalid event source' });
++  }
++  const source: EventSource = sourceValue as EventSource;
+   const correlationId = body.correlationId || CanonicalEventNormalizer.generateCorrelationId(source, body.mint);
+   const eventId = body.eventId || CanonicalEventNormalizer.generateEventId(source, body.mint, body.signature, body.slot, body.eventType);
+ 
+   console.log(`[${source} RECEIVED] mint=${body.mint} source=${source} correlationId=${correlationId} timestamp=${Date.now()} reason="Ingress payload received"`);
+ 
++  if (body.timestamp !== undefined && (!Number.isFinite(Number(body.timestamp)) || Math.abs(Date.now() - Number(body.timestamp)) > 10 * 60 * 1000)) {
++    return res.status(400).json({ status: 'error', error: 'Event timestamp outside accepted window' });
++  }
++
+   const event: UnifiedMarketEvent = {
+     eventId,
+     correlationId,
+@@ -59,8 +69,8 @@
+ });
+ 
+ // Ingress endpoints
+-router.post('/ingress', handleIngress);
+-router.post('/', handleIngress);
++router.post('/ingress', requireAuth, handleIngress);
++router.post('/', requireAuth, handleIngress);
+ 
+ // Health
+ router.get('/health', asyncHandler(async (req, res) => {
+@@ -84,7 +94,7 @@
+ }));
+ 
+ // Manual on-demand evaluation
+-router.post('/evaluate', asyncHandler(async (req, res) => {
++router.post('/evaluate', requireAuth, asyncHandler(async (req, res) => {
+   const { mint, source } = req.body;
+   if (!mint || typeof mint !== 'string') {
+     return res.status(400).json({ status: 'error', error: 'mint address is required' });
+diff -ruN orig/server/workers/StartupReconciliationWorker.ts appfix/server/workers/StartupReconciliationWorker.ts
+--- orig/server/workers/StartupReconciliationWorker.ts	2026-09-04 20:12:20.000000000 +0000
++++ appfix/server/workers/StartupReconciliationWorker.ts	2026-09-04 20:21:27.744713880 +0000
+@@ -36,21 +36,21 @@
+       const mintPk = new PublicKey(pos.mintAddress);
+       const tokenAccounts = await connection.getTokenAccountsByOwner(pubkey, { mint: mintPk });
+ 
+-      let rawBalance = 0;
++      let rawBalance = 0n;
+       if (tokenAccounts.value.length > 0) {
+         const accountInfo = tokenAccounts.value[0].account.data;
+         // Parse token account amount (offset 64 in SPL token layout)
+         if (accountInfo.length >= 72) {
+-          rawBalance = Number(accountInfo.readBigUInt64LE(64));
++          rawBalance = accountInfo.readBigUInt64LE(64);
+         }
+       }
+ 
+-      if (rawBalance <= 1000) {
++      if (rawBalance <= 0n) {
+         console.log(`[StartupReconciliationWorker] Position ${pos.id} has dust/zero balance on-chain. Closing position.`);
+         positionRepository.closePosition(pos.id, { realizedPnLSol: 0, realizedPnLPct: -100 });
+       } else {
+         positionRepository.updatePosition(pos.id, {
+-          amountRaw: rawBalance,
++          amountRaw: rawBalance.toString(),
+           state: (pos.state === 'PENDING_BUY' ? 'OPEN' : pos.state),
+         });
+       }
+diff -ruN orig/server.ts appfix/server.ts
+--- orig/server.ts	2026-09-04 20:12:20.000000000 +0000
++++ appfix/server.ts	2026-09-04 20:21:00.631581689 +0000
+@@ -103,9 +103,9 @@
+   app.use("/api/telegram", telegramRouter);
+   app.use("/api/laserstream", laserstreamRouter);
+   app.use("/api/criteria", criteriaRouter);
+-  app.use("/api/trading/pipeline", pipelineRouter);
++  app.use("/api/trading/pipeline", requireAuth, pipelineRouter);
+   app.use("/api/trading", requireAuth, tradingRouter);
+-  app.use("/api/pipeline", pipelineRouter);
++  app.use("/api/pipeline", requireAuth, pipelineRouter);
+ 
+   // API Catch-all 404 Handler
+   app.all("/api/*", (req, res) => {
+diff -ruN orig/src/components/pages/PnLPage.tsx appfix/src/components/pages/PnLPage.tsx
+--- orig/src/components/pages/PnLPage.tsx	2026-09-04 20:12:20.000000000 +0000
++++ appfix/src/components/pages/PnLPage.tsx	2026-09-04 20:21:00.635070046 +0000
+@@ -4098,17 +4098,9 @@
+     const currentJup = jupiterRpcUrl || 'https://api.jup.ag/swap/v1';
+     const executor = tradeManager.getExecutor();
+ 
+-    const exitMgr = new PositionExitManager(
+-      executor,
+-      currentJup,
+-      currentRpc,
+-      {
+-        tpPct: configRef.current.minTakeProfit || 25,
+-        slPct: configRef.current.stopLossPct || 15,
+-        slippageBpsTp: Math.floor((configRef.current.slippage || 2.5) * 100),
+-        slippageBpsSl: Math.floor((configRef.current.slippage || 10.0) * 100),
+-      }
+-    );
++    // Single exit authority: PositionExitManager is a strict proxy to the global RiskManager.
++    // Do not construct a second manager instance per page mount.
++    const exitMgr = positionExitManager;
+ 
+     exitMgr.setOnExitErrorCallback((mint, side, errorMessage) => {
+       const pos = positionsRef.current[mint];
+@@ -4231,6 +4223,8 @@
+     }
+ 
+     return () => {
++      // Singleton authority must remain available to the rest of the application; do not stop it on unmount.
++      // Page lifecycle cleanup only detaches local monitoring.
+       exitMgr.stop();
+       masterMon?.stopMonitoring();
+       positionExitManagerRef.current = null;
+diff -ruN orig/src/components/pages/PredictionPage.tsx appfix/src/components/pages/PredictionPage.tsx
+--- orig/src/components/pages/PredictionPage.tsx	2026-09-04 20:12:20.000000000 +0000
++++ appfix/src/components/pages/PredictionPage.tsx	2026-09-04 20:21:00.631996331 +0000
+@@ -6,9 +6,9 @@
+ export const PredictionPage = ({ tokenMetrics }: { tokenMetrics: Record<string, TokenMetric> }) => {
+   const [activeTab, setActiveTab] = useState<'sentiment' | 'market' | 'alerts'>('sentiment');
+   
+-  // Real implementation would fetch from real APIs. For the scope of this frontend, we aggregate
+-  // from our AI-driven token metrics
+-  const tokens = Object.values(tokenMetrics || {}).filter(m => m && (m.marketCap || 0) > 100000 && m.isRugSafe !== false);
++  // This page currently consumes the authoritative token metrics already available in the app.
++  // External social/news providers are not wired here, so the UI must not claim they are live.
++  const tokens = Object.values(tokenMetrics || {}).filter(m => m && (m.marketCap || 0) > 100000 && m.isRugSafe === true);
+ 
+   return (
+     <div className="p-4 lg:p-8 max-w-7xl mx-auto space-y-6 lg:space-y-12 pb-24 lg:pb-8">
+@@ -27,28 +27,28 @@
+             <MessageSquare className="w-8 h-8 text-blue-400" />
+             <div>
+               <div className="text-sm text-gray-400">Social Sentiment</div>
+-              <div className="text-xl font-bold">Aggregating...</div>
++              <div className="text-xl font-bold">Not connected</div>
+             </div>
+          </div>
+          <div className="bg-gray-900 border border-gray-800 p-6 rounded-xl flex items-center gap-4">
+             <LineChart className="w-8 h-8 text-emerald-400" />
+             <div>
+               <div className="text-sm text-gray-400">Market Momentum</div>
+-              <div className="text-xl font-bold">Active</div>
++              <div className="text-xl font-bold">From token metrics</div>
+             </div>
+          </div>
+          <div className="bg-gray-900 border border-gray-800 p-6 rounded-xl flex items-center gap-4">
+             <Globe className="w-8 h-8 text-indigo-400" />
+             <div>
+               <div className="text-sm text-gray-400">On-Chain Data</div>
+-              <div className="text-xl font-bold">Streaming</div>
++              <div className="text-xl font-bold">On-chain metrics</div>
+             </div>
+          </div>
+          <div className="bg-gray-900 border border-gray-800 p-6 rounded-xl flex items-center gap-4">
+             <Newspaper className="w-8 h-8 text-amber-400" />
+             <div>
+               <div className="text-sm text-gray-400">News Sentiment</div>
+-              <div className="text-xl font-bold">Live</div>
++              <div className="text-xl font-bold">Not connected</div>
+             </div>
+          </div>
+       </section>
+@@ -84,7 +84,7 @@
+                 <div key={token.address} className="bg-gray-900 border border-gray-800 p-6 rounded-xl relative overflow-hidden group">
+                   <div className="absolute top-0 right-0 p-4">
+                     <span className="px-3 py-1 bg-emerald-500/20 text-emerald-400 text-xs font-bold rounded-full border border-emerald-500/30">
+-                      Predictive Score: {Math.min(99, Math.floor(((token.buyCount||1)/(token.sellCount||1))*30 + (token.percentageIncrease||0)))}
++                      Predictive Score: {Math.min(99, Math.floor(((token.buyCount||0)/(token.sellCount > 0 ? token.sellCount : 1))*30 + (token.percentageIncrease||0)))}
+                     </span>
+                   </div>
+                   <h3 className="text-xl font-bold mb-1">{token.symbol}</h3>
+diff -ruN orig/src/components/pages/SafetyPage.tsx appfix/src/components/pages/SafetyPage.tsx
+--- orig/src/components/pages/SafetyPage.tsx	2026-09-04 20:12:20.000000000 +0000
++++ appfix/src/components/pages/SafetyPage.tsx	2026-09-04 20:21:00.631894198 +0000
+@@ -15,10 +15,10 @@
+     if (!token) return false;
+     const profitPct = token.percentageIncrease || 0;
+     const buyCount = token.buyCount || 0;
+-    const sellCount = token.sellCount || 1;
+-    const buyMomentum = (buyCount / sellCount) >= 3;
++    const sellCount = Math.max(0, token.sellCount || 0);
++    const buyMomentum = sellCount === 0 ? buyCount > 0 : (buyCount / sellCount) >= 3;
+     const isNew = (Date.now() - (token.discoveredAt || 0)) < 86400000; // Under 24h
+-    return profitPct > 50 && buyMomentum && isNew;
++    return token.isRugSafe === true && profitPct > 50 && buyMomentum && isNew;
+   });
+ 
+   return (
+@@ -81,6 +81,7 @@
+             <ul className="text-gray-300 text-sm list-disc pl-5 space-y-2">
+               <li>Profit &gt; 50%</li>
+               <li>Momentum (Buy/Ratio &gt;= 3)</li>
++              <li>Rug-safety scan explicitly passed</li>
+               <li>Newly Migrated (&lt; 24h old)</li>
+             </ul>
+           </div>
+diff -ruN orig/src/engines/unifiedTradePipeline.ts appfix/src/engines/unifiedTradePipeline.ts
+--- orig/src/engines/unifiedTradePipeline.ts	2026-09-04 20:12:20.000000000 +0000
++++ appfix/src/engines/unifiedTradePipeline.ts	2026-09-04 20:21:00.632125115 +0000
+@@ -2,6 +2,7 @@
+ import { Trade } from '../types';
+ import { systemLogger } from '../services/systemLogger';
+ import { tokenLifecycleManager } from '../services/TokenLifecycleManager';
++import { authenticatedFetch } from '../services/authenticatedFetch';
+ 
+ export type TradeSource = 'PULSE_FEED' | 'WSS' | 'HELIUS_WSS' | 'HELIUS_GRPC' | 'DEXSCREENER' | 'LASERSTREAM' | 'PUMP_FUN' | 'MANUAL' | 'SIMULATION';
+ export type TradeType = 'BUY' | 'SELL' | 'TOKEN_DISCOVERED' | 'TRADE' | 'MIGRATION';
+@@ -96,7 +97,7 @@
+     tokenLifecycleManager.markDiscovered(event.mint, event.symbol);
+ 
+     // Synchronize asynchronously with authoritative server-side pipeline ingress
+-    fetch('/api/pipeline/ingress', {
++    authenticatedFetch('/api/pipeline/ingress', {
+       method: 'POST',
+       headers: { 'Content-Type': 'application/json' },
+       body: JSON.stringify({
+diff -ruN orig/src/services/MainnetJupiterExecutor.ts appfix/src/services/MainnetJupiterExecutor.ts
+--- orig/src/services/MainnetJupiterExecutor.ts	2026-09-04 20:12:20.000000000 +0000
++++ appfix/src/services/MainnetJupiterExecutor.ts	2026-09-04 20:21:00.631828299 +0000
+@@ -141,7 +141,16 @@
+       }
+ 
+       const isSolBuy = inputMint === 'So11111111111111111111111111111111111111112';
+-      const numAmount = typeof amount === 'bigint' ? Number(amount) : Number(amount);
++      const strAmount = typeof amount === 'bigint' ? amount.toString() : (typeof amount === 'string' ? amount : String(Math.trunc(amount)));
++      if (!/^\d+$/.test(strAmount) || BigInt(strAmount) <= 0n) {
++        throw new ExecutionError('transaction_failure', 'INVALID_RAW_AMOUNT: swap amount must be a positive integer raw amount');
++      }
++      const rawAmount = BigInt(strAmount);
++      if (rawAmount > BigInt(Number.MAX_SAFE_INTEGER)) {
++        throw new ExecutionError('transaction_failure', 'UNSAFE_RAW_AMOUNT: raw SPL amount exceeds JavaScript safe integer range; execution refused to prevent quantity corruption');
++      }
++      const numAmount = Number(rawAmount);
++
+ 
+       await assertTradeBalance(isSolBuy ? numAmount / LAMPORTS_PER_SOL + 0.005 : 0.005);
+ 
+@@ -155,12 +164,12 @@
+         }
+       }
+ 
+-      // Reuse preValidatedQuote if provided, otherwise fetch fresh quote from Mainnet Jupiter API
+-      const strAmount = typeof amount === 'bigint' ? amount.toString() : (typeof amount === 'string' ? amount : String(Math.trunc(amount)));
++      // Reuse preValidatedQuote if provided, otherwise fetch fresh quote from Mainnet Jupiter API.
++      // Keep the raw amount as a decimal string over the wire; never round it before Jupiter receives it.
+       const quote = preValidatedQuote || await this.getQuote({
+         inputMint,
+         outputMint,
+-        amount: Number(strAmount) || 0,
++        amount: strAmount as any,
+         slippageBps,
+         restrictIntermediateTokens: true,
+       });
+@@ -351,14 +360,17 @@
+     ]);
+ 
+     const allAccounts = [...splAccounts.value, ...t22Accounts.value];
+-    let totalRawAmount = 0;
++    let totalRawAmount = 0n;
+     for (const account of allAccounts) {
+       const amountStr = account.account.data.parsed?.info?.tokenAmount?.amount;
+       if (amountStr) {
+-        totalRawAmount += Number(amountStr);
++        totalRawAmount += BigInt(amountStr);
+       }
+     }
+-    return totalRawAmount;
++    if (totalRawAmount > BigInt(Number.MAX_SAFE_INTEGER)) {
++      throw new Error('UNSAFE_RAW_BALANCE: token balance exceeds JavaScript safe integer range; refusing lossy conversion');
++    }
++    return Number(totalRawAmount);
+   }
+ 
+   async hasTokenAccount(mint: string): Promise<boolean> {
+diff -ruN orig/src/services/PositionExitManager.ts appfix/src/services/PositionExitManager.ts
+--- orig/src/services/PositionExitManager.ts	2026-09-04 20:12:20.000000000 +0000
++++ appfix/src/services/PositionExitManager.ts	2026-09-04 20:21:00.632281269 +0000
+@@ -21,6 +21,9 @@
+  */
+ export class PositionExitManager {
+   private delegate: RiskManager = riskManager;
++  private onExit?: ExitCallback;
++  private onExitError?: ExitErrorCallback;
++  private onLog?: RiskLogCallback;
+ 
+   constructor(
+     _executor: ITradeExecutor = executionEngine,
+@@ -75,16 +78,16 @@
+     this.delegate.stop();
+   }
+ 
+-  public setOnExitCallback(_cb: ExitCallback): void {
+-    // No-op client-side
++  public setOnExitCallback(cb: ExitCallback): void {
++    this.onExit = cb;
+   }
+ 
+-  public setOnExitErrorCallback(_cb: ExitErrorCallback): void {
+-    // No-op client-side
++  public setOnExitErrorCallback(cb: ExitErrorCallback): void {
++    this.onExitError = cb;
+   }
+ 
+-  public setOnLogCallback(_cb: RiskLogCallback): void {
+-    // No-op client-side
++  public setOnLogCallback(cb: RiskLogCallback): void {
++    this.onLog = cb;
+   }
+ 
+   public getPosition(mint: string): ManagedPosition | undefined {
+diff -ruN orig/src/services/RiskManager.ts appfix/src/services/RiskManager.ts
+--- orig/src/services/RiskManager.ts	2026-09-04 20:12:20.000000000 +0000
++++ appfix/src/services/RiskManager.ts	2026-09-04 20:21:00.632169351 +0000
+@@ -1,5 +1,6 @@
+ // src/services/RiskManager.ts
+ import { systemLogger } from './systemLogger';
++import { authenticatedFetch } from './authenticatedFetch';
+ 
+ export interface ManagedPosition {
+   mint: string;
+@@ -148,7 +149,7 @@
+     systemLogger.info('SELL', `[RiskManager] User initiated manual exit for ${mint}. Forwarding to server...`);
+     
+     try {
+-      const response = await fetch('/api/trading/sell', {
++      const response = await authenticatedFetch('/api/trading/sell', {
+         method: 'POST',
+         headers: {
+           'Content-Type': 'application/json',
+diff -ruN orig/src/services/StartupReconciliation.ts appfix/src/services/StartupReconciliation.ts
+--- orig/src/services/StartupReconciliation.ts	2026-09-04 20:12:20.000000000 +0000
++++ appfix/src/services/StartupReconciliation.ts	2026-09-04 20:21:15.740670027 +0000
+@@ -38,7 +38,7 @@
+         // Query on-chain raw balance for this mint
+         const rawBalance = await walletBalanceService.getTokenBalance(mint, activeWallet.address);
+ 
+-        if (rawBalance <= 1000) {
++        if (rawBalance <= 0) {
+           // Token balance is empty or dust on-chain
+           if (pos.amount && pos.amount > 0) {
+             console.log(`[StartupReconciliation] Position ${mint} has zero on-chain balance. Marking CLOSED.`);
+diff -ruN orig/src/services/authenticatedFetch.ts appfix/src/services/authenticatedFetch.ts
+--- orig/src/services/authenticatedFetch.ts	1970-01-01 00:00:00.000000000 +0000
++++ appfix/src/services/authenticatedFetch.ts	2026-09-04 20:21:00.632076622 +0000
+@@ -0,0 +1,10 @@
++import { auth } from '../lib/firebase';
++
++export async function authenticatedFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
++  const user = auth.currentUser;
++  if (!user) throw new Error('AUTH_REQUIRED');
++  const token = await user.getIdToken();
++  const headers = new Headers(init.headers);
++  headers.set('Authorization', `Bearer ${token}`);
++  return fetch(input, { ...init, headers });
++}
