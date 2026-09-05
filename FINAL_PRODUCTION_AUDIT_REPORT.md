@@ -1,5 +1,5 @@
 # Final Production Audit Report
-Generated at: 2026-09-05T18:58:02.483Z
+Generated at: 2026-09-05T19:39:44.211Z
 Total Findings: 123
 Bugs: 5
 Warnings: 118
@@ -12,8 +12,8 @@ Warnings: 118
 - **[WARNING]** `server/services/JupiterTradingService.ts:10`: Hardcoded Secret / Private Key (`privateKey?: string;`)
 - **[WARNING]** `server/services/JupiterTradingService.ts:56`: Hardcoded Secret / Private Key (`walletPrivateKey?: string;`)
 - **[WARNING]** `server/services/simulation.ts:111`: Artificial History Truncation (slice(-500)) (`pairAddress: `${mint.slice(0, 8)}pair${mint.slice(-4)}`,`)
-- **[BUG]** `server/trading/PositionManager.ts:266`: Unsafe Number Conversion on Raw Amounts (`const tokenAmountNum = Number(rawBigInt);`)
-- **[BUG]** `server/trading/TradingEngine.ts:403`: Unsafe Number Conversion on Raw Amounts (`if (rawAmountBigInt <= 0n && (isNaN(Number(rawAmountStr)) || Number(rawAmountStr) <= 0)) {`)
+- **[BUG]** `server/trading/PositionManager.ts:270`: Unsafe Number Conversion on Raw Amounts (`const tokenAmountNum = Number(rawBigInt);`)
+- **[BUG]** `server/trading/TradingEngine.ts:407`: Unsafe Number Conversion on Raw Amounts (`if (rawAmountBigInt <= 0n && (isNaN(Number(rawAmountStr)) || Number(rawAmountStr) <= 0)) {`)
 - **[WARNING]** `server/wallet/WalletManager.ts:45`: Hardcoded Secret / Private Key (`const secret = bs58.decode(devnetKeyA);`)
 - **[WARNING]** `server/wallet/WalletManager.ts:46`: Hardcoded Secret / Private Key (`keypairDevnetA = Keypair.fromSecretKey(secret);`)
 - **[WARNING]** `server/wallet/WalletManager.ts:66`: Hardcoded Secret / Private Key (`const secret = bs58.decode(devnetKeyB);`)

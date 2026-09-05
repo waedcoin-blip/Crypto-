@@ -85,15 +85,26 @@ export class RiskManager {
       };
     }
 
-    // Record buy timestamp for cooldown
-    this.recentBuyTimestamps.set(`${network}:${wallet}:${mint}`, Date.now());
-
     return {
       allowed: true,
       reason: 'FINAL_REVALIDATION_PASSED',
       verifiedDecimals: meta.decimals,
       executableNetProfitLamports: prof.expectedNetProfitLamports,
     };
+  }
+
+  /**
+   * Record buy timestamp for cooldown after confirmed success.
+   */
+  public recordBuySuccess(network: string, wallet: string, mint: string): void {
+    this.recordSuccessfulBuy(network, wallet, mint);
+  }
+
+  /**
+   * Record buy timestamp for cooldown after confirmed success.
+   */
+  public recordSuccessfulBuy(network: string, wallet: string, mint: string): void {
+    this.recentBuyTimestamps.set(`${network}:${wallet}:${mint}`, Date.now());
   }
 
   /**

@@ -16,6 +16,10 @@ export class RebuyGuard {
   private pendingReservations: Map<string, BuyReservation> = new Map(); // reservationId -> reservation
   private reservedKeys: Map<string, string> = new Map(); // network:wallet:mint -> reservationId
   private completedBuyCounts: Map<string, number> = new Map(); // network:wallet:mint -> completed count
+  
+  // FIX: Cache trade counts to avoid O(n) scans
+  private tradeCountCache: Map<string, { count: number; lastUpdated: number }> = new Map();
+  private readonly CACHE_TTL_MS = 30000;
 
   private constructor() {}
 
@@ -33,14 +37,23 @@ export class RebuyGuard {
 
   public getCompletedBuyCount(network: string, wallet: string, mint: string): number {
     const key = this.getGuardKey(network, wallet, mint);
-    // The repository is authoritative across process restarts. The in-memory
-    // counter remains a fast-path for the current process.
+    
+    // FIX: Use cached count if fresh
+    const cached = this.tradeCountCache.get(key);
+    if (cached && (Date.now() - cached.lastUpdated) < this.CACHE_TTL_MS) {
+      const memory = this.completedBuyCounts.get(key) || 0;
+      return Math.max(cached.count, memory);
+    }
+    
+    // Full scan only when cache miss or stale
     const persisted = tradeRepository.getTrades(network).filter((t) =>
       t.side === 'BUY' &&
       t.status === 'CONFIRMED' &&
       (t.wallet || 'default') === wallet.trim() &&
       t.mintAddress.trim() === mint.trim()
     ).length;
+    
+    this.tradeCountCache.set(key, { count: persisted, lastUpdated: Date.now() });
     const memory = this.completedBuyCounts.get(key) || 0;
     return Math.max(persisted, memory);
   }
@@ -168,6 +181,9 @@ export class RebuyGuard {
     const key = this.getGuardKey(res.network, res.wallet, res.mint);
     const current = this.completedBuyCounts.get(key) || 0;
     this.completedBuyCounts.set(key, current + 1);
+    
+    // FIX: Invalidate cache on confirmation
+    this.tradeCountCache.delete(key);
 
     this.releaseBuy(reservationId);
   }
@@ -200,12 +216,14 @@ export class RebuyGuard {
   public resetBuyCount(network: string, wallet: string, mint: string): void {
     const key = this.getGuardKey(network, wallet, mint);
     this.completedBuyCounts.delete(key);
+    this.tradeCountCache.delete(key);
   }
 
   public clear(): void {
     this.pendingReservations.clear();
     this.reservedKeys.clear();
     this.completedBuyCounts.clear();
+    this.tradeCountCache.clear();
   }
 }
 

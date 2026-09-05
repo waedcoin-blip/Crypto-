@@ -104,7 +104,8 @@ export class ProfitabilityEngine {
       // 3. Execution Costs in BigInt Lamports
       const networkFeesLamports = 10_000n; // 0.00001 SOL
       const priorityFeesLamports = 1_500_000n; // 0.0015 SOL priority fee
-      const dexFeesLamports = (buyInputLamports * 30n) / 10000n; // ~0.3% DEX fee
+      const dexFeeBps = buyQuote.feeBps !== undefined ? BigInt(buyQuote.feeBps) : 30n; // Use quote fee or default 0.3%
+      const dexFeesLamports = (buyInputLamports * dexFeeBps) / 10000n;
       const totalExecutionCostsLamports = networkFeesLamports + priorityFeesLamports + dexFeesLamports;
 
       // 4. Executable Net SOL Profit

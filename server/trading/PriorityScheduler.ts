@@ -1,5 +1,4 @@
 // server/trading/PriorityScheduler.ts
-import { MarketEvent } from '../market/EventNormalizer.js';
 
 export enum PriorityLevel {
   P0_EMERGENCY_SELL = 0,
@@ -26,6 +25,11 @@ export class PriorityScheduler {
   private queue: ScheduledTask[] = [];
   private activeWorkers = 0;
   private readonly maxConcurrentWorkers = 4;
+  
+  // FIX: Track emergency sells to prevent RPC overload
+  private emergencySellCount = 0;
+  private readonly maxEmergencySellsPerSecond = 10;
+  private lastEmergencySellReset = Date.now();
 
   private constructor() {}
 
@@ -36,15 +40,27 @@ export class PriorityScheduler {
     return PriorityScheduler.instance;
   }
 
-  /**
-   * Schedules a task with a given priority level.
-   * If priority is P0 or P1, it executes immediately to prevent blockage.
-   */
   public async schedule<T>(priority: PriorityLevel, execute: () => Promise<T>): Promise<T> {
     const id = `task_${Math.random().toString(36).slice(2, 11)}_${Date.now()}`;
 
-    // Bypass queue entirely for Sell Priorities (P0 & P1) to achieve lowest latency exits
     if (priority <= PriorityLevel.P1_STANDARD_SELL) {
+      // FIX: Rate limit emergency sells
+      const now = Date.now();
+      if (now - this.lastEmergencySellReset > 1000) {
+        this.emergencySellCount = 0;
+        this.lastEmergencySellReset = now;
+      }
+      if (this.emergencySellCount >= this.maxEmergencySellsPerSecond) {
+        // Queue it instead of bypassing if rate limit hit
+        return new Promise<T>((resolve, reject) => {
+          const task: ScheduledTask<T> = { id, priority, execute, createdAt: Date.now(), resolve, reject };
+          this.queue.push(task);
+          this.sortQueue();
+          this.processNext();
+        });
+      }
+      this.emergencySellCount++;
+      
       try {
         return await execute();
       } catch (err) {
@@ -69,7 +85,6 @@ export class PriorityScheduler {
   }
 
   private sortQueue(): void {
-    // Sort primarily by priority (ascending, lower number = higher priority), then by age (createdAt)
     this.queue.sort((a, b) => {
       if (a.priority !== b.priority) {
         return a.priority - b.priority;

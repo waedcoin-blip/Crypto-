@@ -79,7 +79,13 @@ export class HardenedApprovalStore {
   /**
    * Finds the latest usable approval for a mint and pool.
    */
-  public getLatestUsableApproval(chain: 'solana', mint: string, pool?: string): HardenedApproval | undefined {
+  public getLatestUsableApproval(
+    chain: 'solana',
+    mint: string,
+    pool?: string,
+    currentPrice?: number,
+    currentSlot?: number
+  ): HardenedApproval | undefined {
     let canonicalMint: string;
     try {
       canonicalMint = canonicalizeSolanaMint(mint);
@@ -93,7 +99,7 @@ export class HardenedApprovalStore {
     const approval = this.approvals.get(approvalId);
     if (!approval) return undefined;
 
-    const usability = this.isApprovalUsable(approval);
+    const usability = this.isApprovalUsable(approval, currentPrice, currentSlot);
     if (!usability.valid) {
       return undefined;
     }

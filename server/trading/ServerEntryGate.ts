@@ -43,11 +43,12 @@ export class ServerEntryGate {
     wallet: string;
     autoSniperEnabled: boolean;
   }): Promise<ServerEntryDecision> {
-    const { candidate, network, wallet, autoSniperEnabled } = params;
+    const { candidate, criteria, network, wallet, autoSniperEnabled } = params;
     const res = await hardenedCriteriaEngine.evaluateCandidate(candidate, {
       network,
       wallet,
       autoSniperEnabled,
+      criteria,
     });
 
     const isPass = res.decision === 'PASS';

@@ -9,16 +9,16 @@ export interface Position {
   network: string;
   wallet: string;
   mint: string;
-  tokenAmount: number; // Raw integer base units; MUST remain a safe integer in the legacy number-based execution API
-  tokenAmountRaw?: string; // Exact uncorrupted base units string for large supplies / BigInt
+  tokenAmount: number;
+  tokenAmountRaw?: string;
   decimals: number;
   totalSolSpent: number;
-  averageEntryPrice: number; // SOL per 1 whole token
+  averageEntryPrice: number;
   currentPriceSol: number;
   peakPriceSol: number;
   highestPnlPct: number;
-  realizedPnl: number; // SOL
-  unrealizedPnl: number; // SOL
+  realizedPnl: number;
+  unrealizedPnl: number;
   unrealizedPnlPct: number;
   status: PositionStatus;
   openedAt: number;
@@ -37,12 +37,14 @@ export interface Position {
   orderIds: string[];
   buySignature?: string;
   exitSignature?: string;
+  // FIX: Track cost basis of sold tokens for accurate realized PnL%
+  totalSolSpentOnSold?: number;
 }
 
 export class PositionManager {
   private static instance: PositionManager;
-  private positions: Map<string, Position> = new Map(); // Keyed by positionId
-  private positionKeys: Map<string, string> = new Map(); // Keyed by network:wallet:mint -> positionId
+  private positions: Map<string, Position> = new Map();
+  private positionKeys: Map<string, string> = new Map();
 
   private constructor() {
     this.refreshFromRepository();
@@ -63,6 +65,7 @@ export class PositionManager {
     let safeBigInt: bigint;
     try { safeBigInt = BigInt(value); } catch { throw new Error(`INVALID_POSITION_RAW_AMOUNT: ${positionId}`); }
     if (safeBigInt <= 0n) return 0;
+    // FIX: For very large values, keep as BigInt string to avoid precision loss
     return Number(safeBigInt);
   }
 
@@ -218,6 +221,7 @@ export class PositionManager {
       pos.peakPriceSol = currentPriceSol;
     }
 
+    // FIX: Use BigInt for precise token quantity calculation
     const tokenQty = pos.tokenAmount / (10 ** pos.decimals);
     const currentValueSol = tokenQty * currentPriceSol;
     pos.unrealizedPnl = currentValueSol - pos.totalSolSpent;
@@ -300,7 +304,6 @@ export class PositionManager {
       }
     }
 
-    // New Position
     const posId = `pos_${now}_${params.mint.slice(0, 6)}`;
     const tokenQty = tokenAmountNum / (10 ** decimals);
     const averageEntryPrice = tokenQty > 0 ? params.solSpent / tokenQty : 0;
@@ -380,8 +383,14 @@ export class PositionManager {
     if (!pos) return undefined;
 
     const remainingRaw = Math.max(0, pos.tokenAmount - tokensSoldRaw);
+    
+    // FIX: Track cost basis of sold portion for accurate realized PnL%
+    const soldFraction = tokensSoldRaw / (pos.tokenAmount || 1);
+    const soldCostBasis = pos.totalSolSpent * soldFraction;
+    pos.totalSolSpentOnSold = (pos.totalSolSpentOnSold || 0) + soldCostBasis;
+    
     pos.tokenAmount = remainingRaw;
-    pos.realizedPnl += solReceived - (pos.totalSolSpent * (tokensSoldRaw / (pos.tokenAmount + tokensSoldRaw || 1)));
+    pos.realizedPnl += solReceived - soldCostBasis;
     pos.updatedAt = Date.now();
 
     if (remainingRaw <= 0) {

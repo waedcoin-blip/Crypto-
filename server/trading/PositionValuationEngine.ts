@@ -4,47 +4,24 @@ import { executionGateway } from '../execution/ExecutionGateway.js';
 
 export interface PositionValuation {
   mint: string;
-
   tokenAmountRaw: bigint | string;
   tokenDecimals: number;
-
   entryCostSol: number;
-
   currentPriceSol?: number;
-
-  // Executable Valuation (authoritative from Jupiter SELL quote)
   executableValueSol?: number;
   executablePnlSol?: number;
   executablePnlPercent?: number;
-
-  // Market Valuation (from real-time candidate price / WSS / LaserStream)
   marketValueSol?: number;
   marketPnlSol?: number;
   marketPnlPercent?: number;
-
-  // General PnL (defaults to executable proceeds if available, else market proceeds)
   pnlSol?: number;
   pnlPercent?: number;
-
-  source:
-    | 'JUPITER'
-    | 'LASERSTREAM'
-    | 'WSS'
-    | 'HELIUS_WSS'
-    | 'UNAVAILABLE';
-
+  source: 'JUPITER' | 'LASERSTREAM' | 'WSS' | 'HELIUS_WSS' | 'UNAVAILABLE';
   lastMarketEventAt?: number;
   lastMarketPriceAt?: number;
   lastExecutableQuoteAt?: number;
-
   valuationUpdatedAt: number;
-
-  status:
-    | 'LIVE'
-    | 'STALE'
-    | 'UNAVAILABLE';
-
-  // Observability & context fields
+  status: 'LIVE' | 'STALE' | 'UNAVAILABLE';
   positionId?: string;
   network?: string;
   wallet?: string;
@@ -60,9 +37,6 @@ export interface ValuationConfig {
   staleThresholdMs: number;
 }
 
-/**
- * Safe conversion of raw token balance to UI quantity without floating truncation.
- */
 export function safeTokenQuantity(rawAmount: bigint | number | string, decimals: number): number {
   if (typeof decimals !== 'number' || isNaN(decimals) || decimals < 0) {
     return 0;
@@ -102,15 +76,11 @@ export class PositionValuationEngine {
     return `${network}:${wallet}:${mint}`;
   }
 
-  /**
-   * Returns authoritative valuation for a position, evaluating freshness.
-   */
   public getValuation(network: string, wallet: string, mint: string): PositionValuation | undefined {
     const val = this.valuations.get(this.getKey(network, wallet, mint));
     if (!val) return undefined;
 
     const now = Date.now();
-    // Stale check if quote or price is older than threshold
     if (val.status === 'LIVE') {
       const lastTime = Math.max(val.lastExecutableQuoteAt || 0, val.lastMarketPriceAt || 0);
       if (lastTime > 0 && (now - lastTime > this.config.staleThresholdMs)) {
@@ -147,13 +117,6 @@ export class PositionValuationEngine {
     });
   }
 
-  /**
-   * Evaluates position valuation using real market event (WSS/LaserStream).
-   * Enforces:
-   * - Fail-closed on unresolved decimals
-   * - Event ordering (rejects older timestamps)
-   * - Pure SOL accounting: pnlSol = executableValueSol - entryCostSol
-   */
   public updateFromMarketEvent(
     position: Position,
     priceSol: number,
@@ -167,7 +130,6 @@ export class PositionValuationEngine {
     const key = this.getKey(position.network, position.wallet, position.mint);
     const existing = this.valuations.get(key);
 
-    // Decimal verification — FAIL CLOSED (Do NOT invent 6)
     if (typeof position.decimals !== 'number' || isNaN(position.decimals) || position.decimals < 0) {
       this.logValuationFailure(position.mint, 'DECIMALS_UNRESOLVED_FAIL_CLOSED');
       const unavail: PositionValuation = {
@@ -186,7 +148,6 @@ export class PositionValuationEngine {
       return unavail;
     }
 
-    // Event ordering: Reject older events
     if (existing && existing.lastMarketEventAt && eventTimestamp < existing.lastMarketEventAt) {
       console.log(`[PNL VALUATION REJECTED] Out-of-order market event for ${position.mint}: ${eventTimestamp} < ${existing.lastMarketEventAt}`);
       return existing;
@@ -198,21 +159,19 @@ export class PositionValuationEngine {
     const entryCostSol = position.totalSolSpent > 0 ? position.totalSolSpent : 0;
     const averageEntryPriceSol = tokenQuantity > 0 && entryCostSol > 0 ? entryCostSol / tokenQuantity : position.averageEntryPrice;
 
-    // Market valuation from real-time candidate price
     const currentPriceSol = priceSol;
     const marketValueSol = tokenQuantity * currentPriceSol;
     const marketPnlSol = marketValueSol - entryCostSol;
     const marketPnlPercent = entryCostSol > 0 ? (marketPnlSol / entryCostSol) * 100 : 0;
 
-    // When a fresh market event arrives, it represents the latest live price state.
-    // Executable valuation scales with market value unless a newer quote exists.
-    const executableValueSol = marketValueSol;
-    const executablePnlSol = marketPnlSol;
-    const executablePnlPercent = marketPnlPercent;
+    // FIX: Don't set executableValueSol = marketValueSol
+    // executable values should only come from actual Jupiter quotes
+    const executableValueSol = existing?.executableValueSol;
+    const executablePnlSol = executableValueSol !== undefined ? executableValueSol - entryCostSol : undefined;
+    const executablePnlPercent = executableValueSol !== undefined && entryCostSol > 0 ? (executablePnlSol! / entryCostSol) * 100 : undefined;
 
-    // Authoritative live PnL is updated immediately from the fresh market event
-    const pnlSol = marketPnlSol;
-    const pnlPercent = marketPnlPercent;
+    const pnlSol = executablePnlSol !== undefined ? executablePnlSol : marketPnlSol;
+    const pnlPercent = executablePnlPercent !== undefined ? executablePnlPercent : marketPnlPercent;
 
     const currentSeq = (this.sequences.get(key) || 0) + 1;
     this.sequences.set(key, currentSeq);
@@ -252,14 +211,6 @@ export class PositionValuationEngine {
     return valuation;
   }
 
-  /**
-   * Fetches fresh executable Jupiter quote for the ACTUAL current position balance.
-   * Enforces:
-   * - Actual token quantity quoted for SELL
-   * - Fail-closed on missing decimals
-   * - Request deduplication
-   * - Async race condition protection
-   */
   public async refreshExecutableQuote(position: Position): Promise<PositionValuation | null> {
     if (!position || position.tokenAmount <= 0) {
       return null;
@@ -269,7 +220,6 @@ export class PositionValuationEngine {
     const now = Date.now();
     const existing = this.valuations.get(key);
 
-    // Decimal verification — FAIL CLOSED
     if (typeof position.decimals !== 'number' || isNaN(position.decimals) || position.decimals < 0) {
       this.logValuationFailure(position.mint, 'DECIMALS_UNRESOLVED_FAIL_CLOSED');
       const unavail: PositionValuation = {
@@ -288,12 +238,10 @@ export class PositionValuationEngine {
       return unavail;
     }
 
-    // Rate limit quote refresh throttle (e.g. 1000ms)
     if (existing && existing.lastExecutableQuoteAt && (now - existing.lastExecutableQuoteAt < this.config.quoteRefreshMs)) {
       return existing;
     }
 
-    // Request deduplication: return in-flight promise
     if (this.pendingQuotePromises.has(key)) {
       return this.pendingQuotePromises.get(key)!;
     }
@@ -314,7 +262,6 @@ export class PositionValuationEngine {
 
         const reqFinishedAt = Date.now();
 
-        // Async race protection: discard if newer sequence was dispatched
         if (this.sequences.get(key) !== nextSeq) {
           console.warn(`[PNL VALUATION RACE DISCARDED] Sequence mismatch for ${position.mint}: ${nextSeq} vs current ${this.sequences.get(key)}`);
           return this.valuations.get(key) || null;
@@ -332,7 +279,6 @@ export class PositionValuationEngine {
           const executablePnlSol = executableValueSol - entryCostSol;
           const executablePnlPercent = entryCostSol > 0 ? (executablePnlSol / entryCostSol) * 100 : 0;
 
-          // Preserve market values from existing or candidate calculation
           const marketValueSol = existing?.marketValueSol ?? (tokenQuantity * (existing?.currentPriceSol || currentPriceSol));
           const marketPnlSol = existing?.marketPnlSol ?? (marketValueSol - entryCostSol);
           const marketPnlPercent = entryCostSol > 0 ? (marketPnlSol / entryCostSol) * 100 : 0;
@@ -379,7 +325,6 @@ export class PositionValuationEngine {
         this.pendingQuotePromises.delete(key);
       }
 
-      // Fallback on previous valuation with stale checking
       if (existing) {
         const lastDataTime = Math.max(existing.lastExecutableQuoteAt || 0, existing.lastMarketPriceAt || 0);
         const age = Date.now() - lastDataTime;
@@ -390,7 +335,6 @@ export class PositionValuationEngine {
         return existing;
       }
 
-      // No price available: return UNAVAILABLE (never fabricate price)
       const unavailableValuation: PositionValuation = {
         mint: position.mint,
         tokenAmountRaw: String(position.tokenAmount),
@@ -449,4 +393,3 @@ export class PositionValuationEngine {
 }
 
 export const positionValuationEngine = PositionValuationEngine.getInstance();
-

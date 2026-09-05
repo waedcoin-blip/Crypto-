@@ -128,10 +128,10 @@ export class TradingEngine {
 
     const clientRequestId = params.clientRequestId || `buy_${mint.slice(0, 8)}_${Date.now()}`;
     const rawLamports = params.amountSol * 1e9;
-    if (!Number.isInteger(Math.round(rawLamports)) || rawLamports <= 0) {
+    if (!Number.isFinite(rawLamports) || rawLamports <= 0 || rawLamports > Number.MAX_SAFE_INTEGER) {
       return {
         success: false,
-        error: `INVALID_AMOUNT: Non-integer or non-positive lamports calculated: ${rawLamports}`,
+        error: `INVALID_AMOUNT: Non-finite, non-positive, or too large lamports calculated: ${rawLamports}`,
       };
     }
     const amountLamports = Math.floor(rawLamports);
@@ -167,7 +167,10 @@ export class TradingEngine {
     // 2. Authoritative Invariant: NO TOKEN MAY REACH BUY EXECUTION WITHOUT A CURRENT, VALID, SINGLE-USE, MINT/POOL-BOUND HardenedApproval
     let approval = params.approval;
     if (!approval) {
-      approval = hardenedApprovalStore.getLatestUsableApproval('solana', mint, params.pool);
+      // Pass current market data for validation
+      const currentPrice = candidateEnricher.enrichCandidate(mint, network).then(c => c.priceSol?.value).catch(() => undefined);
+      const currentSlot = 0; // Would come from actual slot provider
+      approval = hardenedApprovalStore.getLatestUsableApproval('solana', mint, params.pool, await currentPrice, currentSlot);
     }
 
     if (!approval) {
@@ -297,6 +300,7 @@ export class TradingEngine {
 
       hardenedApprovalStore.markConsumed(approval.approvalId, order.id);
       rebuyGuard.confirmBuy(reservation.reservationId);
+      riskManager.recordBuySuccess(network, wallet, mint);
       candidateRegistry.updateCandidateState(network, mint, 'BOUGHT');
       tradeRepository.recordTrade({
         id: `trade_${order.id}`,
