@@ -7,7 +7,16 @@ export interface SolanaMintValidationResult {
   reason?: 'INVALID_BASE58' | 'INVALID_BYTE_LENGTH' | 'INVALID_PUBLIC_KEY';
 }
 
-export function validateSolanaMint(mint: unknown): SolanaMintValidationResult {
+function isMintOnCurveFn(mint: string): boolean {
+  try {
+    const pubkey = new PublicKey(mint);
+    return PublicKey.isOnCurve(pubkey.toBuffer());
+  } catch (err) {
+    return false;
+  }
+}
+
+function validateSolanaMintFn(mint: unknown): SolanaMintValidationResult {
   if (typeof mint !== 'string' || !mint.trim()) {
     return { valid: false, reason: 'INVALID_BASE58' };
   }
@@ -36,10 +45,12 @@ export function validateSolanaMint(mint: unknown): SolanaMintValidationResult {
   }
 }
 
-export function canonicalizeSolanaMint(mint: unknown): string {
-  const result = validateSolanaMint(mint);
+function canonicalizeSolanaMintFn(mint: unknown): string {
+  const result = validateSolanaMintFn(mint);
   if (!result.valid || !result.mint) {
     throw new Error(`INVALID_MINT: ${result.reason}`);
   }
   return result.mint;
 }
+
+export { isMintOnCurveFn as isMintOnCurve, validateSolanaMintFn as validateSolanaMint, canonicalizeSolanaMintFn as canonicalizeSolanaMint };

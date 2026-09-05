@@ -2,6 +2,7 @@
 import { Router } from 'express';
 import { asyncHandler } from '../middleware/errorHandler.js';
 import { tradingEngine } from '../trading/TradingEngine.js';
+import { isMintOnCurve } from '../../src/utils/solanaValidators.js';
 import { positionManager } from '../trading/PositionManager.js';
 import { orderManager } from '../trading/OrderManager.js';
 import { criteriaRepository } from '../repositories/CriteriaRepository.js';
@@ -75,6 +76,10 @@ router.post('/buy', asyncHandler(async (req, res) => {
   
   if (!network) {
     return res.status(400).json({ status: 'error', error: 'INVALID_NETWORK_EXPLICIT_REQUIRED: Network parameter is required and cannot be empty.' });
+  }
+
+  if (!isMintOnCurve(mint)) {
+    return res.status(400).json({ status: 'error', error: 'INVALID_MINT: Mint address is invalid or not on curve.' });
   }
 
   const response = await tradingEngine.buy({

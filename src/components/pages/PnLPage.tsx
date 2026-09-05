@@ -38,6 +38,7 @@ import { useTradingEnvironmentStore } from '../../store/tradingEnvironmentStore'
 import { walletBalanceService } from '../../services/WalletBalanceService';
 import { resolveTokenDecimals } from '../../services/PaperTradeExecutor';
 import { unifiedTradePipeline, NormalizedTradeEvent } from '../../engines/unifiedTradePipeline';
+import { isMintOnCurve } from '../../utils/solanaValidators';
 
 import { DEFAULT_HELIUS_RPC, DEFAULT_HELIUS_WS, HELIUS_API_KEY, SOL_MINT, USDC_MINT } from '../../constants/solana';
 
@@ -3253,6 +3254,9 @@ export const PnLPage = ({
     const isBuy = inputMint === SOL_MINT;
 
     if (isBuy) {
+      if (!isMintOnCurve(outputMint)) {
+        throw new Error(`Invalid mint address: ${outputMint}`);
+      }
       const solAmount = Number(amount) / 1e9;
       const data = await apiClient.post('/api/trading/buy', {
         network: currentMode,
@@ -3921,6 +3925,12 @@ const checkTokenCriteria = (mint: string): {
       
       const slippageBps = Math.floor(configRef.current.slippage * 100);
       const network = authoritativeNetwork;
+
+      if (!isMintOnCurve(mint)) {
+        addLog(`❌ [BUY ABORTED] Invalid mint address: ${mint}`, 'err');
+        pendingBuyMintsRef.current.delete(mint);
+        return;
+      }
 
       const buyData = await apiClient.post('/api/trading/buy', {
         network,
