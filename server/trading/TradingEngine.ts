@@ -38,7 +38,7 @@ export interface SellParams {
   network: string;
   wallet: string;
   mint: string;
-  amountRaw?: number; // Optional, defaults to full position amount
+  amountRaw?: number | string | bigint; // Optional, defaults to full position amount
   slippageBps?: number;
   clientRequestId?: string;
   reason?: 'TP' | 'SL' | 'MANUAL' | 'FORCE_EXIT' | string;
@@ -354,11 +354,21 @@ export class TradingEngine {
       };
     }
 
-    const rawAmount = params.amountRaw !== undefined ? params.amountRaw : position.tokenAmount;
-    if (rawAmount <= 0) {
+    const rawAmountStr = params.amountRaw !== undefined 
+      ? String(params.amountRaw).trim() 
+      : (position.tokenAmountRaw ? String(position.tokenAmountRaw) : String(position.tokenAmount));
+    
+    let rawAmountBigInt: bigint = 0n;
+    try {
+      if (/^\d+$/.test(rawAmountStr)) {
+        rawAmountBigInt = BigInt(rawAmountStr);
+      }
+    } catch {}
+
+    if (rawAmountBigInt <= 0n && (isNaN(Number(rawAmountStr)) || Number(rawAmountStr) <= 0)) {
       return {
         success: false,
-        error: `INVALID_AMOUNT: Sell amount must be greater than 0, received ${rawAmount}`,
+        error: `INVALID_AMOUNT: Sell amount must be greater than 0, received ${rawAmountStr}`,
       };
     }
 

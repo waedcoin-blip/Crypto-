@@ -1,17 +1,19 @@
 # Final Production Audit Report
-Generated at: 2026-09-05T16:20:15.665Z
-Total Findings: 121
-Bugs: 3
+Generated at: 2026-09-05T16:49:20.291Z
+Total Findings: 123
+Bugs: 5
 Warnings: 118
 
 ## Findings Details
+- **[BUG]** `server/execution/FastExitExecutor.ts:91`: Unsafe Number Conversion on Raw Amounts (`amountTokens: Number(rawBig) / (10 ** position.decimals),`)
 - **[BUG]** `server/execution/PaperTradeExecutor.ts:37`: Unsafe Number Conversion on Raw Amounts (`const tokenQty = Number(amountRaw) / (10 ** decs);`)
 - **[BUG]** `server/execution/PaperTradeExecutor.ts:53`: Unsafe Number Conversion on Raw Amounts (`const minLamports = BigInt(Math.floor(Number(lamports) * (1 - slippage)));`)
 - **[WARNING]** `server/market/HeliusErrors.ts:29`: Artificial History Truncation (slice(-500)) (`if (sanitized.length <= 8) return '***' + sanitized.slice(-3);`)
-- **[BUG]** `server/routes/trading.ts:113`: Unsafe Number Conversion on Raw Amounts (`amountRaw: amountRaw !== undefined ? Number(amountRaw) : undefined,`)
 - **[WARNING]** `server/services/JupiterTradingService.ts:10`: Hardcoded Secret / Private Key (`privateKey?: string;`)
 - **[WARNING]** `server/services/JupiterTradingService.ts:56`: Hardcoded Secret / Private Key (`walletPrivateKey?: string;`)
 - **[WARNING]** `server/services/simulation.ts:111`: Artificial History Truncation (slice(-500)) (`pairAddress: `${mint.slice(0, 8)}pair${mint.slice(-4)}`,`)
+- **[BUG]** `server/trading/PositionManager.ts:266`: Unsafe Number Conversion on Raw Amounts (`const tokenAmountNum = Number(rawBigInt);`)
+- **[BUG]** `server/trading/TradingEngine.ts:368`: Unsafe Number Conversion on Raw Amounts (`if (rawAmountBigInt <= 0n && (isNaN(Number(rawAmountStr)) || Number(rawAmountStr) <= 0)) {`)
 - **[WARNING]** `server/wallet/WalletManager.ts:45`: Hardcoded Secret / Private Key (`const secret = bs58.decode(devnetKeyA);`)
 - **[WARNING]** `server/wallet/WalletManager.ts:46`: Hardcoded Secret / Private Key (`keypairDevnetA = Keypair.fromSecretKey(secret);`)
 - **[WARNING]** `server/wallet/WalletManager.ts:66`: Hardcoded Secret / Private Key (`const secret = bs58.decode(devnetKeyB);`)
@@ -92,14 +94,14 @@ Warnings: 118
 - **[WARNING]** `src/components/pages/PnLPage.tsx:3060`: Hardcoded Secret / Private Key (`if (lastLoggedKeyRef.current !== privateKey) {`)
 - **[WARNING]** `src/components/pages/PnLPage.tsx:3062`: Hardcoded Secret / Private Key (`lastLoggedKeyRef.current = privateKey;`)
 - **[WARNING]** `src/components/pages/PnLPage.tsx:3075`: Hardcoded Secret / Private Key (`}, [privateKey, rpcUrl, customWsUrl, addLog]);`)
-- **[WARNING]** `src/components/pages/PnLPage.tsx:3646`: Hardcoded Secret / Private Key (`const { maxPositions, privateKey, slippage } = configRef.current;`)
-- **[WARNING]** `src/components/pages/PnLPage.tsx:3647`: Hardcoded Secret / Private Key (`// Block any token starting with 'sim' if privateKey is active`)
-- **[WARNING]** `src/components/pages/PnLPage.tsx:3903`: Hardcoded Secret / Private Key (`if (isMainnet && !privateKey && !activeWalletAddress) {`)
-- **[WARNING]** `src/components/pages/PnLPage.tsx:4732`: Hardcoded Secret / Private Key (`}, [privateKey, addLog]);`)
-- **[WARNING]** `src/components/pages/PnLPage.tsx:5364`: Hardcoded Secret / Private Key (`if (!privateKey) {`)
-- **[WARNING]** `src/components/pages/PnLPage.tsx:7387`: Artificial History Truncation (slice(-500)) (`{alert.address.slice(0, 12)}...{alert.address.slice(-6)}`)
-- **[WARNING]** `src/components/pages/PnLPage.tsx:7763`: Artificial History Truncation (slice(-500)) (`<span className="text-white font-bold">{t.mint.slice(0, 6)}...{t.mint.slice(-6)}</span>`)
-- **[WARNING]** `src/components/pages/PnLPage.tsx:7976`: Artificial History Truncation (slice(-500)) (`const mintDisplay = mintStr.length > 12 ? `${mintStr.slice(0, 6)}...${mintStr.slice(-6)}` : mintStr || 'Unknown';`)
+- **[WARNING]** `src/components/pages/PnLPage.tsx:3639`: Hardcoded Secret / Private Key (`const { maxPositions, privateKey, slippage } = configRef.current;`)
+- **[WARNING]** `src/components/pages/PnLPage.tsx:3640`: Hardcoded Secret / Private Key (`// Block any token starting with 'sim' if privateKey is active`)
+- **[WARNING]** `src/components/pages/PnLPage.tsx:3896`: Hardcoded Secret / Private Key (`if (isMainnet && !privateKey && !activeWalletAddress) {`)
+- **[WARNING]** `src/components/pages/PnLPage.tsx:4720`: Hardcoded Secret / Private Key (`}, [privateKey, addLog]);`)
+- **[WARNING]** `src/components/pages/PnLPage.tsx:5352`: Hardcoded Secret / Private Key (`if (!privateKey) {`)
+- **[WARNING]** `src/components/pages/PnLPage.tsx:7375`: Artificial History Truncation (slice(-500)) (`{alert.address.slice(0, 12)}...{alert.address.slice(-6)}`)
+- **[WARNING]** `src/components/pages/PnLPage.tsx:7751`: Artificial History Truncation (slice(-500)) (`<span className="text-white font-bold">{t.mint.slice(0, 6)}...{t.mint.slice(-6)}</span>`)
+- **[WARNING]** `src/components/pages/PnLPage.tsx:7964`: Artificial History Truncation (slice(-500)) (`const mintDisplay = mintStr.length > 12 ? `${mintStr.slice(0, 6)}...${mintStr.slice(-6)}` : mintStr || 'Unknown';`)
 - **[WARNING]** `src/components/pages/SafetyPage.tsx:49`: Artificial History Truncation (slice(-500)) (`{token.address ? `${token.address.slice(0, 6)}...${token.address.slice(-4)}` : 'N/A'}`)
 - **[WARNING]** `src/components/pages/SystemCheckPage.tsx:947`: Hardcoded Secret / Private Key (`OneUptime Telemetry Token / Ingestion Secret`)
 - **[WARNING]** `src/lib/crypto.ts:10`: Hardcoded Secret / Private Key (`async function deriveKey(secretMaterial: string, salt: Uint8Array): Promise<CryptoKey> {`)

@@ -10,6 +10,7 @@ export interface Position {
   wallet: string;
   mint: string;
   tokenAmount: number; // Raw integer base units; MUST remain a safe integer in the legacy number-based execution API
+  tokenAmountRaw?: string; // Exact uncorrupted base units string for large supplies / BigInt
   decimals: number;
   totalSolSpent: number;
   averageEntryPrice: number; // SOL per 1 whole token
@@ -62,9 +63,6 @@ export class PositionManager {
     let safeBigInt: bigint;
     try { safeBigInt = BigInt(value); } catch { throw new Error(`INVALID_POSITION_RAW_AMOUNT: ${positionId}`); }
     if (safeBigInt <= 0n) return 0;
-    if (safeBigInt > BigInt(Number.MAX_SAFE_INTEGER)) {
-      throw new Error(`RAW_AMOUNT_PRECISION_UNSUPPORTED: Position ${positionId} has raw token amount ${safeBigInt.toString()} above Number.MAX_SAFE_INTEGER. Execution is blocked to prevent quantity corruption.`);
-    }
     return Number(safeBigInt);
   }
 
@@ -258,10 +256,14 @@ export class PositionManager {
     if (decimals === undefined) {
       throw new Error(`Cannot open position for ${params.mint}: missing decimals.`);
     }
-    const tokenAmountNum = this.parseRawAmountSafe(params.tokenAmountRaw, params.mint);
-    if (!Number.isSafeInteger(tokenAmountNum) || tokenAmountNum <= 0) {
-      throw new Error(`INVALID_RAW_TOKEN_AMOUNT: tokenAmountRaw must be a positive safe integer for ${params.mint}.`);
+    let rawBigInt: bigint;
+    try {
+      rawBigInt = BigInt(params.tokenAmountRaw);
+      if (rawBigInt <= 0n) throw new Error('NON_POSITIVE');
+    } catch {
+      throw new Error(`INVALID_RAW_TOKEN_AMOUNT: tokenAmountRaw must be a positive integer for ${params.mint}.`);
     }
+    const tokenAmountNum = Number(rawBigInt);
     const tpPct = params.tpPct ?? 25;
     const slPct = Math.abs(params.slPct ?? 15);
     if (!Number.isFinite(tpPct) || tpPct <= 0 || !Number.isFinite(slPct) || slPct <= 0 || slPct >= 100) {
@@ -272,15 +274,13 @@ export class PositionManager {
       const existing = this.positions.get(existingId);
       if (existing && existing.status !== 'CLOSED') {
         const prevTotalCost = existing.totalSolSpent;
-        const prevTotalRaw = existing.tokenAmount;
         const newTotalCost = prevTotalCost + params.solSpent;
-        const newTotalRawBig = BigInt(prevTotalRaw) + BigInt(params.tokenAmountRaw);
-        if (newTotalRawBig > BigInt(Number.MAX_SAFE_INTEGER)) {
-          throw new Error(`RAW_AMOUNT_PRECISION_UNSUPPORTED: accumulated position ${existing.id} exceeds Number.MAX_SAFE_INTEGER; refusing to corrupt quantity.`);
-        }
+        const prevTotalRawBig = existing.tokenAmountRaw ? BigInt(existing.tokenAmountRaw) : BigInt(existing.tokenAmount);
+        const newTotalRawBig = prevTotalRawBig + BigInt(params.tokenAmountRaw);
         const newTotalRaw = Number(newTotalRawBig);
         const newTotalQty = newTotalRaw / (10 ** existing.decimals);
 
+        existing.tokenAmountRaw = newTotalRawBig.toString();
         existing.tokenAmount = newTotalRaw;
         existing.totalSolSpent = newTotalCost;
         if (newTotalQty > 0) {
@@ -311,6 +311,7 @@ export class PositionManager {
       wallet: params.wallet,
       mint: params.mint,
       tokenAmount: tokenAmountNum,
+      tokenAmountRaw: rawBigInt.toString(),
       decimals,
       totalSolSpent: params.solSpent,
       averageEntryPrice,

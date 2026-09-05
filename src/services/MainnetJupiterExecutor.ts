@@ -15,6 +15,7 @@ import { useAppStore } from '../store/appStore';
 import { getTokenBalanceRaw, percentOfRawAmount } from './jupiterService';
 
 import { rpcRouting } from './rpcRouting';
+import { apiClient } from './apiClient';
 
 const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
 const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
@@ -98,13 +99,13 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
     await this.checkNetworkSafety();
     try {
       const quote = await this.jupiterApi.quoteGet(params);
-      if (!quote) {
-        throw new ExecutionError('quote_failure', 'Jupiter returned empty quote.');
+      if (!quote || !quote.outAmount) {
+        throw new ExecutionError('quote_failure', 'QUOTE_FETCH_FAILED: Jupiter returned empty quote.');
       }
       return quote;
     } catch (err: any) {
       const classification = classifyExecutionError(err);
-      throw new ExecutionError(classification, `Jupiter getQuote failed: ${err.message || String(err)}`);
+      throw new ExecutionError(classification, `QUOTE_FETCH_FAILED: Jupiter getQuote failed: ${err.message || String(err)}`);
     }
   }
 
@@ -141,14 +142,13 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
       }
 
       const isSolBuy = inputMint === 'So11111111111111111111111111111111111111112';
-      const numAmount = typeof amount === 'bigint' ? Number(amount) : Number(amount);
       const strAmount = typeof amount === 'bigint' ? amount.toString() : (typeof amount === 'string' ? amount : String(Math.trunc(amount)));
 
       const endpoint = isSolBuy ? '/api/trading/buy' : '/api/trading/sell';
       const body = isSolBuy ? {
         network: 'mainnet',
         mint: outputMint,
-        amountSol: numAmount / LAMPORTS_PER_SOL,
+        amountSol: Number(BigInt(strAmount)) / LAMPORTS_PER_SOL,
         slippageBps,
         clientRequestId: `mainnet_buy_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         label,
@@ -161,15 +161,9 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
         reason: label,
       };
 
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new ExecutionError('transaction_failure', data.error || 'Mainnet server execution failed');
+      const data = await apiClient.post(endpoint, body);
+      if (!data || !data.success) {
+        throw new ExecutionError('transaction_failure', data?.error || 'Mainnet server execution failed');
       }
 
       const sig = data.signature;
@@ -182,7 +176,7 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
         signature: sig,
         inputMint,
         outputMint,
-        inputAmount: numAmount,
+        inputAmount: typeof amount === 'number' ? amount : Number(strAmount),
         outputAmount: outAmountRaw,
         feeSol: 0.000005,
         slot: 0,

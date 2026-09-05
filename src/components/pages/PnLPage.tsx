@@ -3238,7 +3238,7 @@ export const PnLPage = ({
   ]);
 
   
-  const executeJupiterSwap = async (inputMint: string, outputMint: string, amount: number, customSlippageBps?: number, minExpectedOutSol?: number) => {
+  const executeJupiterSwap = async (inputMint: string, outputMint: string, amount: number | string | bigint, customSlippageBps?: number, minExpectedOutSol?: number) => {
     if (inputMint.toLowerCase().startsWith('sim') || outputMint.toLowerCase().startsWith('sim')) {
       throw new Error("Trading of tokens starting with 'sim' is strictly blocked.");
     }
@@ -3253,55 +3253,48 @@ export const PnLPage = ({
     const isBuy = inputMint === SOL_MINT;
 
     if (isBuy) {
-      const solAmount = amount / 1e9;
-      const res = await fetch('/api/trading/buy', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          network: currentMode,
-          mint: outputMint,
-          amountSol: solAmount,
-          slippageBps: slippageToUse,
-          clientRequestId: `pnl_buy_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-          label: 'entry',
-        }),
+      const solAmount = Number(amount) / 1e9;
+      const data = await apiClient.post('/api/trading/buy', {
+        network: currentMode,
+        mint: outputMint,
+        amountSol: solAmount,
+        slippageBps: slippageToUse,
+        clientRequestId: `pnl_buy_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        label: 'entry',
       });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || `Server buy execution failed (${res.status})`);
+      if (!data || !data.success) {
+        throw new Error(data?.error || 'Server buy execution failed');
       }
+      const outAmountRawVal = data.result?.outAmountRaw || data.outAmountRaw || '0';
       return {
         txid: data.signature,
-        outputAmount: Number(data.result?.outAmountRaw || data.outAmountRaw || 0),
-        outputAmountRaw: Number(data.result?.outAmountRaw || data.outAmountRaw || 0),
+        outputAmount: Number(outAmountRawVal),
+        outputAmountRaw: outAmountRawVal,
         outputAmountSol: 0,
         feeSol: 0,
         slot: 0,
       };
     } else {
-      const res = await fetch('/api/trading/sell', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          network: currentMode,
-          mint: inputMint,
-          amountRaw: amount,
-          slippageBps: slippageToUse,
-          clientRequestId: `pnl_sell_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-          reason: 'MANUAL',
-        }),
+      const strAmount = typeof amount === 'bigint' ? amount.toString() : (typeof amount === 'string' ? amount : String(Math.trunc(Number(amount))));
+      const data = await apiClient.post('/api/trading/sell', {
+        network: currentMode,
+        mint: inputMint,
+        amountRaw: strAmount,
+        slippageBps: slippageToUse,
+        clientRequestId: `pnl_sell_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        reason: 'MANUAL',
       });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || `Server sell execution failed (${res.status})`);
+      if (!data || !data.success) {
+        throw new Error(data?.error || 'Server sell execution failed');
       }
       const isOutputSol = outputMint === SOL_MINT || outputMint === 'So11111111111111111111111111111111111111112';
-      const outAmount = Number(data.result?.outAmountRaw || data.outAmountRaw || 0);
+      const outAmountRawVal = data.result?.outAmountRaw || data.outAmountRaw || '0';
+      const outAmountNum = Number(outAmountRawVal);
       return {
         txid: data.signature,
-        outputAmount: outAmount,
-        outputAmountRaw: outAmount,
-        outputAmountSol: isOutputSol ? (outAmount / 1e9) : 0,
+        outputAmount: outAmountNum,
+        outputAmountRaw: outAmountRawVal,
+        outputAmountSol: isOutputSol ? (outAmountNum / 1e9) : 0,
         feeSol: 0,
         slot: 0,
       };
@@ -3915,25 +3908,20 @@ const checkTokenCriteria = (mint: string): {
       const slippageBps = Math.floor(configRef.current.slippage * 100);
       const network = isMainnet ? 'mainnet' : 'paper';
 
-      const buyRes = await fetch('/api/trading/buy', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          network,
-          mint,
-          amountSol: solAmount,
-          slippageBps,
-          clientRequestId: `pnl_buy_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-          label: 'entry',
-        }),
+      const buyData = await apiClient.post('/api/trading/buy', {
+        network,
+        mint,
+        amountSol: solAmount,
+        slippageBps,
+        clientRequestId: `pnl_buy_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        label: 'entry',
       });
 
-      const buyData = await buyRes.json();
-      if (!buyRes.ok || !buyData.success) {
-        throw new Error(buyData.error || `Server buy execution failed (${buyRes.status})`);
+      if (!buyData || !buyData.success) {
+        throw new Error(buyData?.error || 'Server buy execution failed');
       }
 
-      const outAmountRaw = buyData.result?.outAmountRaw || buyData.outAmountRaw || 0;
+      const outAmountRaw = buyData.result?.outAmountRaw || buyData.outAmountRaw || '0';
       const actualSolSpent = buyData.result?.totalCostSol || solAmount;
       const result = {
         txid: buyData.signature,
@@ -4311,11 +4299,11 @@ const checkTokenCriteria = (mint: string): {
       positionsRef.current = next;
       useAppStore.getState().updateActivePositions(() => next);
       positionExitManagerRef.current?.updatePositionTpSl(mint, safeTp, safeSl);
-      // Authoritative Backend TP/SL Sync
-      fetch('/api/trading/positions/tpsl', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mint, tpPct: safeTp, slPct: safeSl }),
+      // Authoritative Backend TP/SL Sync via apiClient
+      apiClient.post('/api/trading/positions/tpsl', {
+        mint,
+        tpPct: safeTp,
+        slPct: safeSl,
       }).catch(err => {
         console.error('[TP/SL Server Sync Error]', err);
       });
@@ -4358,11 +4346,11 @@ const checkTokenCriteria = (mint: string): {
       positionsRef.current = next;
       useAppStore.getState().updateActivePositions(() => next);
       positionExitManagerRef.current?.updatePositionTpSl(mint, defaultTp, Math.abs(defaultSl));
-      // Authoritative Backend TP/SL Reset Sync
-      fetch('/api/trading/positions/tpsl', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mint, tpPct: defaultTp, slPct: Math.abs(defaultSl) }),
+      // Authoritative Backend TP/SL Reset Sync via apiClient
+      apiClient.post('/api/trading/positions/tpsl', {
+        mint,
+        tpPct: defaultTp,
+        slPct: Math.abs(defaultSl),
       }).catch(err => {
         console.error('[TP/SL Server Reset Sync Error]', err);
       });

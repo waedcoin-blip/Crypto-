@@ -69,6 +69,12 @@ async function runTestSuite() {
   }
   console.log('  ✔ Release on failure cleanly unblocked future retry');
 
+  // Cleanup any lingering open test positions from previous runs to clear max position limits
+  const openPositions = positionManager.getOpenPositions('paper', 'default');
+  for (const pos of openPositions) {
+    positionManager.updatePositionStatus('paper', 'default', pos.mint, 'CLOSED');
+  }
+
   // TEST 3: TradingEngine Centralized BUY & Position Creation
   console.log('▶ [TEST 3] TradingEngine Centralized BUY & Position Lifecycle');
   const buyRes = await tradingEngine.buy({

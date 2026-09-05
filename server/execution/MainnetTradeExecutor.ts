@@ -45,12 +45,19 @@ export class MainnetTradeExecutor implements TradeExecutor {
     const amountStr = String(params.amount);
     const url = `https://quote-api.jup.ag/v6/quote?inputMint=${encodeURIComponent(params.inputMint)}&outputMint=${encodeURIComponent(params.outputMint)}&amount=${encodeURIComponent(amountStr)}&slippageBps=${params.slippageBps ?? 250}`;
 
-    const res = await fetch(url, { headers });
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`Jupiter Quote Failed [${res.status}]: ${errText}`);
+    try {
+      const res = await fetch(url, { headers });
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        throw new Error(`QUOTE_FETCH_FAILED: Jupiter Quote Failed [${res.status}]: ${errText}`);
+      }
+      return await res.json();
+    } catch (err: any) {
+      if (err.message && err.message.startsWith('QUOTE_FETCH_FAILED')) {
+        throw err;
+      }
+      throw new Error(`QUOTE_FETCH_FAILED: Jupiter Quote Network/API Error: ${err?.message || err}`);
     }
-    return await res.json();
   }
 
   async quoteBuy(params: QuoteParams): Promise<QuoteResult> {
@@ -69,6 +76,10 @@ export class MainnetTradeExecutor implements TradeExecutor {
       }
     } else {
       quote = await this.fetchJupiterQuote(params);
+    }
+
+    if (!quote || !quote.outAmount) {
+      throw new Error(`QUOTE_FETCH_FAILED: Empty quote returned for ${params.inputMint} -> ${params.outputMint}`);
     }
 
     const validated = validateQuoteSafetyStrict({
@@ -106,6 +117,10 @@ export class MainnetTradeExecutor implements TradeExecutor {
       }
     } else {
       quote = await this.fetchJupiterQuote(params);
+    }
+
+    if (!quote || !quote.outAmount) {
+      throw new Error(`QUOTE_FETCH_FAILED: Empty quote returned for ${params.inputMint} -> ${params.outputMint}`);
     }
 
     const validated = validateQuoteSafetyStrict({

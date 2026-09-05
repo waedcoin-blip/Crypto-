@@ -239,8 +239,9 @@ export class UnifiedExitEngine {
     if (!decision.shouldExit || !decision.reason) return false;
 
     // Verify raw amount safety
-    if (!Number.isSafeInteger(position.tokenAmount) || position.tokenAmount <= 0) {
-      console.error(`[TP/SL] REJECTED mint=${position.mint} reason=INVALID_RAW_AMOUNT amount=${position.tokenAmount}`);
+    const rawBig = position.tokenAmountRaw ? BigInt(position.tokenAmountRaw) : BigInt(position.tokenAmount);
+    if (rawBig <= 0n) {
+      console.error(`[TP/SL] REJECTED mint=${position.mint} reason=INVALID_RAW_AMOUNT amount=${position.tokenAmountRaw || position.tokenAmount}`);
       return false;
     }
 
@@ -356,7 +357,8 @@ export class UnifiedExitEngine {
     }
 
     // 2. Token Raw Balance Validation
-    if (!Number.isSafeInteger(position.tokenAmount) || position.tokenAmount <= 0) {
+    const rawBig = position.tokenAmountRaw ? BigInt(position.tokenAmountRaw) : BigInt(position.tokenAmount);
+    if (rawBig <= 0n) {
       return {
         valid: false,
         mint,
@@ -365,7 +367,7 @@ export class UnifiedExitEngine {
         priceDivergencePct: 0,
         routeAvailable: false,
         rawBalance: position.tokenAmount,
-        reason: `INVALID_RAW_AMOUNT: Balance ${position.tokenAmount} must be positive safe integer`,
+        reason: `INVALID_RAW_AMOUNT: Balance ${position.tokenAmountRaw || position.tokenAmount} must be positive integer`,
         timestamp: now,
       };
     }
@@ -497,7 +499,7 @@ export class UnifiedExitEngine {
           network: position.network,
           wallet: position.wallet,
           mint: position.mint,
-          amountRaw: position.tokenAmount,
+          amountRaw: position.tokenAmountRaw || position.tokenAmount,
           slippageBps,
           reason,
           clientRequestId: `exit_${position.mint.slice(0, 8)}_${Date.now()}_att${attempt}`,

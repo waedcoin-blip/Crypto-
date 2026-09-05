@@ -9,7 +9,7 @@ export interface FastExitParams {
   network: string;
   wallet: string;
   mint: string;
-  amountRaw: number; // legacy execution API; must be a safe integer
+  amountRaw: number | string | bigint;
   slippageBps: number;
   reason: string;
   clientRequestId: string;
@@ -44,7 +44,11 @@ export class FastExitExecutor {
       };
     }
 
-    if (!Number.isSafeInteger(params.amountRaw) || params.amountRaw <= 0) {
+    let rawBig: bigint;
+    try {
+      rawBig = BigInt(params.amountRaw);
+      if (rawBig <= 0n) throw new Error('NON_POSITIVE');
+    } catch {
       return { success: false, error: 'INVALID_RAW_AMOUNT: Refusing to execute an unsafe/non-positive raw token amount.', inputMint: params.mint, outputMint: 'So11111111111111111111111111111111111111112', inAmountRaw: params.amountRaw, outAmountRaw: 0 };
     }
 
@@ -54,7 +58,7 @@ export class FastExitExecutor {
       wallet: params.wallet,
       mint: params.mint,
       side: 'sell',
-      amount: params.amountRaw,
+      amount: rawBig.toString(),
       decimals: position.decimals,
       slippageBps: params.slippageBps,
       clientRequestId: params.clientRequestId,
@@ -83,8 +87,8 @@ export class FastExitExecutor {
         side: 'SELL',
         network: params.network,
         wallet: params.wallet,
-        amountRaw: params.amountRaw,
-        amountTokens: params.amountRaw / (10 ** position.decimals),
+        amountRaw: rawBig.toString(),
+        amountTokens: Number(rawBig) / (10 ** position.decimals),
         solAmount: execResult.netProceedsSol || 0,
         priceSOL: execResult.effectivePriceSol || 0,
         pnlSol: execResult.netProceedsSol !== undefined ? execResult.netProceedsSol - position.totalSolSpent : undefined,

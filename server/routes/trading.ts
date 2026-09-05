@@ -110,7 +110,7 @@ router.post('/sell', asyncHandler(async (req, res) => {
     network,
     wallet: wallet || 'default',
     mint,
-    amountRaw: amountRaw !== undefined ? Number(amountRaw) : undefined,
+    amountRaw: amountRaw !== undefined ? (typeof amountRaw === 'bigint' ? amountRaw.toString() : String(amountRaw)) : undefined,
     slippageBps: slippageBps ? Number(slippageBps) : undefined,
     clientRequestId,
     reason,

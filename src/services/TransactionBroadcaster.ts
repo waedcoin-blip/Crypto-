@@ -2,6 +2,7 @@
 import { Connection } from '@solana/web3.js';
 import { rpcRouting } from './rpcRouting';
 import { PreparedExitTransaction } from './ExitTransactionBuilder';
+import { apiClient } from './apiClient';
 
 export interface BroadcastResult {
   signature: string;
@@ -35,23 +36,18 @@ export class TransactionBroadcaster {
   ): Promise<BroadcastResult> {
     const start = Date.now();
     
-    // Client-side direct broadcast is neutralized; route through authoritative server execution
-    const res = await fetch('/api/trading/sell', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        network: 'mainnet',
-        mint: preparedTx.quote.mint,
-        amountRaw: preparedTx.quote.inputAmountRaw.toString(),
-        slippageBps: preparedTx.quote.slippageBps,
-        clientRequestId: `exit_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-        reason: 'exit',
-      }),
+    // Client-side direct broadcast is neutralized; route through authoritative server execution via apiClient
+    const data = await apiClient.post('/api/trading/sell', {
+      network: 'mainnet',
+      mint: preparedTx.quote.mint,
+      amountRaw: preparedTx.quote.inputAmountRaw.toString(),
+      slippageBps: preparedTx.quote.slippageBps,
+      clientRequestId: `exit_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      reason: 'exit',
     });
 
-    const data = await res.json();
-    if (!res.ok || !data.success) {
-      throw new Error(`BROADCAST_SUBMIT_FAILED: ${data.error || 'Server broadcast failed'}`);
+    if (!data || !data.success) {
+      throw new Error(`BROADCAST_SUBMIT_FAILED: ${data?.error || 'Server broadcast failed'}`);
     }
 
     return {

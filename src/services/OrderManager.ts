@@ -9,6 +9,7 @@ import { useBalanceStore } from '../store/balanceStore';
 import { resolveTokenDecimals } from './PaperTradeExecutor';
 import { Connection } from '@solana/web3.js';
 import { getSignatureStatusRobust } from './jupiterService';
+import { apiClient } from './apiClient';
 
 export type OrderState =
   | 'SIGNAL'
@@ -272,29 +273,25 @@ export class OrderManager {
       } : {
         network: order.network,
         mint: targetMint,
-        amountRaw: amount,
+        amountRaw: String(amount),
         slippageBps,
         clientRequestId: order.id,
         reason: label,
       };
 
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || `Server trade execution failed (${res.status})`);
+      const data = await apiClient.post(endpoint, body);
+      if (!data || !data.success) {
+        throw new Error(data?.error || 'Server trade execution failed');
       }
 
       submittedSignature = data.signature;
+      const outAmountRawVal = data.result?.outAmountRaw || data.outAmountRaw || '0';
       result = {
         signature: data.signature,
         inputMint,
         outputMint,
         inputAmount: amount,
-        outputAmount: Number(data.result?.outAmountRaw || data.outAmountRaw || 0),
+        outputAmount: Number(outAmountRawVal),
         feeSol: 0,
         slot: 0,
         landingTimeMs: 0,

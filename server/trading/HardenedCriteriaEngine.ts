@@ -221,12 +221,14 @@ export class HardenedCriteriaEngine {
     }
 
     // 9. MAX OPEN POSITIONS
+    const existingPos = positionManager.getPosition(network, wallet, mint);
+    const isExistingPosition = existingPos && existingPos.status === 'OPEN';
     const currentPositions = positionManager.getOpenPositions(network, wallet);
     const maxPositions = config.maxPositions || 5;
-    if (currentPositions.length >= maxPositions) {
+    if (!isExistingPosition && currentPositions.length >= maxPositions) {
       record('MAX_POSITIONS', 'Max Open Positions', 'FAIL', false, `MAX_POSITIONS_REACHED: ${currentPositions.length} >= ${maxPositions}`, currentPositions.length, maxPositions);
     } else {
-      record('MAX_POSITIONS', 'Max Open Positions', 'PASS', true, 'POSITIONS_AVAILABLE', currentPositions.length, maxPositions);
+      record('MAX_POSITIONS', 'Max Open Positions', 'PASS', true, isExistingPosition ? 'EXISTING_POSITION_REBUY_ALLOWED' : 'POSITIONS_AVAILABLE', currentPositions.length, maxPositions);
     }
 
     // 10. AUTO-SNIPER TOGGLE
