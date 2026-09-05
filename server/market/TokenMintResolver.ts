@@ -1,6 +1,7 @@
 // server/market/TokenMintResolver.ts
 import { PublicKey } from '@solana/web3.js';
 import bs58 from 'bs58';
+import { validateSolanaMint } from '../../src/utils/solanaValidators.js';
 
 export type AddressClassification =
   | 'TOKEN_MINT'
@@ -99,16 +100,7 @@ export class TokenMintResolver {
    * Validates if a given string is a syntactically valid Solana PublicKey (Base58, 32-byte).
    */
   public isValidPublicKey(address: string): boolean {
-    if (!address || typeof address !== 'string') return false;
-    const trimmed = address.trim();
-    if (trimmed.length < 32 || trimmed.length > 44) return false;
-
-    try {
-      const decoded = bs58.decode(trimmed);
-      return decoded.length === 32;
-    } catch {
-      return false;
-    }
+    return validateSolanaMint(address).valid;
   }
 
   /**

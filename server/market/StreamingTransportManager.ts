@@ -15,12 +15,18 @@ export type ConfiguredTransport = 'wss' | 'grpc' | 'auto';
 
 export class StreamingTransportManager {
   private static instance: StreamingTransportManager;
-  private activeTransport: StreamingTransport = heliusLaserStreamWssManager;
+  private _activeTransport: StreamingTransport | null = null;
   private configuredMode: ConfiguredTransport = 'wss';
 
   private constructor() {
     this.configuredMode = (process.env.HELIUS_STREAM_TRANSPORT as ConfiguredTransport) || 'wss';
-    this.resolveActiveTransport();
+  }
+
+  private get activeTransport(): StreamingTransport {
+    if (!this._activeTransport) {
+      this.resolveActiveTransport();
+    }
+    return this._activeTransport!;
   }
 
   public static getInstance(): StreamingTransportManager {
@@ -37,6 +43,7 @@ export class StreamingTransportManager {
       const endpoint = process.env.YELLOWSTONE_GRPC_ENDPOINT;
       if (xToken && endpoint) {
         // gRPC configured
+        this._activeTransport = yellowstoneConnectionManager as any as StreamingTransport;
         laserLogger.info('[STREAMING TRANSPORT] Selected gRPC transport mode (Yellowstone)');
         return;
       }
@@ -46,7 +53,7 @@ export class StreamingTransportManager {
     }
 
     // Default: Helius Standard WSS
-    this.activeTransport = heliusLaserStreamWssManager;
+    this._activeTransport = heliusLaserStreamWssManager;
     laserLogger.info('[STREAMING TRANSPORT] Authoritative transport: Helius Standard WSS');
   }
 

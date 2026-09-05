@@ -22,6 +22,7 @@
     "test:jupiter-only": "node scripts/jupiter-only-architecture-test.mjs",
     "test:quote-safety": "tsx scripts/quote-safety-regression-test.ts",
     "test:token-age-gate": "node scripts/token-age-gate-test.mjs",
+    "build:render": "npm install && npm run build && npm run lint && npm run test:parity && npm run test:laserstream",
     "clean": "rm -rf dist",
     "postinstall": "node scripts/patch-bigint-buffer.cjs",
     "lint": "tsc --noEmit",

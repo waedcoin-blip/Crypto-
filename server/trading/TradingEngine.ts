@@ -51,6 +51,15 @@ export interface TradeEngineResponse {
   signature?: string;
   error?: string;
   result?: ExecutionResult;
+  status?: 'authorized' | 'rejected';
+  reason?: string;
+  stage?: string;
+  authorization?: {
+    approvalId: string;
+    chain: string;
+    network: string;
+    mint: string;
+  };
 }
 
 export class TradingEngine {
@@ -170,6 +179,9 @@ export class TradingEngine {
         return {
           success: false,
           error: `NO_VALID_HARDENED_APPROVAL: Token failed hardened criteria: ${evalResult.rejectionReasons.join(', ') || 'CRITERIA_FAILED'}`,
+          status: 'rejected',
+          reason: evalResult.rejectionReasons.join(', ') || 'CRITERIA_FAILED',
+          stage: 'HARDENED_APPROVAL'
         };
       }
       approval = evalResult.approval;
@@ -183,6 +195,9 @@ export class TradingEngine {
       return {
         success: false,
         error: `FINAL_RECHECK_FAILED: ${finalRecheck.reason}`,
+        status: 'rejected',
+        reason: finalRecheck.reason,
+        stage: 'FINAL_RECHECK'
       };
     }
 
@@ -205,6 +220,9 @@ export class TradingEngine {
       return {
         success: false,
         error: err?.message || String(err),
+        status: 'rejected',
+        reason: err?.message || 'REBUY_GUARD_REJECTED',
+        stage: 'REBUY_GUARD'
       };
     }
 
@@ -293,6 +311,13 @@ export class TradingEngine {
         positionId: position.id,
         signature: execResult.signature,
         result: execResult,
+        status: 'authorized',
+        authorization: {
+          approvalId: approval.approvalId,
+          chain: approval.chain,
+          network,
+          mint: approval.mint
+        }
       };
     } catch (err: any) {
       hardenedApprovalStore.markInvalid(approval.approvalId, err?.message || 'UNCAUGHT_ERROR');

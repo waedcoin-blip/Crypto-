@@ -1,6 +1,7 @@
 // server/trading/HardenedApprovalStore.ts
 import { HardenedApproval } from '../types/index.js';
 import crypto from 'crypto';
+import { canonicalizeSolanaMint } from '../../src/utils/solanaValidators.js';
 
 export class HardenedApprovalStore {
   private static instance: HardenedApprovalStore;
@@ -54,12 +55,15 @@ export class HardenedApprovalStore {
    * Issues and stores a new HardenedApproval.
    */
   public issueApproval(approval: HardenedApproval): HardenedApproval {
+    const canonicalMint = canonicalizeSolanaMint(approval.mint);
+    approval.mint = canonicalMint;
+
     this.approvals.set(approval.approvalId, approval);
-    const key = `${approval.chain}:${approval.mint}:${approval.pool || 'default'}`;
+    const key = `${approval.chain}:${canonicalMint}:${approval.pool || 'default'}`;
     this.mintApprovals.set(key, approval.approvalId);
 
     console.log(
-      `[HARDENED_APPROVAL_ISSUED] approvalId=${approval.approvalId} mint=${approval.mint} pool=${approval.pool || 'default'} version=${approval.criteriaVersion} expiresAt=${approval.expiresAt} price=${approval.evaluationPrice.toFixed(8)} decisionHash=${approval.decisionHash.slice(0, 12)}...`
+      `[HARDENED_APPROVAL_ISSUED] approvalId=${approval.approvalId} mint=${canonicalMint} pool=${approval.pool || 'default'} version=${approval.criteriaVersion} expiresAt=${approval.expiresAt} price=${approval.evaluationPrice.toFixed(8)} decisionHash=${approval.decisionHash.slice(0, 12)}...`
     );
 
     return approval;
@@ -76,7 +80,13 @@ export class HardenedApprovalStore {
    * Finds the latest usable approval for a mint and pool.
    */
   public getLatestUsableApproval(chain: 'solana', mint: string, pool?: string): HardenedApproval | undefined {
-    const key = `${chain}:${mint}:${pool || 'default'}`;
+    let canonicalMint: string;
+    try {
+      canonicalMint = canonicalizeSolanaMint(mint);
+    } catch {
+      return undefined;
+    }
+    const key = `${chain}:${canonicalMint}:${pool || 'default'}`;
     const approvalId = this.mintApprovals.get(key);
     if (!approvalId) return undefined;
 

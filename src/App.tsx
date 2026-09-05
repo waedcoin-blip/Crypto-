@@ -1303,7 +1303,13 @@ function App() {
           const tokens = tokensForTracking;
 
           const tradedMints = new Set<string>([
-            ...(state.mySniperTrades || []).map((t: any) => t.address || t.mint || t.tokenAddress).filter(Boolean),
+            ...(state.mySniperTrades || []).map((t: any) => {
+              try {
+                return t.mint || t.address || t.tokenAddress;
+              } catch {
+                return null;
+              }
+            }).filter(Boolean),
             ...Object.keys(state.activePositions || {}),
             ...Array.from(autoBoughtTokens.current)
           ]);

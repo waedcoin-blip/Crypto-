@@ -1,6 +1,7 @@
 // server/market/CanonicalEventNormalizer.ts
 import { UnifiedMarketEvent, EventSource, MarketEventType } from '../types/index.js';
 import { tokenMintResolver } from './TokenMintResolver.js';
+import { canonicalizeSolanaMint } from '../../src/utils/solanaValidators.js';
 
 export class CanonicalEventNormalizer {
   /**
@@ -34,8 +35,14 @@ export class CanonicalEventNormalizer {
     if (!rawTrade) return null;
     const tradePayload = rawTrade;
 
-    const mint = (tradePayload.tokenAddress || tradePayload.token || tradePayload.mint || '').trim();
-    if (!mint || !tokenMintResolver.isValidPublicKey(mint)) {
+    let mint: string;
+    try {
+      mint = canonicalizeSolanaMint(tradePayload.tokenAddress || tradePayload.token || tradePayload.mint);
+    } catch {
+      return null;
+    }
+
+    if (!tokenMintResolver.isValidPublicKey(mint)) {
       return null;
     }
 
@@ -92,8 +99,14 @@ export class CanonicalEventNormalizer {
     },
     network: string = 'mainnet'
   ): UnifiedMarketEvent | null {
-    const mint = params.mint.trim();
-    if (!mint || !tokenMintResolver.isValidPublicKey(mint)) {
+    let mint: string;
+    try {
+      mint = canonicalizeSolanaMint(params.mint);
+    } catch {
+      return null;
+    }
+
+    if (!tokenMintResolver.isValidPublicKey(mint)) {
       return null;
     }
 
@@ -138,8 +151,14 @@ export class CanonicalEventNormalizer {
   ): UnifiedMarketEvent | null {
     if (!pair || !pair.baseToken?.address) return null;
 
-    const mint = pair.baseToken.address.trim();
-    if (!mint || !tokenMintResolver.isValidPublicKey(mint)) {
+    let mint: string;
+    try {
+      mint = canonicalizeSolanaMint(pair.baseToken.address);
+    } catch {
+      return null;
+    }
+
+    if (!tokenMintResolver.isValidPublicKey(mint)) {
       return null;
     }
 
@@ -186,8 +205,14 @@ export class CanonicalEventNormalizer {
     },
     network: string = 'mainnet'
   ): UnifiedMarketEvent | null {
-    const mint = (params.mint || '').trim();
-    if (!mint || !tokenMintResolver.isValidPublicKey(mint)) return null;
+    let mint: string;
+    try {
+      mint = canonicalizeSolanaMint(params.mint);
+    } catch {
+      return null;
+    }
+
+    if (!tokenMintResolver.isValidPublicKey(mint)) return null;
 
     const now = Date.now();
     const eventType = params.eventType || (params.side ? params.side : 'TRADE');

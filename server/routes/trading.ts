@@ -92,10 +92,10 @@ router.post('/buy', asyncHandler(async (req, res) => {
   });
 
   if (!response.success) {
-    return res.status(400).json({ status: 'error', error: response.error });
+    return res.status(400).json({ status: response.status || 'error', error: response.error, reason: response.reason, stage: response.stage });
   }
 
-  res.json({ status: 'success', ...response, timestamp: Date.now() });
+  res.json({ ...response, timestamp: Date.now() });
 }));
 
 // POST /api/trading/sell
@@ -215,6 +215,11 @@ router.get('/status', asyncHandler(async (req, res) => {
   const status = tradingSupervisor.getStatus();
   res.json({
     status: 'success',
+    network: status.network,
+    mode: status.mode,
+    isLiveTrading: status.isLiveTrading,
+    supervisorState: status.state,
+    executionAuthority: status.executionAuthority,
     supervisorStatus: status,
     isRunning: status.state === 'TRADING',
     timestamp: Date.now(),

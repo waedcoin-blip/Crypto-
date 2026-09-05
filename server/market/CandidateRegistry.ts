@@ -6,6 +6,7 @@ import {
   UnifiedMarketEvent,
 } from '../types/index.js';
 import { sourceHealthMonitor } from './SourceHealthMonitor.js';
+import { canonicalizeSolanaMint } from '../../src/utils/solanaValidators.js';
 
 export class CandidateRegistry {
   private static instance: CandidateRegistry;
@@ -61,9 +62,12 @@ export class CandidateRegistry {
     event: UnifiedMarketEvent,
     network: string = 'mainnet'
   ): { candidate: CandidatePipelineRecord; isNewCandidate: boolean } {
+    const canonicalMint = canonicalizeSolanaMint(event.mint);
+    event.mint = canonicalMint; // normalize event in-place just in case
+    
     const pool = event.pool || 'default';
-    const key = this.buildKey(network, event.mint, pool);
-    const fallbackKey = `${network}:${event.mint}`;
+    const key = this.buildKey(network, canonicalMint, pool);
+    const fallbackKey = `${network}:${canonicalMint}`;
     const now = Date.now();
     let isNewCandidate = false;
 
@@ -157,13 +161,19 @@ export class CandidateRegistry {
   }
 
   public getCandidate(network: string, mint: string, pool: string = 'default'): CandidatePipelineRecord | undefined {
-    const key = this.buildKey(network, mint, pool);
+    let canonicalMint: string;
+    try {
+      canonicalMint = canonicalizeSolanaMint(mint);
+    } catch {
+      return undefined;
+    }
+    const key = this.buildKey(network, canonicalMint, pool);
     if (this.candidates.has(key)) return this.candidates.get(key);
-    const fallbackKey = `${network}:${mint}`;
+    const fallbackKey = `${network}:${canonicalMint}`;
     if (this.candidates.has(fallbackKey)) return this.candidates.get(fallbackKey);
     // Search any matching pool key
     for (const [k, c] of this.candidates.entries()) {
-      if (k.startsWith(`${network}:${mint}:`) || k.startsWith(`solana:${mint}:`)) {
+      if (k.startsWith(`${network}:${canonicalMint}:`) || k.startsWith(`solana:${canonicalMint}:`)) {
         return c;
       }
     }

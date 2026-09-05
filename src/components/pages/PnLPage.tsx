@@ -3244,7 +3244,7 @@ export const PnLPage = ({
     }
 
     if (!user) {
-      throw new Error("Authentication required: Please sign in with Google/Firebase before placing real on-chain orders.");
+      throw new Error("Authentication required: Please sign in with Google/Firebase before placing orders.");
     }
 
     const currentMode = useTradingEnvironmentStore.getState().network || 'paper';
@@ -3887,10 +3887,22 @@ const checkTokenCriteria = (mint: string): {
       return;
     }
     
-    const storeStateForBuyMode = useAppStore.getState();
-    const tradeModeFromStorage = (typeof localStorage !== 'undefined' ? localStorage.getItem('trade_mode') : null) || (typeof localStorage !== 'undefined' && localStorage.getItem('is_live_trading') === 'true' ? 'mainnet' : 'paper');
+    let supervisorStatus: any = null;
+    try {
+      const statusData = await apiClient.get('/api/trading/status');
+      if (statusData && statusData.success) {
+        supervisorStatus = statusData;
+      }
+    } catch (err) {
+      console.warn('Failed to fetch authoritative supervisor status', err);
+    }
+
+    const authoritativeNetwork = supervisorStatus?.network || 'paper';
+    const isLive = supervisorStatus?.isLiveTrading === true;
+    const isLiveAuth = supervisorStatus?.executionAuthority === 'LIVE';
     
-    const isMainnet = tradeModeFromStorage === 'mainnet';
+    // Override local inference with authoritative state
+    const isMainnet = authoritativeNetwork !== 'paper' && isLive && isLiveAuth;
     const activeWalletAddress = useActiveWalletStore.getState().activeWallet?.address;
 
     if (isMainnet && !privateKey && !activeWalletAddress) {
@@ -3903,10 +3915,12 @@ const checkTokenCriteria = (mint: string): {
     
     try {
       const isGraduated = !mint.toLowerCase().endsWith('pump');
-      addLog(`🟢 [BUY TRIGGER] All required criteria & buy limits verified for ${symbol} (${isGraduated ? 'Raydium' : 'Pump.fun'}) | Pos Limit: ${activePositionsCount + 1}/${maxPositions || '∞'}, Rebuy Limit: ${totalTradedCount + 1}/${activeMaxRebuyTimes}, Amount: ${solAmount} SOL. Placing real on-chain order...`, 'buy');
-      addLog(`Ordering ${solAmount} SOL → ${symbol}...`, 'buy');
+      
+      addLog(`🟡 [LOCAL CRITERIA PASS] Local criteria & limits verified for ${symbol}. Pos: ${activePositionsCount + 1}/${maxPositions || '∞'}, Rebuy: ${totalTradedCount + 1}/${activeMaxRebuyTimes}.`, 'info');
+      addLog(`🟡 [AUTHORIZATION PENDING] Requesting buy authorization for ${symbol} from server...`, 'info');
+      
       const slippageBps = Math.floor(configRef.current.slippage * 100);
-      const network = isMainnet ? 'mainnet' : 'paper';
+      const network = authoritativeNetwork;
 
       const buyData = await apiClient.post('/api/trading/buy', {
         network,
@@ -3918,7 +3932,19 @@ const checkTokenCriteria = (mint: string): {
       });
 
       if (!buyData || !buyData.success) {
+        if (buyData?.status === 'rejected') {
+          throw new Error(`[${buyData.stage || 'AUTHORIZATION_REJECTED'}] ${buyData.reason || buyData.error}`);
+        }
         throw new Error(buyData?.error || 'Server buy execution failed');
+      }
+
+      if (buyData.status === 'authorized') {
+        const approvalId = buyData.authorization?.approvalId || 'N/A';
+        if (isMainnet) {
+          addLog(`🟢 [BUY AUTHORIZED] approvalId=${approvalId}. Placing real on-chain order for ${symbol}...`, 'buy');
+        } else {
+          addLog(`🟢 [BUY AUTHORIZED] approvalId=${approvalId}. Paper Mode Active — Order placed in paper ledger for ${symbol}.`, 'buy');
+        }
       }
 
       const outAmountRaw = buyData.result?.outAmountRaw || buyData.outAmountRaw || '0';

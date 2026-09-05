@@ -3,6 +3,7 @@ import { TradeExecutor, QuoteParams, QuoteResult, ExecuteParams, ExecutionResult
 import { PaperTradeExecutor } from './PaperTradeExecutor.js';
 import { DevnetTradeExecutor } from './DevnetTradeExecutor.js';
 import { MainnetTradeExecutor } from './MainnetTradeExecutor.js';
+import { ExecutionAuthority } from './ExecutionAuthority.js';
 import { paperWalletLedger } from '../wallet/PaperWalletLedger.js';
 
 export type NetworkType = 'paper' | 'devnet' | 'mainnet';
@@ -81,11 +82,17 @@ export class ExecutionGateway implements TradeExecutor {
 
   async buy(params: ExecuteParams): Promise<ExecutionResult> {
     const net = this.resolveNetwork(params.network);
+    if (net !== 'paper') {
+      ExecutionAuthority.assertLiveExecutionAllowed(net);
+    }
     return this.getExecutor(net).buy({ ...params, network: net });
   }
 
   async sell(params: ExecuteParams): Promise<ExecutionResult> {
     const net = this.resolveNetwork(params.network);
+    if (net !== 'paper') {
+      ExecutionAuthority.assertLiveExecutionAllowed(net);
+    }
     return this.getExecutor(net).sell({ ...params, network: net });
   }
 

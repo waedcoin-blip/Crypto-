@@ -50,7 +50,11 @@ export interface ComponentHealthMap {
 export interface SupervisorStatus {
   sessionId: string | null;
   state: TradingLifecycleState;
-  network: string;
+  network: 'paper' | 'devnet' | 'mainnet';
+  mode: 'paper' | 'live';
+  isLiveTrading: boolean;
+  supervisorState: TradingLifecycleState;
+  executionAuthority: 'PAPER' | 'LIVE';
   wallet: string;
   executor: string;
   health: ComponentHealthMap;
@@ -100,10 +104,16 @@ export class TradingSupervisor {
   }
 
   public getStatus(): SupervisorStatus {
+    const net = (this.network || 'paper').toLowerCase().trim() as 'paper' | 'devnet' | 'mainnet';
+    const isLive = net !== 'paper';
     return {
       sessionId: this.sessionId,
       state: this.state,
-      network: this.network,
+      network: net,
+      mode: isLive ? 'live' : 'paper',
+      isLiveTrading: isLive,
+      supervisorState: this.state,
+      executionAuthority: isLive ? 'LIVE' : 'PAPER',
       wallet: this.wallet,
       executor: this.executorType,
       health: { ...this.healthMap },
