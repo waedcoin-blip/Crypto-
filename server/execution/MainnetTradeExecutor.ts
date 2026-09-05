@@ -45,30 +45,12 @@ export class MainnetTradeExecutor implements TradeExecutor {
     const amountStr = String(params.amount);
     const url = `https://quote-api.jup.ag/v6/quote?inputMint=${encodeURIComponent(params.inputMint)}&outputMint=${encodeURIComponent(params.outputMint)}&amount=${encodeURIComponent(amountStr)}&slippageBps=${params.slippageBps ?? 250}`;
 
-    try {
-      const res = await fetch(url, { headers });
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(`Jupiter Quote Failed [${res.status}]: ${errText}`);
-      }
-      return await res.json();
-    } catch (err: any) {
-      // If network is unreachable (e.g. offline sandbox / DNS error EAI_AGAIN), fallback to synthetic quote
-      if (err?.message?.includes('fetch failed') || err?.code === 'EAI_AGAIN' || err?.message?.includes('ENOTFOUND')) {
-        const inAmt = String(params.amount);
-        const outAmt = String(Math.floor(Number(params.amount) * 1000));
-        return {
-          inputMint: params.inputMint,
-          outputMint: params.outputMint,
-          inAmount: inAmt,
-          outAmount: outAmt,
-          otherAmountThreshold: String(Math.floor(Number(outAmt) * 0.975)),
-          priceImpactPct: '0.01',
-          routePlan: [{ swapInfo: { ammKey: 'FallbackAMM' } }],
-        };
-      }
-      throw err;
+    const res = await fetch(url, { headers });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Jupiter Quote Failed [${res.status}]: ${errText}`);
     }
+    return await res.json();
   }
 
   async quoteBuy(params: QuoteParams): Promise<QuoteResult> {
@@ -230,7 +212,17 @@ export class MainnetTradeExecutor implements TradeExecutor {
     };
   }
 
+  private parseAmountBigInt(amount: bigint | string | number): bigint {
+    if (typeof amount === 'bigint') return amount;
+    const str = String(amount).trim();
+    if (str.includes('.')) {
+      throw new Error(`INVALID_RAW_AMOUNT: Floating point not allowed for raw token amount (${str})`);
+    }
+    return BigInt(str);
+  }
+
   async buy(params: ExecuteParams): Promise<ExecutionResult> {
+    const amountBigInt = this.parseAmountBigInt(params.amount);
     const walletAccount = walletManager.getAccount('mainnet:default');
     if (!walletAccount.keypair) {
       throw new Error('EXECUTION_FAILED: Mainnet private key not configured on server');
@@ -239,25 +231,25 @@ export class MainnetTradeExecutor implements TradeExecutor {
     const quoteRes = params.preValidatedQuote || (await this.quoteBuy({
       inputMint: params.inputMint,
       outputMint: params.outputMint,
-      amount: params.amount,
+      amount: amountBigInt,
       slippageBps: params.slippageBps,
       userPublicKey: walletAccount.publicKey,
     }));
 
     // If test context without active key, produce valid result
     if (process.env.NODE_ENV === 'test' && !process.env.MAINNET_PRIVATE_KEY) {
-      const outAmount = Number(quoteRes.outAmount);
-      const solSpent = params.amount / 1e9;
+      const outAmountStr = quoteRes.outAmount;
+      const solSpent = Number(amountBigInt) / 1e9;
       return {
         success: true,
         signature: `mock_mainnet_buy_${Date.now()}`,
         status: 'CONFIRMED',
         inputMint: params.inputMint,
         outputMint: params.outputMint,
-        inAmountRaw: params.amount,
-        outAmountRaw: outAmount,
+        inAmountRaw: amountBigInt.toString(),
+        outAmountRaw: outAmountStr,
         totalCostSol: solSpent,
-        effectivePriceSol: solSpent / (outAmount / (10 ** params.decimals)),
+        effectivePriceSol: solSpent / (Number(outAmountStr) / (10 ** params.decimals)),
       };
     }
 
@@ -295,12 +287,25 @@ export class MainnetTradeExecutor implements TradeExecutor {
         maxRetries: 3,
       });
 
-      // 🔴 IMMEDIATE BROADCAST CALLBACK
+      // 🔴 IMMEDIATE BROADCAST CALLBACK WITH FAIL-CLOSED RECOVERY_REQUIRED
       if (params.onBroadcast) {
         try {
           await params.onBroadcast(txid, { blockhash, lastValidBlockHeight });
-        } catch (callbackErr) {
-          console.warn(`[MainnetTradeExecutor] onBroadcast callback failed for ${txid}:`, callbackErr);
+        } catch (callbackErr: any) {
+          console.error(`🚨 [CRITICAL_EXECUTION_ALERT] onBroadcast / persistSignature FAILED for ${txid}: ${callbackErr?.message || callbackErr}`);
+          return {
+            success: false,
+            signature: txid,
+            status: 'RECOVERY_REQUIRED',
+            isAmbiguous: true,
+            lastValidBlockHeight,
+            blockhash,
+            inputMint: params.inputMint,
+            outputMint: params.outputMint,
+            inAmountRaw: amountBigInt.toString(),
+            outAmountRaw: '0',
+            error: `SIGNATURE_PERSISTENCE_FAILED_RECOVERY_REQUIRED: Signature ${txid} broadcasted but persistence callback failed: ${callbackErr?.message || callbackErr}`,
+          };
         }
       }
 
@@ -308,18 +313,18 @@ export class MainnetTradeExecutor implements TradeExecutor {
       const verification = await this.verifyTransactionConfirmation(txid, blockhash, lastValidBlockHeight);
 
       if (verification.status === 'CONFIRMED') {
-        const solSpent = params.amount / 1e9;
-        const outAmountRaw = Number(quoteRes.outAmount);
+        const solSpent = Number(amountBigInt) / 1e9;
+        const outAmountStr = quoteRes.outAmount;
         return {
           success: true,
           signature: txid,
           status: 'CONFIRMED',
           inputMint: params.inputMint,
           outputMint: params.outputMint,
-          inAmountRaw: params.amount,
-          outAmountRaw,
+          inAmountRaw: amountBigInt.toString(),
+          outAmountRaw: outAmountStr,
           totalCostSol: solSpent,
-          effectivePriceSol: solSpent / (outAmountRaw / (10 ** params.decimals)),
+          effectivePriceSol: solSpent / (Number(outAmountStr) / (10 ** params.decimals)),
         };
       } else if (verification.status === 'FAILED') {
         return {
@@ -328,8 +333,8 @@ export class MainnetTradeExecutor implements TradeExecutor {
           status: 'FAILED',
           inputMint: params.inputMint,
           outputMint: params.outputMint,
-          inAmountRaw: params.amount,
-          outAmountRaw: 0,
+          inAmountRaw: amountBigInt.toString(),
+          outAmountRaw: '0',
           error: verification.error,
         };
       } else {
@@ -343,8 +348,8 @@ export class MainnetTradeExecutor implements TradeExecutor {
           blockhash,
           inputMint: params.inputMint,
           outputMint: params.outputMint,
-          inAmountRaw: params.amount,
-          outAmountRaw: 0,
+          inAmountRaw: amountBigInt.toString(),
+          outAmountRaw: '0',
           error: verification.error,
         };
       }
@@ -360,8 +365,8 @@ export class MainnetTradeExecutor implements TradeExecutor {
           blockhash,
           inputMint: params.inputMint,
           outputMint: params.outputMint,
-          inAmountRaw: params.amount,
-          outAmountRaw: 0,
+          inAmountRaw: amountBigInt.toString(),
+          outAmountRaw: '0',
           error: `BROADCAST_COMPLETED_BUT_ERROR: ${e?.message || e}`,
         };
       }
@@ -370,14 +375,15 @@ export class MainnetTradeExecutor implements TradeExecutor {
         status: 'FAILED',
         inputMint: params.inputMint,
         outputMint: params.outputMint,
-        inAmountRaw: params.amount,
-        outAmountRaw: 0,
+        inAmountRaw: amountBigInt.toString(),
+        outAmountRaw: '0',
         error: `MAINNET_EXECUTION_ERROR: ${e?.message || e}`,
       };
     }
   }
 
   async sell(params: ExecuteParams): Promise<ExecutionResult> {
+    const amountBigInt = this.parseAmountBigInt(params.amount);
     const walletAccount = walletManager.getAccount('mainnet:default');
     if (!walletAccount.keypair) {
       throw new Error('EXECUTION_FAILED: Mainnet private key not configured on server');
@@ -386,22 +392,23 @@ export class MainnetTradeExecutor implements TradeExecutor {
     const quoteRes = params.preValidatedQuote || (await this.quoteSell({
       inputMint: params.inputMint,
       outputMint: params.outputMint,
-      amount: params.amount,
+      amount: amountBigInt,
       slippageBps: params.slippageBps,
       userPublicKey: walletAccount.publicKey,
     }));
 
     if (process.env.NODE_ENV === 'test' && !process.env.MAINNET_PRIVATE_KEY) {
-      const outLamports = Number(quoteRes.outAmount);
+      const outLamportsStr = quoteRes.outAmount;
+      const outLamportsNum = Number(outLamportsStr);
       return {
         success: true,
         signature: `mock_mainnet_sell_${Date.now()}`,
         status: 'CONFIRMED',
         inputMint: params.inputMint,
         outputMint: params.outputMint,
-        inAmountRaw: params.amount,
-        outAmountRaw: outLamports,
-        netProceedsSol: outLamports / 1e9,
+        inAmountRaw: amountBigInt.toString(),
+        outAmountRaw: outLamportsStr,
+        netProceedsSol: outLamportsNum / 1e9,
       };
     }
 
@@ -438,28 +445,42 @@ export class MainnetTradeExecutor implements TradeExecutor {
         maxRetries: 3,
       });
 
-      // 🔴 IMMEDIATE BROADCAST CALLBACK
+      // 🔴 IMMEDIATE BROADCAST CALLBACK WITH FAIL-CLOSED RECOVERY_REQUIRED
       if (params.onBroadcast) {
         try {
           await params.onBroadcast(txid, { blockhash, lastValidBlockHeight });
-        } catch (callbackErr) {
-          console.warn(`[MainnetTradeExecutor] onBroadcast callback failed for ${txid}:`, callbackErr);
+        } catch (callbackErr: any) {
+          console.error(`🚨 [CRITICAL_EXECUTION_ALERT] onBroadcast / persistSignature FAILED for ${txid}: ${callbackErr?.message || callbackErr}`);
+          return {
+            success: false,
+            signature: txid,
+            status: 'RECOVERY_REQUIRED',
+            isAmbiguous: true,
+            lastValidBlockHeight,
+            blockhash,
+            inputMint: params.inputMint,
+            outputMint: params.outputMint,
+            inAmountRaw: amountBigInt.toString(),
+            outAmountRaw: '0',
+            error: `SIGNATURE_PERSISTENCE_FAILED_RECOVERY_REQUIRED: Signature ${txid} broadcasted but persistence callback failed: ${callbackErr?.message || callbackErr}`,
+          };
         }
       }
 
       const verification = await this.verifyTransactionConfirmation(txid, blockhash, lastValidBlockHeight);
 
       if (verification.status === 'CONFIRMED') {
-        const outLamports = Number(quoteRes.outAmount);
+        const outLamportsStr = quoteRes.outAmount;
+        const outLamportsNum = Number(outLamportsStr);
         return {
           success: true,
           signature: txid,
           status: 'CONFIRMED',
           inputMint: params.inputMint,
           outputMint: params.outputMint,
-          inAmountRaw: params.amount,
-          outAmountRaw: outLamports,
-          netProceedsSol: outLamports / 1e9,
+          inAmountRaw: amountBigInt.toString(),
+          outAmountRaw: outLamportsStr,
+          netProceedsSol: outLamportsNum / 1e9,
         };
       } else if (verification.status === 'FAILED') {
         return {
@@ -468,8 +489,8 @@ export class MainnetTradeExecutor implements TradeExecutor {
           status: 'FAILED',
           inputMint: params.inputMint,
           outputMint: params.outputMint,
-          inAmountRaw: params.amount,
-          outAmountRaw: 0,
+          inAmountRaw: amountBigInt.toString(),
+          outAmountRaw: '0',
           error: verification.error,
         };
       } else {
@@ -483,8 +504,8 @@ export class MainnetTradeExecutor implements TradeExecutor {
           blockhash,
           inputMint: params.inputMint,
           outputMint: params.outputMint,
-          inAmountRaw: params.amount,
-          outAmountRaw: 0,
+          inAmountRaw: amountBigInt.toString(),
+          outAmountRaw: '0',
           error: verification.error,
         };
       }
@@ -499,8 +520,8 @@ export class MainnetTradeExecutor implements TradeExecutor {
           blockhash,
           inputMint: params.inputMint,
           outputMint: params.outputMint,
-          inAmountRaw: params.amount,
-          outAmountRaw: 0,
+          inAmountRaw: amountBigInt.toString(),
+          outAmountRaw: '0',
           error: `BROADCAST_COMPLETED_BUT_ERROR: ${e?.message || e}`,
         };
       }
@@ -509,8 +530,8 @@ export class MainnetTradeExecutor implements TradeExecutor {
         status: 'FAILED',
         inputMint: params.inputMint,
         outputMint: params.outputMint,
-        inAmountRaw: params.amount,
-        outAmountRaw: 0,
+        inAmountRaw: amountBigInt.toString(),
+        outAmountRaw: '0',
         error: `MAINNET_EXECUTION_ERROR: ${e?.message || e}`,
       };
     }

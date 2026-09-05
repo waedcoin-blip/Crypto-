@@ -20,7 +20,7 @@ export interface Order {
   wallet: string;
   mint: string;
   side: 'buy' | 'sell';
-  amount: number; // Raw integer base units or lamports
+  amount: bigint | string | number; // Raw integer base units or lamports
   decimals: number;
   slippageBps: number;
   status: OrderStatus;
@@ -54,14 +54,15 @@ export class OrderManager {
   private loadFromRepository(): void {
     const list = orderRepository.getOrders();
     for (const record of list) {
+      const rawAmtStr = String(record.amount_raw || '0');
       const order: Order = {
         id: record.order_id,
         network: record.network || 'paper',
         wallet: record.wallet || 'default',
         mint: record.mint,
         side: record.side,
-        amount: Number(record.amount_raw || 0),
-        decimals: 6,
+        amount: rawAmtStr,
+        decimals: record.decimals !== undefined ? record.decimals : 9,
         slippageBps: record.slippageBps || 250,
         status: this.mapRecordStateToStatus(record.state),
         createdAt: record.created_at,
@@ -121,7 +122,7 @@ export class OrderManager {
     wallet: string;
     mint: string;
     side: 'buy' | 'sell';
-    amount: number;
+    amount: bigint | string | number;
     decimals: number;
     slippageBps: number;
     clientRequestId: string;
@@ -152,7 +153,7 @@ export class OrderManager {
       wallet: params.wallet,
       mint: params.mint,
       side: params.side,
-      amount: params.amount,
+      amount: typeof params.amount === 'bigint' ? params.amount.toString() : params.amount,
       decimals: params.decimals,
       slippageBps: params.slippageBps,
       status: 'CREATED',
@@ -170,7 +171,8 @@ export class OrderManager {
       mint: order.mint,
       wallet: order.wallet,
       side: order.side,
-      amount_raw: order.amount,
+      amount_raw: String(order.amount),
+      decimals: order.decimals,
       slippageBps: order.slippageBps,
       label: order.label,
       network: order.network,

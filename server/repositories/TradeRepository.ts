@@ -10,7 +10,7 @@ export interface HistoricalTradeRecord {
   side: 'BUY' | 'SELL';
   network: string;
   wallet?: string;
-  amountRaw: number;
+  amountRaw: string | number;
   amountTokens: number;
   solAmount: number;
   priceSOL: number;

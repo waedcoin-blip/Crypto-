@@ -3,7 +3,7 @@
 export interface QuoteParams {
   inputMint: string;
   outputMint: string;
-  amount: number; // Raw integer units or lamports
+  amount: bigint | string | number; // Raw integer units or lamports
   slippageBps?: number;
   decimals?: number;
   userPublicKey?: string;
@@ -23,7 +23,7 @@ export interface QuoteResult {
 export interface ExecuteParams {
   inputMint: string;
   outputMint: string;
-  amount: number; // Raw integer units
+  amount: bigint | string | number; // Raw integer units
   slippageBps: number;
   decimals: number;
   walletAddress?: string;
@@ -43,8 +43,8 @@ export interface ExecutionResult {
   blockhash?: string;
   inputMint: string;
   outputMint: string;
-  inAmountRaw: number;
-  outAmountRaw: number;
+  inAmountRaw: bigint | string | number;
+  outAmountRaw: bigint | string | number;
   effectivePriceSol?: number;
   totalCostSol?: number;
   netProceedsSol?: number;

@@ -142,147 +142,50 @@ export class MainnetJupiterExecutor implements ITradeExecutor {
 
       const isSolBuy = inputMint === 'So11111111111111111111111111111111111111112';
       const numAmount = typeof amount === 'bigint' ? Number(amount) : Number(amount);
-
-      await assertTradeBalance(isSolBuy ? numAmount / LAMPORTS_PER_SOL + 0.005 : 0.005);
-
-      if (!isSolBuy) {
-        const tokenBalance = await this.getTokenBalance(inputMint);
-        if (tokenBalance < numAmount) {
-          throw new ExecutionError(
-            'transaction_failure',
-            `Insufficient token balance for exit (Available: ${tokenBalance}, Required: ${numAmount})`
-          );
-        }
-      }
-
-      // Reuse preValidatedQuote if provided, otherwise fetch fresh quote from Mainnet Jupiter API
       const strAmount = typeof amount === 'bigint' ? amount.toString() : (typeof amount === 'string' ? amount : String(Math.trunc(amount)));
-      const quote = preValidatedQuote || await this.getQuote({
-        inputMint,
-        outputMint,
-        amount: Number(strAmount) || 0,
+
+      const endpoint = isSolBuy ? '/api/trading/buy' : '/api/trading/sell';
+      const body = isSolBuy ? {
+        network: 'mainnet',
+        mint: outputMint,
+        amountSol: numAmount / LAMPORTS_PER_SOL,
         slippageBps,
-        restrictIntermediateTokens: true,
+        clientRequestId: `mainnet_buy_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        label,
+      } : {
+        network: 'mainnet',
+        mint: inputMint,
+        amountRaw: strAmount,
+        slippageBps,
+        clientRequestId: `mainnet_sell_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        reason: label,
+      };
+
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
       });
 
-      if (!preValidatedQuote) {
-        this.validateQuoteSafety(quote, numAmount, slippageBps);
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new ExecutionError('transaction_failure', data.error || 'Mainnet server execution failed');
       }
 
-      // Post swap request requesting high priority with capped priority fee of 500,000 lamports
-      let swapBuild;
-      try {
-        swapBuild = await this.jupiterApi.swapPost({
-          swapRequest: {
-            quoteResponse: quote,
-            userPublicKey: activePublicKey,
-            dynamicComputeUnitLimit: true,
-            prioritizationFeeLamports: {
-              priorityLevelWithMaxLamports: {
-                priorityLevel: 'high',
-                maxLamports: 500000,
-                global: false,
-              },
-            } as any,
-          },
-        });
-      } catch (postErr: any) {
-        throw new ExecutionError('transaction_failure', `Jupiter swapPost failed: ${postErr?.message || String(postErr)}`);
-      }
-
-      const txBuf = Buffer.from(swapBuild.swapTransaction, 'base64');
-      const tx = VersionedTransaction.deserialize(txBuf);
-      tx.sign([kp]);
-
-      let sig: string;
-      try {
-        sig = await this.connection.sendRawTransaction(tx.serialize(), {
-          skipPreflight: false,
-          maxRetries: 3,
-        });
-      } catch (sendErr: any) {
-        throw new ExecutionError('transaction_failure', `Send raw transaction failed: ${sendErr?.message || String(sendErr)}`);
-      }
-
-      let confirmationStatus: any = null;
-      const deadline = Date.now() + 90000;
-      while (Date.now() < deadline) {
-        const status = await this.connection.getSignatureStatus(sig, { searchTransactionHistory: true });
-        confirmationStatus = status.value;
-        if (confirmationStatus?.err) {
-          throw new ExecutionError('transaction_failure', `Mainnet transaction failed on-chain: ${JSON.stringify(confirmationStatus.err)}`, { signature: sig });
-        }
-        if (confirmationStatus?.confirmationStatus === 'confirmed' || confirmationStatus?.confirmationStatus === 'finalized') break;
-        await new Promise(r => setTimeout(r, 750));
-      }
-      if (!confirmationStatus || !['confirmed','finalized'].includes(confirmationStatus.confirmationStatus)) {
-        throw new ExecutionError('transaction_failure', 'Transaction confirmation timed out; signature was not confirmed.', { signature: sig });
-      }
-
-      const slot = confirmationStatus.slot || 0;
+      const sig = data.signature;
       const targetMint = isSolBuy ? outputMint : inputMint;
-
-      // Non-blocking balance synchronization
       this.syncStoreBalances(activePublicKey, targetMint).catch(e => console.warn('[MainnetJupiterExecutor] syncStoreBalances non-blocking error:', e));
-
       const landingTimeMs = Date.now() - start;
 
-      // 🔴 Strict on-chain confirmed proceeds parsing: No fake Jupiter-quote fallback for confirmed sell proceeds
-      let actualFee = 0.000005;
-      let actualOutputAmountLamports = 0;
-      let verifiedReceipt = false;
-
-      for (let attempt = 0; attempt < 5; attempt++) {
-        try {
-          const txDetails = await this.connection.getParsedTransaction(sig, {
-            commitment: 'confirmed',
-            maxSupportedTransactionVersion: 0,
-          });
-          if (txDetails?.meta) {
-            const receipt = JupiterTransactionReplay.verifyConfirmedReceipt({
-              txDetails,
-              userPublicKey: activePublicKey,
-              inputMint,
-              outputMint,
-              isSolBuy,
-            });
-            actualFee = receipt.actualFeeSol;
-            actualOutputAmountLamports = receipt.actualOutputAmount;
-            verifiedReceipt = true;
-            break;
-          }
-        } catch (fErr) {
-          if (attempt === 4) {
-            throw fErr;
-          }
-          await new Promise((r) => setTimeout(r, 400));
-        }
-      }
-
-      if (!verifiedReceipt || actualOutputAmountLamports <= 0) {
-        throw new ExecutionError(
-          'receipt_failure',
-          `Mainnet transaction confirmed on-chain (${sig}) but output receipt could not be verified.`
-        );
-      }
-
-      this.telemetryTotalFeesPaidSol += actualFee;
-      this.telemetryLandingTimeTotalMs += landingTimeMs;
-
-      useAppStore.getState().addJupiterLog({
-        type: 'INFO',
-        message: `Mainnet Swap Success: ${sig.slice(0, 8)}... (Slot ${slot}, Fee: ${actualFee.toFixed(6)} SOL)`,
-        details: { signature: sig, inputMint, outputMint, inAmount: amount, outAmount: actualOutputAmountLamports, feeSol: actualFee },
-      });
-
+      const outAmountRaw = Number(data.result?.outAmountRaw || data.outAmountRaw || 0);
       return {
         signature: sig,
         inputMint,
         outputMint,
         inputAmount: numAmount,
-        outputAmount: actualOutputAmountLamports,
-        feeSol: actualFee,
-        slot,
+        outputAmount: outAmountRaw,
+        feeSol: 0.000005,
+        slot: 0,
         landingTimeMs,
         method: 'rpc',
       };

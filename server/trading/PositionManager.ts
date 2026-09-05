@@ -238,7 +238,7 @@ export class PositionManager {
     network: string;
     wallet: string;
     mint: string;
-    tokenAmountRaw: number;
+    tokenAmountRaw: number | string | bigint;
     decimals?: number;
     solSpent: number;
     orderId?: string;
@@ -258,7 +258,8 @@ export class PositionManager {
     if (decimals === undefined) {
       throw new Error(`Cannot open position for ${params.mint}: missing decimals.`);
     }
-    if (!Number.isSafeInteger(params.tokenAmountRaw) || params.tokenAmountRaw <= 0) {
+    const tokenAmountNum = this.parseRawAmountSafe(params.tokenAmountRaw, params.mint);
+    if (!Number.isSafeInteger(tokenAmountNum) || tokenAmountNum <= 0) {
       throw new Error(`INVALID_RAW_TOKEN_AMOUNT: tokenAmountRaw must be a positive safe integer for ${params.mint}.`);
     }
     const tpPct = params.tpPct ?? 25;
@@ -301,7 +302,7 @@ export class PositionManager {
 
     // New Position
     const posId = `pos_${now}_${params.mint.slice(0, 6)}`;
-    const tokenQty = params.tokenAmountRaw / (10 ** decimals);
+    const tokenQty = tokenAmountNum / (10 ** decimals);
     const averageEntryPrice = tokenQty > 0 ? params.solSpent / tokenQty : 0;
 
     const newPos: Position = {
@@ -309,7 +310,7 @@ export class PositionManager {
       network: params.network,
       wallet: params.wallet,
       mint: params.mint,
-      tokenAmount: params.tokenAmountRaw,
+      tokenAmount: tokenAmountNum,
       decimals,
       totalSolSpent: params.solSpent,
       averageEntryPrice,

@@ -3247,22 +3247,65 @@ export const PnLPage = ({
       throw new Error("Authentication required: Please sign in with Google/Firebase before placing real on-chain orders.");
     }
 
-    const currentMode = tradeManager.getExecutor().mode;
-    if (currentMode !== 'paper' && !privateKey) throw new Error("Private Key missing");
-    
+    const currentMode = useTradingEnvironmentStore.getState().network || 'paper';
+    const isMainnet = currentMode === 'mainnet';
     const slippageToUse = customSlippageBps !== undefined ? customSlippageBps : Math.floor(slippage * 100);
-    const intent = inputMint === SOL_MINT ? 'entry' : 'exit_tp';
-    
-    const res = await tradeManager.swap(inputMint, outputMint, amount, slippageToUse, intent);
-    const isOutputSol = outputMint === SOL_MINT || outputMint === 'So11111111111111111111111111111111111111112';
-    return {
-      txid: res.signature,
-      outputAmount: res.outputAmount || 0,
-      outputAmountRaw: res.outputAmount || 0,
-      outputAmountSol: isOutputSol ? ((res.outputAmount || 0) / 1_000_000_000) : 0,
-      feeSol: res.feeSol || 0,
-      slot: res.slot || 0,
-    };
+    const isBuy = inputMint === SOL_MINT;
+
+    if (isBuy) {
+      const solAmount = amount / 1e9;
+      const res = await fetch('/api/trading/buy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          network: currentMode,
+          mint: outputMint,
+          amountSol: solAmount,
+          slippageBps: slippageToUse,
+          clientRequestId: `pnl_buy_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          label: 'entry',
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || `Server buy execution failed (${res.status})`);
+      }
+      return {
+        txid: data.signature,
+        outputAmount: Number(data.result?.outAmountRaw || data.outAmountRaw || 0),
+        outputAmountRaw: Number(data.result?.outAmountRaw || data.outAmountRaw || 0),
+        outputAmountSol: 0,
+        feeSol: 0,
+        slot: 0,
+      };
+    } else {
+      const res = await fetch('/api/trading/sell', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          network: currentMode,
+          mint: inputMint,
+          amountRaw: amount,
+          slippageBps: slippageToUse,
+          clientRequestId: `pnl_sell_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          reason: 'MANUAL',
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || `Server sell execution failed (${res.status})`);
+      }
+      const isOutputSol = outputMint === SOL_MINT || outputMint === 'So11111111111111111111111111111111111111112';
+      const outAmount = Number(data.result?.outAmountRaw || data.outAmountRaw || 0);
+      return {
+        txid: data.signature,
+        outputAmount: outAmount,
+        outputAmountRaw: outAmount,
+        outputAmountSol: isOutputSol ? (outAmount / 1e9) : 0,
+        feeSol: 0,
+        slot: 0,
+      };
+    }
   };
 
   const pendingBuysRef = useRef(0);
@@ -3869,15 +3912,34 @@ const checkTokenCriteria = (mint: string): {
       const isGraduated = !mint.toLowerCase().endsWith('pump');
       addLog(`🟢 [BUY TRIGGER] All required criteria & buy limits verified for ${symbol} (${isGraduated ? 'Raydium' : 'Pump.fun'}) | Pos Limit: ${activePositionsCount + 1}/${maxPositions || '∞'}, Rebuy Limit: ${totalTradedCount + 1}/${activeMaxRebuyTimes}, Amount: ${solAmount} SOL. Placing real on-chain order...`, 'buy');
       addLog(`Ordering ${solAmount} SOL → ${symbol}...`, 'buy');
-      const amountLamports = Math.floor(solAmount * 1_000_000_000);
       const slippageBps = Math.floor(configRef.current.slippage * 100);
-      const swapRes = await tradeManager.swap(SOL_MINT, mint, amountLamports, slippageBps, 'entry');
-      const actualSolSpent = swapRes.totalCostSol || (solAmount + (swapRes.feeSol || 0));
+      const network = isMainnet ? 'mainnet' : 'paper';
+
+      const buyRes = await fetch('/api/trading/buy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          network,
+          mint,
+          amountSol: solAmount,
+          slippageBps,
+          clientRequestId: `pnl_buy_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          label: 'entry',
+        }),
+      });
+
+      const buyData = await buyRes.json();
+      if (!buyRes.ok || !buyData.success) {
+        throw new Error(buyData.error || `Server buy execution failed (${buyRes.status})`);
+      }
+
+      const outAmountRaw = buyData.result?.outAmountRaw || buyData.outAmountRaw || 0;
+      const actualSolSpent = buyData.result?.totalCostSol || solAmount;
       const result = {
-        txid: swapRes.signature,
-        slot: swapRes.slot || 0,
-        outputAmount: swapRes.outputAmount,
-        quoteOutAmountRaw: swapRes.outputAmount,
+        txid: buyData.signature,
+        slot: 0,
+        outputAmount: Number(outAmountRaw),
+        quoteOutAmountRaw: outAmountRaw,
       };
       if (result.txid) {
         const passedOutputAmount = typeof result.outputAmount === 'number' && !isNaN(result.outputAmount) ? result.outputAmount : 0;

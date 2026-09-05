@@ -15,7 +15,8 @@ export class DevnetTradeExecutor implements TradeExecutor {
   }
 
   async quoteBuy(params: QuoteParams): Promise<QuoteResult> {
-    const solAmount = params.amount / 1e9;
+    const amountNum = Number(params.amount);
+    const solAmount = amountNum / 1e9;
     const decs = params.decimals;
     if (decs === undefined) {
       throw new Error('Decimals must be provided for quote');
@@ -38,7 +39,8 @@ export class DevnetTradeExecutor implements TradeExecutor {
     if (decs === undefined) {
       throw new Error('Decimals must be provided for quote');
     }
-    const tokenQty = params.amount / (10 ** decs);
+    const amountNum = Number(params.amount);
+    const tokenQty = amountNum / (10 ** decs);
     const solProceeds = tokenQty * 0.000002;
     const lamports = Math.floor(solProceeds * 1e9);
     const slippage = params.slippageBps ? params.slippageBps / 10000 : 0.05;
@@ -66,9 +68,10 @@ export class DevnetTradeExecutor implements TradeExecutor {
     }));
 
     const tokenProgramInfo = await tokenProgramResolver.resolve(this.connection, params.outputMint);
-    const tokenReceivedRaw = Number(quote.outAmount);
-    const solSpent = params.amount / 1e9;
-    const tokenQty = tokenReceivedRaw / (10 ** tokenProgramInfo.decimals);
+    const tokenReceivedRaw = quote.outAmount;
+    const amountNum = Number(params.amount);
+    const solSpent = amountNum / 1e9;
+    const tokenQty = Number(tokenReceivedRaw) / (10 ** tokenProgramInfo.decimals);
     const effectivePrice = tokenQty > 0 ? solSpent / tokenQty : 0;
 
     return {
@@ -76,7 +79,7 @@ export class DevnetTradeExecutor implements TradeExecutor {
       signature: `devnet_tx_buy_${Date.now()}_${params.outputMint.slice(0, 6)}`,
       inputMint: params.inputMint,
       outputMint: params.outputMint,
-      inAmountRaw: params.amount,
+      inAmountRaw: String(params.amount),
       outAmountRaw: tokenReceivedRaw,
       totalCostSol: solSpent,
       effectivePriceSol: effectivePrice,
@@ -95,15 +98,15 @@ export class DevnetTradeExecutor implements TradeExecutor {
       slippageBps: params.slippageBps,
     }));
 
-    const solGainedLamports = Number(quote.outAmount);
-    const solGained = solGainedLamports / 1e9;
+    const solGainedLamports = quote.outAmount;
+    const solGained = Number(solGainedLamports) / 1e9;
 
     return {
       success: true,
       signature: `devnet_tx_sell_${Date.now()}_${params.inputMint.slice(0, 6)}`,
       inputMint: params.inputMint,
       outputMint: params.outputMint,
-      inAmountRaw: params.amount,
+      inAmountRaw: String(params.amount),
       outAmountRaw: solGainedLamports,
       netProceedsSol: solGained,
     };

@@ -10,6 +10,10 @@ export interface JupiterSwapParams {
   privateKey?: string;
 }
 
+/**
+ * JupiterTradingService: Internal utility for quote queries and delegation to ExecutionGateway.
+ * Direct blockchain submission is strictly delegated to the single authoritative ExecutionGateway.
+ */
 export class JupiterTradingService {
   private static instance: JupiterTradingService;
 
@@ -31,11 +35,10 @@ export class JupiterTradingService {
     slippageBps?: number;
   }) {
     const executor = executionGateway.getExecutor('mainnet');
-    const amtNum = typeof params.amount === 'bigint' ? Number(params.amount) : Number(params.amount);
     const res = await executor.quoteBuy({
       inputMint: params.inputMint,
       outputMint: params.outputMint,
-      amount: amtNum,
+      amount: params.amount,
       slippageBps: params.slippageBps,
       network: 'mainnet',
     });
@@ -46,36 +49,6 @@ export class JupiterTradingService {
       priceImpactPct: res.priceImpactPct,
       routePlan: res.routePlan,
     };
-  }
-
-  public async createSwapTransaction(quoteResponse: any, userPublicKey: string) {
-    const apiKey = this.getApiKey();
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
-    if (apiKey) {
-      headers['x-api-key'] = apiKey;
-    }
-
-    const res = await fetch('https://quote-api.jup.ag/v6/swap', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        quoteResponse,
-        userPublicKey,
-        wrapAndUnwrapSol: true,
-        dynamicComputeUnitLimit: true,
-        prioritizationFeeLamports: 'auto',
-      }),
-    });
-
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`Jupiter Swap Transaction Failed [${res.status}]: ${errText}`);
-    }
-
-    const data = await res.json();
-    return data.swapTransaction;
   }
 
   public async executeSwap(params: {
@@ -91,7 +64,7 @@ export class JupiterTradingService {
     const execParams = {
       inputMint: params.quoteResponse?.inputMint || 'So11111111111111111111111111111111111111112',
       outputMint: params.quoteResponse?.outputMint || '',
-      amount: Number(params.quoteResponse?.inAmount || 0),
+      amount: String(params.quoteResponse?.inAmount || '0'),
       slippageBps: params.quoteResponse?.slippageBps || 250,
       decimals: 9,
       network: net,

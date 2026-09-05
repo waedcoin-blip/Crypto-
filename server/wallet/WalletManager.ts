@@ -126,6 +126,10 @@ export class WalletManager {
   public getAllAccounts(): WalletAccount[] {
     return Array.from(this.accounts.values());
   }
+
+  public setAccount(account: WalletAccount): void {
+    this.accounts.set(account.identity, account);
+  }
 }
 
 export const walletManager = WalletManager.getInstance();
