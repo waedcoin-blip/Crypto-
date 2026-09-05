@@ -3,6 +3,7 @@ import { TradeExecutor, QuoteParams, QuoteResult, ExecuteParams, ExecutionResult
 import { PaperTradeExecutor } from './PaperTradeExecutor.js';
 import { DevnetTradeExecutor } from './DevnetTradeExecutor.js';
 import { MainnetTradeExecutor } from './MainnetTradeExecutor.js';
+import { paperWalletLedger } from '../wallet/PaperWalletLedger.js';
 
 export type NetworkType = 'paper' | 'devnet' | 'mainnet';
 
@@ -25,57 +26,79 @@ export class ExecutionGateway implements TradeExecutor {
     return ExecutionGateway.instance;
   }
 
-  public getExecutor(network: string = 'paper'): TradeExecutor {
-    const net = (network || 'paper').toLowerCase().trim();
-    if (net === 'mainnet' || net === 'mainnet-beta') return this.mainnetExecutor;
-    if (net === 'devnet') return this.devnetExecutor;
-    return this.paperExecutor;
+  public resolveNetwork(network?: string): NetworkType {
+    if (!network) {
+      throw new Error("INVALID_NETWORK_EXPLICIT_REQUIRED: Network parameter is required and cannot be empty.");
+    }
+    const net = network.toLowerCase().trim();
+    if (net === 'mainnet' || net === 'mainnet-beta') return 'mainnet';
+    if (net === 'devnet') return 'devnet';
+    if (net === 'paper') return 'paper';
+
+    throw new Error(`INVALID_NETWORK_EXPLICIT_REQUIRED: '${network}' is not a valid network. Expected 'paper', 'devnet', or 'mainnet'.`);
   }
 
-  public resolveNetwork(network?: string, walletAddress?: string): NetworkType {
-    if (network) {
-      const net = network.toLowerCase().trim();
-      if (net === 'mainnet' || net === 'mainnet-beta') return 'mainnet';
-      if (net === 'devnet') return 'devnet';
-      if (net === 'paper') return 'paper';
+  public getExecutor(network: string): TradeExecutor {
+    const net = this.resolveNetwork(network);
+    if (net === 'mainnet') return this.mainnetExecutor;
+    if (net === 'devnet') return this.devnetExecutor;
+    if (net === 'paper') return this.paperExecutor;
+
+    throw new Error(`INVALID_NETWORK_EXPLICIT_REQUIRED: '${network}' is not supported.`);
+  }
+
+  public async verifyReadiness(network: string, walletAddress?: string): Promise<{ ready: boolean; reason?: string }> {
+    try {
+      const net = this.resolveNetwork(network);
+      if (net === 'paper') {
+        const sol = paperWalletLedger.getSolBalance();
+        if (typeof sol === 'number' && sol >= 0) {
+          return { ready: true };
+        }
+        return { ready: false, reason: 'PaperWalletLedger return invalid balance' };
+      }
+
+      const exec = this.getExecutor(net);
+      const balance = await exec.getBalance(walletAddress);
+      if (typeof balance === 'number' && !isNaN(balance)) {
+        return { ready: true };
+      }
+      return { ready: false, reason: `Executor for ${net} returned invalid balance` };
+    } catch (err: any) {
+      return { ready: false, reason: err?.message || String(err) };
     }
-    if (walletAddress) {
-      if (walletAddress.startsWith('mainnet:') || walletAddress === 'mainnet') return 'mainnet';
-      if (walletAddress.startsWith('devnet:') || walletAddress === 'devnet') return 'devnet';
-      if (walletAddress.startsWith('paper:') || walletAddress === 'paper') return 'paper';
-    }
-    return 'paper';
   }
 
   async quoteBuy(params: QuoteParams): Promise<QuoteResult> {
     const net = this.resolveNetwork(params.network);
-    return this.getExecutor(net).quoteBuy(params);
+    return this.getExecutor(net).quoteBuy({ ...params, network: net });
   }
 
   async quoteSell(params: QuoteParams): Promise<QuoteResult> {
     const net = this.resolveNetwork(params.network);
-    return this.getExecutor(net).quoteSell(params);
+    return this.getExecutor(net).quoteSell({ ...params, network: net });
   }
 
   async buy(params: ExecuteParams): Promise<ExecutionResult> {
-    const net = this.resolveNetwork(params.network, params.walletAddress);
+    const net = this.resolveNetwork(params.network);
     return this.getExecutor(net).buy({ ...params, network: net });
   }
 
   async sell(params: ExecuteParams): Promise<ExecutionResult> {
-    const net = this.resolveNetwork(params.network, params.walletAddress);
+    const net = this.resolveNetwork(params.network);
     return this.getExecutor(net).sell({ ...params, network: net });
   }
 
   async getBalance(walletAddress?: string, network?: string): Promise<number> {
-    const net = this.resolveNetwork(network, walletAddress);
+    const net = this.resolveNetwork(network);
     return this.getExecutor(net).getBalance(walletAddress);
   }
 
   async getTokenBalance(mint: string, walletAddress?: string, network?: string): Promise<number> {
-    const net = this.resolveNetwork(network, walletAddress);
+    const net = this.resolveNetwork(network);
     return this.getExecutor(net).getTokenBalance(mint, walletAddress);
   }
 }
 
 export const executionGateway = ExecutionGateway.getInstance();
+

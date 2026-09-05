@@ -127,8 +127,9 @@ export class OrderManager {
     clientRequestId: string;
     label?: string;
   }): Order {
+    const net = executionGateway.resolveNetwork(params.network);
     const idempotencyKey = this.generateIdempotencyKey(
-      params.network,
+      net,
       params.wallet,
       params.mint,
       params.side,
@@ -147,7 +148,7 @@ export class OrderManager {
     const now = Date.now();
     const order: Order = {
       id,
-      network: params.network,
+      network: net,
       wallet: params.wallet,
       mint: params.mint,
       side: params.side,

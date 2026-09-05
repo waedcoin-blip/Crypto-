@@ -201,6 +201,12 @@ export class RebuyGuard {
     const key = this.getGuardKey(network, wallet, mint);
     this.completedBuyCounts.delete(key);
   }
+
+  public clear(): void {
+    this.pendingReservations.clear();
+    this.reservedKeys.clear();
+    this.completedBuyCounts.clear();
+  }
 }
 
 export const rebuyGuard = RebuyGuard.getInstance();

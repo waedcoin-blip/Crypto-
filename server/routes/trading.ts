@@ -72,8 +72,13 @@ router.post('/config', updateConfigHandler);
 // POST /api/trading/buy
 router.post('/buy', asyncHandler(async (req, res) => {
   const { network, wallet, mint, amountSol, slippageBps, maxRebuyTimes, tradeOnlyOnce, clientRequestId, label, tpPct, slPct } = req.body;
+  
+  if (!network) {
+    return res.status(400).json({ status: 'error', error: 'INVALID_NETWORK_EXPLICIT_REQUIRED: Network parameter is required and cannot be empty.' });
+  }
+
   const response = await tradingEngine.buy({
-    network: network || 'paper',
+    network,
     wallet: wallet || 'default',
     mint,
     amountSol: Number(amountSol || 0.1),
@@ -96,11 +101,16 @@ router.post('/buy', asyncHandler(async (req, res) => {
 // POST /api/trading/sell
 router.post('/sell', asyncHandler(async (req, res) => {
   const { network, wallet, mint, amountRaw, slippageBps, clientRequestId, reason } = req.body;
+
+  if (!network) {
+    return res.status(400).json({ status: 'error', error: 'INVALID_NETWORK_EXPLICIT_REQUIRED: Network parameter is required and cannot be empty.' });
+  }
+
   const response = await tradingEngine.sell({
-    network: network || 'paper',
+    network,
     wallet: wallet || 'default',
     mint,
-    amountRaw: amountRaw !== undefined ? (typeof amountRaw === 'string' ? BigInt(amountRaw) : amountRaw) : undefined,
+    amountRaw: amountRaw !== undefined ? Number(amountRaw) : undefined,
     slippageBps: slippageBps ? Number(slippageBps) : undefined,
     clientRequestId,
     reason,
@@ -198,42 +208,43 @@ router.get('/trades', asyncHandler(async (req, res) => {
   });
 }));
 
+import { tradingSupervisor } from '../trading/TradingSupervisor.js';
+
 // GET /api/trading/status
 router.get('/status', asyncHandler(async (req, res) => {
-  const worker = workerStateRepository.getWorkerState('trading');
-  const engineStatus = tradingEngine.getStatus();
+  const status = tradingSupervisor.getStatus();
   res.json({
     status: 'success',
-    workerState: worker || { worker: 'trading', status: 'RUNNING', lastHeartbeat: Date.now() },
-    engineStatus,
+    supervisorStatus: status,
+    isRunning: status.state === 'TRADING',
     timestamp: Date.now(),
   });
 }));
 
 // POST /api/trading/start
 router.post('/start', asyncHandler(async (req, res) => {
-  await workerStateRepository.heartbeat({
-    worker: 'trading',
-    status: 'RUNNING',
-    lastHeartbeat: Date.now(),
-  });
+  const supervisorStatus = await tradingSupervisor.startTrading(req.body || {});
+  if (supervisorStatus.state === 'START_FAILED') {
+    return res.status(500).json({
+      status: 'error',
+      error: supervisorStatus.lastError || 'Trading engine start failed',
+      supervisorStatus,
+      timestamp: Date.now(),
+    });
+  }
   res.json({
     status: 'success',
-    workerState: { worker: 'trading', status: 'RUNNING', lastHeartbeat: Date.now() },
+    supervisorStatus,
     timestamp: Date.now(),
   });
 }));
 
 // POST /api/trading/stop
 router.post('/stop', asyncHandler(async (req, res) => {
-  await workerStateRepository.heartbeat({
-    worker: 'trading',
-    status: 'STOPPED',
-    lastHeartbeat: Date.now(),
-  });
+  const supervisorStatus = await tradingSupervisor.stopTrading();
   res.json({
     status: 'success',
-    workerState: { worker: 'trading', status: 'STOPPED', lastHeartbeat: Date.now() },
+    supervisorStatus,
     timestamp: Date.now(),
   });
 }));

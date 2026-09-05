@@ -84,18 +84,48 @@ export class TradingEngine {
    * Flow: TradingEngine -> RebuyGuard (Reserve) -> OrderManager -> ExecutionGateway -> PositionManager.
    */
   public async buy(params: BuyParams): Promise<TradeEngineResponse> {
-    const network = params.network || 'paper';
+    let network: string;
+    try {
+      network = executionGateway.resolveNetwork(params.network);
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err?.message || String(err),
+      };
+    }
+
+    if (!params.amountSol || !Number.isFinite(params.amountSol) || params.amountSol <= 0) {
+      return {
+        success: false,
+        error: `INVALID_AMOUNT: Buy amount SOL must be a positive finite number, received ${params.amountSol}`,
+      };
+    }
+
     const wallet = params.wallet || 'default';
     const lockKey = `${network}:${wallet}`;
-    return this.withBuyWalletLock(lockKey, () => this.buyUnlocked(params));
+    return this.withBuyWalletLock(lockKey, () => this.buyUnlocked({ ...params, network, wallet }));
   }
 
   private async buyUnlocked(params: BuyParams): Promise<TradeEngineResponse> {
-    const network = params.network || 'paper';
+    const network = executionGateway.resolveNetwork(params.network);
     const wallet = params.wallet || 'default';
-    const mint = params.mint.trim();
+    const mint = (params.mint || '').trim();
+    if (!mint) {
+      return {
+        success: false,
+        error: 'INVALID_MINT: Mint address is required.',
+      };
+    }
+
     const clientRequestId = params.clientRequestId || `buy_${mint.slice(0, 8)}_${Date.now()}`;
-    const amountLamports = Math.floor(params.amountSol * 1e9);
+    const rawLamports = params.amountSol * 1e9;
+    if (!Number.isInteger(Math.round(rawLamports)) || rawLamports <= 0) {
+      return {
+        success: false,
+        error: `INVALID_AMOUNT: Non-integer or non-positive lamports calculated: ${rawLamports}`,
+      };
+    }
+    const amountLamports = Math.floor(rawLamports);
     const slippageBps = params.slippageBps || 250;
 
     // 1. Fetch token decimals first (resolves from params, existing position, or chain/cache)
@@ -116,7 +146,10 @@ export class TradingEngine {
           if (network === 'paper') {
             decimals = 6;
           } else {
-            throw err;
+            return {
+              success: false,
+              error: `UNRESOLVED_TOKEN_DECIMALS: Could not resolve decimals for ${mint} on ${network}: ${err?.message || err}`,
+            };
           }
         }
       }
@@ -287,9 +320,24 @@ export class TradingEngine {
    * Centralized SELL execution.
    */
   public async sell(params: SellParams): Promise<TradeEngineResponse> {
-    const network = params.network || 'paper';
+    let network: string;
+    try {
+      network = executionGateway.resolveNetwork(params.network);
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err?.message || String(err),
+      };
+    }
+
     const wallet = params.wallet || 'default';
-    const mint = params.mint.trim();
+    const mint = (params.mint || '').trim();
+    if (!mint) {
+      return {
+        success: false,
+        error: 'INVALID_MINT: Mint address is required for sell.',
+      };
+    }
 
     const position = positionManager.getPosition(network, wallet, mint);
     if (!position) {

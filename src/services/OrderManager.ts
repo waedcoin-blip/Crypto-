@@ -258,12 +258,55 @@ export class OrderManager {
       this.transitionState(order.id, 'TRANSACTION_BUILDING');
       this.transitionState(order.id, 'SIGNING');
 
-      // 6. SUBMITTED
-      const result = await executor.swap(inputMint, outputMint, amount, slippageBps, label, quote);
+      let result: SwapResult;
 
-      if (result.signature) {
-        submittedSignature = result.signature;
-        this.transitionState(order.id, 'SUBMITTED', { signature: result.signature });
+      if (order.network === 'mainnet') {
+        const isBuy = isSolBuy;
+        const endpoint = isBuy ? '/api/trading/buy' : '/api/trading/sell';
+        const body = isBuy ? {
+          network: order.network,
+          mint: targetMint,
+          amountSol: amount / 1e9,
+          slippageBps,
+          clientRequestId: order.id,
+          label,
+        } : {
+          network: order.network,
+          mint: targetMint,
+          amountRaw: amount,
+          slippageBps,
+          clientRequestId: order.id,
+          reason: label,
+        };
+
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          throw new Error(data.error || `Server trade execution failed (${res.status})`);
+        }
+
+        submittedSignature = data.signature;
+        result = {
+          signature: data.signature,
+          inputMint,
+          outputMint,
+          inputAmount: amount,
+          outputAmount: Number(data.result?.outAmountRaw || data.outAmountRaw || 0),
+          feeSol: 0,
+          slot: 0,
+          landingTimeMs: 0,
+          method: 'rpc',
+        };
+      } else {
+        // Paper mode execution
+        result = await executor.swap(inputMint, outputMint, amount, slippageBps, label, quote);
+        if (result.signature) {
+          submittedSignature = result.signature;
+        }
       }
 
       // 7. CONFIRMING & On-Chain Verification

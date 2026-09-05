@@ -373,6 +373,26 @@ export class PositionManager {
     return pos;
   }
 
+  public reducePositionAmount(positionId: string, tokensSoldRaw: number, solReceived: number): Position | undefined {
+    const pos = this.getPositionById(positionId);
+    if (!pos) return undefined;
+
+    const remainingRaw = Math.max(0, pos.tokenAmount - tokensSoldRaw);
+    pos.tokenAmount = remainingRaw;
+    pos.realizedPnl += solReceived - (pos.totalSolSpent * (tokensSoldRaw / (pos.tokenAmount + tokensSoldRaw || 1)));
+    pos.updatedAt = Date.now();
+
+    if (remainingRaw <= 0) {
+      pos.status = 'CLOSED';
+      pos.closedAt = Date.now();
+      const key = this.getPositionKey(pos.network, pos.wallet, pos.mint);
+      this.positionKeys.delete(key);
+    }
+
+    this.syncRepository(pos);
+    return pos;
+  }
+
   public updatePositionStatus(
     network: string,
     wallet: string,

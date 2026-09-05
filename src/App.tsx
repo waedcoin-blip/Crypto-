@@ -813,9 +813,19 @@ function App() {
   // API Health Check
   useEffect(() => {
     fetch('/api/health')
-      .then(r => r.json())
+      .then(async r => {
+        const text = await r.text().catch(() => '');
+        if (!r.ok) {
+          throw new Error(`HTTP ${r.status}: ${text || r.statusText}`);
+        }
+        try {
+          return JSON.parse(text);
+        } catch {
+          return { status: 'warning', message: text };
+        }
+      })
       .then(data => console.log('✅ Matrix Backend Connected:', data))
-      .catch((err: any) => console.error('❌ Matrix Backend Connectivity Issue:', err));
+      .catch((err: any) => console.warn('⚠️ Matrix Backend Connectivity Status:', err?.message || err));
   }, []);
 
   const sendTelegramAlert = async (msg: string, silent = false) => {

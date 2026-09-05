@@ -1,11 +1,9 @@
 // server/execution/PaperTradeExecutor.ts
 import { TradeExecutor, QuoteParams, QuoteResult, ExecuteParams, ExecutionResult } from './TradeExecutor.js';
 import { positionManager } from '../trading/PositionManager.js';
+import { paperWalletLedger } from '../wallet/PaperWalletLedger.js';
 
 export class PaperTradeExecutor implements TradeExecutor {
-  private paperSolBalance = 100.0; // 100 SOL simulated balance
-  private paperTokenBalances: Map<string, number> = new Map(); // mint -> raw integer units
-
   async quoteBuy(params: QuoteParams): Promise<QuoteResult> {
     const solAmount = params.amount / 1e9;
     const decs = params.decimals !== undefined ? params.decimals : 9;
@@ -62,28 +60,28 @@ export class PaperTradeExecutor implements TradeExecutor {
     }));
 
     const solSpent = params.amount / 1e9;
-    if (this.paperSolBalance < solSpent) {
+    const currentSolBalance = paperWalletLedger.getSolBalance();
+    if (currentSolBalance < solSpent) {
       return {
         success: false,
         inputMint: params.inputMint,
         outputMint: params.outputMint,
         inAmountRaw: params.amount,
         outAmountRaw: 0,
-        error: `INSUFFICIENT_PAPER_BALANCE: Required ${solSpent.toFixed(4)} SOL, available ${this.paperSolBalance.toFixed(4)} SOL`,
+        error: `INSUFFICIENT_PAPER_BALANCE: Required ${solSpent.toFixed(4)} SOL, available ${currentSolBalance.toFixed(4)} SOL`,
       };
     }
 
     const tokenReceivedRaw = Number(quote.outAmount);
-    this.paperSolBalance -= solSpent;
-    const existingToken = this.paperTokenBalances.get(params.outputMint) || 0;
-    this.paperTokenBalances.set(params.outputMint, existingToken + tokenReceivedRaw);
+    const signature = `paper_buy_${Date.now()}_${params.outputMint.slice(0, 8)}`;
+    paperWalletLedger.commitBuy(params.outputMint, solSpent, tokenReceivedRaw, params.decimals, signature);
 
     const tokenQty = tokenReceivedRaw / (10 ** params.decimals);
     const effectivePrice = tokenQty > 0 ? solSpent / tokenQty : 0;
 
     return {
       success: true,
-      signature: `paper_buy_${Date.now()}_${params.outputMint.slice(0, 8)}`,
+      signature,
       inputMint: params.inputMint,
       outputMint: params.outputMint,
       inAmountRaw: params.amount,
@@ -94,11 +92,9 @@ export class PaperTradeExecutor implements TradeExecutor {
   }
 
   async sell(params: ExecuteParams): Promise<ExecutionResult> {
-    let currentTokenRaw = this.paperTokenBalances.get(params.inputMint) || 0;
+    let currentTokenRaw = paperWalletLedger.getTokenBalance(params.inputMint);
     if (currentTokenRaw < params.amount) {
-      // Auto-credit paper token balance for paper positions
       currentTokenRaw = params.amount;
-      this.paperTokenBalances.set(params.inputMint, currentTokenRaw);
     }
     const sellAmountRaw = Math.min(params.amount, currentTokenRaw);
 
@@ -123,13 +119,13 @@ export class PaperTradeExecutor implements TradeExecutor {
 
     const solGainedLamports = Number(quote.outAmount);
     const solGained = solGainedLamports / 1e9;
+    const signature = `paper_sell_${Date.now()}_${params.inputMint.slice(0, 8)}`;
 
-    this.paperTokenBalances.set(params.inputMint, currentTokenRaw - sellAmountRaw);
-    this.paperSolBalance += solGained;
+    paperWalletLedger.commitSell(params.inputMint, solGained, sellAmountRaw, params.decimals, signature);
 
     return {
       success: true,
-      signature: `paper_sell_${Date.now()}_${params.inputMint.slice(0, 8)}`,
+      signature,
       inputMint: params.inputMint,
       outputMint: params.outputMint,
       inAmountRaw: sellAmountRaw,
@@ -139,10 +135,11 @@ export class PaperTradeExecutor implements TradeExecutor {
   }
 
   async getBalance(walletAddress?: string): Promise<number> {
-    return this.paperSolBalance;
+    return paperWalletLedger.getSolBalance();
   }
 
   async getTokenBalance(mint: string, walletAddress?: string): Promise<number> {
-    return this.paperTokenBalances.get(mint) || 0;
+    return paperWalletLedger.getTokenBalance(mint);
   }
 }
+

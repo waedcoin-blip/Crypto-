@@ -57,13 +57,23 @@ class ApiClient {
     return response;
   }
 
+  private async safeJson(res: Response): Promise<any> {
+    const text = await res.text().catch(() => '');
+    if (!text) return {};
+    try {
+      return JSON.parse(text);
+    } catch {
+      return { error: text, status: res.status, ok: res.ok };
+    }
+  }
+
   public async get<T = any>(url: string, options: ApiClientOptions = {}): Promise<T> {
     const res = await this.fetch(url, { ...options, method: 'GET' });
     if (!res.ok) {
       const errorText = await res.text().catch(() => '');
       throw new Error(`HTTP ${res.status}: ${errorText || res.statusText}`);
     }
-    return res.json();
+    return this.safeJson(res);
   }
 
   public async post<T = any>(url: string, body?: any, options: ApiClientOptions = {}): Promise<T> {
@@ -81,7 +91,7 @@ class ApiClient {
       const errorText = await res.text().catch(() => '');
       throw new Error(`HTTP ${res.status}: ${errorText || res.statusText}`);
     }
-    return res.json();
+    return this.safeJson(res);
   }
 
   public async patch<T = any>(url: string, body?: any, options: ApiClientOptions = {}): Promise<T> {
@@ -99,7 +109,7 @@ class ApiClient {
       const errorText = await res.text().catch(() => '');
       throw new Error(`HTTP ${res.status}: ${errorText || res.statusText}`);
     }
-    return res.json();
+    return this.safeJson(res);
   }
 
   public async put<T = any>(url: string, body?: any, options: ApiClientOptions = {}): Promise<T> {
@@ -117,7 +127,7 @@ class ApiClient {
       const errorText = await res.text().catch(() => '');
       throw new Error(`HTTP ${res.status}: ${errorText || res.statusText}`);
     }
-    return res.json();
+    return this.safeJson(res);
   }
 }
 

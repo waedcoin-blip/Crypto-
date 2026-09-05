@@ -5309,7 +5309,28 @@ const checkTokenCriteria = (mint: string): {
     startTimeRef.current = Date.now();
     localStorage.setItem('juipter_auto_startTime', startTimeRef.current.toString());
     setIsRunning(true);
-    addLog('🚀 Bot started', 'info');
+    addLog('🚀 Bot starting on server...', 'info');
+
+    try {
+      const currentNetwork = useTradingEnvironmentStore.getState().network || 'paper';
+      const res = await apiClient.post('/api/trading/start', {
+        network: currentNetwork,
+        wallet: 'default',
+        buyAmountSol: tradeAmount,
+        tpPct: minTakeProfit,
+        slPct: stopLoss,
+        maxPositions,
+      });
+
+      if (res && res.status === 'success') {
+        addLog(`✅ Server Trading Supervisor active (${currentNetwork})`, 'info');
+      } else {
+        addLog(`⚠️ Server Trading Supervisor reported: ${res?.error || 'Unknown issue'}`, 'warn');
+      }
+    } catch (err: any) {
+      addLog(`❌ Failed to start Server Trading Supervisor: ${err?.message || err}`, 'error');
+    }
+
     checkAndTrade();
   };
 
