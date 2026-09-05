@@ -1,5 +1,6 @@
 import { useActiveWalletStore } from "./store/activeWalletStore";
 import { useTradingEnvironmentStore } from "./store/tradingEnvironmentStore";
+import { apiClient } from "./services/apiClient";
 import { getKeypairFromPrivateKey, getSavedSessionKeypair, saveSessionKeypair } from './utils/keypairUtils';
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -517,8 +518,7 @@ function App() {
 
   // Load authoritative trading config from backend worker API on mount
   useEffect(() => {
-    fetch('/api/trading/config')
-      .then(res => res.json())
+    apiClient.get('/api/trading/config')
       .then(data => {
         if (data && data.config) {
           const cfg = data.config;

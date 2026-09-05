@@ -1,5 +1,6 @@
 // src/services/RiskManager.ts
 import { systemLogger } from './systemLogger';
+import { apiClient } from './apiClient';
 
 export interface ManagedPosition {
   mint: string;
@@ -148,20 +149,13 @@ export class RiskManager {
     systemLogger.info('SELL', `[RiskManager] User initiated manual exit for ${mint}. Forwarding to server...`);
     
     try {
-      const response = await fetch('/api/trading/sell', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          mint,
-          reason,
-        }),
+      const data = await apiClient.post('/api/trading/sell', {
+        mint,
+        reason,
       });
 
-      const data = await response.json();
-      if (!response.ok || !data.success) {
-        throw new Error(data.error || 'Request rejected by trading server');
+      if (!data || !data.success) {
+        throw new Error(data?.error || 'Request rejected by trading server');
       }
 
       systemLogger.info('SELL', `[RiskManager] Manual exit authorized and submitted by server for ${mint}.`);

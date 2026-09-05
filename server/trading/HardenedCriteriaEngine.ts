@@ -179,8 +179,8 @@ export class HardenedCriteriaEngine {
         record('MARKET_CAP', 'Market Cap Range', 'PASS', true, 'MCAP_OK', mcapVal);
       }
     } else {
-      if (isPump) {
-        record('MARKET_CAP', 'Market Cap Range', 'PASS', true, 'PUMP_MCAP_DEFAULT_OK');
+      if (isPump || opts.network === 'paper' || candidate.network === 'paper') {
+        record('MARKET_CAP', 'Market Cap Range', 'PASS', true, 'MCAP_UNCONSTRAINED_OR_PAPER');
       } else {
         record('MARKET_CAP', 'Market Cap Range', 'UNKNOWN', false, 'MCAP_DATA_UNAVAILABLE');
       }

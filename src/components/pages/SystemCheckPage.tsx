@@ -5,6 +5,7 @@ import { jupiterPreSellValidator } from '../../services/JupiterPreSellValidator'
 import { pingJupiterApi } from '../../services/jupiterService';
 import { marketDataManager } from '../../services/marketDataManager';
 import { telemetryService, TelemetrySpan } from '../../services/telemetryService';
+import { apiClient } from '../../services/apiClient';
 
 export const SystemCheckPage = ({
   rpcUrl
@@ -30,12 +31,9 @@ export const SystemCheckPage = ({
   const fetchEntryDiagnostics = async () => {
     try {
       setLoadingDiagnostics(true);
-      const res = await fetch('/api/trading/entry-diagnostics');
-      if (res.ok) {
-        const data = await res.json();
-        if (data.status === 'success') {
-          setEntryDiagnostics(data.diagnostics);
-        }
+      const data = await apiClient.get('/api/trading/entry-diagnostics');
+      if (data && data.status === 'success') {
+        setEntryDiagnostics(data.diagnostics);
       }
     } catch {
       // Benign fallback
@@ -50,12 +48,10 @@ export const SystemCheckPage = ({
     setEvaluatingLoading(true);
     setEvaluationResult(null);
     try {
-      const res = await fetch('/api/trading/evaluate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mint: evaluatingMint.trim(), source: 'UI_SYSTEM_CHECK' }),
+      const data = await apiClient.post('/api/trading/evaluate', {
+        mint: evaluatingMint.trim(),
+        source: 'UI_SYSTEM_CHECK'
       });
-      const data = await res.json();
       setEvaluationResult(data.result);
       fetchEntryDiagnostics();
     } catch (err: any) {

@@ -293,6 +293,7 @@ export type CandidateLifecycleState =
 export interface CandidatePipelineRecord {
   mint: string;
   network: string;
+  pool?: string;
   symbol: string;
   firstDiscoveredSource: EventSource;
   sources: EventSource[];

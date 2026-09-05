@@ -1,6 +1,8 @@
 import { useActiveWalletStore } from "../../store/activeWalletStore";
 import { getKeypairFromPrivateKey } from '../../utils/keypairUtils';
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { apiClient } from '../../services/apiClient';
+import { auth } from '../../lib/firebase';
 import { useNavigate } from 'react-router-dom';
 import { Play, Square, Search, ShieldCheck, ShieldAlert, AlertTriangle, Shield, TrendingUp, ChevronDown, ChevronUp, BookOpen, X, Zap, Activity, ChevronRight, Download, Trash2, Settings, Pause, Database, Copy, Check, Terminal, ArrowUpDown, SlidersHorizontal, Eye, EyeOff, Clock, Info, Bug, Filter, Server, Globe, RefreshCw, Wifi, CloudUpload } from 'lucide-react';
 import { Connection, Keypair, VersionedTransaction, PublicKey } from '@solana/web3.js';
@@ -2091,90 +2093,82 @@ export const PnLPage = ({
   // Sync authoritative state from backend on mount
   useEffect(() => {
     const syncBackendTradingState = async () => {
+      if (!auth.currentUser) return; // Do not attempt protected fetches when unauthenticated
       try {
-        const res = await fetch('/api/trading/config');
-        if (res.ok) {
-          const data = await res.json();
-          if (data.isRunning !== undefined) {
-            setIsRunning(data.isRunning);
-          }
+        const data = await apiClient.get('/api/trading/config');
+        if (data && data.isRunning !== undefined) {
+          setIsRunning(data.isRunning);
         }
       } catch (e) {}
 
       try {
-        const posRes = await fetch('/api/trading/positions');
-        if (posRes.ok) {
-          const posData = await posRes.json();
-          if (posData.openPositions && Array.isArray(posData.openPositions)) {
-            const mapped: Record<string, Position> = {};
-            const valuations = posData.valuations || {};
-            for (const p of posData.openPositions) {
-              const mint = p.mint || p.mintAddress || p.id;
-              const val = valuations[mint] || valuations[p.mint] || valuations[p.id];
-              const decimals = p.decimals !== undefined ? p.decimals : (val?.tokenDecimals !== undefined ? val.tokenDecimals : 9);
-              const rawAmount = p.tokenAmount !== undefined ? p.tokenAmount : (p.amountRaw ? Number(p.amountRaw) : 0);
-              const amount = decimals > 0 ? rawAmount / (10 ** decimals) : rawAmount;
-              const entryCostSol = val?.entryCostSol ?? p.totalSolSpent ?? p.solSpent ?? 0;
-              const currentPriceSol = val?.currentPriceSol ?? p.currentPriceSol ?? p.currentPriceSOL ?? p.entryPriceSOL ?? 0;
-              
-              const marketValueSol = val?.marketValueSol ?? (amount > 0 && currentPriceSol > 0 ? amount * currentPriceSol : 0);
-              const marketPnlSol = val?.marketPnlSol ?? (entryCostSol > 0 ? marketValueSol - entryCostSol : 0);
-              const marketPnlPercent = val?.marketPnlPercent ?? (entryCostSol > 0 ? (marketPnlSol / entryCostSol) * 100 : 0);
+        const posData = await apiClient.get('/api/trading/positions');
+        if (posData && posData.openPositions && Array.isArray(posData.openPositions)) {
+          const mapped: Record<string, Position> = {};
+          const valuations = posData.valuations || {};
+          for (const p of posData.openPositions) {
+            const mint = p.mint || p.mintAddress || p.id;
+            const val = valuations[mint] || valuations[p.mint] || valuations[p.id];
+            const decimals = p.decimals !== undefined ? p.decimals : (val?.tokenDecimals !== undefined ? val.tokenDecimals : 9);
+            const rawAmount = p.tokenAmount !== undefined ? p.tokenAmount : (p.amountRaw ? Number(p.amountRaw) : 0);
+            const amount = decimals > 0 ? rawAmount / (10 ** decimals) : rawAmount;
+            const entryCostSol = val?.entryCostSol ?? p.totalSolSpent ?? p.solSpent ?? 0;
+            const currentPriceSol = val?.currentPriceSol ?? p.currentPriceSol ?? p.currentPriceSOL ?? p.entryPriceSOL ?? 0;
+            
+            const marketValueSol = val?.marketValueSol ?? (amount > 0 && currentPriceSol > 0 ? amount * currentPriceSol : 0);
+            const marketPnlSol = val?.marketPnlSol ?? (entryCostSol > 0 ? marketValueSol - entryCostSol : 0);
+            const marketPnlPercent = val?.marketPnlPercent ?? (entryCostSol > 0 ? (marketPnlSol / entryCostSol) * 100 : 0);
 
-              const executableValueSol = val?.executableValueSol ?? marketValueSol;
-              const executablePnlSol = val?.executablePnlSol ?? val?.pnlSol ?? (entryCostSol > 0 ? executableValueSol - entryCostSol : 0);
-              const executablePnlPercent = val?.executablePnlPercent ?? val?.pnlPercent ?? (entryCostSol > 0 ? (executablePnlSol / entryCostSol) * 100 : 0);
+            const executableValueSol = val?.executableValueSol ?? marketValueSol;
+            const executablePnlSol = val?.executablePnlSol ?? val?.pnlSol ?? (entryCostSol > 0 ? executableValueSol - entryCostSol : 0);
+            const executablePnlPercent = val?.executablePnlPercent ?? val?.pnlPercent ?? (entryCostSol > 0 ? (executablePnlSol / entryCostSol) * 100 : 0);
 
-              mapped[mint] = {
-                symbol: p.mintAddress ? p.mintAddress.slice(0, 6) : (p.mint ? p.mint.slice(0, 6) : 'TOKEN'),
-                buyPrice: p.averageEntryPrice ?? p.entryPriceSOL ?? (amount > 0 && entryCostSol > 0 ? entryCostSol / amount : 0),
-                currentPrice: currentPriceSol,
-                solSpent: entryCostSol,
-                amount,
-                entryTime: p.openedAt || p.createdAt || Date.now(),
-                txid: p.signature || p.buySignature || '',
-                positionId: p.id,
-                decimals,
-                tpPct: p.tpPct,
-                slPct: p.slPct,
-                hasCustomTpSl: p.hasCustomTpSl,
-                entryCostSol,
-                currentPriceSol,
-                marketValueSol,
-                marketPnlSol,
-                marketPnlPercent,
-                executableValueSol,
-                executablePnlSol,
-                executablePnlPercent,
-                pnlSol: marketPnlSol,
-                pnlPercent: marketPnlPercent,
-                source: val?.source || 'WSS',
-                lastMarketPriceAt: val?.lastMarketPriceAt,
-                lastExecutableQuoteAt: val?.lastExecutableQuoteAt,
-                quoteAgeMs: val?.quoteAgeMs,
-                status: val?.status || 'LIVE',
-              };
-            }
-            setPositions(mapped);
-            positionsRef.current = mapped;
-            useAppStore.getState().updateActivePositions(() => mapped);
+            mapped[mint] = {
+              symbol: p.mintAddress ? p.mintAddress.slice(0, 6) : (p.mint ? p.mint.slice(0, 6) : 'TOKEN'),
+              buyPrice: p.averageEntryPrice ?? p.entryPriceSOL ?? (amount > 0 && entryCostSol > 0 ? entryCostSol / amount : 0),
+              currentPrice: currentPriceSol,
+              solSpent: entryCostSol,
+              amount,
+              entryTime: p.openedAt || p.createdAt || Date.now(),
+              txid: p.signature || p.buySignature || '',
+              positionId: p.id,
+              decimals,
+              tpPct: p.tpPct,
+              slPct: p.slPct,
+              hasCustomTpSl: p.hasCustomTpSl,
+              entryCostSol,
+              currentPriceSol,
+              marketValueSol,
+              marketPnlSol,
+              marketPnlPercent,
+              executableValueSol,
+              executablePnlSol,
+              executablePnlPercent,
+              pnlSol: marketPnlSol,
+              pnlPercent: marketPnlPercent,
+              source: val?.source || 'WSS',
+              lastMarketPriceAt: val?.lastMarketPriceAt,
+              lastExecutableQuoteAt: val?.lastExecutableQuoteAt,
+              quoteAgeMs: val?.quoteAgeMs,
+              status: val?.status || 'LIVE',
+            };
           }
+          setPositions(mapped);
+          positionsRef.current = mapped;
+          useAppStore.getState().updateActivePositions(() => mapped);
         }
       } catch (e) {}
 
       try {
-        const tradesRes = await fetch('/api/trading/trades');
-        if (tradesRes.ok) {
-          const tradesData = await tradesRes.json();
-          if (tradesData.trades && Array.isArray(tradesData.trades)) {
-            setTradeHistory(tradesData.trades);
-          }
+        const tradesData = await apiClient.get('/api/trading/trades');
+        if (tradesData && tradesData.trades && Array.isArray(tradesData.trades)) {
+          setTradeHistory(tradesData.trades);
         }
       } catch (e) {}
     };
 
     syncBackendTradingState();
-    const syncInterval = setInterval(syncBackendTradingState, 1000);
+    const syncInterval = setInterval(syncBackendTradingState, 3000);
     return () => clearInterval(syncInterval);
   }, []);
 

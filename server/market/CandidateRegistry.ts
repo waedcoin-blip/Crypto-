@@ -49,6 +49,10 @@ export class CandidateRegistry {
     }
   }
 
+  public buildKey(networkOrChain: string, mint: string, pool: string = 'default'): string {
+    return `${networkOrChain}:${mint}:${pool}`;
+  }
+
   /**
    * Ingests or updates a candidate token from any discovery source.
    * Merges sources and preserves the authoritative state.
@@ -57,11 +61,13 @@ export class CandidateRegistry {
     event: UnifiedMarketEvent,
     network: string = 'mainnet'
   ): { candidate: CandidatePipelineRecord; isNewCandidate: boolean } {
-    const key = `${network}:${event.mint}`;
+    const pool = event.pool || 'default';
+    const key = this.buildKey(network, event.mint, pool);
+    const fallbackKey = `${network}:${event.mint}`;
     const now = Date.now();
     let isNewCandidate = false;
 
-    let candidate = this.candidates.get(key);
+    let candidate = this.candidates.get(key) || this.candidates.get(fallbackKey);
 
     if (!candidate) {
       const src = event.source as EventSource;
@@ -69,6 +75,7 @@ export class CandidateRegistry {
       candidate = {
         mint: event.mint,
         network,
+        pool,
         symbol: event.symbol || event.mint.slice(0, 6).toUpperCase(),
         firstDiscoveredSource: src,
         sources: [src],
@@ -82,12 +89,17 @@ export class CandidateRegistry {
     } else {
       const src = event.source as EventSource;
       candidate.lastEventAt = now;
+      if (pool && pool !== 'default') {
+        candidate.pool = pool;
+      }
       if (!candidate.sources.includes(src)) {
         candidate.sources.push(src);
       }
       if (event.symbol && (!candidate.symbol || candidate.symbol.startsWith('0x') || candidate.symbol.length > 10)) {
         candidate.symbol = event.symbol;
       }
+      // re-key to specific pool if it was default
+      this.candidates.set(key, candidate);
     }
 
     return { candidate, isNewCandidate };
@@ -97,9 +109,8 @@ export class CandidateRegistry {
    * Check if a candidate can attempt a BUY.
    * Rejects if already BUYING, BOUGHT, or actively locked.
    */
-  public canAttemptBuy(network: string, mint: string): { allowed: boolean; reason?: string } {
-    const key = `${network}:${mint}`;
-    const candidate = this.candidates.get(key);
+  public canAttemptBuy(network: string, mint: string, pool: string = 'default'): { allowed: boolean; reason?: string } {
+    const candidate = this.getCandidate(network, mint, pool);
 
     if (!candidate) {
       return { allowed: true };
@@ -129,10 +140,10 @@ export class CandidateRegistry {
       orderId?: string;
       signature?: string;
       positionId?: string;
+      pool?: string;
     }
   ): void {
-    const key = `${network}:${mint}`;
-    const candidate = this.candidates.get(key);
+    const candidate = this.getCandidate(network, mint, details?.pool);
     if (!candidate) return;
 
     candidate.state = state;
@@ -145,8 +156,18 @@ export class CandidateRegistry {
     if (details?.positionId) candidate.positionId = details.positionId;
   }
 
-  public getCandidate(network: string, mint: string): CandidatePipelineRecord | undefined {
-    return this.candidates.get(`${network}:${mint}`);
+  public getCandidate(network: string, mint: string, pool: string = 'default'): CandidatePipelineRecord | undefined {
+    const key = this.buildKey(network, mint, pool);
+    if (this.candidates.has(key)) return this.candidates.get(key);
+    const fallbackKey = `${network}:${mint}`;
+    if (this.candidates.has(fallbackKey)) return this.candidates.get(fallbackKey);
+    // Search any matching pool key
+    for (const [k, c] of this.candidates.entries()) {
+      if (k.startsWith(`${network}:${mint}:`) || k.startsWith(`solana:${mint}:`)) {
+        return c;
+      }
+    }
+    return undefined;
   }
 
   public getAllCandidates(network?: string): CandidatePipelineRecord[] {

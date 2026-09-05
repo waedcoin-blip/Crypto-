@@ -1,5 +1,6 @@
 // src/services/UltraFastExitEngine.ts
 import { systemLogger } from './systemLogger';
+import { apiClient } from './apiClient';
 
 export interface MarketPriceEvent {
   mint: string;
@@ -44,23 +45,16 @@ export class UltraFastExitEngine {
     systemLogger.info('SELL', `[UltraFastExitEngine] Relaying manual exit request for ${mint} to server-side authority.`);
 
     try {
-      const response = await fetch('/api/trading/sell', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          mint,
-          reason,
-        }),
+      const data = await apiClient.post('/api/trading/sell', {
+        mint,
+        reason,
       });
 
-      const data = await response.json();
-      if (response.ok && data.success) {
+      if (data && data.success) {
         systemLogger.info('SELL', `[UltraFastExitEngine] Server successfully executed manual exit for ${mint}.`);
         return true;
       } else {
-        systemLogger.error('SELL', `[UltraFastExitEngine] Server failed manual exit for ${mint}: ${data.error}`);
+        systemLogger.error('SELL', `[UltraFastExitEngine] Server failed manual exit for ${mint}: ${data?.error}`);
         return false;
       }
     } catch (err: any) {

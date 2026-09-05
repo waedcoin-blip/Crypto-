@@ -3,6 +3,8 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import { getNetworkConfig, TradingNetwork } from '../config/network';
 import { useBalanceStore } from '../store/balanceStore';
 import { useActiveWalletStore } from '../store/activeWalletStore';
+import { usePaperWalletStore } from '../store/paperWalletStore';
+import { resolveTokenDecimals } from './PaperTradeExecutor';
 
 const LAMPORTS_PER_SOL = 1_000_000_000;
 const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
@@ -97,9 +99,7 @@ export class WalletBalanceService {
     this.network = network;
     if (network === 'paper') {
       useBalanceStore.getState().setNetwork('paper');
-      import('../store/paperWalletStore').then(m => {
-        m.usePaperWalletStore.getState().syncToBalanceStore();
-      });
+      usePaperWalletStore.getState().syncToBalanceStore();
       return;
     }
     const config = getNetworkConfig(network);
@@ -110,7 +110,6 @@ export class WalletBalanceService {
 
   async refresh(overrideAddress?: string): Promise<number> {
     if (this.network === 'paper') {
-      const { usePaperWalletStore } = await import('../store/paperWalletStore');
       const store = usePaperWalletStore.getState();
       store.syncToBalanceStore();
       return store.solBalance;
@@ -195,9 +194,7 @@ export class WalletBalanceService {
    */
   async getTokenBalanceRaw(mint: string, walletAddress?: string): Promise<bigint> {
     if (this.network === 'paper') {
-      const { usePaperWalletStore } = await import('../store/paperWalletStore');
       const bal = usePaperWalletStore.getState().tokenBalances[mint] || 0;
-      const { resolveTokenDecimals } = await import('./PaperTradeExecutor');
       const decimals = resolveTokenDecimals(mint);
       return BigInt(Math.round(bal * Math.pow(10, decimals)));
     }
@@ -233,11 +230,9 @@ export class WalletBalanceService {
    */
   async getTokenBalance(mint: string, walletAddress?: string): Promise<number> {
     if (this.network === 'paper') {
-      const { usePaperWalletStore } = await import('../store/paperWalletStore');
       return usePaperWalletStore.getState().tokenBalances[mint] || 0;
     }
     const raw = await this.getTokenBalanceRaw(mint, walletAddress);
-    const { resolveTokenDecimals } = await import('./PaperTradeExecutor');
     const decimals = resolveTokenDecimals(mint);
     const rawStr = raw.toString();
     return parseInt(rawStr, 10) / Math.pow(10, decimals);
