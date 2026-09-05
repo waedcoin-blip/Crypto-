@@ -9,6 +9,11 @@ import { ExecutionResult } from '../execution/TradeExecutor.js';
 import { tradeRepository } from '../repositories/TradeRepository.js';
 import { tokenProgramResolver } from '../wallet/TokenProgramResolver.js';
 import { unifiedExitEngine } from './UnifiedExitEngine.js';
+import { HardenedApproval } from '../types/index.js';
+import { hardenedApprovalStore } from './HardenedApprovalStore.js';
+import { hardenedCriteriaEngine } from './HardenedCriteriaEngine.js';
+import { candidateEnricher } from './CandidateEnricher.js';
+import { candidateRegistry } from '../market/CandidateRegistry.js';
 
 export interface BuyParams {
   network: string;
@@ -25,6 +30,8 @@ export interface BuyParams {
   slPct?: number;
   trailingSlPct?: number;
   maxHoldTimeMs?: number;
+  pool?: string;
+  approval?: HardenedApproval;
 }
 
 export interface SellParams {
@@ -115,7 +122,41 @@ export class TradingEngine {
       }
     }
 
-    // 2. RebuyGuard Reservation Check
+    // 2. Authoritative Invariant: NO TOKEN MAY REACH BUY EXECUTION WITHOUT A CURRENT, VALID, SINGLE-USE, MINT/POOL-BOUND HardenedApproval
+    let approval = params.approval;
+    if (!approval) {
+      approval = hardenedApprovalStore.getLatestUsableApproval('solana', mint, params.pool);
+    }
+
+    if (!approval) {
+      console.log(`[TradingEngine] No pre-existing HardenedApproval for ${mint}. Running authoritative HardenedCriteriaEngine evaluation...`);
+      const candidate = await candidateEnricher.enrichCandidate(mint, network);
+      const evalResult = await hardenedCriteriaEngine.evaluateCandidate(candidate, { network, wallet });
+      if (evalResult.decision !== 'PASS' || !evalResult.approval) {
+        console.warn(`[TradingEngine] BUY REJECTED: Candidate ${mint} failed hardened criteria. Reasons: ${evalResult.rejectionReasons.join(', ')}`);
+        return {
+          success: false,
+          error: `NO_VALID_HARDENED_APPROVAL: Token failed hardened criteria: ${evalResult.rejectionReasons.join(', ') || 'CRITERIA_FAILED'}`,
+        };
+      }
+      approval = evalResult.approval;
+    }
+
+    // Perform final recheck right before order execution
+    const finalRecheck = await hardenedCriteriaEngine.performFinalRecheck(approval, { network, wallet });
+    if (!finalRecheck.allowed) {
+      console.warn(`[TradingEngine] BUY REJECTED by final recheck: ${finalRecheck.reason}`);
+      hardenedApprovalStore.markInvalid(approval.approvalId, finalRecheck.reason);
+      return {
+        success: false,
+        error: `FINAL_RECHECK_FAILED: ${finalRecheck.reason}`,
+      };
+    }
+
+    // Mark approval as CONSUMING
+    hardenedApprovalStore.startConsuming(approval.approvalId, clientRequestId);
+
+    // 3. RebuyGuard Reservation Check
     let reservation;
     try {
       reservation = rebuyGuard.reserveBuy({
@@ -127,13 +168,14 @@ export class TradingEngine {
         tradeOnlyOnce: params.tradeOnlyOnce,
       });
     } catch (err: any) {
+      hardenedApprovalStore.markInvalid(approval.approvalId, err?.message || 'REBUY_GUARD_REJECTED');
       return {
         success: false,
         error: err?.message || String(err),
       };
     }
 
-    // 3. Create Order in OrderManager
+    // 4. Create Order in OrderManager
     const order = orderManager.createOrder({
       network,
       wallet,
@@ -146,13 +188,15 @@ export class TradingEngine {
       label: params.label || 'entry',
     });
 
-    // 4. Execute Order
+    // 5. Execute Order
     try {
       const execResult = await orderManager.executeOrder(order.id);
 
       if (!execResult.success) {
         if (execResult.isAmbiguous || execResult.signature || execResult.status === 'RECOVERY_REQUIRED') {
           console.warn(`[TradingEngine] Buy transaction for ${mint} broadcasted or timed out (sig=${execResult.signature}). Retaining rebuy reservation to prevent duplicate spend.`);
+          hardenedApprovalStore.markInvalid(approval.approvalId, 'UNKNOWN_STATUS');
+          rebuyGuard.holdBuy(reservation.reservationId, execResult.signature, 'UNKNOWN_STATUS');
           return {
             success: false,
             orderId: order.id,
@@ -163,6 +207,7 @@ export class TradingEngine {
         }
 
         // Release reservation only on definite pre-broadcast failure or verified expiration
+        hardenedApprovalStore.markInvalid(approval.approvalId, execResult.error || 'EXEC_FAILED');
         rebuyGuard.releaseBuy(reservation.reservationId);
         return {
           success: false,
@@ -172,7 +217,7 @@ export class TradingEngine {
         };
       }
 
-      // 5. Update the authoritative position first, then persist the
+      // 6. Update the authoritative position first, then persist the
       // confirmed BUY so rebuy limits survive worker/server restarts.
       const position = positionManager.openOrAccumulatePosition({
         network,
@@ -189,7 +234,9 @@ export class TradingEngine {
         maxHoldTimeMs: params.maxHoldTimeMs,
       });
 
+      hardenedApprovalStore.markConsumed(approval.approvalId, order.id);
       rebuyGuard.confirmBuy(reservation.reservationId);
+      candidateRegistry.updateCandidateState(network, mint, 'BOUGHT');
       tradeRepository.recordTrade({
         id: `trade_${order.id}`,
         orderId: order.id,
@@ -215,9 +262,11 @@ export class TradingEngine {
         result: execResult,
       };
     } catch (err: any) {
+      hardenedApprovalStore.markInvalid(approval.approvalId, err?.message || 'UNCAUGHT_ERROR');
       const orderRecord = orderManager.getOrderById(order.id);
       if (orderRecord?.transactionSignature || orderRecord?.status === 'RECOVERY_REQUIRED') {
         console.warn(`[TradingEngine] Buy caught error but transaction signature exists (${orderRecord.transactionSignature}). Retaining reservation.`);
+        rebuyGuard.holdBuy(reservation.reservationId, orderRecord.transactionSignature, 'UNCAUGHT_ERROR');
         return {
           success: false,
           orderId: order.id,

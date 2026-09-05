@@ -57,11 +57,16 @@ export class ActivePositionMarketFeed {
       if (pos.mint) activeMap.set(pos.mint.toLowerCase(), pos);
     }
 
+    const mint = event.mint;
+    const now = Date.now();
+    const eventTime = event.timestamp || now;
+    const candidatePrice = event.price || 0;
+
     // Check direct mint or account keys
     const matchedPositions: Position[] = [];
 
-    if (event.mint && activeMap.has(event.mint)) {
-      matchedPositions.push(activeMap.get(event.mint)!);
+    if (mint && activeMap.has(mint)) {
+      matchedPositions.push(activeMap.get(mint)!);
     }
 
     if (event.accountKeys && event.accountKeys.length > 0) {
@@ -75,16 +80,22 @@ export class ActivePositionMarketFeed {
       }
     }
 
-    if (matchedPositions.length === 0) return;
+    if (matchedPositions.length === 0) {
+      if (mint) {
+        console.log(`[ACTIVE_POSITION_MARKET_EVENT_UNMATCHED] mint=${mint} price=${candidatePrice} timestamp=${eventTime}`);
+      }
+      return;
+    }
 
     for (const pos of matchedPositions) {
-      await this.processPositionUpdate(pos, event.price);
+      console.log(`[ACTIVE_POSITION_MARKET_EVENT] mint=${pos.mint} price=${candidatePrice} timestamp=${eventTime}`);
+      await this.processPositionUpdate(pos, candidatePrice);
     }
   }
 
   /**
    * Periodic active position poll (500ms interval).
-   * Ensures positions are continuously updated with fresh executable quote data.
+   * Ensures positions are periodically refreshed with executable valuation quotes in the background.
    */
   private async pollActivePositions(): Promise<void> {
     const openPositions = positionManager.getOpenPositions();
@@ -97,135 +108,89 @@ export class ActivePositionMarketFeed {
       const lastQuoteTime = pos.lastExecutableQuoteAt || 0;
       const lastQuery = this.lastPriceQueryTime.get(pos.mint) || 0;
 
-      // Poll if executable quote is older than 1000ms
-      if (now - lastQuoteTime >= 1000 && now - lastQuery >= 500) {
+      // Poll executable quote if older than 2000ms and last query was > 1000ms ago
+      if (now - lastQuoteTime >= 2000 && now - lastQuery >= 1000) {
         this.lastPriceQueryTime.set(pos.mint, now);
-        await this.processPositionUpdate(pos);
+        try {
+          const val = await positionValuationEngine.refreshExecutableQuote(pos);
+          if (val && val.currentPriceSol && val.executableValueSol) {
+            const tpThreshold = Number.isFinite(pos.tpPct) ? Math.abs(pos.tpPct) : 25;
+            const slThreshold = Number.isFinite(pos.slPct) ? -Math.abs(pos.slPct) : -15;
+            if (val.pnlPercent !== undefined && (val.pnlPercent >= tpThreshold || val.pnlPercent <= slThreshold)) {
+              await unifiedExitEngine.evaluateAndExecuteExit(pos, val.currentPriceSol, {
+                executableQuoteSol: val.executableValueSol,
+                quoteTimestamp: val.lastExecutableQuoteAt,
+              });
+            }
+          }
+        } catch (err: any) {
+          console.warn(`[ACTIVE_FEED_POLL_ERROR] mint=${pos.mint}: ${err?.message || err}`);
+        }
       }
     }
   }
 
   /**
-   * Calculates executable market price for an active position and routes immediately to UnifiedExitEngine.
-   * Priority:
-   * 1. Executable Jupiter SELL quote
-   * 2. Fresh WSS candidate price
-   * 3. Bonding curve price (if active and not migrated)
+   * Ingests candidate market price, updates live market valuation,
+   * checks if candidate crosses exit thresholds, and hands off to UnifiedExitEngine.
    */
   public async processPositionUpdate(position: Position, candidatePrice?: number): Promise<void> {
     const mint = position.mint;
     const now = Date.now();
-    const WSOL = 'So11111111111111111111111111111111111111112';
     if (!Number.isSafeInteger(position.tokenAmount) || position.tokenAmount <= 0) {
       console.error(`[EXIT_MONITOR_BLOCKED] reason=UNSAFE_RAW_AMOUNT mint=${mint} amount=${String(position.tokenAmount)}`);
       return;
     }
 
-    // 1. A market event is only a trigger/candidate. TP/SL can execute only after
-    //    a fresh executable SELL quote is obtained. This is the critical bridge that
-    //    was previously missing: the WSS candidate path updated PnL and returned, so
-    //    TP/SL never reached the authoritative exit engine.
-    const quoteAge = now - (position.lastExecutableQuoteAt || 0);
-    const candidatePnlPct = candidatePrice && candidatePrice > 0 && position.averageEntryPrice > 0
-      ? ((candidatePrice - position.averageEntryPrice) / position.averageEntryPrice) * 100
-      : undefined;
-    const tpThreshold = Number.isFinite(position.tpPct) ? Math.abs(position.tpPct) : 25;
-    const slThreshold = Number.isFinite(position.slPct) ? -Math.abs(position.slPct) : -15;
-    const thresholdCrossing = candidatePnlPct !== undefined &&
-      (candidatePnlPct >= tpThreshold || candidatePnlPct <= slThreshold);
-
-    // Quote on threshold-crossing WSS events immediately. Otherwise refresh at most
-    // every 750ms. This keeps TP/SL responsive without turning every WSS tick into a
-    // Jupiter request. The 500ms polling loop remains a fallback.
-    const shouldRefreshExecutableQuote =
-      !candidatePrice || candidatePrice <= 0 ||
-      quoteAge > 750 || thresholdCrossing;
-
-    if (shouldRefreshExecutableQuote) {
-      try {
-        const quote = await executionGateway.quoteSell({
-          inputMint: mint,
-          outputMint: WSOL,
-          amount: position.tokenAmount,
-          decimals: position.decimals !== undefined ? position.decimals : 9,
-          slippageBps: position.slippageBpsSl || 1000,
-          network: position.network,
-          walletAddress: position.wallet,
-        });
-
-        if (quote && quote.outAmount) {
-          const outLamports = BigInt(quote.outAmount);
-          const expectedOutSol = Number(outLamports) / 1e9;
-          const tokenQty = position.tokenAmount / (10 ** (position.decimals !== undefined ? position.decimals : 9));
-          const executablePriceSol = tokenQty > 0 ? expectedOutSol / tokenQty : 0;
-
-          if (executablePriceSol > 0) {
-            const updatedPos = positionManager.updatePositionPrice(
-              position.network,
-              position.wallet,
-              position.mint,
-              executablePriceSol,
-              { isFreshQuote: true, timestamp: now }
-            ) || position;
-
-            // Authoritative valuation update
-            await positionValuationEngine.refreshExecutableQuote(updatedPos);
-
-            await unifiedExitEngine.evaluateAndExecuteExit(updatedPos, executablePriceSol, {
-              executableQuoteSol: expectedOutSol,
-              quoteTimestamp: now,
-            });
-            return;
-          }
-        }
-      } catch (err: any) {
-        console.warn(`[EXIT_MONITOR_RETRY] reason=EXECUTABLE_QUOTE_UNAVAILABLE mint=${mint}: ${err?.message || err}`);
-        // Failed quote MUST NOT modify timestamps or overwrite prices with zero!
+    // Determine effective candidate price: candidatePrice, bonding curve, or last known price
+    let effectivePrice = candidatePrice;
+    if (!effectivePrice || effectivePrice <= 0) {
+      const bcState = bondingCurveFastLane.getState(mint);
+      if (bcState && bcState.priceSolPerToken > 0 && bcState.bondingProgressPct < 100) {
+        effectivePrice = bcState.priceSolPerToken;
+      } else {
+        effectivePrice = position.currentPriceSol;
       }
     }
 
-    // 2. Process candidate price if available
-    if (candidatePrice && candidatePrice > 0) {
-      const updatedPos = positionManager.updatePositionPrice(
-        position.network,
-        position.wallet,
-        position.mint,
-        candidatePrice,
-        { isMarketEvent: true, timestamp: now }
-      ) || position;
+    if (!effectivePrice || effectivePrice <= 0) return;
 
-      positionValuationEngine.updateFromMarketEvent(updatedPos, candidatePrice, now, 'WSS');
+    // 1. Update candidate market price and valuation immediately
+    const updatedPos = positionManager.updatePositionPrice(
+      position.network,
+      position.wallet,
+      position.mint,
+      effectivePrice,
+      { isMarketEvent: true, timestamp: now }
+    ) || position;
 
-      // Send market event to UnifiedExitEngine (which safely fetches an executable quote before any sell)
-      await unifiedExitEngine.evaluateAndExecuteExit(updatedPos, candidatePrice, {
-        quoteTimestamp: now,
-      });
-      return;
+    positionValuationEngine.updateFromMarketEvent(updatedPos, effectivePrice, now, 'WSS');
+
+    // 2. Check whether TP/SL or risk parameters might be crossed
+    const candidatePnlPct = updatedPos.averageEntryPrice > 0
+      ? ((effectivePrice - updatedPos.averageEntryPrice) / updatedPos.averageEntryPrice) * 100
+      : 0;
+    const tpThreshold = Number.isFinite(updatedPos.tpPct) ? Math.abs(updatedPos.tpPct) : 25;
+    const slThreshold = Number.isFinite(updatedPos.slPct) ? -Math.abs(updatedPos.slPct) : -15;
+    const isTriggerCandidate = candidatePnlPct >= tpThreshold || candidatePnlPct <= slThreshold;
+    const isTimeExpired = Boolean(updatedPos.maxHoldTimeMs && (now - updatedPos.openedAt >= updatedPos.maxHoldTimeMs));
+
+    // Trailing stop candidate check
+    let isTrailingTrigger = false;
+    if (updatedPos.highestPnlPct > 0) {
+      const dropFromPeak = updatedPos.highestPnlPct - candidatePnlPct;
+      const trailingDrop = Number.isFinite(updatedPos.trailingSlPct) ? Math.abs(updatedPos.trailingSlPct!) : 15;
+      if (dropFromPeak >= trailingDrop) {
+        isTrailingTrigger = true;
+      }
     }
 
-    // 3. Fallback to Bonding Curve Fast Lane if active and not complete (migrated)
-    const bcState = bondingCurveFastLane.getState(mint);
-    if (bcState && bcState.priceSolPerToken > 0 && bcState.bondingProgressPct < 100) {
-      const updatedPos = positionManager.updatePositionPrice(
-        position.network,
-        position.wallet,
-        position.mint,
-        bcState.priceSolPerToken,
-        { timestamp: now }
-      ) || position;
-
-      positionValuationEngine.updateFromMarketEvent(updatedPos, bcState.priceSolPerToken, now, 'WSS');
-
-      await unifiedExitEngine.evaluateAndExecuteExit(updatedPos, bcState.priceSolPerToken, {
-        quoteTimestamp: now,
-      });
-      return;
-    }
-
-    // 4. Stale price fallback evaluation - pass last known timestamp so freshness check can block stale triggers
-    if (position.currentPriceSol > 0) {
-      await unifiedExitEngine.evaluateAndExecuteExit(position, position.currentPriceSol, {
-        quoteTimestamp: position.lastExecutableQuoteAt || position.lastMarketPriceAt || 0,
+    // 3. If candidate crosses any exit threshold, hand off directly to UnifiedExitEngine.
+    // UnifiedExitEngine will acquire the atomic lock, fetch ONE fresh executable Jupiter quote,
+    // revalidate with executable proceeds, and execute atomically.
+    if (isTriggerCandidate || isTimeExpired || isTrailingTrigger) {
+      await unifiedExitEngine.evaluateAndExecuteExit(updatedPos, effectivePrice, {
+        maxDataAgeMs: 2000,
       });
     }
   }

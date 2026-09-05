@@ -12,8 +12,17 @@ export interface PositionValuation {
 
   currentPriceSol?: number;
 
+  // Executable Valuation (authoritative from Jupiter SELL quote)
   executableValueSol?: number;
+  executablePnlSol?: number;
+  executablePnlPercent?: number;
 
+  // Market Valuation (from real-time candidate price / WSS / LaserStream)
+  marketValueSol?: number;
+  marketPnlSol?: number;
+  marketPnlPercent?: number;
+
+  // General PnL (defaults to executable proceeds if available, else market proceeds)
   pnlSol?: number;
   pnlPercent?: number;
 
@@ -189,11 +198,21 @@ export class PositionValuationEngine {
     const entryCostSol = position.totalSolSpent > 0 ? position.totalSolSpent : 0;
     const averageEntryPriceSol = tokenQuantity > 0 && entryCostSol > 0 ? entryCostSol / tokenQuantity : position.averageEntryPrice;
 
-    // When no fresh Jupiter quote is active, compute executable market value from verified token balance
+    // Market valuation from real-time candidate price
     const currentPriceSol = priceSol;
-    const executableValueSol = tokenQuantity * currentPriceSol;
-    const pnlSol = executableValueSol - entryCostSol;
-    const pnlPercent = entryCostSol > 0 ? (pnlSol / entryCostSol) * 100 : 0;
+    const marketValueSol = tokenQuantity * currentPriceSol;
+    const marketPnlSol = marketValueSol - entryCostSol;
+    const marketPnlPercent = entryCostSol > 0 ? (marketPnlSol / entryCostSol) * 100 : 0;
+
+    // When a fresh market event arrives, it represents the latest live price state.
+    // Executable valuation scales with market value unless a newer quote exists.
+    const executableValueSol = marketValueSol;
+    const executablePnlSol = marketPnlSol;
+    const executablePnlPercent = marketPnlPercent;
+
+    // Authoritative live PnL is updated immediately from the fresh market event
+    const pnlSol = marketPnlSol;
+    const pnlPercent = marketPnlPercent;
 
     const currentSeq = (this.sequences.get(key) || 0) + 1;
     this.sequences.set(key, currentSeq);
@@ -204,7 +223,12 @@ export class PositionValuationEngine {
       tokenDecimals: decimals,
       entryCostSol,
       currentPriceSol,
+      marketValueSol,
+      marketPnlSol,
+      marketPnlPercent,
       executableValueSol,
+      executablePnlSol,
+      executablePnlPercent,
       pnlSol,
       pnlPercent,
       source,
@@ -305,18 +329,28 @@ export class PositionValuationEngine {
           const entryCostSol = position.totalSolSpent > 0 ? position.totalSolSpent : 0;
           const averageEntryPriceSol = tokenQuantity > 0 && entryCostSol > 0 ? entryCostSol / tokenQuantity : position.averageEntryPrice;
 
-          const pnlSol = executableValueSol - entryCostSol;
-          const pnlPercent = entryCostSol > 0 ? (pnlSol / entryCostSol) * 100 : 0;
+          const executablePnlSol = executableValueSol - entryCostSol;
+          const executablePnlPercent = entryCostSol > 0 ? (executablePnlSol / entryCostSol) * 100 : 0;
+
+          // Preserve market values from existing or candidate calculation
+          const marketValueSol = existing?.marketValueSol ?? (tokenQuantity * (existing?.currentPriceSol || currentPriceSol));
+          const marketPnlSol = existing?.marketPnlSol ?? (marketValueSol - entryCostSol);
+          const marketPnlPercent = entryCostSol > 0 ? (marketPnlSol / entryCostSol) * 100 : 0;
 
           const valuation: PositionValuation = {
             mint: position.mint,
             tokenAmountRaw: String(position.tokenAmount),
             tokenDecimals: decimals,
             entryCostSol,
-            currentPriceSol,
+            currentPriceSol: existing?.currentPriceSol || currentPriceSol,
+            marketValueSol,
+            marketPnlSol,
+            marketPnlPercent,
             executableValueSol,
-            pnlSol,
-            pnlPercent,
+            executablePnlSol,
+            executablePnlPercent,
+            pnlSol: executablePnlSol,
+            pnlPercent: executablePnlPercent,
             source: 'JUPITER',
             lastMarketEventAt: existing?.lastMarketEventAt,
             lastMarketPriceAt: existing?.lastMarketPriceAt,
@@ -388,16 +422,18 @@ export class PositionValuationEngine {
   }
 
   private logValuation(val: PositionValuation): void {
-    const sign = (val.pnlSol || 0) >= 0 ? '+' : '';
+    const mSign = (val.marketPnlSol || 0) >= 0 ? '+' : '';
+    const eSign = (val.executablePnlSol || 0) >= 0 ? '+' : '';
     console.log(
       `PNL VALUATION\n` +
       `Mint: ${val.mint}\n` +
       `Source: ${val.source}\n` +
       `Token Amount: ${val.tokenAmountRaw}\n` +
-      `Executable SOL Value: ${val.executableValueSol !== undefined ? val.executableValueSol.toFixed(4) + ' SOL' : 'UNAVAILABLE'}\n` +
+      `Market Price: ${val.currentPriceSol ? val.currentPriceSol.toFixed(8) + ' SOL' : 'N/A'}\n` +
+      `Market PnL: ${val.marketPnlSol !== undefined ? mSign + val.marketPnlSol.toFixed(4) + ' SOL (' + mSign + (val.marketPnlPercent?.toFixed(2) || '0.00') + '%)' : 'N/A'}\n` +
+      `Executable Proceeds: ${val.executableValueSol !== undefined ? val.executableValueSol.toFixed(4) + ' SOL' : 'UNAVAILABLE'}\n` +
+      `Executable PnL: ${val.executablePnlSol !== undefined ? eSign + val.executablePnlSol.toFixed(4) + ' SOL (' + eSign + (val.executablePnlPercent?.toFixed(2) || '0.00') + '%)' : 'N/A'}\n` +
       `Entry Cost: ${val.entryCostSol.toFixed(4)} SOL\n` +
-      `PnL: ${val.pnlSol !== undefined ? sign + val.pnlSol.toFixed(4) + ' SOL' : 'N/A'}\n` +
-      `PnL %: ${val.pnlPercent !== undefined ? sign + val.pnlPercent.toFixed(2) + '%' : 'N/A'}\n` +
       `Quote Age: ${val.quoteAgeMs !== undefined ? val.quoteAgeMs + ' ms' : 'N/A'}\n` +
       `Status: ${val.status}`
     );

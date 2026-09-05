@@ -25,6 +25,7 @@ const handleIngress = asyncHandler(async (req, res) => {
   const event: UnifiedMarketEvent = {
     eventId,
     correlationId,
+    chain: 'solana',
     source,
     mint: body.mint.trim(),
     signature: body.signature,

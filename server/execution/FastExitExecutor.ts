@@ -13,6 +13,7 @@ export interface FastExitParams {
   slippageBps: number;
   reason: string;
   clientRequestId: string;
+  preValidatedQuote?: any;
 }
 
 export class FastExitExecutor {
@@ -62,9 +63,9 @@ export class FastExitExecutor {
 
     console.log(`[FastExitExecutor] Created sell order=${order.id} for position=${params.positionId} mint=${params.mint}`);
 
-    // 2. Execute Order via standard orderManager
+    // 2. Execute Order via standard orderManager (reusing pre-validated quote if present)
     try {
-      const execResult = await orderManager.executeOrder(order.id);
+      const execResult = await orderManager.executeOrder(order.id, params.preValidatedQuote);
 
       if (!execResult.success) {
         if (execResult.isAmbiguous || execResult.signature || execResult.status === 'RECOVERY_REQUIRED') {

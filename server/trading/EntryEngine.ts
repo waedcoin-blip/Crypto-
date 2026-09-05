@@ -4,6 +4,7 @@ import { marketEventBus } from '../market/MarketEventBus.js';
 import { candidateEnricher, EnrichedCandidate } from './CandidateEnricher.js';
 import { opportunityScorer, OpportunityScoreBreakdown } from './OpportunityScorer.js';
 import { serverEntryGate, ServerEntryDecision } from './ServerEntryGate.js';
+import { hardenedCriteriaEngine } from './HardenedCriteriaEngine.js';
 import { tradingEngine, TradeEngineResponse } from './TradingEngine.js';
 import { entryDecisionLedger, EntryDiagnosticsReport } from './EntryDecisionLedger.js';
 import { criteriaRepository } from '../repositories/CriteriaRepository.js';
@@ -229,18 +230,24 @@ export class EntryEngine {
         activeCriteria = {};
       }
 
-      // 4. Evaluate Entry Gate
-      console.log(`[PIPELINE STAGE] ServerEntryGate EVALUATING mint=${mint}`);
-      const decision = await serverEntryGate.evaluateEntry({
-        candidate,
-        criteria: activeCriteria,
-        network,
-        wallet,
-        autoSniperEnabled: this.autoSniperEnabled,
-      });
+      // 4. Evaluate Entry Gate via Authoritative HardenedCriteriaEngine
+      console.log(`[PIPELINE STAGE] HardenedCriteriaEngine EVALUATING mint=${mint}`);
+      const evalResult = await hardenedCriteriaEngine.evaluateCandidate(candidate, { network, wallet, autoSniperEnabled: this.autoSniperEnabled });
 
-      console.log(`[${src} CRITERIA] mint=${mint} source=${src} correlationId=none timestamp=${Date.now()} reason="${decision.decision}"`);
-      console.log(`[PIPELINE STAGE] ServerEntryGate DECISION mint=${mint} allowed=${decision.allowed} score=${scoreBreakdown.totalScore}/100 blockingReasons=${JSON.stringify(decision.blockingReasons)}`);
+      const decision: ServerEntryDecision = {
+        candidateId: mint,
+        mintAddress: mint,
+        symbol: candidate.symbol,
+        decision: evalResult.decision === 'PASS' ? 'CRITERIA_PASSED' : 'CRITERIA_FAILED',
+        allowed: evalResult.decision === 'PASS' && !!evalResult.approval,
+        blockingReasons: evalResult.rejectionReasons,
+        buyAmountSol: evalResult.buyAmountSol,
+        confidenceScore: scoreBreakdown.totalScore,
+        evaluatedAt: Date.now(),
+      };
+
+      console.log(`[${src} CRITERIA] mint=${mint} source=${src} correlationId=none timestamp=${Date.now()} reason="${decision.decision}" approvalId=${evalResult.approval?.approvalId || 'none'}`);
+      console.log(`[PIPELINE STAGE] HardenedCriteriaEngine DECISION mint=${mint} allowed=${decision.allowed} score=${scoreBreakdown.totalScore}/100 blockingReasons=${JSON.stringify(decision.blockingReasons)}`);
 
       // 5. Record telemetry
       entryDecisionLedger.recordDecision(decision, scoreBreakdown, candidate.dataSource);
@@ -251,11 +258,11 @@ export class EntryEngine {
         `[ENTRY EVALUATION] mint=${mint} symbol=${candidate.symbol} score=${scoreBreakdown.totalScore}/100 decision=${decision.decision} reason="${decision.blockingReasons[0] || 'CRITERIA_PASSED'}" (src=${triggerSource})`
       );
 
-      // 6. Execute BUY if Entry Gate Passed
+      // 6. Execute BUY if Hardened Gate Passed and Issued Approval
       let tradeResponse: TradeEngineResponse | undefined;
       let finalStage: PipelineStage = decision.allowed ? 'BUY_SIGNAL' : 'REJECTED';
 
-      if (!decision.allowed) {
+      if (!decision.allowed || !evalResult.approval) {
         console.log(`[${src} BUY BLOCKED] mint=${mint} source=${src} correlationId=none timestamp=${Date.now()} reason="${decision.blockingReasons[0] || 'CRITERIA_FAILED'}"`);
         candidateRegistry.updateCandidateState(network, mint, 'REJECTED', {
           score: scoreBreakdown.totalScore,
@@ -263,7 +270,7 @@ export class EntryEngine {
         });
         sourceHealthMonitor.recordRejection(src, decision.blockingReasons[0]);
       } else {
-        console.log(`[${src} BUY AUTH] mint=${mint} source=${src} correlationId=none timestamp=${Date.now()} reason="Entry gate passed with score ${scoreBreakdown.totalScore}"`);
+        console.log(`[${src} BUY AUTH] mint=${mint} source=${src} correlationId=none timestamp=${Date.now()} reason="Hardened gate passed; approval=${evalResult.approval.approvalId}"`);
         candidateRegistry.updateCandidateState(network, mint, 'BUY_AUTHORIZED', {
           score: scoreBreakdown.totalScore,
         });
@@ -311,7 +318,7 @@ export class EntryEngine {
         candidateRegistry.updateCandidateState(network, mint, 'BUYING');
         sourceHealthMonitor.recordBuyAttempt(src);
 
-        console.log(`[PIPELINE STAGE] TradingEngine.buy() ATTEMPT mint=${mint} amountSol=${decision.buyAmountSol}`);
+        console.log(`[PIPELINE STAGE] TradingEngine.buy() ATTEMPT mint=${mint} amountSol=${decision.buyAmountSol} approvalId=${evalResult.approval.approvalId}`);
         tradeResponse = await tradingEngine.buy({
           network,
           wallet,
@@ -324,6 +331,7 @@ export class EntryEngine {
           label: `entry_engine_${triggerSource.toLowerCase()}`,
           tpPct: activeCriteria.minTakeProfit ?? 25,
           slPct: activeCriteria.stopLoss ? Math.abs(activeCriteria.stopLoss) : 15,
+          approval: evalResult.approval,
         });
 
         entryDecisionLedger.recordBuyAttempt({

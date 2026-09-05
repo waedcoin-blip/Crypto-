@@ -6,6 +6,11 @@ import { fastExitExecutor } from '../execution/FastExitExecutor.js';
 import { positionRepository } from '../repositories/PositionRepository.js';
 import { activePositionMarketFeed } from '../market/ActivePositionMarketFeed.js';
 import { executionGateway } from '../execution/ExecutionGateway.js';
+import { ExitPreCheckResult } from '../types/index.js';
+import { positionValuationEngine } from './PositionValuationEngine.js';
+import { rebuyGuard } from './RebuyGuard.js';
+import { hardenedApprovalStore } from './HardenedApprovalStore.js';
+import { candidateRegistry } from '../market/CandidateRegistry.js';
 
 export interface ExitConfig {
   takeProfitPercent: number;
@@ -80,7 +85,7 @@ export class UnifiedExitEngine {
    * Atomic lock acquisition to protect against duplicate sell pipelines
    */
   public acquireExitLock(network: string, wallet: string, mint: string): boolean {
-    const lockKey = `${network}:${wallet}:${mint.toLowerCase()}`;
+    const lockKey = positionManager.getPositionKey(network, wallet, mint);
     if (this.exitLocks.has(lockKey)) {
       return false;
     }
@@ -89,7 +94,7 @@ export class UnifiedExitEngine {
   }
 
   public releaseExitLock(network: string, wallet: string, mint: string): void {
-    const lockKey = `${network}:${wallet}:${mint.toLowerCase()}`;
+    const lockKey = positionManager.getPositionKey(network, wallet, mint);
     this.exitLocks.delete(lockKey);
   }
 
@@ -217,9 +222,9 @@ export class UnifiedExitEngine {
       maxDataAgeMs?: number;
     } = {}
   ): Promise<boolean> {
-    const lockKey = `${position.network}:${position.wallet}:${position.mint.toLowerCase()}`;
-    if (this.exitLocks.has(lockKey)) {
-      return false; // Exit process already ongoing
+    const lockKey = positionManager.getPositionKey(position.network, position.wallet, position.mint);
+    if (this.exitLocks.has(lockKey) || position.status !== 'OPEN') {
+      return false; // Exit process already ongoing or position not open
     }
 
     if (priceSol > 0) {
@@ -239,6 +244,12 @@ export class UnifiedExitEngine {
       return false;
     }
 
+    // Acquire atomic lock immediately across evaluation, quoting, revalidation, and execution!
+    // This ensures simultaneous WSS events drop immediately and cannot generate duplicate quotes or parallel sells.
+    if (!this.acquireExitLock(position.network, position.wallet, position.mint)) {
+      return false;
+    }
+
     // Automatic exits MUST be backed by a fresh executable quote.
     // A WSS/display price is only a trigger candidate and can never authorize a sell.
     let executableQuoteSol = opts.executableQuoteSol;
@@ -246,6 +257,7 @@ export class UnifiedExitEngine {
     const now = Date.now();
     const maxAge = opts.maxDataAgeMs ?? 2000;
     const isFreshQuote = executableQuoteSol !== undefined && quoteTimestamp !== undefined && (now - quoteTimestamp <= maxAge);
+    let preValidatedQuote: any = undefined;
 
     if (decision.reason !== 'MANUAL_EXIT' && !isFreshQuote) {
       console.log(`[TP/SL] REQUEST_EXECUTABLE_QUOTE mint=${position.mint} rawAmount=${position.tokenAmount}`);
@@ -264,17 +276,20 @@ export class UnifiedExitEngine {
 
         if (!quote || !quote.outAmount) {
           console.warn(`[TP/SL] QUOTE_REJECTED mint=${position.mint} reason=EMPTY_QUOTE`);
+          this.releaseExitLock(position.network, position.wallet, position.mint);
           return false;
         }
 
         const outLamports = BigInt(quote.outAmount);
         if (outLamports <= 0n) {
           console.warn(`[TP/SL] QUOTE_REJECTED mint=${position.mint} reason=NON_POSITIVE_OUT_AMOUNT`);
+          this.releaseExitLock(position.network, position.wallet, position.mint);
           return false;
         }
 
         executableQuoteSol = Number(outLamports) / 1e9;
         quoteTimestamp = Date.now();
+        preValidatedQuote = quote;
 
         // Re-evaluate with the fresh executable quote
         const recheckDecision = await this.evaluatePositionExit(position, priceSol, {
@@ -284,13 +299,15 @@ export class UnifiedExitEngine {
         });
 
         if (!recheckDecision.shouldExit) {
-          console.warn(`[TP/SL] QUOTE_REJECTED mint=${position.mint} reason=THRESHOLD_NOT_MET_AFTER_QUOTE`);
+          console.warn(`[TP/SL] QUOTE_REJECTED mint=${position.mint} reason=THRESHOLD_NOT_MET_AFTER_QUOTE candidate=${decision.reason} executableProceeds=${executableQuoteSol} SOL`);
+          this.releaseExitLock(position.network, position.wallet, position.mint);
           return false;
         }
 
         decision = recheckDecision;
       } catch (err: any) {
         console.warn(`[TP/SL] QUOTE_REJECTED mint=${position.mint} reason=${err?.message || err}`);
+        this.releaseExitLock(position.network, position.wallet, position.mint);
         return false;
       }
     }
@@ -299,16 +316,132 @@ export class UnifiedExitEngine {
     const currentPos = positionManager.getPositionById(position.id);
     if (!currentPos || currentPos.status !== 'OPEN') {
       console.warn(`[TP/SL] REJECTED mint=${position.mint} reason=POSITION_NOT_OPEN status=${currentPos?.status}`);
+      this.releaseExitLock(position.network, position.wallet, position.mint);
       return false;
     }
 
-    // Acquire atomic lock
-    if (!this.acquireExitLock(position.network, position.wallet, position.mint)) {
-      return false;
-    }
-
-    const res = await this.authorizeAndExecuteWithRetry(position, decision.reason, decision.message || '', 3);
+    const res = await this.authorizeAndExecuteWithRetry(position, decision.reason, decision.message || '', 3, preValidatedQuote);
     return res.success;
+  }
+
+  /**
+   * Mandatory Exit Pre-Check enforcing:
+   * «NO SELL MAY REACH EXECUTION WITHOUT A FRESH EXECUTABLE Exit Pre-Check.»
+   */
+  public async performExitPreCheck(
+    position: Position,
+    opts: {
+      executableQuoteSol?: number;
+      quoteTimestamp?: number;
+      maxDataAgeMs?: number;
+      preValidatedQuote?: any;
+    } = {}
+  ): Promise<ExitPreCheckResult> {
+    const now = Date.now();
+    const mint = position.mint.trim();
+
+    // 1. Position Status Check
+    if (position.status !== 'OPEN' && position.status !== 'EXIT_PENDING') {
+      return {
+        valid: false,
+        mint,
+        marketPriceSol: position.currentPriceSol || 0,
+        executablePriceSol: 0,
+        priceDivergencePct: 0,
+        routeAvailable: false,
+        rawBalance: position.tokenAmount,
+        reason: `POSITION_STATUS_INVALID: Position status is ${position.status}, must be OPEN`,
+        timestamp: now,
+      };
+    }
+
+    // 2. Token Raw Balance Validation
+    if (!Number.isSafeInteger(position.tokenAmount) || position.tokenAmount <= 0) {
+      return {
+        valid: false,
+        mint,
+        marketPriceSol: position.currentPriceSol || 0,
+        executablePriceSol: 0,
+        priceDivergencePct: 0,
+        routeAvailable: false,
+        rawBalance: position.tokenAmount,
+        reason: `INVALID_RAW_AMOUNT: Balance ${position.tokenAmount} must be positive safe integer`,
+        timestamp: now,
+      };
+    }
+
+    // 3. Fresh Executable Quote & Route Check
+    let quote = opts.preValidatedQuote;
+    let executableSol = opts.executableQuoteSol;
+
+    if (!quote || executableSol === undefined) {
+      try {
+        const WSOL = 'So11111111111111111111111111111111111111112';
+        quote = await executionGateway.quoteSell({
+          inputMint: mint,
+          outputMint: WSOL,
+          amount: position.tokenAmount,
+          decimals: position.decimals !== undefined ? position.decimals : 9,
+          slippageBps: position.slippageBpsSl || 500,
+          network: position.network,
+          walletAddress: position.wallet,
+        });
+
+        if (!quote || !quote.outAmount || BigInt(quote.outAmount) <= 0n) {
+          return {
+            valid: false,
+            mint,
+            marketPriceSol: position.currentPriceSol || 0,
+            executablePriceSol: 0,
+            priceDivergencePct: 0,
+            routeAvailable: false,
+            rawBalance: position.tokenAmount,
+            reason: 'NO_EXECUTABLE_ROUTE: Jupiter returned empty quote or zero output lamports',
+            timestamp: now,
+          };
+        }
+        executableSol = Number(BigInt(quote.outAmount)) / 1e9;
+      } catch (err: any) {
+        return {
+          valid: false,
+          mint,
+          marketPriceSol: position.currentPriceSol || 0,
+          executablePriceSol: 0,
+          priceDivergencePct: 0,
+          routeAvailable: false,
+          rawBalance: position.tokenAmount,
+          reason: `QUOTE_REQUEST_FAILED: ${err?.message || err}`,
+          timestamp: now,
+        };
+      }
+    }
+
+    // 4. Calculate Executable Price per whole token
+    const tokenWhole = position.tokenAmount / Math.pow(10, position.decimals || 9);
+    const executablePriceSol = tokenWhole > 0 ? executableSol / tokenWhole : 0;
+    const marketPriceSol = position.currentPriceSol || executablePriceSol;
+
+    // 5. Price Divergence Check
+    let divergencePct = 0;
+    if (marketPriceSol > 0 && executablePriceSol > 0) {
+      divergencePct = Math.abs((marketPriceSol - executablePriceSol) / marketPriceSol) * 100;
+    }
+
+    console.log(
+      `[EXIT_PRE_CHECK_PASSED] mint=${mint} rawAmount=${position.tokenAmount} executableSol=${executableSol.toFixed(4)} marketPrice=${marketPriceSol.toFixed(8)} execPrice=${executablePriceSol.toFixed(8)} divergence=${divergencePct.toFixed(1)}%`
+    );
+
+    return {
+      valid: true,
+      mint,
+      marketPriceSol,
+      executablePriceSol,
+      priceDivergencePct: divergencePct,
+      routeAvailable: true,
+      rawBalance: position.tokenAmount,
+      quote,
+      timestamp: now,
+    };
   }
 
   /**
@@ -318,10 +451,23 @@ export class UnifiedExitEngine {
     position: Position,
     reason: string,
     message: string,
-    maxRetries: number = 3
+    maxRetries: number = 3,
+    preValidatedQuote?: any
   ): Promise<{ success: boolean; signature?: string; error?: string; result?: any }> {
     const startTime = Date.now();
     console.log(`[UnifiedExitEngine] [EXIT_AUTHORIZED] position=${position.id} mint=${position.mint} reason=${reason}: ${message}`);
+
+    // Mandatory Invariant: Exit Pre-Check must pass before execution
+    const preCheck = await this.performExitPreCheck(position, { preValidatedQuote });
+    if (!preCheck.valid) {
+      console.warn(`[EXIT_PRE_CHECK_FAILED] position=${position.id} mint=${position.mint} reason=${preCheck.reason}`);
+      this.recordAuditTrail(position.id, position.mint, 'SELL_FAILED', reason, `Exit Pre-Check Failed: ${preCheck.reason}`);
+      this.releaseExitLock(position.network, position.wallet, position.mint);
+      return {
+        success: false,
+        error: `EXIT_PRE_CHECK_FAILED: ${preCheck.reason}`,
+      };
+    }
 
     // Update position status to EXIT_PENDING to lock out duplicate triggers
     positionManager.updatePositionStatus(position.network, position.wallet, position.mint, 'EXIT_PENDING');
@@ -355,6 +501,7 @@ export class UnifiedExitEngine {
           slippageBps,
           reason,
           clientRequestId: `exit_${position.mint.slice(0, 8)}_${Date.now()}_att${attempt}`,
+          preValidatedQuote: attempt === 1 ? (preCheck.quote || preValidatedQuote) : undefined,
         });
         lastResult = result;
 
@@ -384,6 +531,12 @@ export class UnifiedExitEngine {
             `[POSITION_CLOSED] Position closed authoritatively. Realized PnL: ${result.netProceedsSol !== undefined ? (result.netProceedsSol - position.totalSolSpent).toFixed(4) : 0} SOL.`,
             { netProceedsSol: result.netProceedsSol }
           );
+
+          // Post-close RAM and subscriber cleanup
+          positionValuationEngine.removeValuation(position.network, position.wallet, position.mint);
+          rebuyGuard.releaseAllForMint(position.network, position.wallet, position.mint);
+          hardenedApprovalStore.cleanupForMint('solana', position.mint);
+          candidateRegistry.updateCandidateState(position.network, position.mint, 'EXPIRED');
 
           this.releaseExitLock(position.network, position.wallet, position.mint);
           return { success: true, signature: result.signature, result };

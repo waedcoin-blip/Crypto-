@@ -166,6 +166,7 @@ async function runTestSuite() {
   console.log(`  ✔ Yellowstone telemetry active for ${telemetry.network}`);
 
   console.log('\n🎉 ALL REFACTORED ARCHITECTURE V90.23 TESTS PASSED SUCCESSFULLY! ✅');
+  process.exit(0);
 }
 
 runTestSuite().catch((err) => {

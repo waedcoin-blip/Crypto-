@@ -51,6 +51,7 @@ export class CanonicalEventNormalizer {
     return {
       eventId,
       correlationId,
+      chain: 'solana',
       source: 'PULSE_FEED',
       mint,
       signature,
@@ -59,7 +60,9 @@ export class CanonicalEventNormalizer {
       eventType: side === 'BUY' ? 'BUY' : 'SELL',
       side,
       tokenAmount: tradePayload.tokenAmount ? String(tradePayload.tokenAmount) : undefined,
+      tokenAmountRaw: tradePayload.tokenAmount ? String(tradePayload.tokenAmount) : undefined,
       solAmount,
+      solAmountRaw: solAmount,
       priceSol,
       buyer: side === 'BUY' ? (tradePayload.fromAccount || tradePayload.buyer || tradePayload.wallet) : undefined,
       seller: side === 'SELL' ? (tradePayload.fromAccount || tradePayload.seller || tradePayload.wallet) : undefined,
@@ -95,7 +98,7 @@ export class CanonicalEventNormalizer {
     }
 
     const now = Date.now();
-    const eventType: MarketEventType = params.isCreate ? 'TOKEN_DISCOVERED' : 'BONDING_TRADE';
+    const eventType = params.isCreate ? 'TOKEN_DISCOVERED' : 'BONDING_TRADE';
     const side = params.isBuy ? 'BUY' : 'SELL';
     const eventId = this.generateEventId('PUMP_FUN', mint, params.signature, params.slot, eventType);
     const correlationId = this.generateCorrelationId('PUMP_FUN', mint);
@@ -103,6 +106,7 @@ export class CanonicalEventNormalizer {
     return {
       eventId,
       correlationId,
+      chain: 'solana',
       source: 'PUMP_FUN',
       mint,
       signature: params.signature,
@@ -111,7 +115,9 @@ export class CanonicalEventNormalizer {
       eventType,
       side: params.isCreate ? undefined : side,
       tokenAmount: params.tokenAmount,
+      tokenAmountRaw: params.tokenAmount,
       solAmount: params.solAmount,
+      solAmountRaw: params.solAmount,
       priceSol: params.priceSol,
       buyer: side === 'BUY' ? params.trader : undefined,
       seller: side === 'SELL' ? params.trader : undefined,
@@ -144,6 +150,7 @@ export class CanonicalEventNormalizer {
     return {
       eventId,
       correlationId,
+      chain: 'solana',
       source: 'DEXSCREENER',
       mint,
       signature: pair.pairAddress,
@@ -155,6 +162,58 @@ export class CanonicalEventNormalizer {
       pool: pair.pairAddress,
       protocol: pair.dexId,
       raw: pair,
+      network,
+    };
+  }
+
+  /**
+   * Normalizes LaserStream or Helius WSS transaction event.
+   */
+  public static normalizeLaserStreamEvent(
+    params: {
+      source: 'LASERSTREAM' | 'HELIUS_WSS' | 'HELIUS_GRPC';
+      mint: string;
+      pool?: string;
+      signature?: string;
+      slot?: number;
+      priceSol?: number;
+      tokenAmount?: string;
+      solAmount?: string;
+      side?: 'BUY' | 'SELL';
+      eventType?: string;
+      protocol?: string;
+      raw?: unknown;
+    },
+    network: string = 'mainnet'
+  ): UnifiedMarketEvent | null {
+    const mint = (params.mint || '').trim();
+    if (!mint || !tokenMintResolver.isValidPublicKey(mint)) return null;
+
+    const now = Date.now();
+    const eventType = params.eventType || (params.side ? params.side : 'TRADE');
+    const eventId = this.generateEventId(params.source, mint, params.signature, params.slot, eventType);
+    const correlationId = this.generateCorrelationId(params.source, mint);
+
+    return {
+      eventId,
+      correlationId,
+      chain: 'solana',
+      source: params.source,
+      mint,
+      pool: params.pool,
+      signature: params.signature,
+      slot: params.slot,
+      timestamp: now,
+      eventType,
+      side: params.side,
+      tokenAmount: params.tokenAmount,
+      tokenAmountRaw: params.tokenAmount,
+      solAmount: params.solAmount,
+      solAmountRaw: params.solAmount,
+      priceSol: params.priceSol,
+      protocol: params.protocol,
+      confidence: 1.0,
+      raw: params.raw,
       network,
     };
   }

@@ -64,24 +64,26 @@ export class CandidateRegistry {
     let candidate = this.candidates.get(key);
 
     if (!candidate) {
+      const src = event.source as EventSource;
       isNewCandidate = true;
       candidate = {
         mint: event.mint,
         network,
         symbol: event.symbol || event.mint.slice(0, 6).toUpperCase(),
-        firstDiscoveredSource: event.source,
-        sources: [event.source],
+        firstDiscoveredSource: src,
+        sources: [src],
         firstDiscoveredAt: now,
         lastEventAt: now,
         state: 'DISCOVERED',
         correlationId: event.correlationId || `corr_${event.source.toLowerCase()}_${event.mint.slice(0, 8)}_${now}`,
       };
       this.candidates.set(key, candidate);
-      sourceHealthMonitor.recordCandidate(event.source);
+      sourceHealthMonitor.recordCandidate(src);
     } else {
+      const src = event.source as EventSource;
       candidate.lastEventAt = now;
-      if (!candidate.sources.includes(event.source)) {
-        candidate.sources.push(event.source);
+      if (!candidate.sources.includes(src)) {
+        candidate.sources.push(src);
       }
       if (event.symbol && (!candidate.symbol || candidate.symbol.startsWith('0x') || candidate.symbol.length > 10)) {
         candidate.symbol = event.symbol;

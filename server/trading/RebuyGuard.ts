@@ -47,40 +47,61 @@ export class RebuyGuard {
 
   /**
    * Check if a BUY is permitted under the RebuyGuard rules.
-   * maxRebuyTimes semantics:
-   *   maxRebuyTimes = 0 -> 1 total buy (initial buy only, 0 rebuys)
-   *   maxRebuyTimes = 1 -> 2 total buys (1 initial buy + 1 rebuy)
-   *   maxRebuyTimes = N -> (1 + N) total buys
+   * Accepts either an object or positional arguments (network, wallet, mint).
    */
-  public canBuy(params: {
-    network: string;
-    wallet: string;
-    mint: string;
-    maxRebuyTimes?: number;
-    tradeOnlyOnce?: boolean;
-  }): { allowed: boolean; reason: string } {
-    const key = this.getGuardKey(params.network, params.wallet, params.mint);
+  public canBuy(
+    paramsOrNetwork:
+      | {
+          network: string;
+          wallet: string;
+          mint: string;
+          maxRebuyTimes?: number;
+          tradeOnlyOnce?: boolean;
+        }
+      | string,
+    walletArg?: string,
+    mintArg?: string
+  ): { allowed: boolean; reason: string } {
+    let network: string;
+    let wallet: string;
+    let mint: string;
+    let maxRebuyTimes: number | undefined;
+    let tradeOnlyOnce: boolean | undefined;
 
-    // 1. Check if reservation currently active
+    if (typeof paramsOrNetwork === 'string') {
+      network = paramsOrNetwork;
+      wallet = walletArg || 'default';
+      mint = mintArg || '';
+    } else {
+      network = paramsOrNetwork.network;
+      wallet = paramsOrNetwork.wallet;
+      mint = paramsOrNetwork.mint;
+      maxRebuyTimes = paramsOrNetwork.maxRebuyTimes;
+      tradeOnlyOnce = paramsOrNetwork.tradeOnlyOnce;
+    }
+
+    const key = this.getGuardKey(network, wallet, mint);
+
+    // 1. Check if reservation currently active or on HOLD
     if (this.reservedKeys.has(key)) {
-      return { allowed: false, reason: 'BUY_RESERVATION_ACTIVE: A buy transaction is already pending for this mint' };
+      return { allowed: false, reason: 'BUY_RESERVATION_ACTIVE: A buy transaction is already pending or held for this mint' };
     }
 
     // 2. Check position status
-    const existingPosition = positionManager.getPosition(params.network, params.wallet, params.mint);
+    const existingPosition = positionManager.getPosition(network, wallet, mint);
     if (existingPosition && existingPosition.status === 'BUY_PENDING') {
       return { allowed: false, reason: 'POSITION_BUY_PENDING: Position is currently buying' };
     }
 
     // 3. Rebuy count check
-    const maxRebuys = Math.max(0, Math.floor(Number(params.maxRebuyTimes ?? 1)));
-    const maxTotalBuys = params.tradeOnlyOnce ? 1 : 1 + maxRebuys;
-    const currentCompleted = this.getCompletedBuyCount(params.network, params.wallet, params.mint);
+    const maxRebuys = Math.max(0, Math.floor(Number(maxRebuyTimes ?? 1)));
+    const maxTotalBuys = tradeOnlyOnce ? 1 : 1 + maxRebuys;
+    const currentCompleted = this.getCompletedBuyCount(network, wallet, mint);
 
     if (currentCompleted >= maxTotalBuys) {
       return {
         allowed: false,
-        reason: params.tradeOnlyOnce
+        reason: tradeOnlyOnce
           ? `TRADE_ONLY_ONCE: Completed ${currentCompleted}/${maxTotalBuys} total buys`
           : `REBUY_LIMIT_REACHED: Completed ${currentCompleted}/${maxTotalBuys} total buys (maxRebuyTimes: ${maxRebuys})`,
       };
@@ -149,6 +170,31 @@ export class RebuyGuard {
     this.completedBuyCounts.set(key, current + 1);
 
     this.releaseBuy(reservationId);
+  }
+
+  /**
+   * Puts reservation on HOLD for unknown transaction status (timeout or ambiguous broadcast).
+   * Does NOT release the reservation and flags manual reconciliation required.
+   */
+  public holdBuy(reservationId: string, signature?: string, reason?: string): void {
+    const res = this.pendingReservations.get(reservationId);
+    if (!res) return;
+    console.warn(
+      `[REBUY_GUARD_HELD] reservationId=${reservationId} mint=${res.mint} sig=${signature || 'none'} reason=${reason || 'UNKNOWN_STATUS'}. Reservation retained to prevent duplicate spend.`
+    );
+    // Keep in pendingReservations and reservedKeys so canBuy remains false!
+  }
+
+  /**
+   * Clean up all locks and reservations for a mint (e.g. when position is closed).
+   */
+  public releaseAllForMint(network: string, wallet: string, mint: string): void {
+    const key = this.getGuardKey(network, wallet, mint);
+    const resId = this.reservedKeys.get(key);
+    if (resId) {
+      this.pendingReservations.delete(resId);
+      this.reservedKeys.delete(key);
+    }
   }
 
   public resetBuyCount(network: string, wallet: string, mint: string): void {

@@ -7,6 +7,7 @@ export interface QuoteParams {
   slippageBps?: number;
   decimals?: number;
   userPublicKey?: string;
+  walletAddress?: string;
   network?: string;
 }
 

@@ -136,6 +136,33 @@ router.get('/positions', asyncHandler(async (req, res) => {
   });
 }));
 
+// POST /api/trading/positions/tpsl
+router.post('/positions/tpsl', asyncHandler(async (req, res) => {
+  const { mint, tpPct, slPct, trailingSlPct, network, wallet } = req.body;
+  if (!mint) {
+    return res.status(400).json({ status: 'error', error: 'mint is required' });
+  }
+
+  const updated = positionManager.updatePositionTpSl(
+    network,
+    wallet,
+    mint,
+    tpPct !== undefined ? Number(tpPct) : undefined,
+    slPct !== undefined ? Number(slPct) : undefined,
+    trailingSlPct !== undefined ? Number(trailingSlPct) : undefined
+  );
+
+  if (!updated) {
+    return res.status(404).json({ status: 'error', error: `Position for ${mint} not found or already closed` });
+  }
+
+  res.json({
+    status: 'success',
+    position: updated,
+    timestamp: Date.now(),
+  });
+}));
+
 // GET /api/trading/valuations
 router.get('/valuations', asyncHandler(async (req, res) => {
   const valuations = positionValuationEngine.getAllValuations();
@@ -298,6 +325,7 @@ router.post('/pipeline/ingress', asyncHandler(async (req, res) => {
   const event: UnifiedMarketEvent = {
     eventId: body.eventId || CanonicalEventNormalizer.generateEventId(source, body.mint, body.signature, body.slot, body.eventType),
     correlationId: body.correlationId || CanonicalEventNormalizer.generateCorrelationId(source, body.mint),
+    chain: 'solana',
     source,
     mint: body.mint.trim(),
     signature: body.signature,

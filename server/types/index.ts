@@ -195,28 +195,89 @@ export type MarketEventType =
   | 'ACCOUNT_UPDATE'
   | 'SLOT_UPDATE';
 
+export interface MintIdentity {
+  chain: 'solana';
+  mint: string;
+}
+
+export interface MarketIdentity {
+  chain: 'solana';
+  mint: string;
+  pool: string;
+}
+
 export interface UnifiedMarketEvent {
   eventId: string;
   correlationId: string;
-  source: EventSource;
+  chain: 'solana';
+  source: string;
   mint: string;
+  pool?: string;
   signature?: string;
   slot?: number;
   timestamp: number;
-  eventType: MarketEventType;
+  eventType: string;
   side?: 'BUY' | 'SELL';
+  tokenAmountRaw?: bigint | string;
+  solAmountRaw?: bigint | string;
   tokenAmount?: string;
   solAmount?: string;
   priceSol?: number;
   buyer?: string;
   seller?: string;
   confidence?: number;
-  raw?: any;
-  pool?: string;
+  raw?: unknown;
   network?: string;
   accountKeys?: string[];
   protocol?: string;
   symbol?: string;
+}
+
+export type HardenedDecision = 'PASS' | 'FAIL' | 'UNKNOWN';
+
+export interface HardenedCriterionResult {
+  ruleId: string;
+  name: string;
+  passed: boolean;
+  score?: number;
+  observedValue?: any;
+  threshold?: any;
+  reason?: string;
+  status: HardenedDecision;
+}
+
+export interface HardenedApproval {
+  approvalId: string;
+  chain: 'solana';
+  mint: string;
+  pool?: string;
+  criteriaVersion: string;
+  evaluatedAt: number;
+  evaluatedSlot: number;
+  evaluationPrice: number;
+  maxSlotLag: number;
+  maxPriceDeviationPct: number;
+  expiresAt: number;
+  checks: HardenedCriterionResult[];
+  decisionHash: string;
+  correlationId: string;
+  state: 'ISSUED' | 'CONSUMING' | 'CONSUMED' | 'EXPIRED' | 'INVALID';
+  consumedAt?: number;
+  consumedByOrderId?: string;
+}
+
+export interface ExitPreCheckResult {
+  valid: boolean;
+  mint: string;
+  pool?: string;
+  marketPriceSol: number;
+  executablePriceSol: number;
+  priceDivergencePct: number;
+  routeAvailable: boolean;
+  rawBalance: number | bigint | string;
+  quote?: any;
+  reason?: string;
+  timestamp: number;
 }
 
 export type CandidateLifecycleState =

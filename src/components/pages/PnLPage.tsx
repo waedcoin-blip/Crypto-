@@ -162,7 +162,12 @@ interface Position {
   // Authoritative server valuation fields
   entryCostSol?: number;
   currentPriceSol?: number;
+  marketValueSol?: number;
+  marketPnlSol?: number;
+  marketPnlPercent?: number;
   executableValueSol?: number;
+  executablePnlSol?: number;
+  executablePnlPercent?: number;
   pnlSol?: number;
   pnlPercent?: number;
   source?: string;
@@ -2104,41 +2109,55 @@ export const PnLPage = ({
             const mapped: Record<string, Position> = {};
             const valuations = posData.valuations || {};
             for (const p of posData.openPositions) {
-              const mint = p.mintAddress || p.id;
-              const val = valuations[mint] || valuations[p.id];
-              const decimals = p.decimals !== undefined ? p.decimals : (val?.tokenDecimals !== undefined ? val.tokenDecimals : 0);
-              const amount = p.amountRaw ? Number(p.amountRaw) / (10 ** decimals) : 0;
-              const entryCostSol = val?.entryCostSol ?? p.solSpent ?? 0;
-              const currentPriceSol = val?.currentPriceSol ?? p.currentPriceSOL ?? p.entryPriceSOL ?? 0;
-              const executableValueSol = amount > 0 && currentPriceSol > 0 ? amount * currentPriceSol : (val?.executableValueSol ?? 0);
-              const pnlSol = entryCostSol > 0 ? executableValueSol - entryCostSol : (val?.pnlSol ?? 0);
-              const pnlPercent = entryCostSol > 0 ? (pnlSol / entryCostSol) * 100 : (val?.pnlPercent ?? 0);
+              const mint = p.mint || p.mintAddress || p.id;
+              const val = valuations[mint] || valuations[p.mint] || valuations[p.id];
+              const decimals = p.decimals !== undefined ? p.decimals : (val?.tokenDecimals !== undefined ? val.tokenDecimals : 9);
+              const rawAmount = p.tokenAmount !== undefined ? p.tokenAmount : (p.amountRaw ? Number(p.amountRaw) : 0);
+              const amount = decimals > 0 ? rawAmount / (10 ** decimals) : rawAmount;
+              const entryCostSol = val?.entryCostSol ?? p.totalSolSpent ?? p.solSpent ?? 0;
+              const currentPriceSol = val?.currentPriceSol ?? p.currentPriceSol ?? p.currentPriceSOL ?? p.entryPriceSOL ?? 0;
+              
+              const marketValueSol = val?.marketValueSol ?? (amount > 0 && currentPriceSol > 0 ? amount * currentPriceSol : 0);
+              const marketPnlSol = val?.marketPnlSol ?? (entryCostSol > 0 ? marketValueSol - entryCostSol : 0);
+              const marketPnlPercent = val?.marketPnlPercent ?? (entryCostSol > 0 ? (marketPnlSol / entryCostSol) * 100 : 0);
+
+              const executableValueSol = val?.executableValueSol ?? marketValueSol;
+              const executablePnlSol = val?.executablePnlSol ?? val?.pnlSol ?? (entryCostSol > 0 ? executableValueSol - entryCostSol : 0);
+              const executablePnlPercent = val?.executablePnlPercent ?? val?.pnlPercent ?? (entryCostSol > 0 ? (executablePnlSol / entryCostSol) * 100 : 0);
 
               mapped[mint] = {
-                symbol: p.mintAddress ? p.mintAddress.slice(0, 6) : 'TOKEN',
-                buyPrice: p.entryPriceSOL || 0,
+                symbol: p.mintAddress ? p.mintAddress.slice(0, 6) : (p.mint ? p.mint.slice(0, 6) : 'TOKEN'),
+                buyPrice: p.averageEntryPrice ?? p.entryPriceSOL ?? (amount > 0 && entryCostSol > 0 ? entryCostSol / amount : 0),
                 currentPrice: currentPriceSol,
                 solSpent: entryCostSol,
                 amount,
-                entryTime: p.createdAt || Date.now(),
-                txid: p.buySignature || '',
+                entryTime: p.openedAt || p.createdAt || Date.now(),
+                txid: p.signature || p.buySignature || '',
                 positionId: p.id,
                 decimals,
+                tpPct: p.tpPct,
+                slPct: p.slPct,
+                hasCustomTpSl: p.hasCustomTpSl,
                 entryCostSol,
                 currentPriceSol,
+                marketValueSol,
+                marketPnlSol,
+                marketPnlPercent,
                 executableValueSol,
-                pnlSol,
-                pnlPercent,
-                source: val?.source || 'JUPITER',
+                executablePnlSol,
+                executablePnlPercent,
+                pnlSol: marketPnlSol,
+                pnlPercent: marketPnlPercent,
+                source: val?.source || 'WSS',
                 lastMarketPriceAt: val?.lastMarketPriceAt,
                 lastExecutableQuoteAt: val?.lastExecutableQuoteAt,
                 quoteAgeMs: val?.quoteAgeMs,
                 status: val?.status || 'LIVE',
               };
             }
-            if (Object.keys(mapped).length > 0) {
-              setPositions(mapped);
-            }
+            setPositions(mapped);
+            positionsRef.current = mapped;
+            useAppStore.getState().updateActivePositions(() => mapped);
           }
         }
       } catch (e) {}
@@ -4236,6 +4255,14 @@ const checkTokenCriteria = (mint: string): {
       positionsRef.current = next;
       useAppStore.getState().updateActivePositions(() => next);
       positionExitManagerRef.current?.updatePositionTpSl(mint, safeTp, safeSl);
+      // Authoritative Backend TP/SL Sync
+      fetch('/api/trading/positions/tpsl', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mint, tpPct: safeTp, slPct: safeSl }),
+      }).catch(err => {
+        console.error('[TP/SL Server Sync Error]', err);
+      });
       return next;
     });
     addLog(`⚙️ Set ${positionsRef.current[mint]?.symbol || mint.slice(0, 6)} TP: +${safeTp}% | SL: -${safeSl}%`, 'info');
@@ -4275,6 +4302,14 @@ const checkTokenCriteria = (mint: string): {
       positionsRef.current = next;
       useAppStore.getState().updateActivePositions(() => next);
       positionExitManagerRef.current?.updatePositionTpSl(mint, defaultTp, Math.abs(defaultSl));
+      // Authoritative Backend TP/SL Reset Sync
+      fetch('/api/trading/positions/tpsl', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mint, tpPct: defaultTp, slPct: Math.abs(defaultSl) }),
+      }).catch(err => {
+        console.error('[TP/SL Server Reset Sync Error]', err);
+      });
       return next;
     });
     addLog(`🔄 Reset ${positionsRef.current[mint]?.symbol || mint.slice(0, 6)} TP/SL to Global (TP: +${defaultTp}%, SL: -${Math.abs(defaultSl)}%)`, 'info');
@@ -6722,9 +6757,16 @@ const checkTokenCriteria = (mint: string): {
                     const entryCostSol = pos.entryCostSol !== undefined && pos.entryCostSol > 0 ? pos.entryCostSol : (pos.solSpent || 0);
                     const currentPriceSol = displayPrice > 0 ? displayPrice : (pos.currentPriceSol || pos.buyPrice || 0);
                     const currentValueSol = pos.amount > 0 && currentPriceSol > 0 ? pos.amount * currentPriceSol : 0;
-                    const executableValueSol = currentValueSol;
-                    const pnlSol = entryCostSol > 0 ? currentValueSol - entryCostSol : 0;
-                    const pnlPercent = entryCostSol > 0 ? (pnlSol / entryCostSol) * 100 : 0;
+                    const marketValueSol = pos.marketValueSol !== undefined && pos.marketValueSol > 0 ? pos.marketValueSol : currentValueSol;
+                    const marketPnlSol = pos.marketPnlSol !== undefined ? pos.marketPnlSol : (entryCostSol > 0 ? marketValueSol - entryCostSol : 0);
+                    const marketPnlPercent = pos.marketPnlPercent !== undefined ? pos.marketPnlPercent : (entryCostSol > 0 ? (marketPnlSol / entryCostSol) * 100 : 0);
+
+                    const executableValueSol = pos.executableValueSol !== undefined && pos.executableValueSol > 0 ? pos.executableValueSol : marketValueSol;
+                    const executablePnlSol = pos.executablePnlSol !== undefined ? pos.executablePnlSol : (entryCostSol > 0 ? executableValueSol - entryCostSol : 0);
+                    const executablePnlPercent = pos.executablePnlPercent !== undefined ? pos.executablePnlPercent : (entryCostSol > 0 ? (executablePnlSol / entryCostSol) * 100 : 0);
+
+                    const pnlSol = marketPnlSol;
+                    const pnlPercent = marketPnlPercent;
                     const entryPriceSol = pos.amount > 0 && entryCostSol > 0 ? entryCostSol / pos.amount : (pos.buyPrice || 0);
                     const valStatus = pos.status || (displayPrice > 0 ? 'LIVE' : 'UNAVAILABLE');
                     const valSource = pos.source || (token?.priceNative ? 'LASERSTREAM' : 'JUPITER');
@@ -6755,6 +6797,9 @@ const checkTokenCriteria = (mint: string): {
                     const currentPosFromSl = pnlPercent + activeSl;
                     const progressPct = totalRange > 0 ? Math.max(0, Math.min(100, (currentPosFromSl / totalRange) * 100)) : 50;
                     const breakevenPct = totalRange > 0 ? Math.max(0, Math.min(100, (activeSl / totalRange) * 100)) : 50;
+
+                    const distanceToTp = activeTp - pnlPercent;
+                    const distanceToSl = pnlPercent - (-activeSl);
 
                     return (
                       <div key={mint} className="bg-[#0a0b14] border border-[#1f212e] rounded-xl p-4 flex flex-col gap-3">
@@ -6795,6 +6840,17 @@ const checkTokenCriteria = (mint: string): {
                                   {valSource} • {valStatus}
                                 </span>
 
+                                {/* Quote Age Badge */}
+                                {pos.quoteAgeMs !== undefined && (
+                                  <span className={`px-1.5 py-0.5 rounded text-[8.5px] font-mono border whitespace-nowrap ${
+                                    pos.quoteAgeMs <= 2000 
+                                      ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20' 
+                                      : 'bg-amber-500/10 text-amber-300 border-amber-500/20'
+                                  }`}>
+                                    ⚡ {pos.quoteAgeMs}ms quote
+                                  </span>
+                                )}
+
                                 {/* Near migration warning */}
                                 {stage.isNearMigration && (
                                   <span className="text-yellow-400 text-[9px] animate-pulse whitespace-nowrap border border-yellow-400/30 bg-yellow-400/10 px-1.5 py-0.5 rounded">
@@ -6805,7 +6861,7 @@ const checkTokenCriteria = (mint: string): {
                             </div>
                           </div>
 
-                          {/* Top-Right PnL Box */}
+                          {/* Top-Right PnL Box: Live Market PnL + Executable Jupiter PnL */}
                           <div className="text-right font-mono ml-auto">
                             {valStatus === 'UNAVAILABLE' ? (
                               <div className="flex flex-col items-end">
@@ -6814,18 +6870,23 @@ const checkTokenCriteria = (mint: string): {
                               </div>
                             ) : (
                               <div className="flex flex-col items-end">
-                                <div className={`text-[15px] font-bold tracking-tight ${isPos ? 'text-[#c7f284]' : 'text-[#ff4d4d]'}`}>
-                                  {isPos ? '+' : ''}{pnlPercent.toFixed(2)}%
+                                <div className="flex items-baseline gap-1.5 justify-end">
+                                  <span className="text-[10px] text-[#64748b] font-normal uppercase">Market:</span>
+                                  <div className={`text-[15px] font-bold tracking-tight ${isPos ? 'text-[#c7f284]' : 'text-[#ff4d4d]'}`}>
+                                    {isPos ? '+' : ''}{pnlPercent.toFixed(2)}%
+                                  </div>
                                 </div>
-                                <div className="flex items-center gap-1.5 text-[11px]">
+                                <div className="flex items-center gap-1 text-[11px]">
                                   <span className={`font-semibold ${pnlSol >= 0 ? 'text-[#c7f284]/90' : 'text-[#ff4d4d]/90'}`}>
                                     {pnlSol >= 0 ? '+' : '-'}{Math.abs(pnlSol).toFixed(4)} SOL
                                   </span>
-                                  {pos.quoteAgeMs !== undefined && (
-                                    <span className="text-[9px] text-[#64748b] font-normal">
-                                      ({pos.quoteAgeMs}ms)
-                                    </span>
-                                  )}
+                                </div>
+                                {/* Executable Proceeds PnL line */}
+                                <div className="flex items-center gap-1 text-[9.5px] text-slate-400 mt-0.5">
+                                  <span>Exec:</span>
+                                  <span className={`font-semibold ${executablePnlPercent >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                    {executablePnlPercent >= 0 ? '+' : ''}{executablePnlPercent.toFixed(1)}% ({executableValueSol.toFixed(3)} SOL)
+                                  </span>
                                 </div>
                                 {pnlPercent <= -50 && (
                                   <span className="text-[9px] bg-red-950/80 text-rose-400 px-1.5 py-0.5 rounded font-semibold border border-red-500/30 animate-bounce inline-block mt-1 uppercase text-center">
@@ -6926,9 +6987,9 @@ const checkTokenCriteria = (mint: string): {
                               />
                             </div>
                             <div className="flex justify-between text-[9px] font-mono text-slate-400">
-                              <span className="text-rose-400">-{activeSl}% (SL)</span>
+                              <span className="text-rose-400">-{activeSl}% (SL) • {distanceToSl > 0 ? `${distanceToSl.toFixed(1)}% away` : 'SL ZONE'}</span>
                               <span className="text-slate-500">0% Entry</span>
-                              <span className="text-emerald-400">+{activeTp}% (TP)</span>
+                              <span className="text-emerald-400">{distanceToTp <= 0 ? 'TP HIT' : `${distanceToTp.toFixed(1)}% away`} • +{activeTp}% (TP)</span>
                             </div>
                           </div>
                         </div>
@@ -6945,7 +7006,7 @@ const checkTokenCriteria = (mint: string): {
                             </div>
                           </div>
                           <div>
-                            <div className="text-[#64748b] text-[10px] uppercase font-bold tracking-wider mb-0.5">Current Market Price</div>
+                            <div className="text-[#64748b] text-[10px] uppercase font-bold tracking-wider mb-0.5">Market Price (WSS)</div>
                             <div className="text-[#e2e8f0] font-semibold text-[12px]">
                               {valStatus === 'UNAVAILABLE' ? (
                                 <span className="text-slate-500 font-bold text-[11px]">UNAVAILABLE</span>
@@ -6955,8 +7016,9 @@ const checkTokenCriteria = (mint: string): {
                                 `${displayPrice.toFixed(8)} SOL`
                               )}
                             </div>
-                            <div className="text-[10px] text-[#64748b] mt-0.5">
-                              Executable Value: {executableValueSol.toFixed(4)} SOL
+                            <div className="text-[10px] text-[#64748b] mt-0.5 flex items-center justify-between">
+                              <span>Market Val: {marketValueSol.toFixed(4)} SOL</span>
+                              <span className="text-slate-400">Exec: {executableValueSol.toFixed(4)} SOL</span>
                             </div>
                           </div>
                         </div>

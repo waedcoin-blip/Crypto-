@@ -91,14 +91,13 @@ export async function runPositionValuationTests(): Promise<void> {
   // TEST 5 — Event Ordering (Older event rejected)
   console.log('\n--- TEST 5: Event Ordering (Older event rejected) ---');
   const t1 = Date.now();
-  const t2 = t1 + 500;
   const tOld = t1 - 1000;
 
-  positionValuationEngine.updateFromMarketEvent(basePosition, 0.002, t2, 'WSS');
+  positionValuationEngine.updateFromMarketEvent(basePosition, 0.002, t1, 'WSS');
   const valNew = positionValuationEngine.getValuation(testNetwork, testWallet, testMint);
   assert(valNew?.currentPriceSol === 0.002, 'Newer event price applied');
 
-  // Attempt to apply older event (tOld < t2)
+  // Attempt to apply older event (tOld < t1)
   positionValuationEngine.updateFromMarketEvent(basePosition, 0.0005, tOld, 'WSS');
   const valAfterOld = positionValuationEngine.getValuation(testNetwork, testWallet, testMint);
   assert(valAfterOld?.currentPriceSol === 0.002, 'Older market event rejected; newer valuation retained');

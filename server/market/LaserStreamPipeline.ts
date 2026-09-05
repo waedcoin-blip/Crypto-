@@ -372,6 +372,7 @@ export class LaserStreamPipeline {
     marketEventBus.publishUnified({
       eventId: `${eventSource}:${event.signature || 'nosig'}:${extractedMint}:${event.slot}`,
       correlationId: `corr_${eventSource.toLowerCase()}_${extractedMint.slice(0, 8)}_${Date.now()}`,
+      chain: 'solana',
       source: eventSource,
       mint: extractedMint,
       signature: event.signature,

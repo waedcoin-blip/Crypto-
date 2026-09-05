@@ -338,6 +338,41 @@ export class PositionManager {
     return newPos;
   }
 
+  public updatePositionTpSl(
+    network: string | undefined,
+    wallet: string | undefined,
+    mint: string,
+    tpPct?: number,
+    slPct?: number,
+    trailingSlPct?: number
+  ): Position | undefined {
+    this.refreshFromRepository();
+    let pos = network && wallet ? this.getPosition(network, wallet, mint) : undefined;
+    if (!pos) {
+      pos = this.getOpenPositions().find(
+        p => p.mint === mint || p.mint.toLowerCase() === mint.toLowerCase()
+      );
+    }
+    if (!pos || pos.status === 'CLOSED') return undefined;
+
+    if (tpPct !== undefined) {
+      const tp = Number(tpPct);
+      if (!Number.isFinite(tp) || tp <= 0) throw new Error('INVALID_TP_PERCENT');
+      pos.tpPct = tp;
+    }
+    if (slPct !== undefined) {
+      const sl = Math.abs(Number(slPct));
+      if (!Number.isFinite(sl) || sl <= 0 || sl >= 100) throw new Error('INVALID_SL_PERCENT');
+      pos.slPct = sl;
+    }
+    if (trailingSlPct !== undefined) {
+      pos.trailingSlPct = Math.abs(Number(trailingSlPct));
+    }
+    pos.updatedAt = Date.now();
+    this.syncRepository(pos);
+    return pos;
+  }
+
   public updatePositionStatus(
     network: string,
     wallet: string,

@@ -54,7 +54,7 @@ export class MarketEventBus {
    */
   public publishUnified(event: UnifiedMarketEvent): void {
     // 1. Health monitoring
-    sourceHealthMonitor.recordEvent(event.source);
+    sourceHealthMonitor.recordEvent(event.source as any);
 
     // 2. Deduplication & Candidate Registry
     if (candidateRegistry.isEventDuplicate(event.eventId)) {
