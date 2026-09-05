@@ -213,7 +213,7 @@ export class EntryEngine {
       entryDecisionLedger.recordEnriched();
       console.log(`[PIPELINE STAGE] ENRICHING mint=${mint}`);
       const candidate = await candidateEnricher.enrichCandidate(mint, network);
-      if (!candidate.isEnriched) {
+      if (!candidate.isEnriched && (network !== 'paper' || candidate.symbol === 'INVALID')) {
         console.warn(`[EntryEngine] ENRICHMENT FAILED: mint=${mint} reason=${candidate.enrichmentStatus}`);
         return {
           mintAddress: mint,

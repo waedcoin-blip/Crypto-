@@ -173,7 +173,7 @@ export class TradingEngine {
     if (!approval) {
       console.log(`[TradingEngine] No pre-existing HardenedApproval for ${mint}. Running authoritative HardenedCriteriaEngine evaluation...`);
       const candidate = await candidateEnricher.enrichCandidate(mint, network);
-      if (!candidate.isEnriched) {
+      if (!candidate.isEnriched && (network !== 'paper' || candidate.symbol === 'INVALID')) {
         console.warn(`[TradingEngine] BUY REJECTED: Candidate ${mint} enrichment failed, status: ${candidate.enrichmentStatus}`);
         return {
           success: false,
