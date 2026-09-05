@@ -173,6 +173,16 @@ export class TradingEngine {
     if (!approval) {
       console.log(`[TradingEngine] No pre-existing HardenedApproval for ${mint}. Running authoritative HardenedCriteriaEngine evaluation...`);
       const candidate = await candidateEnricher.enrichCandidate(mint, network);
+      if (!candidate.isEnriched) {
+        console.warn(`[TradingEngine] BUY REJECTED: Candidate ${mint} enrichment failed, status: ${candidate.enrichmentStatus}`);
+        return {
+          success: false,
+          error: `ENRICHMENT_FAILED: Invalid mint ${mint}`,
+          status: 'rejected',
+          reason: 'INVALID_MINT',
+          stage: 'ENRICHMENT'
+        };
+      }
       const evalResult = await hardenedCriteriaEngine.evaluateCandidate(candidate, { network, wallet });
       if (evalResult.decision !== 'PASS' || !evalResult.approval) {
         console.warn(`[TradingEngine] BUY REJECTED: Candidate ${mint} failed hardened criteria. Reasons: ${evalResult.rejectionReasons.join(', ')}`);

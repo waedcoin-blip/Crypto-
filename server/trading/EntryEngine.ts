@@ -213,6 +213,17 @@ export class EntryEngine {
       entryDecisionLedger.recordEnriched();
       console.log(`[PIPELINE STAGE] ENRICHING mint=${mint}`);
       const candidate = await candidateEnricher.enrichCandidate(mint, network);
+      if (!candidate.isEnriched) {
+        console.warn(`[EntryEngine] ENRICHMENT FAILED: mint=${mint} reason=${candidate.enrichmentStatus}`);
+        return {
+          mintAddress: mint,
+          symbol: 'INVALID',
+          stage: 'REJECTED',
+          status: 'FAILED',
+          error: `ENRICHMENT_FAILED: ${candidate.enrichmentStatus}`,
+        };
+      }
+
 
       console.log(`[PIPELINE STAGE] REAL MARKET/RISK DATA mint=${mint} mcap=${candidate.marketCapUsd.value !== null ? '$' + candidate.marketCapUsd.value.toFixed(0) : 'none'} liq=${candidate.liquidityUsd.value !== null ? '$' + candidate.liquidityUsd.value.toFixed(0) : 'none'} age=${candidate.ageMinutes.value !== null ? candidate.ageMinutes.value.toFixed(1) + 'm' : 'none'} risk=${candidate.riskScore.value !== null ? candidate.riskScore.value : 'none'} decimals=${candidate.decimals.value !== null ? candidate.decimals.value : 'none'}`);
 
