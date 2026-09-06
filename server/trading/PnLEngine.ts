@@ -1,10 +1,11 @@
 // server/trading/PnLEngine.ts
 import { Position } from './PositionManager.js';
+import { rawToUiNumber } from '../utils/rawAmount.js';
 
 export interface PnLMetrics {
   positionId: string;
   mint: string;
-  tokenAmountRaw: number;
+  tokenAmountRaw: string;
   decimals: number;
   tokenQuantity: number;
   totalSolSpent: number;
@@ -38,7 +39,7 @@ export class PnLEngine {
     if (!Number.isInteger(decimals) || decimals < 0 || decimals > 18) {
       throw new Error(`Invalid persisted decimals: ${decimals} for ${position.mint}`);
     }
-    const tokenQuantity = position.tokenAmount / (10 ** decimals);
+    const tokenQuantity = rawToUiNumber(position.tokenAmountRaw || String(position.tokenAmount), decimals);
     const averageEntryPrice = position.averageEntryPrice > 0
       ? position.averageEntryPrice
       : tokenQuantity > 0 ? position.totalSolSpent / tokenQuantity : 0;
@@ -60,7 +61,7 @@ export class PnLEngine {
     return {
       positionId: position.id,
       mint: position.mint,
-      tokenAmountRaw: position.tokenAmount,
+      tokenAmountRaw: position.tokenAmountRaw || String(position.tokenAmount),
       decimals,
       tokenQuantity,
       totalSolSpent: position.totalSolSpent,

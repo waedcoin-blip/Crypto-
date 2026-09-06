@@ -1,6 +1,7 @@
 // server/trading/PositionValuationEngine.ts
 import { Position } from './PositionManager.js';
 import { executionGateway } from '../execution/ExecutionGateway.js';
+import { lamportsToSolNumber } from '../utils/rawAmount.js';
 
 export interface PositionValuation {
   mint: string;
@@ -134,7 +135,7 @@ export class PositionValuationEngine {
       this.logValuationFailure(position.mint, 'DECIMALS_UNRESOLVED_FAIL_CLOSED');
       const unavail: PositionValuation = {
         mint: position.mint,
-        tokenAmountRaw: String(position.tokenAmount),
+        tokenAmountRaw: position.tokenAmountRaw || String(position.tokenAmount),
         tokenDecimals: -1,
         entryCostSol: position.totalSolSpent || 0,
         valuationUpdatedAt: Date.now(),
@@ -155,7 +156,7 @@ export class PositionValuationEngine {
 
     const now = Date.now();
     const decimals = position.decimals;
-    const tokenQuantity = safeTokenQuantity(position.tokenAmount, decimals);
+    const tokenQuantity = safeTokenQuantity(position.tokenAmountRaw || String(position.tokenAmount), decimals);
     const entryCostSol = position.totalSolSpent > 0 ? position.totalSolSpent : 0;
     const averageEntryPriceSol = tokenQuantity > 0 && entryCostSol > 0 ? entryCostSol / tokenQuantity : position.averageEntryPrice;
 
@@ -178,7 +179,7 @@ export class PositionValuationEngine {
 
     const valuation: PositionValuation = {
       mint: position.mint,
-      tokenAmountRaw: String(position.tokenAmount),
+      tokenAmountRaw: position.tokenAmountRaw || String(position.tokenAmount),
       tokenDecimals: decimals,
       entryCostSol,
       currentPriceSol,
@@ -212,7 +213,7 @@ export class PositionValuationEngine {
   }
 
   public async refreshExecutableQuote(position: Position): Promise<PositionValuation | null> {
-    if (!position || position.tokenAmount <= 0) {
+    if (!position || !position.tokenAmountRaw || BigInt(position.tokenAmountRaw) <= 0n) {
       return null;
     }
 
@@ -224,7 +225,7 @@ export class PositionValuationEngine {
       this.logValuationFailure(position.mint, 'DECIMALS_UNRESOLVED_FAIL_CLOSED');
       const unavail: PositionValuation = {
         mint: position.mint,
-        tokenAmountRaw: String(position.tokenAmount),
+        tokenAmountRaw: position.tokenAmountRaw || String(position.tokenAmount),
         tokenDecimals: -1,
         entryCostSol: position.totalSolSpent || 0,
         valuationUpdatedAt: now,
@@ -255,7 +256,7 @@ export class PositionValuationEngine {
         const quote = await executionGateway.quoteSell({
           inputMint: position.mint,
           outputMint: WSOL,
-          amount: position.tokenAmount,
+          amount: position.tokenAmountRaw || String(position.tokenAmount),
           slippageBps: position.slippageBpsSl || 1000,
           network: position.network,
         });
@@ -269,9 +270,9 @@ export class PositionValuationEngine {
 
         if (quote && quote.outAmount) {
           const outLamports = BigInt(quote.outAmount);
-          const executableValueSol = Number(outLamports) / 1e9;
+          const executableValueSol = lamportsToSolNumber(outLamports);
           const decimals = position.decimals;
-          const tokenQuantity = safeTokenQuantity(position.tokenAmount, decimals);
+          const tokenQuantity = safeTokenQuantity(position.tokenAmountRaw || String(position.tokenAmount), decimals);
           const currentPriceSol = tokenQuantity > 0 ? executableValueSol / tokenQuantity : 0;
           const entryCostSol = position.totalSolSpent > 0 ? position.totalSolSpent : 0;
           const averageEntryPriceSol = tokenQuantity > 0 && entryCostSol > 0 ? entryCostSol / tokenQuantity : position.averageEntryPrice;
@@ -285,7 +286,7 @@ export class PositionValuationEngine {
 
           const valuation: PositionValuation = {
             mint: position.mint,
-            tokenAmountRaw: String(position.tokenAmount),
+            tokenAmountRaw: position.tokenAmountRaw || String(position.tokenAmount),
             tokenDecimals: decimals,
             entryCostSol,
             currentPriceSol: existing?.currentPriceSol || currentPriceSol,
@@ -337,7 +338,7 @@ export class PositionValuationEngine {
 
       const unavailableValuation: PositionValuation = {
         mint: position.mint,
-        tokenAmountRaw: String(position.tokenAmount),
+        tokenAmountRaw: position.tokenAmountRaw || String(position.tokenAmount),
         tokenDecimals: position.decimals,
         entryCostSol: position.totalSolSpent || 0,
         averageEntryPriceSol: position.averageEntryPrice,

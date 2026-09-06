@@ -3,6 +3,7 @@ import { orderManager } from '../trading/OrderManager.js';
 import { positionManager } from '../trading/PositionManager.js';
 import { tradeRepository } from '../repositories/TradeRepository.js';
 import { ExecutionResult } from './TradeExecutor.js';
+import { rawToUiNumber } from '../utils/rawAmount.js';
 
 export interface FastExitParams {
   positionId: string;
@@ -88,7 +89,7 @@ export class FastExitExecutor {
         network: params.network,
         wallet: params.wallet,
         amountRaw: rawBig.toString(),
-        amountTokens: Number(rawBig) / (10 ** position.decimals),
+        amountTokens: rawToUiNumber(rawBig, position.decimals),
         solAmount: execResult.netProceedsSol || 0,
         priceSOL: execResult.effectivePriceSol || 0,
         pnlSol: execResult.netProceedsSol !== undefined ? execResult.netProceedsSol - position.totalSolSpent : undefined,

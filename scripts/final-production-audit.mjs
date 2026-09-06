@@ -5,7 +5,7 @@ const dangerousPatterns = [
   { name: 'Unsafe Decimal Fallback (?? 6 or || 6)', regex: /\?\?\s*6|\|\|\s*6/g, severity: 'BUG' },
   { name: 'Floating Point Division by 1e6', regex: /\/\s*1e6/g, severity: 'BUG' },
   { name: 'Floating Point Multiplication by 1e6', regex: /\*\s*1e6/g, severity: 'WARNING' },
-  { name: 'Unsafe Number Conversion on Raw Amounts', regex: /Number\s*\(\s*(raw|amountRaw|lamports)/g, severity: 'BUG' },
+  { name: 'Unsafe Number Conversion on Raw Amounts', regex: /\bNumber\s*\(\s*(rawBig|rawAmountBigInt|newTotalRawBig|amountRaw|lamports|outLamports|tokenReceivedRaw|sellAmountRaw)/g, severity: 'BUG' },
   { name: 'Overlapping Async Interval', regex: /setInterval\s*\(\s*async/g, severity: 'BUG' },
   { name: 'Swallowed Errors (catch {})', regex: /catch\s*\(\s*\)\s*\{\s*\}/g, severity: 'BUG' },
   { name: 'Hardcoded Secret / Private Key', regex: /privateKey|secret|seed|mnemonic/gi, severity: 'WARNING' },

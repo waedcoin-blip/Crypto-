@@ -137,8 +137,10 @@ export class ActivePositionMarketFeed {
   public async processPositionUpdate(position: Position, candidatePrice?: number): Promise<void> {
     const mint = position.mint;
     const now = Date.now();
-    if (!Number.isSafeInteger(position.tokenAmount) || position.tokenAmount <= 0) {
-      console.error(`[EXIT_MONITOR_BLOCKED] reason=UNSAFE_RAW_AMOUNT mint=${mint} amount=${String(position.tokenAmount)}`);
+    let rawAmount: bigint;
+    try { rawAmount = BigInt(position.tokenAmountRaw || String(position.tokenAmount)); } catch { rawAmount = 0n; }
+    if (rawAmount <= 0n) {
+      console.error(`[EXIT_MONITOR_BLOCKED] reason=INVALID_RAW_AMOUNT mint=${mint} amount=${String(position.tokenAmountRaw || position.tokenAmount)}`);
       return;
     }
 

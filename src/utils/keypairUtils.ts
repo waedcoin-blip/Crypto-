@@ -46,41 +46,45 @@ export function getSavedSessionKeypair(): Keypair | null {
   if (typeof window === 'undefined') return null;
   
   // 1. Check transient sessionStorage first
-  const sessionCandidates = [
-    sessionStorage.getItem('matrix_session_key'),
-    sessionStorage.getItem('solana_session_wallet'),
-  ];
-  for (const raw of sessionCandidates) {
-    if (raw && raw.trim()) {
-      try {
-        const kp = getKeypairFromPrivateKey(raw);
-        if (kp) return kp;
-      } catch {
-        // continue
+  if (typeof sessionStorage !== 'undefined') {
+    const sessionCandidates = [
+      sessionStorage.getItem('matrix_session_key'),
+      sessionStorage.getItem('solana_session_wallet'),
+    ];
+    for (const raw of sessionCandidates) {
+      if (raw && raw.trim()) {
+        try {
+          const kp = getKeypairFromPrivateKey(raw);
+          if (kp) return kp;
+        } catch {
+          // continue
+        }
       }
     }
   }
 
   // 2. Check legacy localStorage (migrate to sessionStorage and purge from localStorage)
-  const legacyLocalCandidates = [
-    'matrix_user_custom_key',
-    'app_active_private_key',
-    'solana_session_wallet',
-  ];
-  for (const key of legacyLocalCandidates) {
-    const raw = localStorage.getItem(key);
-    if (raw && raw.trim()) {
-      try {
-        const kp = getKeypairFromPrivateKey(raw);
-        if (kp) {
-          // Migrate to sessionStorage and remove from localStorage
-          saveSessionKeypair(kp);
-          return kp;
+  if (typeof localStorage !== 'undefined') {
+    const legacyLocalCandidates = [
+      'matrix_user_custom_key',
+      'app_active_private_key',
+      'solana_session_wallet',
+    ];
+    for (const key of legacyLocalCandidates) {
+      const raw = localStorage.getItem(key);
+      if (raw && raw.trim()) {
+        try {
+          const kp = getKeypairFromPrivateKey(raw);
+          if (kp) {
+            // Migrate to sessionStorage and remove from localStorage
+            saveSessionKeypair(kp);
+            return kp;
+          }
+        } catch {
+          // continue
+        } finally {
+          localStorage.removeItem(key);
         }
-      } catch {
-        // continue
-      } finally {
-        localStorage.removeItem(key);
       }
     }
   }
@@ -92,30 +96,40 @@ export function saveSessionKeypair(kp: Keypair | null, network: 'paper' | 'mainn
   if (typeof window === 'undefined') return;
 
   // Always purge private keys from persistent localStorage
-  localStorage.removeItem('matrix_user_custom_key');
-  localStorage.removeItem('app_active_private_key');
-  localStorage.removeItem('solana_session_wallet');
+  if (typeof localStorage !== 'undefined') {
+    localStorage.removeItem('matrix_user_custom_key');
+    localStorage.removeItem('app_active_private_key');
+    localStorage.removeItem('solana_session_wallet');
+  }
 
   if (kp) {
     const encoded = bs58.encode(kp.secretKey);
     const address = kp.publicKey.toBase58();
     
     // Store only in transient sessionStorage
-    sessionStorage.setItem('matrix_session_key', encoded);
-    sessionStorage.setItem('solana_session_wallet', encoded);
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.setItem('matrix_session_key', encoded);
+      sessionStorage.setItem('solana_session_wallet', encoded);
+    }
     
     // Non-sensitive public metadata is stored in localStorage
-    const meta: WalletMetadata = {
-      address,
-      network,
-      initialized: true,
-      lastUpdated: Date.now(),
-    };
-    localStorage.setItem('matrix_wallet_metadata', JSON.stringify(meta));
+    if (typeof localStorage !== 'undefined') {
+      const meta: WalletMetadata = {
+        address,
+        network,
+        initialized: true,
+        lastUpdated: Date.now(),
+      };
+      localStorage.setItem('matrix_wallet_metadata', JSON.stringify(meta));
+    }
   } else {
-    sessionStorage.removeItem('matrix_session_key');
-    sessionStorage.removeItem('solana_session_wallet');
-    localStorage.removeItem('matrix_wallet_metadata');
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.removeItem('matrix_session_key');
+      sessionStorage.removeItem('solana_session_wallet');
+    }
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem('matrix_wallet_metadata');
+    }
   }
 }
 

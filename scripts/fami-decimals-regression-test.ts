@@ -1,4 +1,7 @@
 // scripts/fami-decimals-regression-test.ts
+if (typeof globalThis.window === 'undefined') {
+  (globalThis as any).window = globalThis;
+}
 if (typeof global.localStorage === 'undefined') {
   global.localStorage = {
     getItem: () => null,
@@ -10,14 +13,13 @@ if (typeof global.localStorage === 'undefined') {
   };
 }
 
-import { TokenDecimalsResolver } from '../src/services/TokenDecimalsResolver';
-import { tokenRegistry } from '../src/services/TokenRegistry';
-
 console.log('=== FAMI & Token Decimals Resolution Regression Test ===');
 
 const FAMI_MINT = 'HmaHhC9vBh43gZnNTUFGNGP1A72jH1MXKjhHRWw2Ja8F';
 
 async function runTests() {
+  const { TokenDecimalsResolver } = await import('../src/services/TokenDecimalsResolver');
+  const { tokenRegistry } = await import('../src/services/TokenRegistry');
   console.log('1. Testing sync resolution fail-closed for unverified FAMI...');
   try {
     TokenDecimalsResolver.resolveSync(FAMI_MINT);

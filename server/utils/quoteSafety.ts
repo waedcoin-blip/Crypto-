@@ -3,6 +3,7 @@
  * Server-side Authoritative Quote Safety & Normalization Engine
  */
 
+import { lamportsToSolNumber } from './rawAmount.js';
 export const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 export const SOL_MINT = 'So11111111111111111111111111111111111111112';
 export const MAX_PRICE_IMPACT_RATIO = 0.10; // 0.10 = 10.0%
@@ -87,7 +88,7 @@ export function buildSafeQuoteDiagnostic(params: {
 
   let calculatedSolAmount: number | undefined;
   if (calculatedLamports !== undefined) {
-    calculatedSolAmount = Number(calculatedLamports) / 1_000_000_000;
+    calculatedSolAmount = lamportsToSolNumber(calculatedLamports);
   } else if (requestedUsdAmount !== undefined && solPriceUsed !== undefined && solPriceUsed > 0) {
     calculatedSolAmount = requestedUsdAmount / solPriceUsed;
   }

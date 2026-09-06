@@ -1,6 +1,7 @@
 // server/trading/PositionManager.ts
 import { positionRepository, PositionRecord } from '../repositories/PositionRepository.js';
 import { positionValuationEngine } from './PositionValuationEngine.js';
+import { rawToUiNumber, parsePositiveRawAmount, safeRawNumber } from '../utils/rawAmount.js';
 
 export type PositionStatus = 'NONE' | 'BUY_PENDING' | 'OPEN' | 'EXIT_PENDING' | 'RECOVERY_REQUIRED' | 'CLOSED';
 
@@ -62,11 +63,9 @@ export class PositionManager {
   }
 
   private parseRawAmountSafe(value: number | string | bigint, positionId: string): number {
-    let safeBigInt: bigint;
-    try { safeBigInt = BigInt(value); } catch { throw new Error(`INVALID_POSITION_RAW_AMOUNT: ${positionId}`); }
-    if (safeBigInt <= 0n) return 0;
-    // FIX: For very large values, keep as BigInt string to avoid precision loss
-    return Number(safeBigInt);
+    const raw = parsePositiveRawAmount(value, `position ${positionId}`);
+    // Legacy numeric field is only populated when the raw integer is exactly representable.
+    return safeRawNumber(raw);
   }
 
   public refreshFromRepository(): void {
@@ -222,7 +221,7 @@ export class PositionManager {
     }
 
     // FIX: Use BigInt for precise token quantity calculation
-    const tokenQty = pos.tokenAmount / (10 ** pos.decimals);
+    const tokenQty = pos.tokenAmountRaw ? rawToUiNumber(pos.tokenAmountRaw, pos.decimals) : pos.tokenAmount / (10 ** pos.decimals);
     const currentValueSol = tokenQty * currentPriceSol;
     pos.unrealizedPnl = currentValueSol - pos.totalSolSpent;
     pos.unrealizedPnlPct = pos.totalSolSpent > 0 ? (pos.unrealizedPnl / pos.totalSolSpent) * 100 : 0;
@@ -267,7 +266,7 @@ export class PositionManager {
     } catch {
       throw new Error(`INVALID_RAW_TOKEN_AMOUNT: tokenAmountRaw must be a positive integer for ${params.mint}.`);
     }
-    const tokenAmountNum = Number(rawBigInt);
+    const tokenAmountNum = safeRawNumber(rawBigInt);
     const tpPct = params.tpPct ?? 25;
     const slPct = Math.abs(params.slPct ?? 15);
     if (!Number.isFinite(tpPct) || tpPct <= 0 || !Number.isFinite(slPct) || slPct <= 0 || slPct >= 100) {
@@ -281,11 +280,11 @@ export class PositionManager {
         const newTotalCost = prevTotalCost + params.solSpent;
         const prevTotalRawBig = existing.tokenAmountRaw ? BigInt(existing.tokenAmountRaw) : BigInt(existing.tokenAmount);
         const newTotalRawBig = prevTotalRawBig + BigInt(params.tokenAmountRaw);
-        const newTotalRaw = Number(newTotalRawBig);
-        const newTotalQty = newTotalRaw / (10 ** existing.decimals);
+        const newTotalQty = rawToUiNumber(newTotalRawBig, existing.decimals);
+        const newTotalRawLegacy = safeRawNumber(newTotalRawBig);
 
         existing.tokenAmountRaw = newTotalRawBig.toString();
-        existing.tokenAmount = newTotalRaw;
+        existing.tokenAmount = newTotalRawLegacy;
         existing.totalSolSpent = newTotalCost;
         if (newTotalQty > 0) {
           existing.averageEntryPrice = newTotalCost / newTotalQty;
@@ -305,7 +304,7 @@ export class PositionManager {
     }
 
     const posId = `pos_${now}_${params.mint.slice(0, 6)}`;
-    const tokenQty = tokenAmountNum / (10 ** decimals);
+    const tokenQty = rawToUiNumber(rawBigInt, decimals);
     const averageEntryPrice = tokenQty > 0 ? params.solSpent / tokenQty : 0;
 
     const newPos: Position = {
@@ -378,18 +377,22 @@ export class PositionManager {
     return pos;
   }
 
-  public reducePositionAmount(positionId: string, tokensSoldRaw: number, solReceived: number): Position | undefined {
+  public reducePositionAmount(positionId: string, tokensSoldRaw: number | string | bigint, solReceived: number): Position | undefined {
     const pos = this.getPositionById(positionId);
     if (!pos) return undefined;
 
-    const remainingRaw = Math.max(0, pos.tokenAmount - tokensSoldRaw);
-    
-    // FIX: Track cost basis of sold portion for accurate realized PnL%
-    const soldFraction = tokensSoldRaw / (pos.tokenAmount || 1);
+    const currentRaw = BigInt(pos.tokenAmountRaw || String(pos.tokenAmount));
+    const soldRaw = BigInt(String(tokensSoldRaw));
+    if (soldRaw <= 0n || soldRaw > currentRaw) return undefined;
+    const remainingRaw = currentRaw - soldRaw;
+
+    // Track cost basis of sold portion without converting raw amounts to Number.
+    const soldFraction = Number(soldRaw * 1_000_000n / currentRaw) / 1_000_000;
     const soldCostBasis = pos.totalSolSpent * soldFraction;
     pos.totalSolSpentOnSold = (pos.totalSolSpentOnSold || 0) + soldCostBasis;
     
-    pos.tokenAmount = remainingRaw;
+    pos.tokenAmountRaw = remainingRaw.toString();
+    pos.tokenAmount = safeRawNumber(remainingRaw);
     pos.realizedPnl += solReceived - soldCostBasis;
     pos.updatedAt = Date.now();
 
@@ -446,7 +449,7 @@ export class PositionManager {
       mintAddress: pos.mint,
       network: pos.network,
       wallet: pos.wallet,
-      amountRaw: pos.tokenAmount,
+      amountRaw: pos.tokenAmountRaw || String(pos.tokenAmount),
       decimals: pos.decimals,
       entryPriceSOL: pos.averageEntryPrice,
       solSpent: pos.totalSolSpent,

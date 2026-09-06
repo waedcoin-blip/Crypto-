@@ -9,6 +9,7 @@ import { ExecutionResult } from '../execution/TradeExecutor.js';
 import { tradeRepository } from '../repositories/TradeRepository.js';
 import { tokenProgramResolver } from '../wallet/TokenProgramResolver.js';
 import { unifiedExitEngine } from './UnifiedExitEngine.js';
+import { rawToUiNumber } from '../utils/rawAmount.js';
 import { HardenedApproval } from '../types/index.js';
 import { hardenedApprovalStore } from './HardenedApprovalStore.js';
 import { hardenedCriteriaEngine } from './HardenedCriteriaEngine.js';
@@ -317,7 +318,7 @@ export class TradingEngine {
         network,
         wallet,
         amountRaw: typeof execResult.outAmountRaw === 'bigint' ? execResult.outAmountRaw.toString() : execResult.outAmountRaw,
-        amountTokens: Number(execResult.outAmountRaw) / (10 ** position.decimals),
+        amountTokens: rawToUiNumber(execResult.outAmountRaw, position.decimals),
         solAmount: execResult.totalCostSol || params.amountSol,
         priceSOL: execResult.effectivePriceSol || position.averageEntryPrice,
         signature: execResult.signature || order.id,
@@ -403,14 +404,19 @@ export class TradingEngine {
       ? String(params.amountRaw).trim() 
       : (position.tokenAmountRaw ? String(position.tokenAmountRaw) : String(position.tokenAmount));
     
-    let rawAmountBigInt: bigint = 0n;
+    let rawAmountBigInt: bigint;
     try {
-      if (/^\d+$/.test(rawAmountStr)) {
-        rawAmountBigInt = BigInt(rawAmountStr);
-      }
-    } catch {}
+      if (!/^\d+$/.test(rawAmountStr)) throw new Error('NON_INTEGER');
+      rawAmountBigInt = BigInt(rawAmountStr);
+      if (rawAmountBigInt <= 0n) throw new Error('NON_POSITIVE');
+    } catch {
+      return {
+        success: false,
+        error: `INVALID_AMOUNT: Sell amount must be a positive integer raw amount, received ${rawAmountStr}`,
+      };
+    }
 
-    if (rawAmountBigInt <= 0n && (isNaN(Number(rawAmountStr)) || Number(rawAmountStr) <= 0)) {
+    if (rawAmountBigInt <= 0n) {
       return {
         success: false,
         error: `INVALID_AMOUNT: Sell amount must be greater than 0, received ${rawAmountStr}`,

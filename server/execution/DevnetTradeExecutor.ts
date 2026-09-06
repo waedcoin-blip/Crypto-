@@ -1,3 +1,4 @@
+import { rawToUiNumber, applySlippageBps } from '../utils/rawAmount.js';
 // server/execution/DevnetTradeExecutor.ts
 import { Connection, PublicKey } from '@solana/web3.js';
 import { TradeExecutor, QuoteParams, QuoteResult, ExecuteParams, ExecutionResult } from './TradeExecutor.js';
@@ -23,7 +24,7 @@ export class DevnetTradeExecutor implements TradeExecutor {
     }
     const simulatedTokensRaw = Math.floor(solAmount * 500_000 * (10 ** decs)); // Devnet swap simulation
     const slippage = params.slippageBps ? params.slippageBps / 10000 : 0.05;
-    const minThreshold = Math.floor(simulatedTokensRaw * (1 - slippage));
+    const minThreshold = applySlippageBps(BigInt(simulatedTokensRaw), Math.round(slippage * 10000));
 
     return {
       inAmount: String(params.amount),
@@ -44,7 +45,7 @@ export class DevnetTradeExecutor implements TradeExecutor {
     const solProceeds = tokenQty * 0.000002;
     const lamports = Math.floor(solProceeds * 1e9);
     const slippage = params.slippageBps ? params.slippageBps / 10000 : 0.05;
-    const minThreshold = Math.floor(lamports * (1 - slippage));
+    const minThreshold = applySlippageBps(BigInt(lamports), Math.round(slippage * 10000));
 
     return {
       inAmount: String(params.amount),
@@ -71,7 +72,7 @@ export class DevnetTradeExecutor implements TradeExecutor {
     const tokenReceivedRaw = quote.outAmount;
     const amountNum = Number(params.amount);
     const solSpent = amountNum / 1e9;
-    const tokenQty = Number(tokenReceivedRaw) / (10 ** tokenProgramInfo.decimals);
+    const tokenQty = rawToUiNumber(tokenReceivedRaw, tokenProgramInfo.decimals);
     const effectivePrice = tokenQty > 0 ? solSpent / tokenQty : 0;
 
     return {

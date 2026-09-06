@@ -20,6 +20,7 @@ function getExecutionRpcUrls(): string[] {
   ].filter((v): v is string => !!v && v.trim().length > 0).map(v => v.trim()))];
 }
 
+import { lamportsToSolNumber } from '../utils/rawAmount.js';
 export class MainnetTradeExecutor implements TradeExecutor {
   private connection: Connection;
   private backupConnections: Connection[];
@@ -414,7 +415,7 @@ export class MainnetTradeExecutor implements TradeExecutor {
 
     if (process.env.NODE_ENV === 'test' && !process.env.MAINNET_PRIVATE_KEY) {
       const outLamportsStr = quoteRes.outAmount;
-      const outLamportsNum = Number(outLamportsStr);
+      const outLamportsNum = lamportsToSolNumber(outLamportsStr);
       return {
         success: true,
         signature: `mock_mainnet_sell_${Date.now()}`,
@@ -423,7 +424,7 @@ export class MainnetTradeExecutor implements TradeExecutor {
         outputMint: params.outputMint,
         inAmountRaw: amountBigInt.toString(),
         outAmountRaw: outLamportsStr,
-        netProceedsSol: outLamportsNum / 1e9,
+        netProceedsSol: outLamportsNum,
       };
     }
 
@@ -486,7 +487,7 @@ export class MainnetTradeExecutor implements TradeExecutor {
 
       if (verification.status === 'CONFIRMED') {
         const outLamportsStr = quoteRes.outAmount;
-        const outLamportsNum = Number(outLamportsStr);
+        const outLamportsNum = lamportsToSolNumber(outLamportsStr);
         return {
           success: true,
           signature: txid,
@@ -495,7 +496,7 @@ export class MainnetTradeExecutor implements TradeExecutor {
           outputMint: params.outputMint,
           inAmountRaw: amountBigInt.toString(),
           outAmountRaw: outLamportsStr,
-          netProceedsSol: outLamportsNum / 1e9,
+          netProceedsSol: outLamportsNum,
         };
       } else if (verification.status === 'FAILED') {
         return {

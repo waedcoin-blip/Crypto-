@@ -1,19 +1,14 @@
 # Final Production Audit Report
-Generated at: 2026-09-05T19:39:44.211Z
-Total Findings: 123
-Bugs: 5
+Generated at: 2026-09-06T20:20:14.585Z
+Total Findings: 118
+Bugs: 0
 Warnings: 118
 
 ## Findings Details
-- **[BUG]** `server/execution/FastExitExecutor.ts:91`: Unsafe Number Conversion on Raw Amounts (`amountTokens: Number(rawBig) / (10 ** position.decimals),`)
-- **[BUG]** `server/execution/PaperTradeExecutor.ts:37`: Unsafe Number Conversion on Raw Amounts (`const tokenQty = Number(amountRaw) / (10 ** decs);`)
-- **[BUG]** `server/execution/PaperTradeExecutor.ts:53`: Unsafe Number Conversion on Raw Amounts (`const minLamports = BigInt(Math.floor(Number(lamports) * (1 - slippage)));`)
 - **[WARNING]** `server/market/HeliusErrors.ts:29`: Artificial History Truncation (slice(-500)) (`if (sanitized.length <= 8) return '***' + sanitized.slice(-3);`)
 - **[WARNING]** `server/services/JupiterTradingService.ts:10`: Hardcoded Secret / Private Key (`privateKey?: string;`)
 - **[WARNING]** `server/services/JupiterTradingService.ts:56`: Hardcoded Secret / Private Key (`walletPrivateKey?: string;`)
 - **[WARNING]** `server/services/simulation.ts:111`: Artificial History Truncation (slice(-500)) (`pairAddress: `${mint.slice(0, 8)}pair${mint.slice(-4)}`,`)
-- **[BUG]** `server/trading/PositionManager.ts:270`: Unsafe Number Conversion on Raw Amounts (`const tokenAmountNum = Number(rawBigInt);`)
-- **[BUG]** `server/trading/TradingEngine.ts:407`: Unsafe Number Conversion on Raw Amounts (`if (rawAmountBigInt <= 0n && (isNaN(Number(rawAmountStr)) || Number(rawAmountStr) <= 0)) {`)
 - **[WARNING]** `server/wallet/WalletManager.ts:45`: Hardcoded Secret / Private Key (`const secret = bs58.decode(devnetKeyA);`)
 - **[WARNING]** `server/wallet/WalletManager.ts:46`: Hardcoded Secret / Private Key (`keypairDevnetA = Keypair.fromSecretKey(secret);`)
 - **[WARNING]** `server/wallet/WalletManager.ts:66`: Hardcoded Secret / Private Key (`const secret = bs58.decode(devnetKeyB);`)
@@ -124,7 +119,7 @@ Warnings: 118
 - **[WARNING]** `src/utils/keypairUtils.ts:37`: Hardcoded Secret / Private Key (`return Keypair.fromSecretKey(bytes);`)
 - **[WARNING]** `src/utils/keypairUtils.ts:39`: Hardcoded Secret / Private Key (`return Keypair.fromSeed(bytes);`)
 - **[WARNING]** `src/utils/keypairUtils.ts:41`: Hardcoded Secret / Private Key (`throw new Error(`Invalid private key length (${bytes.length} bytes). Must decode to 32 bytes (seed) or 64 bytes (full secret key).`);`)
-- **[WARNING]** `src/utils/keypairUtils.ts:56`: Hardcoded Secret / Private Key (`const kp = getKeypairFromPrivateKey(raw);`)
-- **[WARNING]** `src/utils/keypairUtils.ts:74`: Hardcoded Secret / Private Key (`const kp = getKeypairFromPrivateKey(raw);`)
-- **[WARNING]** `src/utils/keypairUtils.ts:100`: Hardcoded Secret / Private Key (`const encoded = bs58.encode(kp.secretKey);`)
+- **[WARNING]** `src/utils/keypairUtils.ts:57`: Hardcoded Secret / Private Key (`const kp = getKeypairFromPrivateKey(raw);`)
+- **[WARNING]** `src/utils/keypairUtils.ts:77`: Hardcoded Secret / Private Key (`const kp = getKeypairFromPrivateKey(raw);`)
+- **[WARNING]** `src/utils/keypairUtils.ts:106`: Hardcoded Secret / Private Key (`const encoded = bs58.encode(kp.secretKey);`)
 - **[WARNING]** `src/utils/quoteSafety.ts:95`: Hardcoded Secret / Private Key (`* Creates a SAFE diagnostic object for debugging quote issues without leaking secrets.`)

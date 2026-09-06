@@ -12,6 +12,7 @@ import { rebuyGuard } from './RebuyGuard.js';
 import { hardenedApprovalStore } from './HardenedApprovalStore.js';
 import { candidateRegistry } from '../market/CandidateRegistry.js';
 
+import { lamportsToSolNumber, rawToUiNumber } from '../utils/rawAmount.js';
 export interface ExitConfig {
   takeProfitPercent: number;
   stopLossPercent: number;
@@ -261,14 +262,14 @@ export class UnifiedExitEngine {
     let preValidatedQuote: any = undefined;
 
     if (decision.reason !== 'MANUAL_EXIT' && !isFreshQuote) {
-      console.log(`[TP/SL] REQUEST_EXECUTABLE_QUOTE mint=${position.mint} rawAmount=${position.tokenAmount}`);
+      console.log(`[TP/SL] REQUEST_EXECUTABLE_QUOTE mint=${position.mint} rawAmount=${position.tokenAmountRaw || position.tokenAmount}`);
       try {
         const WSOL = 'So11111111111111111111111111111111111111112';
         const slippageBps = decision.reason === 'TAKE_PROFIT' ? (position.slippageBpsTp || 250) : (position.slippageBpsSl || 1000);
         const quote = await executionGateway.quoteSell({
           inputMint: position.mint,
           outputMint: WSOL,
-          amount: position.tokenAmount,
+          amount: position.tokenAmountRaw || String(position.tokenAmount),
           decimals: position.decimals !== undefined ? position.decimals : 9,
           slippageBps,
           network: position.network,
@@ -288,7 +289,7 @@ export class UnifiedExitEngine {
           return false;
         }
 
-        executableQuoteSol = Number(outLamports) / 1e9;
+        executableQuoteSol = lamportsToSolNumber(outLamports);
         quoteTimestamp = Date.now();
         preValidatedQuote = quote;
 
@@ -350,7 +351,7 @@ export class UnifiedExitEngine {
         executablePriceSol: 0,
         priceDivergencePct: 0,
         routeAvailable: false,
-        rawBalance: position.tokenAmount,
+        rawBalance: position.tokenAmountRaw || String(position.tokenAmount),
         reason: `POSITION_STATUS_INVALID: Position status is ${position.status}, must be OPEN`,
         timestamp: now,
       };
@@ -366,7 +367,7 @@ export class UnifiedExitEngine {
         executablePriceSol: 0,
         priceDivergencePct: 0,
         routeAvailable: false,
-        rawBalance: position.tokenAmount,
+        rawBalance: position.tokenAmountRaw || String(position.tokenAmount),
         reason: `INVALID_RAW_AMOUNT: Balance ${position.tokenAmountRaw || position.tokenAmount} must be positive integer`,
         timestamp: now,
       };
@@ -382,7 +383,7 @@ export class UnifiedExitEngine {
         quote = await executionGateway.quoteSell({
           inputMint: mint,
           outputMint: WSOL,
-          amount: position.tokenAmount,
+          amount: position.tokenAmountRaw || String(position.tokenAmount),
           decimals: position.decimals !== undefined ? position.decimals : 9,
           slippageBps: position.slippageBpsSl || 500,
           network: position.network,
@@ -397,7 +398,7 @@ export class UnifiedExitEngine {
             executablePriceSol: 0,
             priceDivergencePct: 0,
             routeAvailable: false,
-            rawBalance: position.tokenAmount,
+            rawBalance: position.tokenAmountRaw || String(position.tokenAmount),
             reason: 'NO_EXECUTABLE_ROUTE: Jupiter returned empty quote or zero output lamports',
             timestamp: now,
           };
@@ -411,7 +412,7 @@ export class UnifiedExitEngine {
           executablePriceSol: 0,
           priceDivergencePct: 0,
           routeAvailable: false,
-          rawBalance: position.tokenAmount,
+          rawBalance: position.tokenAmountRaw || String(position.tokenAmount),
           reason: `QUOTE_REQUEST_FAILED: ${err?.message || err}`,
           timestamp: now,
         };
@@ -419,7 +420,7 @@ export class UnifiedExitEngine {
     }
 
     // 4. Calculate Executable Price per whole token
-    const tokenWhole = position.tokenAmount / Math.pow(10, position.decimals || 9);
+    const tokenWhole = rawToUiNumber(position.tokenAmountRaw || String(position.tokenAmount), position.decimals);
     const executablePriceSol = tokenWhole > 0 ? executableSol / tokenWhole : 0;
     const marketPriceSol = position.currentPriceSol || executablePriceSol;
 
@@ -430,7 +431,7 @@ export class UnifiedExitEngine {
     }
 
     console.log(
-      `[EXIT_PRE_CHECK_PASSED] mint=${mint} rawAmount=${position.tokenAmount} executableSol=${executableSol.toFixed(4)} marketPrice=${marketPriceSol.toFixed(8)} execPrice=${executablePriceSol.toFixed(8)} divergence=${divergencePct.toFixed(1)}%`
+      `[EXIT_PRE_CHECK_PASSED] mint=${mint} rawAmount=${position.tokenAmountRaw || position.tokenAmount} executableSol=${executableSol.toFixed(4)} marketPrice=${marketPriceSol.toFixed(8)} execPrice=${executablePriceSol.toFixed(8)} divergence=${divergencePct.toFixed(1)}%`
     );
 
     return {
@@ -440,7 +441,7 @@ export class UnifiedExitEngine {
       executablePriceSol,
       priceDivergencePct: divergencePct,
       routeAvailable: true,
-      rawBalance: position.tokenAmount,
+      rawBalance: position.tokenAmountRaw || String(position.tokenAmount),
       quote,
       timestamp: now,
     };
@@ -499,7 +500,7 @@ export class UnifiedExitEngine {
           network: position.network,
           wallet: position.wallet,
           mint: position.mint,
-          amountRaw: position.tokenAmountRaw || position.tokenAmount,
+          amountRaw: position.tokenAmountRaw || String(position.tokenAmount),
           slippageBps,
           reason,
           clientRequestId: `exit_${position.mint.slice(0, 8)}_${Date.now()}_att${attempt}`,

@@ -3,6 +3,8 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { safeRawNumber } from '../utils/rawAmount.js';
+
 export interface PaperTransaction {
   id: string;
   type: 'BUY' | 'SELL' | 'RESET';
@@ -83,15 +85,22 @@ export class PaperWalletLedger {
     stmt.run(lamportsStr, Date.now());
   }
 
-  public getTokenBalance(mint: string): number {
+  public getTokenBalanceRaw(mint: string): bigint {
     const stmt = this.db.prepare('SELECT balance_raw FROM wallet_balances WHERE asset_key = ?');
     const row = stmt.get(mint) as any;
-    if (!row) return 0;
-    return Number(row.balance_raw);
+    if (!row) return 0n;
+    try { return BigInt(String(row.balance_raw)); } catch { throw new Error(`CORRUPT_PAPER_BALANCE: ${mint}`); }
   }
 
-  public setTokenBalance(mint: string, rawAmount: number, decimals: number = 9): void {
-    const rawStr = String(Math.floor(rawAmount));
+  /** Legacy display API. Trading logic must use getTokenBalanceRaw(). */
+  public getTokenBalance(mint: string): number {
+    const raw = this.getTokenBalanceRaw(mint);
+    return safeRawNumber(raw);
+  }
+
+  public setTokenBalance(mint: string, rawAmount: number | string | bigint, decimals: number = 9): void {
+    const rawStr = typeof rawAmount === 'bigint' ? rawAmount.toString() : String(rawAmount);
+    if (!/^\d+$/.test(rawStr)) throw new Error(`INVALID_TOKEN_BALANCE: ${mint}`);
     const stmt = this.db.prepare(`
       INSERT INTO wallet_balances (asset_key, balance_raw, decimals, updated_at)
       VALUES (?, ?, ?, ?)
@@ -100,13 +109,14 @@ export class PaperWalletLedger {
     stmt.run(mint, rawStr, decimals, Date.now());
   }
 
-  public commitBuy(mint: string, solSpent: number, tokenAmountRaw: number, decimals: number, signature: string): void {
+  public commitBuy(mint: string, solSpent: number, tokenAmountRaw: number | string | bigint, decimals: number, signature: string): void {
     const currentSol = this.getSolBalance();
     const newSol = Math.max(0, currentSol - solSpent);
     this.setSolBalance(newSol);
 
-    const currentToken = this.getTokenBalance(mint);
-    this.setTokenBalance(mint, currentToken + tokenAmountRaw, decimals);
+    const currentToken = this.getTokenBalanceRaw(mint);
+    const incoming = BigInt(String(tokenAmountRaw));
+    this.setTokenBalance(mint, currentToken + incoming, decimals);
 
     const txStmt = this.db.prepare(`
       INSERT INTO paper_transactions (id, type, mint, sol_amount, token_amount_raw, decimals, signature, timestamp)
@@ -115,13 +125,14 @@ export class PaperWalletLedger {
     txStmt.run(`tx_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`, mint, solSpent, String(tokenAmountRaw), decimals, signature, Date.now());
   }
 
-  public commitSell(mint: string, solGained: number, tokenAmountRaw: number, decimals: number, signature: string): void {
+  public commitSell(mint: string, solGained: number, tokenAmountRaw: number | string | bigint, decimals: number, signature: string): void {
     const currentSol = this.getSolBalance();
     this.setSolBalance(currentSol + solGained);
 
-    const currentToken = this.getTokenBalance(mint);
-    const newToken = Math.max(0, currentToken - tokenAmountRaw);
-    this.setTokenBalance(mint, newToken, decimals);
+    const currentToken = this.getTokenBalanceRaw(mint);
+    const sold = BigInt(String(tokenAmountRaw));
+    if (sold > currentToken) throw new Error(`INSUFFICIENT_TOKEN_BALANCE: ${mint}`);
+    this.setTokenBalance(mint, currentToken - sold, decimals);
 
     const txStmt = this.db.prepare(`
       INSERT INTO paper_transactions (id, type, mint, sol_amount, token_amount_raw, decimals, signature, timestamp)
