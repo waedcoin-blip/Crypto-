@@ -15,6 +15,7 @@ import { hardenedApprovalStore } from './HardenedApprovalStore.js';
 import { hardenedCriteriaEngine } from './HardenedCriteriaEngine.js';
 import { candidateEnricher } from './CandidateEnricher.js';
 import { candidateRegistry } from '../market/CandidateRegistry.js';
+import { tokenMintResolver } from '../market/TokenMintResolver.js';
 
 export interface BuyParams {
   network: string;
@@ -124,6 +125,30 @@ export class TradingEngine {
       return {
         success: false,
         error: 'INVALID_MINT: Mint address is required.',
+      };
+    }
+
+    // 0. On-Chain Canonical Mint Validation Gate
+    const executor = executionGateway.getExecutor(network) as any;
+    const connection = executor?.connection || null;
+    const mintValidation = await tokenMintResolver.validateTokenMint(mint, connection);
+
+    if (!mintValidation.ok) {
+      if (mintValidation.code === 'INVALID_MINT') {
+        return {
+          success: false,
+          error: `BUY REJECTED: Reason: Invalid token mint ${mint} (${mintValidation.reason}). Stage: Mint Validation`,
+          status: 'rejected',
+          reason: 'INVALID_MINT',
+          stage: 'MINT_VALIDATION',
+        };
+      }
+      return {
+        success: false,
+        error: `BUY REJECTED: Reason: Mint validation unavailable for ${mint} (${mintValidation.reason}). Stage: Mint Validation`,
+        status: 'error',
+        reason: mintValidation.code,
+        stage: 'MINT_VALIDATION',
       };
     }
 

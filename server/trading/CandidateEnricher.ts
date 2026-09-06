@@ -92,9 +92,16 @@ export class CandidateEnricher {
   public async enrichCandidate(mint: string, network: string = 'mainnet'): Promise<EnrichedCandidate> {
     const trimmedMint = mint.trim();
 
-    // 0. Mint Validity Gate
-    if (!tokenMintResolver.isValidMint(trimmedMint)) {
-      return this.createInvalidCandidate(trimmedMint, network, 'INVALID_OR_PROGRAM_MINT');
+    // 0. Mint Validity Gate - Full On-Chain Canonical Validation
+    const executor = executionGateway.getExecutor(network) as any;
+    const connection = executor?.connection || null;
+    const mintValidation = await tokenMintResolver.validateTokenMint(trimmedMint, connection);
+
+    if (!mintValidation.ok) {
+      if (mintValidation.code === 'INVALID_MINT') {
+        return this.createInvalidCandidate(trimmedMint, network, mintValidation.reason);
+      }
+      console.warn(`[CandidateEnricher] Mint validation unavailable for ${trimmedMint}: ${mintValidation.reason}`);
     }
 
     const cacheKey = `${network}:${trimmedMint}`;

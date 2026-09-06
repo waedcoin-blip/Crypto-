@@ -320,22 +320,12 @@ export class LaserStreamPipeline {
     this.counters.mintExtractionAttempted++;
     let extractedMint: string | null = null;
 
-    if (protocol === 'PUMP_FUN') {
+    if (protocol === 'PUMP_FUN' || protocol === 'RAYDIUM') {
       extractedMint = tokenMintResolver.extractMintFromLogs(logs);
     }
 
     if (!extractedMint) {
-      // Find valid SPL token candidate inside account keys by filtering non-mints
-      for (const key of keys) {
-        if (tokenMintResolver.isValidMint(key)) {
-          extractedMint = key;
-          break;
-        }
-      }
-    }
-
-    if (!extractedMint) {
-      // Unresolved mint - DROP EVENT
+      // Unresolved mint - DROP EVENT cleanly
       return;
     }
 

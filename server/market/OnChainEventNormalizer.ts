@@ -174,7 +174,8 @@ eventType=ON_CHAIN_TX`);
       const account = value.account || result.account || {};
       const owner = typeof account.owner === 'string' ? account.owner : '';
 
-      const isMint = tokenMintResolver.isValidMint(pubkey);
+      const isMintOwner = owner === 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' || owner === 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
+      const isMint = isMintOwner && tokenMintResolver.isValidMint(pubkey);
       const resolvedMint = isMint ? pubkey : '';
 
       const eventId = this.generateEventId('HELIUS_WSS', 'ACCOUNT_UPDATE', slot, undefined, pubkey);

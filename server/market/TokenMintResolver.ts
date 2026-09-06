@@ -1,5 +1,6 @@
 // server/market/TokenMintResolver.ts
-import { PublicKey } from '@solana/web3.js';
+import { Connection, PublicKey } from '@solana/web3.js';
+import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, unpackMint } from '@solana/spl-token';
 import bs58 from 'bs58';
 import { validateSolanaMint } from '../../src/utils/solanaValidators.js';
 
@@ -17,6 +18,34 @@ export interface ResolvedMintResult {
   classification: AddressClassification;
   isValidMint: boolean;
   reason: string;
+}
+
+export interface CanonicalValidatedMint {
+  mint: string;
+  ownerProgramId: string;
+  programName: 'spl-token' | 'token-2022';
+  decimals: number;
+  supply: string;
+  isInitialized: boolean;
+  mintAuthority: string | null;
+  freezeAuthority: string | null;
+  validatedAt: number;
+}
+
+export type ValidationErrorCode =
+  | 'VALID'
+  | 'INVALID_MINT'
+  | 'RPC_VALIDATION_UNAVAILABLE'
+  | 'RPC_RATE_LIMITED'
+  | 'RPC_ERROR';
+
+export interface MintValidationResult {
+  ok: boolean;
+  code: ValidationErrorCode;
+  reason: string;
+  mint: string;
+  stage: 'MINT_VALIDATION';
+  value?: CanonicalValidatedMint;
 }
 
 // Exhaustive set of known Solana System, Program, DEX, and Router addresses that must NEVER be treated as token mints.
@@ -68,14 +97,6 @@ const KNOWN_PROGRAMS_AND_NON_MINTS = new Set<string>([
   'MSHOT11111111111111111111111111111111111111', // Moonshot Program
   'MoonCVVNZFSYkqNXP6bxHLPL6QQJiMagDL3qcqUQTrG', // Moonshot Core
 
-  // Known Native Base Tokens & Common Non-Meme Assets
-  'So11111111111111111111111111111111111111112', // Wrapped SOL
-  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
-  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
-  'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So', // mSOL
-  'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn', // JitoSOL
-  'bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1', // bSOL
-
   // Pump.fun Global Authorities, Fee Recipients & System PDAs
   '4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf', // Pump.fun Global Authority
   'CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM', // Pump.fun Fee Recipient
@@ -84,8 +105,12 @@ const KNOWN_PROGRAMS_AND_NON_MINTS = new Set<string>([
 
 export class TokenMintResolver {
   private static instance: TokenMintResolver;
-  private verifiedMintCache: Map<string, { isValid: boolean; checkedAt: number }> = new Map();
-  private readonly cacheTtlMs = 600000; // 10 minutes cache
+  private positiveCache: Map<string, { value: CanonicalValidatedMint; expiresAt: number }> = new Map();
+  private negativeCache: Map<string, { reason: string; expiresAt: number }> = new Map();
+  private inFlightRequests: Map<string, Promise<MintValidationResult>> = new Map();
+
+  private readonly positiveCacheTtlMs = 600000; // 10 minutes
+  private readonly negativeCacheTtlMs = 300000; // 5 minutes
 
   private constructor() {}
 
@@ -104,9 +129,277 @@ export class TokenMintResolver {
   }
 
   /**
-   * Resolves whether an address is a genuine candidate token mint.
-   * Rejects Program IDs, PDAs, Sysvars, Native SOL/USDC, and invalid Base58 strings.
+   * Authoritative, canonical on-chain token mint validation.
+   * Verifies Base58 syntax, program IDs, on-chain account existence, owner program, and SPL / Token-2022 layout.
    */
+  public async validateTokenMint(
+    address: string,
+    connection?: Connection | null,
+    options?: { forceRefresh?: boolean; timeoutMs?: number }
+  ): Promise<MintValidationResult> {
+    if (!address || typeof address !== 'string') {
+      return {
+        ok: false,
+        code: 'INVALID_MINT',
+        reason: 'EMPTY_OR_NON_STRING_ADDRESS',
+        mint: '',
+        stage: 'MINT_VALIDATION',
+      };
+    }
+
+    const trimmed = address.trim();
+
+    if (!this.isValidPublicKey(trimmed)) {
+      return {
+        ok: false,
+        code: 'INVALID_MINT',
+        reason: 'INVALID_BASE58_OR_BYTE_LENGTH',
+        mint: trimmed,
+        stage: 'MINT_VALIDATION',
+      };
+    }
+
+    if (KNOWN_PROGRAMS_AND_NON_MINTS.has(trimmed)) {
+      return {
+        ok: false,
+        code: 'INVALID_MINT',
+        reason: 'KNOWN_PROGRAM_OR_SYSVAR',
+        mint: trimmed,
+        stage: 'MINT_VALIDATION',
+      };
+    }
+
+    if (!options?.forceRefresh) {
+      const posCached = this.positiveCache.get(trimmed);
+      if (posCached && Date.now() < posCached.expiresAt) {
+        return {
+          ok: true,
+          code: 'VALID',
+          reason: 'CACHED_VALID_MINT',
+          mint: trimmed,
+          stage: 'MINT_VALIDATION',
+          value: posCached.value,
+        };
+      }
+
+      const negCached = this.negativeCache.get(trimmed);
+      if (negCached && Date.now() < negCached.expiresAt) {
+        return {
+          ok: false,
+          code: 'INVALID_MINT',
+          reason: `CACHED_INVALID_MINT: ${negCached.reason}`,
+          mint: trimmed,
+          stage: 'MINT_VALIDATION',
+        };
+      }
+    }
+
+    if (this.inFlightRequests.has(trimmed)) {
+      return await this.inFlightRequests.get(trimmed)!;
+    }
+
+    const validationPromise = (async (): Promise<MintValidationResult> => {
+      try {
+        let pubkey: PublicKey;
+        try {
+          pubkey = new PublicKey(trimmed);
+        } catch {
+          return {
+            ok: false,
+            code: 'INVALID_MINT',
+            reason: 'INVALID_PUBLIC_KEY',
+            mint: trimmed,
+            stage: 'MINT_VALIDATION',
+          };
+        }
+
+        const connList = connection ? [connection] : this.getRpcConnections();
+        if (!connList.length) {
+          return {
+            ok: false,
+            code: 'RPC_VALIDATION_UNAVAILABLE',
+            reason: 'NO_RPC_ENDPOINTS_CONFIGURED',
+            mint: trimmed,
+            stage: 'MINT_VALIDATION',
+          };
+        }
+
+        let lastRpcError: unknown = null;
+        for (let i = 0; i < connList.length; i++) {
+          const conn = connList[i];
+          try {
+            const timeoutMs = options?.timeoutMs || 4000;
+            const accInfo = await Promise.race([
+              conn.getAccountInfo(pubkey, 'confirmed'),
+              new Promise<null>((_, reject) => setTimeout(() => reject(new Error('RPC_TIMEOUT')), timeoutMs)),
+            ]);
+
+            if (!accInfo) {
+              const reason = 'ACCOUNT_DOES_NOT_EXIST';
+              this.negativeCache.set(trimmed, { reason, expiresAt: Date.now() + this.negativeCacheTtlMs });
+              this.logValidationEvent(trimmed, 'INVALID', reason, null);
+              return {
+                ok: false,
+                code: 'INVALID_MINT',
+                reason,
+                mint: trimmed,
+                stage: 'MINT_VALIDATION',
+              };
+            }
+
+            if (accInfo.executable) {
+              const reason = 'EXECUTABLE_PROGRAM_ACCOUNT';
+              this.negativeCache.set(trimmed, { reason, expiresAt: Date.now() + this.negativeCacheTtlMs });
+              this.logValidationEvent(trimmed, 'INVALID', reason, null);
+              return {
+                ok: false,
+                code: 'INVALID_MINT',
+                reason,
+                mint: trimmed,
+                stage: 'MINT_VALIDATION',
+              };
+            }
+
+            const ownerStr = accInfo.owner.toBase58();
+            const isSpl = ownerStr === TOKEN_PROGRAM_ID.toBase58();
+            const isToken2022 = ownerStr === TOKEN_2022_PROGRAM_ID.toBase58();
+
+            if (!isSpl && !isToken2022) {
+              const reason = `UNSUPPORTED_ACCOUNT_OWNER: ${ownerStr}`;
+              this.negativeCache.set(trimmed, { reason, expiresAt: Date.now() + this.negativeCacheTtlMs });
+              this.logValidationEvent(trimmed, 'INVALID', reason, ownerStr);
+              return {
+                ok: false,
+                code: 'INVALID_MINT',
+                reason,
+                mint: trimmed,
+                stage: 'MINT_VALIDATION',
+              };
+            }
+
+            const programId = isToken2022 ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+            let mintData;
+            try {
+              mintData = unpackMint(pubkey, accInfo, programId);
+            } catch (e: any) {
+              const reason = `NOT_A_MINT_ACCOUNT: ${e?.message || 'Data layout mismatch'}`;
+              this.negativeCache.set(trimmed, { reason, expiresAt: Date.now() + this.negativeCacheTtlMs });
+              this.logValidationEvent(trimmed, 'INVALID', reason, ownerStr);
+              return {
+                ok: false,
+                code: 'INVALID_MINT',
+                reason,
+                mint: trimmed,
+                stage: 'MINT_VALIDATION',
+              };
+            }
+
+            if (!mintData.isInitialized) {
+              const reason = 'MINT_NOT_INITIALIZED';
+              this.negativeCache.set(trimmed, { reason, expiresAt: Date.now() + this.negativeCacheTtlMs });
+              this.logValidationEvent(trimmed, 'INVALID', reason, ownerStr);
+              return {
+                ok: false,
+                code: 'INVALID_MINT',
+                reason,
+                mint: trimmed,
+                stage: 'MINT_VALIDATION',
+              };
+            }
+
+            const validatedMint: CanonicalValidatedMint = {
+              mint: trimmed,
+              ownerProgramId: ownerStr,
+              programName: isToken2022 ? 'token-2022' : 'spl-token',
+              decimals: mintData.decimals,
+              supply: mintData.supply ? mintData.supply.toString() : '0',
+              isInitialized: mintData.isInitialized,
+              mintAuthority: mintData.mintAuthority ? mintData.mintAuthority.toBase58() : null,
+              freezeAuthority: mintData.freezeAuthority ? mintData.freezeAuthority.toBase58() : null,
+              validatedAt: Date.now(),
+            };
+
+            this.positiveCache.set(trimmed, { value: validatedMint, expiresAt: Date.now() + this.positiveCacheTtlMs });
+            this.logValidationEvent(trimmed, 'VALID', 'ON_CHAIN_VALIDATED', ownerStr, validatedMint.decimals);
+
+            return {
+              ok: true,
+              code: 'VALID',
+              reason: 'ON_CHAIN_VALIDATED',
+              mint: trimmed,
+              stage: 'MINT_VALIDATION',
+              value: validatedMint,
+            };
+          } catch (e: any) {
+            lastRpcError = e;
+          }
+        }
+
+        const rpcMsg = lastRpcError instanceof Error ? lastRpcError.message : String(lastRpcError || 'Unknown');
+        const isRateLimit = rpcMsg.includes('429');
+        return {
+          ok: false,
+          code: isRateLimit ? 'RPC_RATE_LIMITED' : 'RPC_VALIDATION_UNAVAILABLE',
+          reason: `RPC_ERROR: ${rpcMsg}`,
+          mint: trimmed,
+          stage: 'MINT_VALIDATION',
+        };
+      } finally {
+        this.inFlightRequests.delete(trimmed);
+      }
+    })();
+
+    this.inFlightRequests.set(trimmed, validationPromise);
+    return await validationPromise;
+  }
+
+  private getRpcConnections(): Connection[] {
+    const urls = [...new Set([
+      process.env.EXECUTION_RPC_URL,
+      process.env.EXECUTION_RPC_BACKUP_URL,
+      process.env.SEARCH_RPC_URL,
+      process.env.SEARCH_RPC_BACKUP_URL,
+      process.env.MONITOR_RPC_URL,
+      process.env.MONITOR_RPC_BACKUP_URL,
+      process.env.MAINNET_RPC_URL,
+      'https://api.mainnet-beta.solana.com',
+    ].filter((v): v is string => !!v && v.trim().length > 0).map(v => v.trim()))];
+    return urls.map(url => new Connection(url, 'confirmed'));
+  }
+
+  private logValidationEvent(
+    mint: string,
+    result: 'VALID' | 'INVALID',
+    reason: string,
+    owner: string | null,
+    decimals?: number
+  ): void {
+    console.log(JSON.stringify({
+      event: 'MINT_VALIDATION',
+      mint,
+      result,
+      reason,
+      owner: owner || 'UNKNOWN',
+      decimals: decimals !== undefined ? decimals : null,
+      timestamp: Date.now(),
+    }));
+  }
+
+  public isValidMint(address: string): boolean {
+    if (!address || typeof address !== 'string') return false;
+    const trimmed = address.trim();
+    if (!this.isValidPublicKey(trimmed)) return false;
+    if (KNOWN_PROGRAMS_AND_NON_MINTS.has(trimmed)) return false;
+    const neg = this.negativeCache.get(trimmed);
+    if (neg && Date.now() < neg.expiresAt) return false;
+    return true;
+  }
+
+  public async isValidMintAsync(address: string, connection?: Connection | null): Promise<boolean> {
+    const res = await this.validateTokenMint(address, connection);
+    return res.ok;
+  }
+
   public classifyAddress(address: string): ResolvedMintResult {
     if (!address || typeof address !== 'string') {
       return {
@@ -137,62 +430,52 @@ export class TokenMintResolver {
       };
     }
 
-    // Check fast cache
-    const cached = this.verifiedMintCache.get(trimmed);
-    if (cached && Date.now() - cached.checkedAt < this.cacheTtlMs) {
+    const negCached = this.negativeCache.get(trimmed);
+    if (negCached && Date.now() < negCached.expiresAt) {
       return {
         mint: trimmed,
-        classification: cached.isValid ? 'TOKEN_MINT' : 'UNKNOWN',
-        isValidMint: cached.isValid,
-        reason: cached.isValid ? 'CACHED_VALID_MINT' : 'CACHED_INVALID_MINT',
+        classification: 'UNKNOWN',
+        isValidMint: false,
+        reason: negCached.reason,
       };
     }
 
-    // By default, if valid base58 and not in known non-mints list, it qualifies as candidate mint
-    const isValid = true;
-    this.verifiedMintCache.set(trimmed, { isValid, checkedAt: Date.now() });
+    const posCached = this.positiveCache.get(trimmed);
+    if (posCached && Date.now() < posCached.expiresAt) {
+      return {
+        mint: trimmed,
+        classification: 'TOKEN_MINT',
+        isValidMint: true,
+        reason: 'CACHED_VALID_MINT',
+      };
+    }
 
     return {
       mint: trimmed,
       classification: 'TOKEN_MINT',
       isValidMint: true,
-      reason: 'VALID_CANDIDATE_MINT',
+      reason: 'SYNTACTICALLY_VALID_CANDIDATE',
     };
   }
 
-  /**
-   * Fast boolean check for token discovery pipelines.
-   */
-  public isValidMint(address: string): boolean {
-    return this.classifyAddress(address).isValidMint;
-  }
-
-  /**
-   * Parses log messages from transaction logs (e.g. Pump.fun creation logs) to extract
-   * the real newly initialized SPL Token Mint.
-   */
   public extractMintFromLogs(logs: string[]): string | null {
     if (!logs || !Array.isArray(logs)) return null;
 
     for (const log of logs) {
       if (typeof log !== 'string') continue;
 
-      // 1. Pump.fun mint created log pattern: "Program log: mint: <mintAddress>"
       const mintMatch = log.match(/Program log: (?:mint|token_mint|mintAddress):?\s*([1-9A-HJ-NP-Za-km-z]{32,44})/i);
       if (mintMatch && mintMatch[1]) {
         const candidate = mintMatch[1].trim();
         if (this.isValidMint(candidate)) return candidate;
       }
 
-      // 2. Pump.fun Create instruction log: "Program log: Instruction: Create"
-      // If the log contains base58 addresses in JSON or structured form
       const jsonMatch = log.match(/\{.*"mint"\s*:\s*"([1-9A-HJ-NP-Za-km-z]{32,44})".*\}/);
       if (jsonMatch && jsonMatch[1]) {
         const candidate = jsonMatch[1].trim();
         if (this.isValidMint(candidate)) return candidate;
       }
 
-      // 3. InitializeMint2 / InitializeMint instruction
       const initMintMatch = log.match(/Instruction: (?:InitializeMint|InitializeMint2|CreateToken|CreatePool).*?([1-9A-HJ-NP-Za-km-z]{32,44})/i);
       if (initMintMatch && initMintMatch[1]) {
         const candidate = initMintMatch[1].trim();
@@ -203,10 +486,6 @@ export class TokenMintResolver {
     return null;
   }
 
-  /**
-   * Extracts the candidate token mint from an array of transaction account keys,
-   * strictly filtering out known programs, sysvars, and DEX addresses.
-   */
   public extractCandidateMintsFromAccountKeys(accountKeys: string[]): string[] {
     if (!accountKeys || !Array.isArray(accountKeys)) return [];
 
@@ -222,3 +501,12 @@ export class TokenMintResolver {
 }
 
 export const tokenMintResolver = TokenMintResolver.getInstance();
+
+export async function validateTokenMint(
+  address: string,
+  connection?: Connection | null,
+  options?: { forceRefresh?: boolean; timeoutMs?: number }
+): Promise<MintValidationResult> {
+  return TokenMintResolver.getInstance().validateTokenMint(address, connection, options);
+}
+

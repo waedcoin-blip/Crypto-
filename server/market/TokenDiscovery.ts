@@ -16,25 +16,24 @@ export class TokenDiscovery {
   }
 
   public processMarketEvent(event: MarketEvent): void {
-    if (event.type !== 'ON_CHAIN_TX' || !event.accountKeys) return;
+    if (event.type !== 'ON_CHAIN_TX') return;
 
-    for (const key of event.accountKeys) {
-      if (!this.isValidMintCandidate(key)) continue;
+    const mintToProcess = event.candidateMint || null;
+    if (!mintToProcess || !this.isValidMintCandidate(mintToProcess)) return;
 
-      const existing = tokenRepository.getToken(key);
-      tokenRepository.upsertToken({
-        mintAddress: key,
-        network: event.network || 'mainnet',
-        discoveredAt: existing?.discoveredAt ?? event.timestamp,
-        updatedAt: event.timestamp,
-        signal: existing?.signal ?? 'HELIUS_WSS_DISCOVERY',
-        metadata: {
-          ...(existing?.metadata || {}),
-          lastSignature: event.signature,
-          lastSlot: event.slot,
-        },
-      });
-    }
+    const existing = tokenRepository.getToken(mintToProcess);
+    tokenRepository.upsertToken({
+      mintAddress: mintToProcess,
+      network: event.network || 'mainnet',
+      discoveredAt: existing?.discoveredAt ?? event.timestamp,
+      updatedAt: event.timestamp,
+      signal: existing?.signal ?? 'HELIUS_WSS_DISCOVERY',
+      metadata: {
+        ...(existing?.metadata || {}),
+        lastSignature: event.signature,
+        lastSlot: event.slot,
+      },
+    });
   }
 
   public isValidMintCandidate(address: string): boolean {

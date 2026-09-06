@@ -42,7 +42,7 @@ export class CanonicalEventNormalizer {
       return null;
     }
 
-    if (!tokenMintResolver.isValidPublicKey(mint)) {
+    if (!tokenMintResolver.isValidMint(mint)) {
       return null;
     }
 
@@ -106,7 +106,7 @@ export class CanonicalEventNormalizer {
       return null;
     }
 
-    if (!tokenMintResolver.isValidPublicKey(mint)) {
+    if (!tokenMintResolver.isValidMint(mint)) {
       return null;
     }
 
@@ -158,7 +158,7 @@ export class CanonicalEventNormalizer {
       return null;
     }
 
-    if (!tokenMintResolver.isValidPublicKey(mint)) {
+    if (!tokenMintResolver.isValidMint(mint)) {
       return null;
     }
 
@@ -212,7 +212,7 @@ export class CanonicalEventNormalizer {
       return null;
     }
 
-    if (!tokenMintResolver.isValidPublicKey(mint)) return null;
+    if (!tokenMintResolver.isValidMint(mint)) return null;
 
     const now = Date.now();
     const eventType = params.eventType || (params.side ? params.side : 'TRADE');
