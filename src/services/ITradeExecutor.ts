@@ -1,76 +1,72 @@
 // src/services/ITradeExecutor.ts
-import { QuoteGetRequest, QuoteResponse } from '@jup-ag/api';
-
-export type ExecutionFailureClassification =
-  | 'quote_failure'
-  | 'slippage_failure'
-  | 'transaction_failure'
-  | 'receipt_failure';
-
-export class ExecutionError extends Error {
-  classification: ExecutionFailureClassification;
-  details?: any;
-
-  constructor(classification: ExecutionFailureClassification, message: string, details?: any) {
-    super(message);
-    this.name = 'ExecutionError';
-    this.classification = classification;
-    this.details = details;
-  }
-}
+import { PublicKey } from '@solana/web3.js';
 
 export interface SwapResult {
-  signature: string;
-  inputMint: string;
-  outputMint: string;
-  inputAmount: number;
-  outputAmount: number;
-  feeSol: number;
-  totalCostSol?: number;
-  slot: number;
-  landingTimeMs: number;
-  method: 'jito' | 'helius' | 'rpc';
-  simulated?: boolean;
+  success?: boolean;
+  signature?: string;
   error?: string;
-  failureClassification?: ExecutionFailureClassification;
+  inputAmount?: any;
+  outputAmount?: any;
+  inAmount?: string;
+  outAmount?: string;
+  priceImpactPct?: number;
+  routePlan?: any[];
+  txid?: string;
+  latencyMs?: number;
+  totalCostSol?: number;
+  feeSol?: number;
+  slot?: number;
+  landingTimeMs?: number;
+  method?: string;
+  inputMint?: string;
+  outputMint?: string;
 }
 
-export interface ITradeExecutor {
-  readonly mode: 'paper' | 'mainnet';
-  readonly publicKey: string;
+export interface TradeQuote {
+  inputMint: string;
+  outputMint: string;
+  inAmount: string;
+  outAmount: string;
+  otherAmountThreshold?: string;
+  priceImpactPct?: number;
+  routePlan?: any[];
+  slippageBps?: number;
+  rawQuoteResponse?: any;
+}
 
-  getQuote(params: QuoteGetRequest): Promise<QuoteResponse>;
-
-  swap(
-    inputMint: string,
-    outputMint: string,
-    amount: number,
-    slippageBps: number,
-    label?: 'entry' | 'exit_tp' | 'exit_sl' | 'MAX_HOLD' | 'MANUAL' | 'FORCE_EXIT' | string,
-    preValidatedQuote?: QuoteResponse | null
-  ): Promise<SwapResult>;
-
-  getSolBalance(): Promise<number>;
-  getTokenBalance(mint: string): Promise<number>;
-  hasTokenAccount(mint: string): Promise<boolean>;
-
-  batchSwap(
-    swaps: Array<{
-      inputMint: string;
-      outputMint: string;
-      amount: number;
-      slippageBps: number;
-      label?: 'entry' | 'exit_tp' | 'exit_sl' | 'MAX_HOLD' | 'MANUAL' | 'FORCE_EXIT' | string;
-    }>
-  ): Promise<SwapResult[]>;
-
-  getTelemetry(): ExecutorTelemetry;
+export interface TradeResult {
+  success: boolean;
+  signature?: string;
+  error?: string;
+  inputAmount?: string;
+  outputAmount?: string;
+  inAmount?: string;
+  outAmount?: string;
+  priceImpactPct?: number;
 }
 
 export interface ExecutorTelemetry {
   totalSwaps: number;
-  totalFeesPaidSol: number;
-  avgLandingTimeMs: number;
-  failureRate: number;
-  lastFailure?: string;
+  successfulSwaps: number;
+  failedSwaps: number;
+  avgLatencyMs: number;
+}
+
+export class ExecutionError extends Error {
+  constructor(message: string, public code?: string) {
+    super(message);
+    this.name = 'ExecutionError';
+  }
+}
+
+export interface ITradeExecutor {
+  mode?: any;
+  publicKey?: any;
+  getQuote(params: any): Promise<any>;
+  executeSwap(quote: any, keypair?: any): Promise<SwapResult>;
+  batchSwap?(quotes: any[]): Promise<SwapResult[]>;
+  getSolBalance?(address?: string): Promise<number>;
+  getTokenBalance?(mintOrAddress: string, mint?: string): Promise<any>;
+  hasTokenAccount?(mintOrAddress: string, mint?: string): Promise<boolean>;
+  getTelemetry?(): ExecutorTelemetry;
 }

@@ -1,13 +1,10 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword, createUserWithEmailAndPassword, browserLocalPersistence, setPersistence } from 'firebase/auth';
-import { initializeFirestore, doc, getDocFromServer } from 'firebase/firestore';
+import { getFirestore } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
-// Initialize Firestore with long polling for better stability in restricted environments
-export const db = initializeFirestore(app, {
-  experimentalForceLongPolling: true,
-}, firebaseConfig.firestoreDatabaseId);
+export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 
 export const auth = getAuth(app);
 export const authPersistencePromise = setPersistence(auth, browserLocalPersistence);
@@ -79,19 +76,3 @@ export const signInWithGoogle = async () => {
 
 export { signInWithEmailAndPassword, createUserWithEmailAndPassword };
 
-async function testConnection() {
-  try {
-    // Attempting a real server fetch to confirm connection
-    await getDocFromServer(doc(db, 'test', 'connection'));
-    console.log("Firestore connection verified successfully.");
-  } catch (error) {
-    if (error instanceof Error) {
-      if (error.message.includes('the client is offline') || error.message.includes('unavailable')) {
-        console.error("Firestore connectivity issue: The backend is currently unreachable. The app will continue in offline mode.", error.message);
-      } else {
-        console.error("Firestore error:", error.message);
-      }
-    }
-  }
-}
-testConnection();

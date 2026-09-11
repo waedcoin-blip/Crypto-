@@ -89,34 +89,47 @@ export class FastExitExecutor {
 
     console.log(`[FastExitExecutor] EXIT INITIATED: mint=${position.mint} reason=${reason} positionId=${position.id}`);
 
-    // 1. PRE-SELL VALIDATION (Jupiter Executable Quote)
+    // 1. PRE-SELL VALIDATION (Jupiter Executable Quote for Live; Paper DEX Quote for Paper)
     let validatedQuote = preValidatedQuote;
     if (!validatedQuote) {
-      try {
-        const rawAmount = position.tokenAmountRaw || params.amountRaw || String(Math.floor((position.tokenAmount || 0) * (10 ** (position.decimals || 9))));
-        const preSellResult = await jupiterPreSellValidator.validatePreSell({
+      if (position.network === 'paper') {
+        const tokenAmt = position.tokenAmount || (Number(position.tokenAmountRaw || '0') / 10 ** (position.decimals || 9));
+        const estProceedsSol = (position.currentPrice || position.averageEntryPrice || 0.0001) * tokenAmt;
+        validatedQuote = {
           inputMint: position.mint,
-          outputMint: 'So11111111111111111111111111111111111111112', // WSOL
-          rawAmount,
-          slippageBps: position.slippageBpsSl || params.slippageBps || 1000,
-          costBasisSol: position.totalSolSpent,
-        });
+          outputMint: 'So11111111111111111111111111111111111111112',
+          inAmount: position.tokenAmountRaw,
+          outAmount: String(Math.floor(estProceedsSol * 1e9)),
+          priceImpactPct: 0.1,
+          routePlan: [{ swapInfo: { label: 'PaperDEX' } }],
+        };
+      } else {
+        try {
+          const rawAmount = position.tokenAmountRaw || params.amountRaw || String(Math.floor((position.tokenAmount || 0) * (10 ** (position.decimals || 9))));
+          const preSellResult = await jupiterPreSellValidator.validatePreSell({
+            inputMint: position.mint,
+            outputMint: 'So11111111111111111111111111111111111111112', // WSOL
+            rawAmount,
+            slippageBps: position.slippageBpsSl || params.slippageBps || 1000,
+            costBasisSol: position.totalSolSpent,
+          });
 
-        if (!preSellResult.isValid) {
+          if (!preSellResult.isValid) {
+            return {
+              success: false,
+              error: `PRE_SELL_VALIDATION_FAILED: ${preSellResult.reason}`,
+              preSellValidated: false,
+            };
+          }
+
+          validatedQuote = preSellResult.quote;
+        } catch (err: any) {
           return {
             success: false,
-            error: `PRE_SELL_VALIDATION_FAILED: ${preSellResult.reason}`,
+            error: `PRE_SELL_VALIDATION_ERROR: ${err?.message || String(err)}`,
             preSellValidated: false,
           };
         }
-
-        validatedQuote = preSellResult.quote;
-      } catch (err: any) {
-        return {
-          success: false,
-          error: `PRE_SELL_VALIDATION_ERROR: ${err?.message || String(err)}`,
-          preSellValidated: false,
-        };
       }
     }
 

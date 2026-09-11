@@ -13,6 +13,64 @@ import { positionManager } from '../trading/PositionManager.js';
 
 const router = Router();
 
+// ============ TRADE EXECUTION (BUY / SELL) ============
+// POST /api/trading/buy
+router.post('/buy', asyncHandler(async (req: Request, res: Response) => {
+  const result = await tradingEngine.buy(req.body);
+  if (!result.success) {
+    return res.status(400).json({ status: 'error', ...result });
+  }
+  res.json({ status: 'success', ...result, timestamp: Date.now() });
+}));
+
+// POST /api/trading/sell
+router.post('/sell', asyncHandler(async (req: Request, res: Response) => {
+  const result = await tradingEngine.sell(req.body);
+  if (!result.success) {
+    return res.status(400).json({ status: 'error', ...result });
+  }
+  res.json({ status: 'success', ...result, timestamp: Date.now() });
+}));
+
+// ============ POSITIONS & VALUATIONS ============
+// GET /api/trading/positions
+router.get('/positions', asyncHandler(async (req: Request, res: Response) => {
+  const network = req.query.network as string | undefined;
+  const wallet = req.query.wallet as string | undefined;
+  const openPositions = positionManager.getOpenPositions(network, wallet);
+  const allPositions = positionManager.getAllPositions();
+
+  const enriched = openPositions.map(pos => {
+    const val = positionValuationEngine.getValuation(pos.network, pos.wallet, pos.mint);
+    const currentPriceSol = val?.currentPriceSol || pos.currentPrice || pos.averageEntryPrice || 0;
+    const unrealizedPnlSol = val?.pnlSol ?? val?.executablePnlSol ?? (currentPriceSol > 0 && pos.averageEntryPrice > 0 ? (currentPriceSol - pos.averageEntryPrice) * pos.tokenAmount : 0);
+    const unrealizedPnlPct = val?.pnlPercent ?? val?.executablePnlPercent ?? (pos.averageEntryPrice > 0 ? ((currentPriceSol - pos.averageEntryPrice) / pos.averageEntryPrice) * 100 : 0);
+
+    return {
+      ...pos,
+      currentPriceSol,
+      unrealizedPnlSol,
+      unrealizedPnlPct,
+    };
+  });
+
+  const currentPrices = new Map<string, number>();
+  for (const pos of openPositions) {
+    const val = positionValuationEngine.getValuation(pos.network, pos.wallet, pos.mint);
+    if (val?.currentPriceSol) currentPrices.set(pos.mint, val.currentPriceSol);
+  }
+  const portfolioPnL = pnlEngine.calculatePortfolioPnL(openPositions, currentPrices);
+
+  res.json({
+    status: 'success',
+    positions: enriched,
+    allPositions,
+    portfolioPnL,
+    count: enriched.length,
+    timestamp: Date.now(),
+  });
+}));
+
 // ============ PORTFOLIO PNL ============
 // GET /api/trading/portfolio/pnl
 router.get('/portfolio/pnl', asyncHandler(async (_req: Request, res: Response) => {

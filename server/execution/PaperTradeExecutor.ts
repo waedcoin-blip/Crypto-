@@ -70,7 +70,7 @@ export class PaperTradeExecutor implements TradeExecutor {
 
       // Commit buy to paper wallet
       const tokenAmount = amountLamports; // Simplified: 1:1 for paper
-      paperWalletLedger.commitBuy(params.outputMint, amountLamports / 1e9, String(tokenAmount), params.decimals || 9, signature);
+      paperWalletLedger.commitBuy(params.outputMint, amountLamports / 1e9, String(tokenAmount), params.decimals || 9, signature, params.walletAddress || 'default');
 
       if (params.onBroadcast) {
         await params.onBroadcast(signature);
@@ -103,9 +103,10 @@ export class PaperTradeExecutor implements TradeExecutor {
     try {
       const tokenAmountRaw = BigInt(String(params.amount));
 
-      // Check paper token balance
-      const tokenBalance = paperWalletLedger.getTokenBalance(params.inputMint);
-      if (BigInt(String(tokenBalance)) < tokenAmountRaw) {
+      // Check paper token balance using raw balance
+      const rawBalanceStr = paperWalletLedger.getTokenBalanceRaw(params.inputMint, params.walletAddress || 'default');
+      const tokenBalanceRaw = BigInt(rawBalanceStr);
+      if (tokenBalanceRaw < tokenAmountRaw) {
         return {
           success: false,
           error: `INSUFFICIENT_TOKEN_BALANCE: Paper balance < sell amount`,
@@ -122,7 +123,7 @@ export class PaperTradeExecutor implements TradeExecutor {
 
       // Add SOL to paper wallet (simulated output)
       const outSol = Number(tokenAmountRaw) / 1e9; // Simplified
-      paperWalletLedger.commitSell(params.inputMint, String(tokenAmountRaw), outSol, signature);
+      paperWalletLedger.commitSell(params.inputMint, String(tokenAmountRaw), outSol, signature, params.walletAddress || 'default');
 
       if (params.onBroadcast) {
         await params.onBroadcast(signature);

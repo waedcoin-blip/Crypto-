@@ -33,6 +33,10 @@ export class RealTradeExecutor implements ITradeExecutor {
     return this.engine.getQuote(params);
   }
 
+  async executeSwap(quote: any, keypair?: any): Promise<SwapResult> {
+    return this.engine.executeSwap(quote, keypair);
+  }
+
   async swap(
     inputMint: string,
     outputMint: string,

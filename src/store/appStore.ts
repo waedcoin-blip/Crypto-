@@ -77,6 +77,7 @@ interface AppState {
   setSessionWallet: (wallet: Keypair | null) => void;
   setIsMonitoring: (val: boolean) => void;
   addJupiterLog: (log: Omit<{ id: string; timestamp: number; type: 'QUOTE' | 'SWAP' | 'ERROR' | 'INFO'; message: string; details?: any }, 'id' | 'timestamp'>) => void;
+  addLog: (message: string, type?: 'info' | 'success' | 'warning' | 'error') => void;
 }
 
 export const useAppStore = create<AppState>((set) => {
@@ -173,6 +174,14 @@ export const useAppStore = create<AppState>((set) => {
     setIsMonitoring: (val) => set({ isMonitoring: val }),
     addJupiterLog: (log) => set((state) => ({
       jupiterLogs: [{ id: Math.random().toString(36).substr(2, 9), timestamp: Date.now(), ...log }, ...state.jupiterLogs].slice(0, 100)
+    })),
+    addLog: (message: string, type: 'info' | 'success' | 'warning' | 'error' = 'info') => set((state) => ({
+      jupiterLogs: [{
+        id: Math.random().toString(36).substr(2, 9),
+        timestamp: Date.now(),
+        type: (type === 'info' ? 'INFO' : type === 'error' ? 'ERROR' : 'SWAP') as 'QUOTE' | 'SWAP' | 'ERROR' | 'INFO',
+        message,
+      }, ...state.jupiterLogs].slice(0, 100)
     })),
   };
 });

@@ -119,6 +119,15 @@ export class TradeRepository {
     return all;
   }
 
+  public clear(network?: string): void {
+    if (network) {
+      const remaining = this.store.read().filter(t => t.network !== network);
+      this.store.write(remaining);
+    } else {
+      this.store.write([]);
+    }
+  }
+
   private validateTrade(trade: any): boolean {
     if (!trade || typeof trade !== 'object') return false;
     if (!trade.mintAddress || typeof trade.mintAddress !== 'string') return false;

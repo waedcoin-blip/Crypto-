@@ -82,6 +82,8 @@ export class PositionManager {
 
   public refreshFromRepository(): void {
     try {
+      this.positions.clear();
+      this.positionKeys.clear();
       const records = positionRepository.getAllPositions();
       for (const record of records) {
         const pos = this.mapRecordToPosition(record);
