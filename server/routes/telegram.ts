@@ -1,111 +1,78 @@
-/**
- * Telegram bot message proxy
- */
-import { Router } from 'express';
-import { fetchWithTimeout } from '../utils/fetch.js';
-import { logger } from '../utils/logger.js';
+// server/routes/telegram.ts
+import { Router, Request, Response } from 'express';
 import { asyncHandler } from '../middleware/errorHandler.js';
-import { validateRequiredString } from '../utils/validation.js';
-import { BadGatewayError, ValidationError } from '../utils/errors.js';
 import { config } from '../config/index.js';
-import { isAllowedOrigin } from '../middleware/security.js';
 
 const router = Router();
 
-// Simple HTML sanitization to prevent XSS
-function sanitizeHtml(input: string): string {
-  return input
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/&lt;(b|i|code|pre|a|strong|em)\b/g, '<$1')  // Allow safe tags
-    .replace(/&lt;\/(b|i|code|pre|a|strong|em)&gt;/g, '</$1>');
+interface TelegramAlert {
+  token: string;
+  mint: string;
+  type: string;
+  message: string;
+  timestamp: number;
 }
 
-router.post('/', asyncHandler(async (req, res) => {
-  // SSRF/Proxy Protection
-  if (req.headers.origin && !isAllowedOrigin(req.headers.origin)) {
-    throw new BadGatewayError('Telegram proxying requires valid CORS origin');
+// In-memory alert buffer (last 100 alerts)
+const alertBuffer: TelegramAlert[] = [];
+const MAX_BUFFER_SIZE = 100;
+
+/**
+ * POST /api/telegram/alert
+ * Receive an alert and queue it for Telegram delivery.
+ */
+router.post('/alert', asyncHandler(async (req: Request, res: Response) => {
+  const { token, mint, type, message } = req.body;
+
+  if (!token || !type || !message) {
+    return res.status(400).json({ status: 'error', error: 'token, type, and message are required' });
   }
 
-  let token = (typeof req.body?.token === 'string' && req.body.token.trim())
-    ? req.body.token.trim()
-    : (process.env.TELEGRAM_BOT_TOKEN || '').trim();
+  const alert: TelegramAlert = {
+    token,
+    mint: mint || '',
+    type,
+    message,
+    timestamp: Date.now(),
+  };
 
-  // Clean up user token input if they included URLs or 'bot' prefix
-  if (token.includes('telegram.org/bot') || token.includes('t.me/bot')) {
-    token = token.replace(/.*bot/i, '');
-  } else {
-    token = token.replace(/^bot_?/i, '');
-  }
-  token = token.replace(/^["']|["']$/g, '').trim();
-
-  if (!token) {
-    throw new ValidationError('Telegram bot token not configured (specify in settings or TELEGRAM_BOT_TOKEN)');
+  alertBuffer.unshift(alert);
+  if (alertBuffer.length > MAX_BUFFER_SIZE) {
+    alertBuffer.length = MAX_BUFFER_SIZE;
   }
 
-  // Telegram bot token format check: <digits>:<alphanumeric>
-  if (!/^\d+:[A-Za-z0-9_-]{20,}$/.test(token)) {
-    throw new ValidationError('Invalid Telegram Bot Token format. Bot tokens from @BotFather look like 123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ');
-  }
+  // TODO: In production, send to Telegram Bot API here
+  // const botToken = config.TELEGRAM_BOT_TOKEN;
+  // const chatId = config.TELEGRAM_CHAT_ID;
+  // await sendTelegramMessage(botToken, chatId, formatAlert(alert));
 
-  const chatId = validateRequiredString(req.body.chatId, 'chatId');
-  const text = validateRequiredString(req.body.text, 'text');
+  res.json({ status: 'success', message: 'Alert queued', timestamp: Date.now() });
+}));
 
-  const sanitizedText = sanitizeHtml(text);
+/**
+ * GET /api/telegram/alerts
+ * Get recent alerts from the buffer.
+ */
+router.get('/alerts', asyncHandler(async (req: Request, res: Response) => {
+  const limit = Math.min(Number(req.query.limit) || 20, MAX_BUFFER_SIZE);
+  res.json({
+    status: 'success',
+    count: alertBuffer.length,
+    alerts: alertBuffer.slice(0, limit),
+    timestamp: Date.now(),
+  });
+}));
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8000);
-
-  try {
-    const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: sanitizedText,
-        parse_mode: 'HTML',
-      }),
-      signal: controller.signal,
-    });
-
-    clearTimeout(timeout);
-
-    // Read as text first to handle non-JSON responses
-    const textData = await response.text();
-    let result: any;
-    try {
-      result = JSON.parse(textData);
-    } catch {
-      result = { success: response.ok, raw: textData };
-    }
-
-    if (!response.ok) {
-      let description = result?.description || result?.error;
-      if (response.status === 404) {
-        description = 'Telegram Bot Token not found. Please check your Bot Token from @BotFather in settings.';
-      } else if (response.status === 401) {
-        description = 'Unauthorized Telegram Bot Token. Please check your Bot Token from @BotFather.';
-      } else if (response.status === 400 && (description?.includes('chat not found') || description?.includes('chat_id'))) {
-        description = 'Telegram Chat ID not found or invalid. Make sure you started a conversation with the bot first.';
-      }
-      const errMsg = description || `Telegram API error (${response.status})`;
-      if (response.status === 404 || response.status === 401 || response.status === 400 || response.status === 403) {
-        throw new ValidationError(errMsg);
-      }
-      throw new BadGatewayError(errMsg);
-    }
-
-    res.status(response.status).json(result);
-  } catch (error: unknown) {
-    clearTimeout(timeout);
-
-    if (error instanceof Error && error.name === 'AbortError') {
-      logger.error('Telegram Proxy Timeout');
-      throw new BadGatewayError('Telegram API Timeout');
-    }
-
-    throw error;
-  }
+/**
+ * GET /api/telegram/config
+ * Get Telegram configuration status (redacted).
+ */
+router.get('/config', asyncHandler(async (req: Request, res: Response) => {
+  res.json({
+    status: 'success',
+    configured: false, // Set to true when TELEGRAM_BOT_TOKEN is configured
+    timestamp: Date.now(),
+  });
 }));
 
 export default router;

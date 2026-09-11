@@ -1,48 +1,17 @@
 // server/repositories/OrderRepository.ts
-import { readDataFile, updateDataFileAtomic } from '../db/jsonStore.js';
+import { JsonStore } from './JsonStore.js';
+import { OrderRecord } from '../types/index.js';
 
-export type OrderState =
-  | 'SIGNAL'
-  | 'VALIDATING'
-  | 'QUOTE_REQUESTED'
-  | 'QUOTE_RECEIVED'
-  | 'TRANSACTION_BUILDING'
-  | 'SIGNING'
-  | 'SUBMITTED'
-  | 'CONFIRMING'
-  | 'CONFIRMED'
-  | 'FAILED'
-  | 'RECOVERY_REQUIRED'
-  | 'CANCELLED';
-
-export interface OrderRecord {
-  order_id: string;
-  position_id?: string;
-  mint: string;
-  wallet?: string;
-  side: 'buy' | 'sell';
-  amount_raw: string | number;
-  decimals?: number;
-  slippageBps?: number;
-  label?: string;
-  network?: string;
-  state: OrderState;
-  signature?: string;
-  created_at: number;
-  updated_at: number;
-  error?: string;
-  effectivePriceSol?: number;
-  totalCostSol?: number;
-  netProceedsSol?: number;
-  version?: number;
-}
-
-const FILE_NAME = 'orders.json';
-
+/**
+ * OrderRepository: Authoritative persistence layer for all trading orders.
+ */
 export class OrderRepository {
   private static instance: OrderRepository;
+  private store: JsonStore<Record<string, OrderRecord>>;
 
-  private constructor() {}
+  private constructor() {
+    this.store = new JsonStore<Record<string, OrderRecord>>('orders.json', {});
+  }
 
   public static getInstance(): OrderRepository {
     if (!OrderRepository.instance) {
@@ -51,96 +20,28 @@ export class OrderRepository {
     return OrderRepository.instance;
   }
 
-  private readAll(): OrderRecord[] {
-    return readDataFile<OrderRecord[]>(FILE_NAME, []);
+  public upsertOrder(record: OrderRecord): void {
+    const all = this.store.read();
+    all[record.id] = record;
+    this.store.write(all);
   }
 
-  public getOrder(orderId: string): OrderRecord | undefined {
-    return this.readAll().find(o => o.order_id === orderId);
+  public getOrder(id: string): OrderRecord | undefined {
+    const all = this.store.read();
+    return all[id];
   }
 
-  public getOrders(): OrderRecord[] {
-    return this.readAll();
+  public getAllOrders(): OrderRecord[] {
+    const all = this.store.read();
+    return Object.values(all).sort((a, b) => b.createdAt - a.createdAt);
   }
 
-  public createOrder(record: OrderRecord): OrderRecord {
-    let result = record;
-    updateDataFileAtomic<OrderRecord[]>(FILE_NAME, [], (current) => {
-      const existingIdx = current.findIndex(o => o.order_id === record.order_id);
-      const now = Date.now();
-
-      if (existingIdx !== -1) {
-        const existing = current[existingIdx];
-        const merged: OrderRecord = {
-          ...existing,
-          ...record,
-          version: (existing.version || 1) + 1,
-          updated_at: now,
-        };
-        current[existingIdx] = merged;
-        result = merged;
-      } else {
-        const newRecord: OrderRecord = {
-          ...record,
-          version: 1,
-          created_at: record.created_at || now,
-          updated_at: now,
-        };
-        current.push(newRecord);
-        result = newRecord;
-      }
-
-      return current;
-    });
-
-    return result;
+  public getOrdersByStatus(status: string): OrderRecord[] {
+    return this.getAllOrders().filter(o => o.status === status);
   }
 
-  public async updateState(
-    orderId: string,
-    state: OrderState,
-    details?: {
-      signature?: string;
-      error?: string;
-      confirmedAt?: number;
-      effectivePriceSol?: number;
-      totalCostSol?: number;
-      netProceedsSol?: number;
-    }
-  ): Promise<OrderRecord | undefined> {
-    let updated: OrderRecord | undefined;
-
-    updateDataFileAtomic<OrderRecord[]>(FILE_NAME, [], (current) => {
-      const idx = current.findIndex(o => o.order_id === orderId);
-      if (idx === -1) return current;
-
-      const existing = current[idx];
-
-      // Terminal state guard: If already CONFIRMED, do not revert to SUBMITTED or FAILED
-      if (existing.state === 'CONFIRMED' && state !== 'CONFIRMED') {
-        console.warn(`[OrderRepository] Rejected transition from CONFIRMED to ${state} for order ${orderId}`);
-        updated = existing;
-        return current;
-      }
-
-      const merged: OrderRecord = {
-        ...existing,
-        state,
-        updated_at: details?.confirmedAt || Date.now(),
-        signature: details?.signature || existing.signature,
-        error: details?.error || existing.error,
-        effectivePriceSol: details?.effectivePriceSol !== undefined ? details.effectivePriceSol : existing.effectivePriceSol,
-        totalCostSol: details?.totalCostSol !== undefined ? details.totalCostSol : existing.totalCostSol,
-        netProceedsSol: details?.netProceedsSol !== undefined ? details.netProceedsSol : existing.netProceedsSol,
-        version: (existing.version || 1) + 1,
-      };
-
-      current[idx] = merged;
-      updated = merged;
-      return current;
-    });
-
-    return updated;
+  public getOrderByClientRequestId(clientRequestId: string): OrderRecord | undefined {
+    return this.getAllOrders().find(o => o.clientRequestId === clientRequestId);
   }
 }
 

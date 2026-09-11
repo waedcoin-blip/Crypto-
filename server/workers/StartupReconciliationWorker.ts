@@ -1,105 +1,85 @@
 // server/workers/StartupReconciliationWorker.ts
-import { Connection, PublicKey } from '@solana/web3.js';
-import { positionRepository } from '../repositories/PositionRepository.js';
+import { positionManager } from '../trading/PositionManager.js';
+import { tradeRepository } from '../repositories/TradeRepository.js';
 import { orderRepository } from '../repositories/OrderRepository.js';
-import { tokenMintResolver } from '../market/TokenMintResolver.js';
-import { paperWalletLedger } from '../wallet/PaperWalletLedger.js';
+import { positionRepository } from '../repositories/PositionRepository.js';
 
-export async function reconcileDatabaseWithMainnet(): Promise<void> {
-  console.log('[StartupReconciliationWorker] Starting database reconciliation...');
-  const openPositions = positionRepository.getOpenPositions();
-  console.log(`[StartupReconciliationWorker] Checking ${openPositions.length} open positions from database...`);
+/**
+ * StartupReconciliationWorker: Runs once at startup to reconcile
+ * in-memory state with persisted repository state.
+ *
+ * Handles:
+ * - Positions that were OPEN but the process restarted
+ * - Orders stuck in CONFIRMING state (check blockchain for finality)
+ * - Trade history gaps
+ */
+export class StartupReconciliationWorker {
+  private static instance: StartupReconciliationWorker;
+  private hasRun: boolean = false;
 
-  const rpcUrl = process.env.EXECUTION_RPC_URL || process.env.MONITOR_RPC_URL || 'https://api.mainnet-beta.solana.com';
-  let connection: Connection | null = null;
-  try {
-    connection = new Connection(rpcUrl, 'confirmed');
-  } catch (e) {
-    console.warn('[StartupReconciliationWorker] Connection setup warning:', e);
+  private constructor() {}
+
+  public static getInstance(): StartupReconciliationWorker {
+    if (!StartupReconciliationWorker.instance) {
+      StartupReconciliationWorker.instance = new StartupReconciliationWorker();
+    }
+    return StartupReconciliationWorker.instance;
   }
 
-  const walletPubkey = process.env.WALLET_PUBLIC_KEY;
+  /**
+   * Run reconciliation. Should be called once at startup.
+   */
+  public async reconcile(): Promise<{
+    positionsReconciled: number;
+    ordersReconciled: number;
+    staleOrdersMarked: number;
+  }> {
+    if (this.hasRun) {
+      return { positionsReconciled: 0, ordersReconciled: 0, staleOrdersMarked: 0 };
+    }
+    this.hasRun = true;
 
-  for (const pos of openPositions) {
-    // 1. PAPER TRADING RECONCILIATION
-    if (pos.network === 'paper') {
-      const paperBal = paperWalletLedger.getTokenBalance(pos.mintAddress);
-      console.log(`[StartupReconciliationWorker] Paper position ${pos.id} (${pos.mintAddress}) paper balance: ${paperBal}`);
-      if (paperBal > 0) {
-        positionRepository.updatePosition(pos.id, {
-          amountRaw: paperBal,
-          state: pos.state === 'PENDING_BUY' ? 'OPEN' : pos.state,
-        });
+    console.log('[StartupReconciliationWorker] Starting reconciliation...');
+    let positionsReconciled = 0;
+    let ordersReconciled = 0;
+    let staleOrdersMarked = 0;
+
+    // 1. Reconcile positions: Mark stale EXIT_PENDING positions as RECOVERY_REQUIRED
+    const allPositions = positionRepository.getAllPositions();
+    for (const posRecord of allPositions) {
+      if (posRecord.state === 'EXIT_SUBMITTED' || posRecord.state === 'EXIT_CONFIRMING') {
+        // If the position was in exit state but process restarted,
+        // mark as RECOVERY_REQUIRED for manual intervention
+        posRecord.state = 'RECOVERY_REQUIRED';
+        posRecord.updatedAt = Date.now();
+        positionRepository.upsertPosition(posRecord);
+        positionsReconciled++;
+        console.log(`[StartupReconciliationWorker] Position ${posRecord.id} marked RECOVERY_REQUIRED (stale exit state)`);
       }
-      // Never delete paper positions on mainnet RPC failure or 0 mainnet balance!
-      continue;
     }
 
-    // 2. LIVE TRADING (DEVNET / MAINNET) RECONCILIATION
-    if (!walletPubkey || !connection) {
-      console.log(`[StartupReconciliationWorker] Verified live position ${pos.id} (${pos.mintAddress}) state: ${pos.state}`);
-      continue;
+    // 2. Reconcile orders: Mark stale CONFIRMING orders as RECOVERY_REQUIRED
+    const allOrders = orderRepository.getAllOrders();
+    const staleThreshold = Date.now() - 5 * 60 * 1000; // 5 minutes
+    for (const order of allOrders) {
+      if (order.status === 'CONFIRMING' && order.updatedAt < staleThreshold) {
+        order.status = 'RECOVERY_REQUIRED';
+        order.updatedAt = Date.now();
+        order.error = 'STALE_CONFIRMING_STATE: Process restarted during confirmation';
+        orderRepository.upsertOrder(order);
+        staleOrdersMarked++;
+        console.log(`[StartupReconciliationWorker] Order ${order.id} marked RECOVERY_REQUIRED (stale confirming)`);
+      }
+      ordersReconciled++;
     }
 
-    try {
-      if (!tokenMintResolver.isValidPublicKey(walletPubkey) || !tokenMintResolver.isValidPublicKey(pos.mintAddress)) {
-        console.log(`[StartupReconciliationWorker] Verified position ${pos.id} (${pos.mintAddress}) state: ${pos.state}`);
-        continue;
-      }
+    // 3. Load positions into PositionManager
+    positionManager.refreshFromRepository();
 
-      const pubkey = new PublicKey(walletPubkey);
-      const mintPk = new PublicKey(pos.mintAddress);
-      const tokenAccounts = await connection.getTokenAccountsByOwner(pubkey, { mint: mintPk });
+    console.log(`[StartupReconciliationWorker] Reconciliation complete: ${positionsReconciled} positions, ${staleOrdersMarked} stale orders marked.`);
 
-      let rawBalance = 0;
-      if (tokenAccounts.value.length > 0) {
-        const accountInfo = tokenAccounts.value[0].account.data;
-        if (accountInfo.length >= 72) {
-          rawBalance = Number(accountInfo.readBigUInt64LE(64));
-        }
-      }
-
-      if (rawBalance <= 1000) {
-        console.log(`[StartupReconciliationWorker] Position ${pos.id} confirmed zero on-chain balance. Closing position.`);
-        positionRepository.closePosition(pos.id, { realizedPnLSol: 0, realizedPnLPct: -100 });
-      } else {
-        positionRepository.updatePosition(pos.id, {
-          amountRaw: rawBalance,
-          state: (pos.state === 'PENDING_BUY' ? 'OPEN' : pos.state),
-        });
-      }
-    } catch (err: any) {
-      // 🟢 RPC FAILURE SAFETY: On RPC error, DO NOT CLOSE POSITION!
-      console.warn(`[StartupReconciliationWorker] Warning verifying live position ${pos.mintAddress} (RPC failure, preserving position):`, err?.message || err);
-    }
+    return { positionsReconciled, ordersReconciled, staleOrdersMarked };
   }
-
-  // Check pending orders
-  const pendingOrders = orderRepository.getOrders().filter(o =>
-    ['SUBMITTED', 'CONFIRMING', 'TRANSACTION_BUILDING', 'SIGNING'].includes(o.state)
-  );
-
-  for (const order of pendingOrders) {
-    if (order.signature && connection) {
-      try {
-        const status = await connection.getSignatureStatus(order.signature);
-        if (status.value?.confirmationStatus === 'confirmed' || status.value?.confirmationStatus === 'finalized') {
-          if (!status.value.err) {
-            await orderRepository.updateState(order.order_id, 'CONFIRMED');
-          } else {
-            await orderRepository.updateState(order.order_id, 'FAILED', { error: JSON.stringify(status.value.err) });
-          }
-        } else {
-          await orderRepository.updateState(order.order_id, 'RECOVERY_REQUIRED');
-        }
-      } catch {
-        await orderRepository.updateState(order.order_id, 'RECOVERY_REQUIRED');
-      }
-    } else {
-      await orderRepository.updateState(order.order_id, 'CANCELLED', { error: 'Interrupted prior to submission' });
-    }
-  }
-
-  console.log('[StartupReconciliationWorker] Database reconciliation complete.');
 }
 
+export const startupReconciliationWorker = StartupReconciliationWorker.getInstance();

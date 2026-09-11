@@ -1,89 +1,100 @@
-/**
- * FTP hosting and deployment endpoints
- */
-import { Router } from 'express';
-import { config } from '../config/index.js';
-import { ftpLogger } from '../utils/logger.js';
+// server/routes/ftp.ts
+import { Router, Request, Response } from 'express';
 import { asyncHandler } from '../middleware/errorHandler.js';
-import { validateFtpCredentials } from '../utils/validation.js';
-import { UnauthorizedError } from '../utils/errors.js';
-import { testFtpConnection, backupFtpData, deployFtpDist } from '../services/ftpService.js';
-import type { BackupData } from '../services/ftpService.js';
+import { config } from '../config/index.js';
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs';
 
 const router = Router();
 
-// Require strict admin API Key for all FTP routes
-router.use((req, res, next) => {
-  const apiKey = req.headers['x-admin-api-key'];
-  if (!apiKey || apiKey !== process.env.ADMIN_API_KEY) {
-    ftpLogger.warn({ ip: req.ip }, 'Unauthorized FTP administration access attempt');
-    return res.status(401).json({ error: 'Unauthorized: Invalid Admin API Key' });
-  }
-  next();
-});
-
-function getCredentials() {
-  const credentials = {
-    host: process.env.FTP_HOST || '',
-    user: process.env.FTP_USER || '',
-    pass: process.env.FTP_PASS || '',
-    dir: process.env.FTP_DIR || '/htdocs',
-    secure: process.env.FTP_SECURE === 'true'
-  };
-
-  if (!credentials.host || !credentials.user || !credentials.pass) {
-    throw new UnauthorizedError('FTP credentials are not configured on the server');
-  }
-  
-  if (config.ALLOWED_FTP_HOSTS.length === 0) {
-    ftpLogger.warn({ host: credentials.host }, 'FTP host rejected: ALLOWED_FTP_HOSTS is empty');
-    throw new UnauthorizedError('FTP deployment is disabled on this server (allowlist is empty)');
-  }
-  
-  if (!config.ALLOWED_FTP_HOSTS.includes(credentials.host)) {
-    ftpLogger.warn({ host: credentials.host }, 'FTP host not in allowlist');
-    throw new UnauthorizedError('Host not in allowlist');
-  }
-
-  return credentials;
+// Configure multer for file uploads
+const UPLOAD_DIR = path.join(process.cwd(), 'uploads');
+if (!fs.existsSync(UPLOAD_DIR)) {
+  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 }
 
-// POST /api/hosting/test
-router.post('/test', asyncHandler(async (req, res) => {
-  const credentials = getCredentials();
-  const response = await testFtpConnection(credentials);
-  res.json(response);
-}));
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, UPLOAD_DIR),
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, uniqueSuffix + path.extname(file.originalname));
+  },
+});
 
-// POST /api/hosting/backup
-router.post('/backup', asyncHandler(async (req, res) => {
-  const credentials = getCredentials();
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = ['image/png', 'image/jpeg', 'image/webp', 'application/json'];
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('INVALID_FILE_TYPE: Only PNG, JPEG, WebP, and JSON files are allowed'));
+    }
+  },
+});
 
-  const { data } = req.body;
-  if (!data) {
-    return res.status(400).json({ success: false, message: 'No data provided to backup.' });
+/**
+ * POST /api/hosting/upload
+ * Upload a file (screenshot, config export, etc.)
+ */
+router.post('/upload', upload.single('file'), asyncHandler(async (req: Request, res: Response) => {
+  if (!req.file) {
+    return res.status(400).json({ status: 'error', error: 'No file uploaded' });
   }
 
-  const backupData: BackupData = {
-    positions: data.positions ?? {},
-    stats: data.stats ?? {},
-    logs: typeof data.logs === 'string' ? data.logs : JSON.stringify(data.logs),
-    timestamp: data.timestamp || new Date().toISOString(),
-  };
-
-  const response = await backupFtpData(credentials, backupData);
-  res.json(response);
+  res.json({
+    status: 'success',
+    file: {
+      filename: req.file.filename,
+      originalName: req.file.originalname,
+      size: req.file.size,
+      mimetype: req.file.mimetype,
+      path: `/uploads/${req.file.filename}`,
+    },
+    timestamp: Date.now(),
+  });
 }));
 
-// POST /api/hosting/deploy
-router.post('/deploy', asyncHandler(async (req, res) => {
-  const credentials = getCredentials();
+/**
+ * GET /api/hosting/files
+ * List uploaded files.
+ */
+router.get('/files', asyncHandler(async (req: Request, res: Response) => {
+  try {
+    const files = fs.readdirSync(UPLOAD_DIR).map(filename => {
+      const stats = fs.statSync(path.join(UPLOAD_DIR, filename));
+      return {
+        filename,
+        size: stats.size,
+        uploadedAt: stats.birthtime.toISOString(),
+      };
+    });
 
-  const response = await deployFtpDist(credentials, (status, progress) => {
-    ftpLogger.info({ status, progress }, 'Deploy progress');
-  });
+    res.json({ status: 'success', files, timestamp: Date.now() });
+  } catch (err: any) {
+    res.status(500).json({ status: 'error', error: err?.message || String(err) });
+  }
+}));
 
-  res.json(response);
+/**
+ * DELETE /api/hosting/files/:filename
+ * Delete an uploaded file.
+ */
+router.delete('/files/:filename', asyncHandler(async (req: Request, res: Response) => {
+  const { filename } = req.params;
+
+  // Prevent path traversal
+  const sanitized = path.basename(filename);
+  const filePath = path.join(UPLOAD_DIR, sanitized);
+
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ status: 'error', error: 'File not found' });
+  }
+
+  fs.unlinkSync(filePath);
+  res.json({ status: 'success', message: `File '${sanitized}' deleted`, timestamp: Date.now() });
 }));
 
 export default router;

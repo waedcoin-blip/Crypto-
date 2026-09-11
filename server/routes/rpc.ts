@@ -1,113 +1,102 @@
-/**
- * RPC latency probe endpoint
- */
-import { Router } from 'express';
-import { fetchWithTimeout } from '../utils/fetch.js';
-import { validateUrlArray } from '../utils/validation.js';
+// server/routes/rpc.ts
+import { Router, Request, Response } from 'express';
 import { asyncHandler } from '../middleware/errorHandler.js';
-import type { RpcProbeResult } from '../types/index.js';
+import { config } from '../config/index.js';
 
 const router = Router();
 
-const ALLOWED_RPC_DOMAINS = [
-  'solana.com',
-  'helius-rpc.com',
-  'helius.xyz',
-  'quicknode.pro',
-  'quiknode.pro',
-  'tatum.io',
-  'ankr.com',
-  'alchemy.com',
-  'triton.one',
-  'rpcpool.com',
-  'genesysgo.net',
-  'extrnode.com',
-  'run.app',
-];
-
-function isSafeRpcUrl(urlStr: string): boolean {
-  try {
-    const u = new URL(urlStr);
-    
-    // Strict HTTPS only
-    if (u.protocol !== 'https:') {
-      return false;
-    }
-
-    const host = u.hostname.toLowerCase();
-
-    // Block IP addresses (IPv4 & IPv6 literals)
-    if (/^(\d{1,3}\.){3}\d{1,3}$/.test(host) || host.includes(':') || host.startsWith('[') || host.endsWith(']')) {
-      return false;
-    }
-
-    // Block localhost, internal, metadata endpoints
-    if (
-      host === 'localhost' ||
-      host.endsWith('.local') ||
-      host.endsWith('.internal') ||
-      host.endsWith('.corp') ||
-      host.includes('metadata')
-    ) {
-      return false;
-    }
-
-    // Must match approved RPC domain list or subdomains
-    const isApprovedDomain = ALLOWED_RPC_DOMAINS.some(
-      (dom) => host === dom || host.endsWith(`.${dom}`)
-    );
-
-    return isApprovedDomain;
-  } catch {
-    return false;
-  }
+interface RpcEndpoint {
+  url: string;
+  label: string;
+  latencyMs: number | null;
+  healthy: boolean;
+  lastChecked: number;
 }
 
-router.post('/probe', asyncHandler(async (req, res) => {
-  const urls = validateUrlArray(req.body.urls, 5);
+/**
+ * GET /api/rpc/status
+ * Returns the status of all configured RPC endpoints.
+ */
+router.get('/status', asyncHandler(async (req: Request, res: Response) => {
+  const endpoints: RpcEndpoint[] = [];
 
-  const results = await Promise.all(
-    urls.map(async (url): Promise<RpcProbeResult> => {
-      if (!isSafeRpcUrl(url)) {
-        return {
-          url,
-          latency: 0,
-          ok: false,
-          error: 'Forbidden: RPC endpoint must be a secure HTTPS URL from an approved Solana provider',
-        };
-      }
+  const rpcConfigs = [
+    { url: config.SEARCH_RPC_URL, label: 'Search RPC' },
+    { url: config.SEARCH_RPC_BACKUP_URL, label: 'Search RPC Backup' },
+    { url: config.MONITOR_RPC_URL, label: 'Monitor RPC' },
+    { url: config.MONITOR_RPC_BACKUP_URL, label: 'Monitor RPC Backup' },
+    { url: config.EXECUTION_RPC_URL, label: 'Execution RPC' },
+    { url: config.EXECUTION_RPC_BACKUP_URL, label: 'Execution RPC Backup' },
+  ];
 
-      const start = Date.now();
-      try {
-        const response = await fetchWithTimeout(
-          url,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getSlot', params: [] }),
-          },
-          3000
-        );
-        const latency = Date.now() - start;
-        const data = await response.json();
-        return {
-          url,
-          latency,
-          ok: !data.error,
-          slot: data.result,
-        };
-      } catch (e: any) {
-        return {
-          url,
-          latency: Date.now() - start,
-          ok: false,
-          error: e.message,
-        };
-      }
-    })
-  );
+  for (const cfg of rpcConfigs) {
+    if (!cfg.url) continue;
 
-  res.json({ results });
+    const start = Date.now();
+    try {
+      const response = await fetch(cfg.url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getHealth' }),
+        signal: AbortSignal.timeout(5000),
+      });
+      const latencyMs = Date.now() - start;
+      endpoints.push({
+        url: cfg.url.replace(/api-key=[a-zA-Z0-9-_]+/g, 'api-key=***'),
+        label: cfg.label,
+        latencyMs,
+        healthy: response.ok,
+        lastChecked: Date.now(),
+      });
+    } catch (err: any) {
+      endpoints.push({
+        url: cfg.url.replace(/api-key=[a-zA-Z0-9-_]+/g, 'api-key=***'),
+        label: cfg.label,
+        latencyMs: Date.now() - start,
+        healthy: false,
+        lastChecked: Date.now(),
+      });
+    }
+  }
+
+  res.json({
+    status: 'success',
+    endpoints,
+    timestamp: Date.now(),
+  });
+}));
+
+/**
+ * GET /api/rpc/config
+ * Returns the current RPC configuration (redacted).
+ */
+router.get('/config', asyncHandler(async (req: Request, res: Response) => {
+  const redact = (url?: string) => url ? url.replace(/api-key=[a-zA-Z0-9-_]+/g, 'api-key=***') : undefined;
+
+  res.json({
+    status: 'success',
+    config: {
+      search: {
+        primary: redact(config.SEARCH_RPC_URL),
+        backup: redact(config.SEARCH_RPC_BACKUP_URL),
+        ws: redact(config.SEARCH_WS_URL),
+        wsBackup: redact(config.SEARCH_WS_BACKUP_URL),
+      },
+      monitor: {
+        primary: redact(config.MONITOR_RPC_URL),
+        backup: redact(config.MONITOR_RPC_BACKUP_URL),
+        ws: redact(config.MONITOR_WS_URL),
+        wsBackup: redact(config.MONITOR_WS_BACKUP_URL),
+      },
+      execution: {
+        primary: redact(config.EXECUTION_RPC_URL),
+        backup: redact(config.EXECUTION_RPC_BACKUP_URL),
+        ws: redact(config.EXECUTION_WS_URL),
+        wsBackup: redact(config.EXECUTION_WS_BACKUP_URL),
+      },
+    },
+    timestamp: Date.now(),
+  });
 }));
 
 export default router;

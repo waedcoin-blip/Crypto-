@@ -1,12 +1,29 @@
 // server/workers/TradingMonitorWorker.ts
 import { positionManager } from '../trading/PositionManager.js';
-import { positionRepository } from '../repositories/PositionRepository.js';
+import { positionValuationEngine } from '../trading/PositionValuationEngine.js';
+import { unifiedExitEngine } from '../trading/UnifiedExitEngine.js';
+import { workerStateRepository } from '../repositories/WorkerStateRepository.js';
+import { tradingSupervisor } from '../trading/TradingSupervisor.js';
 
+/**
+ * TradingMonitorWorker: Background worker that periodically:
+ * 1. Refreshes executable quotes for all open positions
+ * 2. Evaluates TP/SL/Trailing/MaxHold conditions
+ * 3. Triggers exits when conditions are met
+ * 4. Reports heartbeats for health monitoring
+ *
+ * This worker runs alongside ActivePositionMarketFeed to provide
+ * a safety net for positions that don't receive live market events.
+ */
 export class TradingMonitorWorker {
   private static instance: TradingMonitorWorker;
   private isRunning: boolean = false;
-  private timer: NodeJS.Timeout | null = null;
-  private monitorLoopRunning: boolean = false;
+  private monitorTimer: NodeJS.Timeout | null = null;
+  private heartbeatTimer: NodeJS.Timeout | null = null;
+  private readonly MONITOR_INTERVAL_MS = 5000; // Check positions every 5s
+  private readonly HEARTBEAT_INTERVAL_MS = 15000; // Heartbeat every 15s
+
+  private constructor() {}
 
   public static getInstance(): TradingMonitorWorker {
     if (!TradingMonitorWorker.instance) {
@@ -18,53 +35,88 @@ export class TradingMonitorWorker {
   public async start(): Promise<void> {
     if (this.isRunning) return;
     this.isRunning = true;
-    console.log('[TradingMonitorWorker] Failsafe Reconciliation Worker started (2s interval).');
 
-    this.timer = setInterval(() => {
-      if (this.monitorLoopRunning) return;
-      this.monitorLoopRunning = true;
-      this.monitorLoop().finally(() => {
-        this.monitorLoopRunning = false;
-      });
-    }, 2000);
+    // Main monitoring loop
+    this.monitorTimer = setInterval(() => this.runMonitorCycle(), this.MONITOR_INTERVAL_MS);
+    if (this.monitorTimer.unref) this.monitorTimer.unref();
+
+    // Heartbeat reporting
+    this.heartbeatTimer = setInterval(() => this.reportHeartbeat(), this.HEARTBEAT_INTERVAL_MS);
+    if (this.heartbeatTimer.unref) this.heartbeatTimer.unref();
+
+    await this.reportHeartbeat();
+    console.log('[TradingMonitorWorker] Started. Monitoring open positions.');
   }
 
   public stop(): void {
     this.isRunning = false;
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
+    if (this.monitorTimer) {
+      clearInterval(this.monitorTimer);
+      this.monitorTimer = null;
     }
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+    workerStateRepository.heartbeat({ worker: 'trading', status: 'STOPPED' }).catch(() => {});
     console.log('[TradingMonitorWorker] Stopped.');
   }
 
-  private async monitorLoop(): Promise<void> {
+  private async runMonitorCycle(): Promise<void> {
+    if (!this.isRunning) return;
+
     try {
-      const positions = positionManager.getAllPositions();
-      const now = Date.now();
+      const supervisorStatus = tradingSupervisor.getStatus();
+      if (supervisorStatus.state !== 'TRADING') return;
 
-      // This worker is reconciliation/failsafe only. It MUST NOT be a second TP/SL
-      // execution pipeline. ActivePositionMarketFeed + UnifiedExitEngine are the sole
-      // automatic exit path.
-      for (const pos of positions) {
-        if (pos.status !== 'EXIT_REQUESTED' && pos.status !== 'EXIT_SUBMITTED' && pos.status !== 'EXIT_CONFIRMING' && pos.status !== 'RECOVERY_REQUIRED') continue;
+      const openPositions = positionManager.getOpenPositions();
+      if (openPositions.length === 0) return;
 
-        const age = now - (pos.updatedAt || 0);
-        if (age < 10000) continue;
+      // Refresh valuations for all open positions
+      await positionValuationEngine.forceRefreshAllQuotes(openPositions);
 
-        const repo = positionRepository.getPosition(pos.id);
-        if (!repo) continue;
+      // Evaluate exit conditions for each position
+      for (const position of openPositions) {
+        try {
+          const valuation = positionValuationEngine.getValuation(
+            position.network,
+            position.wallet,
+            position.mint
+          );
+          if (!valuation || valuation.currentPriceSol <= 0) continue;
 
-        console.warn(`[TradingMonitorWorker] Position ${pos.id} requires reconciliation; leaving execution locked until transaction/balance state is verified.`);
-        // Deliberately do not reopen or resubmit the sell here. A future reconciliation
-        // worker may inspect the transaction signature and on-chain token balance.
+          const exitDecision = unifiedExitEngine.evaluatePositionExit(
+            position,
+            valuation.currentPriceSol
+          );
+
+          if (exitDecision.shouldExit) {
+            console.log(`[TradingMonitorWorker] EXIT TRIGGERED: mint=${position.mint} reason=${exitDecision.reason}`);
+            await unifiedExitEngine.evaluateAndExecuteExit(position, valuation.currentPriceSol);
+          }
+        } catch (err: any) {
+          // Silently skip individual position errors
+        }
       }
-    } catch (err) {
-      console.warn('[TradingMonitorWorker] Error in reconciliation loop:', err);
+    } catch (err: any) {
+      console.error('[TradingMonitorWorker] Monitor cycle error:', err?.message);
+    }
+  }
+
+  private async reportHeartbeat(): Promise<void> {
+    try {
+      await workerStateRepository.heartbeat({
+        worker: 'trading',
+        status: this.isRunning ? 'RUNNING' : 'STOPPED',
+        metadata: {
+          openPositions: positionManager.getOpenPositions().length,
+          timestamp: Date.now(),
+        },
+      });
+    } catch {
+      // Silently ignore heartbeat failures
     }
   }
 }
 
 export const tradingMonitorWorker = TradingMonitorWorker.getInstance();
-
-
