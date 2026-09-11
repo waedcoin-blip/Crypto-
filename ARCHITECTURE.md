@@ -1,105 +1,130 @@
-# ARINA X-RAY — ARCHITECTURE & DESIGN DOCUMENT
+# ARINA X-RAY ALPHA — Architecture & Design Document
 
-## Executive Overview
-ARINA X-RAY is a high-frequency Solana algorithmic trading platform built with React, Node.js, Express, and Firebase. This document outlines the consolidated production architecture designed for maximum performance, multi-network safety, raw SPL precision, and single sources of truth across all trading and monitoring paths.
+## 1. Executive Overview
+ARINA X-RAY Alpha is an institutional-grade, **backend-authoritative** algorithmic trading platform for the Solana blockchain. It is engineered for high-frequency event ingestion (via Helius LaserStream/gRPC), strict risk management, and fail-closed execution safety.
 
----
-
-## Architecture Principles
-
-### 1. Single Sources of Truth
-- **Trading Engine (`src/services/tradingEngine.ts`)**: Central entry point for all buy, sell, partial sell, and full sell requests across paper and mainnet execution.
-- **Jupiter Service (`src/services/jupiterService.ts`)**: Unified client for quotes, swap transaction creation, quote validation, and price impact safety checks.
-- **RPC Service (`src/services/rpcService.ts`)**: Single connection pool and RPC routing manager for on-chain queries, balance checks, and transaction submissions.
-- **Token Service (`src/services/tokenService.ts`)**: Central manager for token metadata, on-chain mint validation, and decimal resolution via `TokenDecimalsResolver`.
-- **Amount Engine (`src/utils/amounts.ts`)**: Authoritative engine for raw BigInt SPL token math, decimal conversions, percentage calculations, and display formatting.
-- **Transaction Service (`src/services/transactionService.ts`)**: Single pipeline for transaction signing, RPC broadcasting, and confirmation polling.
-- **Market Data Service (`src/services/marketDataManager.ts`)**: Deduplicated, batched market data provider with circuit breakers and short-lived tier caching.
+**Core Architectural Paradigm:** The system enforces a strict separation of concerns where the **Node.js backend is the sole authority** for trade execution, position state, and exit logic. The React frontend operates exclusively as a telemetry dashboard and API dispatcher, eliminating browser-side race conditions, tab-sleep missed exits, and duplicate execution authorities.
 
 ---
 
-## Directory Structure
+## 2. Core Architectural Principles
+1. **Backend Authority:** The frontend never constructs, signs, or broadcasts transactions directly. It delegates all trading intent to the backend `TradingEngine` and `UnifiedExitEngine`.
+2. **Single-Use Hardened Approvals:** Every buy requires a cryptographically bound, single-use `HardenedApproval` token. Once consumed, it cannot be reused, preventing duplicate buys from race conditions.
+3. **Executable Quote Invariant:** No exit (TP/SL/Manual) is executed based on synthetic or cached prices. Every exit requires a fresh, validated Jupiter Executable Quote (`JupiterPreSellValidator`).
+4. **BigInt Raw Precision:** All token amounts and lamports are handled as `BigInt` or string representations of raw base units. IEEE-754 floating-point math is strictly forbidden in the execution path.
+5. **Strict Network Isolation:** Paper, Devnet, and Mainnet execution paths are firewalled via the `ExecutionGateway`. Paper mode cannot accidentally trigger live RPC calls.
 
-```
-src/
-├── components/          # Modular React UI components & pages
-├── config/              # Network & trading configuration
-├── constants/           # Solana system constants
-├── context/             # React context providers
-├── hooks/               # Custom React hooks
-├── lib/                 # Shared encryption & utilities
-├── services/            # Clean single-responsibility service layer
-│   ├── httpClient.ts          # Unpatched native fetch wrapper
-│   ├── jupiterService.ts      # Unified Jupiter client
-│   ├── marketDataManager.ts   # Centralized market data manager
-│   ├── OrderManager.ts        # Order queue & execution router
-│   ├── PositionExitManager.ts # Risk & exit proxy manager
-│   ├── PositionRegistry.ts    # Central position state store
-│   ├── RiskManager.ts         # Risk rules & automated exit engine
-│   ├── rpcHealthManager.ts    # RPC health monitoring
-│   ├── rpcRouting.ts          # Role-based RPC endpoint configuration
-│   ├── rpcService.ts          # Unified RPC connection pool & web3 methods
-│   ├── tokenService.ts        # Token metadata & balance resolution
-│   ├── TokenDecimalsResolver.ts # On-chain & registry token decimal resolver
-│   ├── TokenRegistry.ts       # Verified token mint registry
-│   ├── TradeManager.ts        # Trade mode adapter
-│   ├── tradingEngine.ts       # Single trading engine interface
-│   ├── transactionService.ts  # Transaction signing & submission service
-│   └── WalletBalanceService.ts # Wallet balance synchronization
-├── store/               # Zustand application state stores
-├── types/               # Shared TypeScript interfaces & types
-└── utils/               # Precision math, amounts, keypair, & PnL calculators
-    ├── amounts.ts             # BigInt raw SPL amount & decimal math
-    ├── keypairUtils.ts        # Session keypair manager
-    ├── pnlCalculator.ts       # Net PnL, gas, and fee calculation engine
-    └── quoteSafety.ts         # Jupiter quote safety & diagnostic validator
+---
+
+## 3. Directory Structure
+```text
+arina-x-ray/
+├── server/                      # BACKEND (Authoritative Execution)
+│   ├── config/                  # Zod-validated environment & trading configs
+│   ├── execution/               # TradeExecutor interface, Mainnet/Paper/Devnet executors
+│   ├── market/                  # Event ingestion, normalization, CandidateRegistry
+│   ├── middleware/              # Auth, Rate Limiting, Error Handling
+│   ├── repositories/            # Atomic JSON/Firestore persistence layer
+│   ├── routes/                  # Express API routers (trading, pipeline, health)
+│   ├── trading/                 # Core engines (Trading, Exit, Criteria, PnL, Positions)
+│   ├── wallet/                  # Server-side keypair management & Paper Ledger
+│   └── workers/                 # Background monitoring & reconciliation
+├── shared/                      # ISOMORPHIC (Types, Event Bus, Shared Detectors)
+├── src/                         # FRONTEND (Pure Telemetry & UI)
+│   ├── components/              # React UI (Dashboards, Tables, Charts)
+│   ├── hooks/                   # usePositions, useTradingActions, useSupervisor
+│   ├── services/                # ApiClient.ts (Fetch wrapper only)
+│   └── store/                   # Zustand (UI state, cached telemetry)
+└── scripts/                     # Regression tests & E2E lifecycle validation
 ```
 
 ---
 
-## Core System Pipelines
-
-### Trading Pipeline
-```
-[UI / Automated Monitors]
+## 4. The Buy Pipeline (Entry Flow)
+```text
+[Event Sources: LaserStream / WSS / DexScreener / Pump.fun]
        │
        ▼
-[src/services/tradingEngine.ts]
+[MarketEventBus] ──► [CandidateRegistry] (Dedup & State Tracking)
        │
-       ├──────────────► [OrderManager]
-       │                       │
-       │                       ▼
-       ├──────────────► [RebuyGuard Check]
-       │                       │
-       │                       ▼
-       ├──────────────► [Jupiter Quote & Safety Validation]
-       │                       │
-       │                       ▼
-       └──────────────► [TransactionService & RPC Pool]
-                               │
-                               ▼
-                        [Solana Mainnet / Paper Engine]
+       ▼
+[CandidateEnricher] (SWR Cached DexScreener + On-Chain Metadata)
+       │
+       ▼
+[HardenedCriteriaEngine] ──► Issues Single-Use [HardenedApproval]
+       │
+       ▼
+[TradingEngine.buy()]
+   ├── 1. Mint Validation Gate (On-chain SPL/Token-2022 check)
+   ├── 2. RebuyGuard (Atomic Mutex Reservation)
+   ├── 3. RiskManager (Final profitability revalidation)
+   ├── 4. OrderManager (Idempotent order creation)
+   └── 5. ExecutionGateway ──► [MainnetTradeExecutor] (Jupiter Swap)
+              │
+              ▼
+       [PositionManager] (Opens/Accumulates Position)
 ```
 
 ---
 
-## Key Safety & Precision Invariants
-
-1. **Native Fetch Protocol**: Native `globalThis.fetch` is never patched or overridden.
-2. **BigInt Precision**: Raw SPL token amounts are strictly maintained as `bigint` without IEEE 754 precision loss.
-3. **Decimals Verification**: Trades are rejected if token decimals cannot be verified on-chain or through the verified token registry.
-4. **Mainnet Keypair Isolation**: Mainnet trades strictly require an explicitly configured private key and active wallet signature.
+## 5. The Exit Pipeline (TP / SL / Trailing / Manual)
+```text
+[ActivePositionMarketFeed] + [TradingMonitorWorker]
+       │ (Live Price Updates & Periodic Valuation)
+       ▼
+[PositionValuationEngine] (Fetches fresh Jupiter quotes)
+       │
+       ▼
+[UnifiedExitEngine] (Evaluates TP/SL/Trailing/MaxHold)
+       │ (If triggered)
+       ▼
+[FastExitExecutor]
+   ├── 1. JupiterPreSellValidator (Executable Quote & Price Impact check)
+   ├── 2. OrderManager (Creates SELL order)
+   └── 3. ExecutionGateway ──► [MainnetTradeExecutor]
+              │
+              ▼
+       [PositionManager] (Marks CLOSED, calculates Realized PnL)
+       [PnLEngine] (Updates Portfolio Metrics)
+```
 
 ---
 
-## Testing & Verification
-The platform includes an automated regression and audit test suite executed via:
-```bash
-npm test
-```
-The test suite verifies:
-- Multi-wallet & multi-network isolation
-- RebuyGuard atomic mutex reservations
-- Position lifecycle & BigInt accumulation
-- Authoritative PnL calculation accuracy
-- On-chain quote safety and decimal verification
+## 6. Single Sources of Truth (Authoritative Engines)
+
+| Domain | Authoritative File | Responsibility |
+| :--- | :--- | :--- |
+| **Trade Execution** | `server/trading/TradingEngine.ts` | Orchestrates the buy lifecycle, locks, and approvals. |
+| **Exit Authority** | `server/trading/UnifiedExitEngine.ts` | Sole owner of TP/SL evaluation and exit execution. |
+| **Position State** | `server/trading/PositionManager.ts` | In-memory state synced to `PositionRepository`. |
+| **PnL Math** | `server/trading/PnLEngine.ts` | Calculates unrealized/realized PnL using raw BigInt amounts. |
+| **Criteria/Risk** | `server/trading/HardenedCriteriaEngine.ts` | Evaluates candidates and issues single-use approvals. |
+| **Order Queue** | `server/trading/OrderManager.ts` | Idempotent order tracking and state machine. |
+| **Event Bus** | `server/market/MarketEventBus.ts` | Central pub/sub for all normalized market events. |
+
+---
+
+## 7. Safety Invariants & Fail-Closed Guards
+
+*   **No Synthetic Exits:** The `UnifiedExitEngine` will *never* execute a sell based on a DexScreener or WSS price. It strictly requires a successful `JupiterPreSellValidator` quote. If Jupiter is down, the exit is queued/retried, not executed blindly.
+*   **Atomic Rebuy Guard:** `RebuyGuard` uses an in-memory mutex to prevent concurrent buy evaluations for the same mint/wallet from resulting in double-spend.
+*   **Stale Lock Recovery:** The `JsonStore` persistence layer implements atomic file writes with stale-lock detection to prevent repository corruption during server restarts.
+*   **Frontend Key Safety:** The browser holds private keys in ephemeral memory only (via `walletBridge.ts`). Keys are never persisted to `localStorage` or transmitted to the backend. For maximum safety, mainnet execution relies on the backend `WalletManager` (env-loaded keys).
+*   **Memory Leak Prevention:** All singleton background intervals (`setInterval`) utilize `.unref()` to ensure the Node.js process can shut down gracefully without hanging.
+
+---
+
+## 8. Frontend Integration Model
+The React frontend (`src/`) has been stripped of all execution authority.
+*   **State:** Zustand stores (`appStore`) only hold UI preferences and cached telemetry. Position and PnL data are fetched via `usePositions` polling the backend `/api/trading/portfolio/pnl`.
+*   **Actions:** Buy/Sell buttons trigger `useTradingActions`, which sends an HTTP POST to `/api/trading/buy` or `/api/trading/sell`.
+*   **Real-time Data:** The frontend subscribes to `/api/laserstream/events` (Server-Sent Events) to receive live market telemetry pushed by the backend `MarketEventBus`.
+
+---
+
+## 9. Testing & Verification
+The architecture is validated by a strict regression suite (`npm test`):
+1.  **Refactored Architecture Suite:** Verifies multi-wallet isolation and RebuyGuard mutexes.
+2.  **Jupiter-Only Architecture Test:** Ensures no exit bypasses the executable quote validator.
+3.  **E2E Paper Lifecycle:** Simulates a full Buy -> Pump -> TP Trigger -> Sell -> Close cycle in paper mode.
+4.  **Raw Precision Regression:** Validates BigInt math against IEEE-754 edge cases.
