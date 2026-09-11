@@ -66,6 +66,10 @@ export class SwrCache<T> {
     return promise;
   }
 
+  async getOrFetch(key: string, fetchFn: () => Promise<T | BypassCacheResult>): Promise<T> {
+    return this.fetch(key, fetchFn);
+  }
+
   private async executeFetch(key: string, fetchFn: () => Promise<T | BypassCacheResult>): Promise<T> {
     try {
       const result = await fetchFn();

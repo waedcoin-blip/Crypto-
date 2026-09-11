@@ -12,8 +12,8 @@ export class WalletIntelligenceEngine {
   }
 
   private syncMonitoredWallets() {
-    const list = useAppStore.getState().monitoredWallets;
-    this.monitoredWallets = new Set(list.map(w => w.address));
+    const list = useAppStore.getState().monitoredWallets || [];
+    this.monitoredWallets = new Set(list);
   }
 
   public analyzeTrade(trade: { type: string, token: string, tokenAddress: string, amount: number, wallet: string }) {
@@ -24,7 +24,6 @@ export class WalletIntelligenceEngine {
     // FIX: Removed early return so monitored wallets can ALSO trigger whale alerts
     if (isMonitored) {
        useAppStore.getState().addTelemetryAlert({
-         id: `wallet-alert-${Date.now()}-${Math.random()}`,
          token: trade.token,
          address: trade.tokenAddress,
          type: 'WALLET_TRADE',

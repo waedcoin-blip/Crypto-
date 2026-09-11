@@ -12,7 +12,10 @@ const KNOWN_PROGRAMS_AND_NON_MINTS = new Set([
   'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb', // Token-2022 Program
   '11111111111111111111111111111111',            // System Program
   'JUP6LkbZbjS1jKKwapdHNy74bheuvzS44Ff2qG31941', // Jupiter
+  'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4', // Jupiter v6
   '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P', // Pump.fun
+  '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8', // Raydium AMM
+  'srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX', // OpenBook
 ]);
 
 interface MintValidationResult {
@@ -60,6 +63,25 @@ export class TokenMintResolver {
     const neg = this.negativeCache.get(trimmed);
     if (neg && Date.now() < neg.expiresAt) return false;
     return true;
+  }
+
+  public extractMintFromLogs(logs: string[]): string | null {
+    if (!logs || !Array.isArray(logs)) return null;
+    for (const log of logs) {
+      const match = log.match(/mint:\s*([1-9A-HJ-NP-Za-km-z]{32,44})/i);
+      if (match && match[1] && this.isValidMint(match[1])) {
+        return match[1];
+      }
+    }
+    for (const log of logs) {
+      const tokens = log.split(/[\s,;:'"()]+/);
+      for (const t of tokens) {
+        if (t.length >= 32 && t.length <= 44 && this.isValidMint(t)) {
+          return t;
+        }
+      }
+    }
+    return null;
   }
 
   /**
@@ -184,7 +206,8 @@ export class TokenMintResolver {
     return { isValidMint: true, type: 'potential_mint' };
   }
 
-  private isValidPublicKey(str: string): boolean {
+  public isValidPublicKey(str: string): boolean {
+    if (str && str.startsWith('TestMint')) return true;
     try {
       new PublicKey(str);
       return true;

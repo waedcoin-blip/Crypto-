@@ -24,7 +24,7 @@ import { useAppStore } from '../store/appStore';
 import { useBalanceStore } from '../store/balanceStore';
 import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
 import { usePaperWalletStore } from '../store/paperWalletStore';
-import { WalletBalanceService } from '../services/WalletBalanceService';
+import { useWalletBridge } from '../services/walletBridge';
 import { cn } from '../lib/utils';
 
 export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className }) => {
@@ -70,8 +70,7 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
       setSessionWallet(kp);
 
       useBalanceStore.getState().setWalletAddress(kp.publicKey.toBase58());
-      const service = new WalletBalanceService(network);
-      service.refresh(kp.publicKey.toBase58());
+      useWalletBridge.getState().refreshBalance();
 
       setKeySuccess(`Wallet updated! Address: ${kp.publicKey.toBase58().slice(0, 4)}...${kp.publicKey.toBase58().slice(-4)}`);
       setInputKey('');
@@ -134,11 +133,13 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
       return;
     }
 
-    const service = new WalletBalanceService(network);
-    service.start(5000);
+    useWalletBridge.getState().refreshBalance();
+    const interval = setInterval(() => {
+      useWalletBridge.getState().refreshBalance();
+    }, 5000);
 
     return () => {
-      service.destroy();
+      clearInterval(interval);
     };
   }, [network, activeAddress]);
 
@@ -146,9 +147,7 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
     if (!activeAddress) return;
     setIsRefreshing(true);
     try {
-      const service = new WalletBalanceService(network);
-      await service.refresh();
-      service.destroy();
+      await useWalletBridge.getState().refreshBalance();
     } catch (e) {
       console.warn('Manual balance refresh error:', e);
     } finally {
@@ -172,8 +171,7 @@ export const WalletStatusWidget: React.FC<{ className?: string }> = ({ className
       source: 'session'
     });
     useBalanceStore.getState().setWalletAddress(kp.publicKey.toBase58());
-    const service = new WalletBalanceService(network);
-    service.refresh(kp.publicKey.toBase58());
+    useWalletBridge.getState().refreshBalance();
   };
 
   const handleDisconnectSession = () => {

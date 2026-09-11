@@ -1,48 +1,11 @@
-import { getKeypairFromPrivateKey } from "../utils/keypairUtils";
-import { useActiveWalletStore } from "../store/activeWalletStore";
-import { useTradingEnvironmentStore } from "../store/tradingEnvironmentStore";
 // src/components/TradingSettings.tsx
 import React, { useState, useEffect } from 'react';
-import { SecureInput } from './SecureInput';
 import { useTradeMode } from '../context/TradeModeContext';
 import { MasterMonitorPanel } from './MasterMonitorPanel';
 import { masterMonitorHealthManager } from '../services/MasterMonitorHealthManager';
-
-// Simple encryption using a user password + AES-GCM via Web Crypto
-export async function encryptData(plaintext: string, password: string): Promise<string> {
-  const enc = new TextEncoder();
-  const keyMaterial = await crypto.subtle.importKey(
-    'raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']
-  );
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  const key = await crypto.subtle.deriveKey(
-    { name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
-    keyMaterial, { name: 'AES-GCM', length: 256 }, false, ['encrypt']
-  );
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ciphertext = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv }, key, enc.encode(plaintext)
-  );
-  const buf = new Uint8Array([...salt, ...iv, ...new Uint8Array(ciphertext)]);
-  return btoa(String.fromCharCode(...buf));
-}
-
-export async function decryptData(ciphertext: string, password: string): Promise<string> {
-  const enc = new TextEncoder();
-  const data = Uint8Array.from(atob(ciphertext), c => c.charCodeAt(0));
-  const salt = data.slice(0, 16);
-  const iv = data.slice(16, 28);
-  const ct = data.slice(28);
-  const keyMaterial = await crypto.subtle.importKey(
-    'raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']
-  );
-  const key = await crypto.subtle.deriveKey(
-    { name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
-    keyMaterial, { name: 'AES-GCM', length: 256 }, false, ['decrypt']
-  );
-  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
-  return new TextDecoder().decode(pt);
-}
+import { useWalletBridge } from '../services/walletBridge';
+import { useAppStore } from '../store/appStore';
+import { Shield, Key, AlertTriangle, CheckCircle, RefreshCw } from 'lucide-react';
 
 // Base58 validation
 const BASE58_REGEX = /^[1-9A-HJ-NP-Za-km-z]+$/;
@@ -50,22 +13,29 @@ const isBase58 = (s: string) => BASE58_REGEX.test(s) && s.length >= 32;
 
 export const TradingSettings: React.FC = () => {
   const { mode, setMode } = useTradeMode();
+  const { status, address, solBalance, connectFromKey, disconnect, refreshBalance } = useWalletBridge();
+  const addLog = useAppStore((s) => s.addLog);
 
-  const [jupiterApiKey, setJupiterApiKey] = useState('');
   const [privateKey, setPrivateKey] = useState('');
   const [rpcUrl, setRpcUrl] = useState('');
   const [masterMonitorRpc, setMasterMonitorRpc] = useState('');
   const [masterMonitorRpc2, setMasterMonitorRpc2] = useState('');
   const [masterMonitorWs, setMasterMonitorWs] = useState('');
   const [vaultPubkey, setVaultPubkey] = useState('');
-  const [password, setPassword] = useState('');
   const [saved, setSaved] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  // Load encrypted keys on mount
+  // Clean up any insecure legacy keys from localStorage on mount
   useEffect(() => {
-    const encApiKey = localStorage.getItem('enc_jupiter_api_key');
-    const encPrivKey = localStorage.getItem('enc_private_key');
+    try {
+      localStorage.removeItem('enc_private_key');
+      localStorage.removeItem('enc_jupiter_api_key');
+      localStorage.removeItem('jupiter_auto_privateKey');
+      localStorage.removeItem('jupiter_api_key');
+    } catch {
+      // Ignore errors
+    }
+
     const savedRpc = localStorage.getItem('rpc_url') || localStorage.getItem('juipter_auto_rpcUrl');
     const savedMasterRpc = localStorage.getItem('master_monitor_rpc') || '';
     const savedMasterRpc2 = localStorage.getItem('master_monitor_rpc2') || '';
@@ -77,61 +47,51 @@ export const TradingSettings: React.FC = () => {
     setMasterMonitorRpc2(savedMasterRpc2);
     setMasterMonitorWs(savedMasterWs);
     if (savedVault) setVaultPubkey(savedVault);
-
-    // Keys remain encrypted until user enters password
-    if (encApiKey) setJupiterApiKey('••••••••••••••••••••••••••');
-    if (encPrivKey) setPrivateKey('••••••••••••••••••••••••••');
   }, []);
 
-  const handleSave = async () => {
-    if (!password) {
-      alert('Enter a session password to encrypt your keys');
+  const handleConnectWallet = async () => {
+    if (!privateKey.trim()) {
+      alert('Enter a valid Base58 private key');
       return;
     }
-    if (privateKey !== '••••••••••••••••••••••••••' && privateKey.length > 0 && !isBase58(privateKey)) {
-      alert('Private key must be valid Base58');
+
+    if (!isBase58(privateKey.trim())) {
+      alert('Private key must be valid Base58 (32+ chars, no 0, O, I, l)');
       return;
+    }
+
+    if (mode === 'mainnet') {
+      const confirmed = window.confirm(
+        '⚠️ MAINNET WARNING:\n\n' +
+        'You are connecting a live mainnet wallet. The key will reside IN-MEMORY ONLY for this browser session ' +
+        'and will NEVER be written to localStorage or disk.\n\nContinue?'
+      );
+      if (!confirmed) return;
     }
 
     setLoading(true);
     try {
-      if (jupiterApiKey && jupiterApiKey !== '••••••••••••••••••••••••••') {
-        localStorage.setItem('enc_jupiter_api_key', await encryptData(jupiterApiKey, password));
-        localStorage.removeItem('jupiter_api_key');
+      const ok = await connectFromKey(privateKey.trim(), mode === 'mainnet' ? 'mainnet' : 'paper');
+      if (ok) {
+        setPrivateKey(''); // Wipe raw input immediately
+        setSaved(true);
+        setTimeout(() => setSaved(false), 2000);
       }
-      if (privateKey && privateKey !== '••••••••••••••••••••••••••') {
-        try {
-          const kp = getKeypairFromPrivateKey(privateKey);
-          const envNet = useTradingEnvironmentStore.getState().network || 'paper';
-          useActiveWalletStore.getState().switchActiveWallet({ keypair: kp, network: envNet, source: 'session' });
-        } catch (e) {}
-
-        localStorage.setItem('enc_private_key', await encryptData(privateKey, password));
-      }
-      if (rpcUrl) {
-        localStorage.setItem('rpc_url', rpcUrl);
-        localStorage.setItem('juipter_auto_rpcUrl', rpcUrl);
-      }
-      masterMonitorHealthManager.setEndpoints(masterMonitorRpc, masterMonitorRpc2, masterMonitorWs);
-      if (vaultPubkey) localStorage.setItem('vault_pubkey', vaultPubkey);
-
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
     } finally {
       setLoading(false);
     }
   };
 
-  const handleDecrypt = async () => {
-    if (!password) return;
-    try {
-      const encApiKey = localStorage.getItem('enc_jupiter_api_key');
-      const encPrivKey = localStorage.getItem('enc_private_key');
-      if (encApiKey) setJupiterApiKey(await decryptData(encApiKey, password));
-      if (encPrivKey) setPrivateKey(await decryptData(encPrivKey, password));
-    } catch {
-      alert('Wrong password');
+  const handleSaveEndpoints = () => {
+    if (rpcUrl) {
+      localStorage.setItem('rpc_url', rpcUrl);
+      localStorage.setItem('juipter_auto_rpcUrl', rpcUrl);
     }
+    masterMonitorHealthManager.setEndpoints(masterMonitorRpc, masterMonitorRpc2, masterMonitorWs);
+    if (vaultPubkey) localStorage.setItem('vault_pubkey', vaultPubkey);
+
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
   };
 
   return (
@@ -167,43 +127,80 @@ export const TradingSettings: React.FC = () => {
 
       {mode === 'mainnet' && (
         <div className="rounded-[10px] border border-rose-500/30 bg-rose-500/10 p-3">
-          <p className="text-[11px] text-rose-400 font-medium">
-            ⚠️ Live mode uses real funds. Double-check all settings before saving.
+          <p className="text-[11px] text-rose-400 font-medium flex items-center gap-1.5">
+            <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+            Live mode uses real funds. Keys are held in session memory only (never saved to localStorage).
           </p>
         </div>
       )}
 
-      {/* Session Password */}
-      <SecureInput
-        label="Session Password"
-        value={password}
-        onChange={setPassword}
-        placeholder="Used to encrypt/decrypt keys locally"
-        validate={(v) => v.length < 8 ? 'Min 8 characters' : null}
-      />
+      {/* Security Architecture Notice */}
+      <div className="rounded-[10px] border border-emerald-500/20 bg-emerald-500/5 p-3 text-xs text-slate-300 space-y-1">
+        <div className="flex items-center gap-2 font-bold text-emerald-400 text-[11px]">
+          <Shield className="w-3.5 h-3.5" />
+          Zero-Persistence Keystore Active
+        </div>
+        <p className="text-[10px] text-slate-400 leading-relaxed">
+          Private keys reside in volatile browser session memory only. No private keys are saved to localStorage, indexedDB, or transmitted over network.
+        </p>
+      </div>
 
-      {/* Jupiter API Key */}
-      <SecureInput
-        label="Jupiter API Key"
-        value={jupiterApiKey}
-        onChange={setJupiterApiKey}
-        placeholder="jup_xxxxxxxxxxxxxxxx"
-        validate={(v) => v.length > 0 && v.length < 20 ? 'Invalid API key format' : null}
-      />
+      {/* Active Wallet Status / Key Connect */}
+      <div className="rounded-[10px] border border-gray-800 bg-[#11121c] p-3 space-y-3">
+        <div className="flex items-center justify-between">
+          <label className="text-[12px] font-medium text-gray-300 uppercase tracking-wider flex items-center gap-1.5">
+            <Key className="w-3.5 h-3.5 text-[#c7f284]" />
+            Session Wallet
+          </label>
+          <span className={`text-[10px] font-mono uppercase ${status === 'CONNECTED' ? 'text-emerald-400' : 'text-slate-500'}`}>
+            {status}
+          </span>
+        </div>
 
-      {/* Private Key */}
-      <SecureInput
-        label="Private Key (Base58)"
-        value={privateKey}
-        onChange={setPrivateKey}
-        placeholder="Paste your base58-encoded private key"
-        isBase58
-        rows={3}
-        validate={(v) => {
-          if (v === '••••••••••••••••••••••••••' || v === '') return null;
-          return !isBase58(v) ? 'Must be valid Base58 (no 0, O, I, l)' : null;
-        }}
-      />
+        {status === 'CONNECTED' ? (
+          <div className="space-y-2 bg-[#050509] border border-[#2d2e3d] rounded-lg p-2.5">
+            <div className="text-[10px] text-[#64748b] uppercase">Active Address</div>
+            <div className="text-xs font-mono text-white break-all">{address}</div>
+            <div className="flex items-center justify-between pt-1">
+              <span className="text-xs font-mono text-[#c7f284]">
+                {solBalance !== null ? `${solBalance.toFixed(4)} SOL` : '—'}
+              </span>
+              <div className="flex gap-2">
+                <button
+                  onClick={refreshBalance}
+                  className="px-2 py-1 bg-[#1f212e] hover:bg-[#2a2d3e] rounded text-[10px] text-slate-300 flex items-center gap-1"
+                >
+                  <RefreshCw className="w-3 h-3" /> Refresh
+                </button>
+                <button
+                  onClick={disconnect}
+                  className="px-2 py-1 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 rounded text-[10px]"
+                >
+                  Disconnect
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <input
+              type="password"
+              value={privateKey}
+              onChange={(e) => setPrivateKey(e.target.value)}
+              placeholder="Paste Base58 private key (in-memory only)"
+              className="w-full rounded-[10px] border border-gray-800 bg-[#050509] px-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-[#c7f284]"
+              autoComplete="off"
+            />
+            <button
+              onClick={handleConnectWallet}
+              disabled={loading || !privateKey.trim()}
+              className="w-full bg-[#c7f284]/10 hover:bg-[#c7f284]/20 text-[#c7f284] border border-[#c7f284]/30 py-2 rounded-lg text-xs font-bold transition-all disabled:opacity-50"
+            >
+              {loading ? 'Connecting...' : 'Connect to Session Memory'}
+            </button>
+          </div>
+        )}
+      </div>
 
       {/* RPC URL */}
       <div className="flex flex-col gap-1.5">
@@ -251,25 +248,13 @@ export const TradingSettings: React.FC = () => {
       </div>
 
       {/* Actions */}
-      <div className="flex gap-3 pt-2">
+      <div className="pt-2">
         <button
-          onClick={handleDecrypt}
-          disabled={!password}
-          className="flex-1 rounded-[10px] border border-gray-700 px-4 py-2.5
-            text-[13px] font-medium text-gray-300
-            hover:border-white hover:text-white
-            disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer"
+          onClick={handleSaveEndpoints}
+          className="w-full rounded-[10px] bg-emerald-500 hover:bg-emerald-400 px-4 py-2.5
+            text-[13px] font-semibold text-black transition-all cursor-pointer"
         >
-          Decrypt Keys
-        </button>
-        <button
-          onClick={handleSave}
-          disabled={loading}
-          className="flex-1 rounded-[10px] bg-emerald-500 hover:bg-emerald-400 px-4 py-2.5
-            text-[13px] font-semibold text-black
-            disabled:opacity-50 transition-all cursor-pointer"
-        >
-          {loading ? 'Encrypting...' : saved ? '✓ Saved' : 'Save & Encrypt'}
+          {saved ? '✓ Endpoints Saved' : 'Save Endpoints'}
         </button>
       </div>
     </div>

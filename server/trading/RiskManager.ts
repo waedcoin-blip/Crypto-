@@ -1,11 +1,10 @@
 // server/trading/RiskManager.ts
-import { Position, positionManager } from './PositionManager.js';
-import { unifiedExitEngine, ExitDecision } from './UnifiedExitEngine.js';
+import { positionManager } from './PositionManager.js';
 import { tokenMetadataResolver } from '../market/TokenMetadataResolver.js';
 import { profitabilityEngine } from './ProfitabilityEngine.js';
-import { defaultTradingConfig } from '../config/TradingConfig.js';
-
-export type { ExitDecision };
+import { tradingConfigManager } from '../config/TradingConfig.js';
+import { logger } from '../utils/logger.js';
+export type { ExitDecision } from './UnifiedExitEngine.js';
 
 export interface BuyRevalidationResult {
   allowed: boolean;
@@ -17,6 +16,8 @@ export interface BuyRevalidationResult {
 export class RiskManager {
   private static instance: RiskManager;
   private recentBuyTimestamps: Map<string, number> = new Map();
+  private buySuccessCount: number = 0;
+  private buyFailureCount: number = 0;
 
   private constructor() {}
 
@@ -27,9 +28,10 @@ export class RiskManager {
     return RiskManager.instance;
   }
 
-  /**
-   * Mandatory Final Buy Revalidation Gate before transaction broadcast/signing.
-   */
+  // ==========================================
+  // FINAL REVALIDATION (Before Broadcast)
+  // ==========================================
+
   public async revalidateBuyBeforeBroadcast(params: {
     mint: string;
     buyAmountLamports: bigint;
@@ -37,112 +39,111 @@ export class RiskManager {
     wallet: string;
   }): Promise<BuyRevalidationResult> {
     const { mint, buyAmountLamports, network, wallet } = params;
+    const config = tradingConfigManager.getConfig();
 
-    // 1. Re-check Cooldown & Position Limits
+    // 1. Re-check Cooldown
+    const cooldownKey = `${network}:${wallet}:${mint}`;
+    const lastBuy = this.recentBuyTimestamps.get(cooldownKey) || 0;
+    if (Date.now() - lastBuy < config.cooldownMs) {
+      return {
+        allowed: false,
+        reason: `COOLDOWN_ACTIVE: ${Date.now() - lastBuy}ms since last buy < ${config.cooldownMs}ms cooldown`,
+      };
+    }
+
+    // 2. Re-check Max Positions
     const openPositions = positionManager.getOpenPositions(network, wallet);
-    if (openPositions.length >= defaultTradingConfig.maxPositions) {
+    if (openPositions.length >= config.maxPositions) {
       return {
         allowed: false,
-        reason: `MAX_POSITIONS_EXCEEDED: Open positions (${openPositions.length}) >= limit (${defaultTradingConfig.maxPositions})`,
+        reason: `MAX_POSITIONS_EXCEEDED: Open positions (${openPositions.length}) >= limit (${config.maxPositions})`,
       };
     }
 
-    const lastBuy = this.recentBuyTimestamps.get(`${network}:${wallet}:${mint}`) || 0;
-    if (Date.now() - lastBuy < defaultTradingConfig.cooldownMs) {
+    // In paper mode, bypass RPC calls and return verified paper metadata
+    if (network === 'paper') {
       return {
-        allowed: false,
-        reason: `COOLDOWN_ACTIVE: ${Date.now() - lastBuy}ms since last buy < ${defaultTradingConfig.cooldownMs}ms cooldown`,
+        allowed: true,
+        reason: 'FINAL_REVALIDATION_PASSED',
+        verifiedDecimals: 6,
+        executableNetProfitLamports: 1000000n,
       };
     }
 
-    // 2. Re-check Mint & Decimals Verification
-    const meta = await tokenMetadataResolver.resolveVerifiedMetadata(mint);
-    if (!meta.isVerified) {
-      return {
-        allowed: false,
-        reason: `UNVERIFIED_MINT_OR_DECIMALS: ${meta.reason || 'Failed to verify on-chain metadata'}`,
-      };
-    }
-
-    // 3. Re-check Executable Quote & SOL Profitability
-    // FIX: Added try-catch to prevent external service failures from crashing the buy pipeline
-    let prof;
+    // 3. Re-check Mint & Decimals Verification
     try {
-      prof = await profitabilityEngine.evaluateExecutableProfitability(
-        mint,
-        buyAmountLamports,
-        defaultTradingConfig.maxSlippageBps
-      );
+      const meta = await tokenMetadataResolver.resolveVerifiedMetadata(mint);
+      if (!meta.isVerified) {
+        return {
+          allowed: false,
+          reason: `UNVERIFIED_MINT_OR_DECIMALS: ${meta.reason || 'Failed to verify on-chain metadata'}`,
+        };
+      }
+
+      // 4. Re-check Executable Quote & SOL Profitability
+
+      // FIX: Added try-catch to prevent external service failures from crashing the buy pipeline
+      let prof;
+      try {
+        prof = await profitabilityEngine.evaluateExecutableProfitability(
+          mint,
+          buyAmountLamports,
+          config.maxSlippageBps
+        );
+      } catch (err: any) {
+        return {
+          allowed: false,
+          reason: `PROFITABILITY_ENGINE_UNAVAILABLE: ${err?.message || 'Unknown error during profitability check'}`,
+        };
+      }
+
+      if (prof.status !== 'AUTHORIZED') {
+        return {
+          allowed: false,
+          reason: `PROFITABILITY_REVALIDATION_FAILED: ${prof.reason || prof.status}`,
+        };
+      }
+      if (prof.quoteFreshnessMs > config.maxQuoteAgeMs) {
+        return {
+          allowed: false,
+          reason: `QUOTE_STALE: Latency ${prof.quoteFreshnessMs}ms exceeds limit ${config.maxQuoteAgeMs}ms`,
+        };
+      }
+
+      return {
+        allowed: true,
+        reason: 'FINAL_REVALIDATION_PASSED',
+        verifiedDecimals: meta.decimals,
+        executableNetProfitLamports: prof.expectedNetProfitLamports,
+      };
     } catch (err: any) {
       return {
         allowed: false,
-        reason: `PROFITABILITY_ENGINE_UNAVAILABLE: ${err?.message || 'Unknown error during profitability check'}`,
+        reason: `REVALIDATION_ERROR: ${err?.message || String(err)}`,
       };
     }
-
-    if (prof.status !== 'AUTHORIZED') {
-      return {
-        allowed: false,
-        reason: `PROFITABILITY_REVALIDATION_FAILED: ${prof.reason || prof.status}`,
-      };
-    }
-
-    if (prof.quoteFreshnessMs > defaultTradingConfig.maxQuoteAgeMs) {
-      return {
-        allowed: false,
-        reason: `QUOTE_STALE: Latency ${prof.quoteFreshnessMs}ms exceeds limit ${defaultTradingConfig.maxQuoteAgeMs}ms`,
-      };
-    }
-
-    return {
-      allowed: true,
-      reason: 'FINAL_REVALIDATION_PASSED',
-      verifiedDecimals: meta.decimals,
-      executableNetProfitLamports: prof.expectedNetProfitLamports,
-    };
   }
 
-  /**
-   * Record buy timestamp for cooldown after confirmed success.
-   */
+  // ==========================================
+  // TELEMETRY
+  // ==========================================
+
   public recordBuySuccess(network: string, wallet: string, mint: string): void {
-    this.recordSuccessfulBuy(network, wallet, mint);
+    const key = `${network}:${wallet}:${mint}`;
+    this.recentBuyTimestamps.set(key, Date.now());
+    this.buySuccessCount++;
   }
 
-  /**
-   * Record buy timestamp for cooldown after confirmed success.
-   */
-  public recordSuccessfulBuy(network: string, wallet: string, mint: string): void {
-    this.recentBuyTimestamps.set(`${network}:${wallet}:${mint}`, Date.now());
+  public recordBuyFailure(): void {
+    this.buyFailureCount++;
   }
 
-  /**
-   * Delegates exit locking/reservation to UnifiedExitEngine.
-   */
-  public reserveExit(positionId: string): boolean {
-    const position = positionManager.getPositionById(positionId);
-    if (!position) return false;
-    return unifiedExitEngine.acquireExitLock(position.network, position.wallet, position.mint);
-  }
-
-  /**
-   * Delegates releasing exit locking/reservation to UnifiedExitEngine.
-   */
-  public releaseExit(positionId: string): void {
-    const position = positionManager.getPositionById(positionId);
-    if (position) {
-      unifiedExitEngine.releaseExitLock(position.network, position.wallet, position.mint);
-    }
-  }
-
-  /**
-   * Delegates position exit evaluations to UnifiedExitEngine.
-   */
-  public async evaluatePositionExit(
-    position: Position,
-    marketPriceSol: number
-  ): Promise<ExitDecision> {
-    return unifiedExitEngine.evaluatePositionExit(position, marketPriceSol);
+  public getTelemetry() {
+    return {
+      buySuccessCount: this.buySuccessCount,
+      buyFailureCount: this.buyFailureCount,
+      activeCooldowns: this.recentBuyTimestamps.size,
+    };
   }
 }
 

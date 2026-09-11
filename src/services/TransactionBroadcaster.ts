@@ -2,7 +2,7 @@
 import { Connection } from '@solana/web3.js';
 import { rpcRouting } from './rpcRouting';
 import { PreparedExitTransaction } from './ExitTransactionBuilder';
-import { apiClient } from './apiClient';
+import { apiClient } from './ApiClient';
 
 export interface BroadcastResult {
   signature: string;

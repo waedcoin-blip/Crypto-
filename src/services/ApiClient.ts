@@ -1,11 +1,11 @@
-// src/services/apiClient.ts
+// src/services/ApiClient.ts
 import { auth } from '../lib/firebase';
 
 export interface ApiClientOptions extends RequestInit {
   skipAuth?: boolean;
 }
 
-class ApiClient {
+export class ApiClient {
   private isRefreshingToken = false;
 
   public async getIdToken(forceRefresh = false): Promise<string | null> {
@@ -28,7 +28,6 @@ class ApiClient {
       if (token) {
         headers.set('Authorization', `Bearer ${token}`);
       } else {
-        // Return synthetic 401 Response early if unauthenticated for protected endpoint
         return new Response(JSON.stringify({ error: 'Unauthenticated', code: 'UNAUTHENTICATED' }), {
           status: 401,
           headers: { 'Content-Type': 'application/json' },
@@ -38,7 +37,6 @@ class ApiClient {
 
     let response = await fetch(url, { ...restOptions, headers });
 
-    // Handle 401 token refresh once
     if (response.status === 401 && !skipAuth && !this.isRefreshingToken) {
       this.isRefreshingToken = true;
       try {
@@ -132,3 +130,48 @@ class ApiClient {
 }
 
 export const apiClient = new ApiClient();
+
+export const tradingApi = {
+  getEngineStatus: () => apiClient.get('/api/trading/engine/status', { skipAuth: true }),
+  getStatus: () => apiClient.get('/api/trading/engine/status', { skipAuth: true }),
+  getPositions: (network?: string, wallet?: string) => {
+    const params = new URLSearchParams();
+    if (network) params.append('network', network);
+    if (wallet) params.append('wallet', wallet);
+    const qs = params.toString();
+    return apiClient.get(`/api/trading/positions${qs ? `?${qs}` : ''}`, { skipAuth: true });
+  },
+  getPortfolioPnL: () => apiClient.get('/api/trading/portfolio/pnl', { skipAuth: true }),
+  buy: (payload: any) => apiClient.post('/api/trading/buy', payload, { skipAuth: true }),
+  sell: (payload: any) => apiClient.post('/api/trading/sell', payload, { skipAuth: true }),
+  getRebuyGuardState: (mint: string, network?: string, wallet?: string) => {
+    const params = new URLSearchParams();
+    if (network) params.append('network', network);
+    if (wallet) params.append('wallet', wallet);
+    const qs = params.toString();
+    return apiClient.get(`/api/trading/rebuy-guard/${mint}${qs ? `?${qs}` : ''}`, { skipAuth: true });
+  },
+  refreshValuations: () => apiClient.post('/api/trading/valuations/refresh', {}, { skipAuth: true }),
+  getSupervisorStatus: () => apiClient.get('/api/trading/supervisor/status', { skipAuth: true }),
+  startSupervisor: (params?: any) => apiClient.post('/api/trading/supervisor/start', params, { skipAuth: true }),
+  stopSupervisor: () => apiClient.post('/api/trading/supervisor/stop', {}, { skipAuth: true }),
+  forceRecovery: (reason?: string) => apiClient.post('/api/trading/supervisor/recovery', { reason }, { skipAuth: true }),
+};
+
+export const criteriaApi = {
+  get: () => apiClient.get('/api/criteria', { skipAuth: true }),
+  update: (patch: any) => apiClient.put('/api/criteria', patch, { skipAuth: true }),
+  reset: () => apiClient.post('/api/criteria/reset', {}, { skipAuth: true }),
+  getPresets: () => apiClient.get('/api/criteria/presets', { skipAuth: true }),
+  applyPreset: (name: string) => apiClient.post(`/api/criteria/presets/${encodeURIComponent(name)}`, {}, { skipAuth: true }),
+};
+
+export const healthApi = {
+  get: () => apiClient.get('/api/health', { skipAuth: true }),
+};
+
+export const pipelineApi = {
+  getCandidates: () => apiClient.get('/api/pipeline/candidates', { skipAuth: true }),
+  validateToken: (telemetry: any) => apiClient.post('/api/pipeline/validate', telemetry, { skipAuth: true }),
+  ingress: (event: any) => apiClient.post('/api/pipeline/ingress', event, { skipAuth: true }),
+};

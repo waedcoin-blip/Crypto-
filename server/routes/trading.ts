@@ -10,6 +10,7 @@ import { rebuyGuard } from '../trading/RebuyGuard.js';
 import { tradingEngine } from '../trading/TradingEngine.js';
 import { tradingConfigManager } from '../config/TradingConfig.js';
 import { positionManager } from '../trading/PositionManager.js';
+import { paperWalletLedger } from '../wallet/PaperWalletLedger.js';
 
 const router = Router();
 
@@ -42,7 +43,7 @@ router.get('/positions', asyncHandler(async (req: Request, res: Response) => {
 
   const enriched = openPositions.map(pos => {
     const val = positionValuationEngine.getValuation(pos.network, pos.wallet, pos.mint);
-    const currentPriceSol = val?.currentPriceSol || pos.currentPrice || pos.averageEntryPrice || 0;
+    const currentPriceSol = val?.currentPriceSol || pos.currentPriceSol || pos.averageEntryPrice || 0;
     const unrealizedPnlSol = val?.pnlSol ?? val?.executablePnlSol ?? (currentPriceSol > 0 && pos.averageEntryPrice > 0 ? (currentPriceSol - pos.averageEntryPrice) * pos.tokenAmount : 0);
     const unrealizedPnlPct = val?.pnlPercent ?? val?.executablePnlPercent ?? (pos.averageEntryPrice > 0 ? ((currentPriceSol - pos.averageEntryPrice) / pos.averageEntryPrice) * 100 : 0);
 
@@ -148,7 +149,8 @@ router.get('/rebuy-guard/:mint', asyncHandler(async (req: Request, res: Response
 // GET /api/trading/engine/status
 router.get('/engine/status', asyncHandler(async (_req: Request, res: Response) => {
   const status = tradingEngine.getEngineStatus();
-  res.json({ status: 'success', ...status, timestamp: Date.now() });
+  const solBalance = paperWalletLedger.getSolBalance();
+  res.json({ status: 'success', ...status, solBalance, timestamp: Date.now() });
 }));
 
 // ============ TRADING CONFIG MANAGEMENT ============

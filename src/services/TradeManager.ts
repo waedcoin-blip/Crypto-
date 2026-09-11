@@ -1,17 +1,23 @@
 // src/services/TradeManager.ts
-import { ITradeExecutor, SwapResult, ExecutorTelemetry } from './ITradeExecutor';
-import { ExecutionEngine, executionEngine } from './ExecutionEngine';
 import { QuoteGetRequest, QuoteResponse } from '@jup-ag/api';
 import { TradingNetwork } from '../config/network';
-import { orderManager } from './OrderManager';
+import { orderManager, SwapResult, ITradeExecutor } from './OrderManager';
+import { getJupiterQuote } from './jupiterService';
+import { tradingApi } from './ApiClient';
+import { useWalletBridge } from './walletBridge';
 
 export type TradeMode = 'paper' | 'mainnet';
 
+export interface ExecutorTelemetry {
+  successfulSwaps: number;
+  failedSwaps: number;
+  avgLatencyMs: number;
+}
+
 /**
- * TradeManager: Adapter layer routing through OrderManager and ExecutionEngine.
+ * TradeManager: Adapter layer routing through OrderManager and backend API.
  */
 export class TradeManager {
-  private executor: ExecutionEngine;
   private _mode: TradeMode;
 
   constructor(options: {
@@ -19,29 +25,22 @@ export class TradeManager {
     realConfig?: { network?: TradingNetwork; verbose?: boolean };
   }) {
     this._mode = options.mode;
-    this.executor = options.realConfig?.network 
-      ? new ExecutionEngine({ network: options.realConfig.network }) 
-      : executionEngine;
   }
 
   switchMode(mode: TradeMode) {
     if (mode === this._mode) return;
     this.save();
     this._mode = mode;
-    this.executor = new ExecutionEngine({ network: mode });
-    orderManager.setExecutor(this.executor);
   }
 
-  getExecutor(): ITradeExecutor { return this.executor; }
   get mode() { return this._mode; }
 
   save() {
     // No-op for real execution
   }
 
-  // Passthrough methods to ExecutionEngine / OrderManager
   getQuote(params: QuoteGetRequest): Promise<QuoteResponse> {
-    return this.executor.getQuote(params);
+    return getJupiterQuote(params.inputMint, params.outputMint, Number(params.amount), params.slippageBps);
   }
 
   async swap(
@@ -56,13 +55,33 @@ export class TradeManager {
   }
 
   batchSwap(swaps: Array<{ inputMint: string; outputMint: string; amount: number; slippageBps: number; label?: string }>) {
-    return this.executor.batchSwap(swaps as any);
+    return Promise.all(swaps.map(s => this.swap(s.inputMint, s.outputMint, s.amount, s.slippageBps, s.label)));
   }
 
-  getSolBalance() { return this.executor.getSolBalance(); }
-  getTokenBalance(mint: string) { return this.executor.getTokenBalance(mint); }
-  hasTokenAccount(mint: string) { return this.executor.hasTokenAccount(mint); }
-  getTelemetry(): ExecutorTelemetry { return this.executor.getTelemetry(); }
+  async getSolBalance(): Promise<number> {
+    const status = await tradingApi.getStatus().catch(() => null);
+    return status?.engine?.solBalance ?? useWalletBridge.getState().solBalance ?? 0;
+  }
+
+  async getTokenBalance(mint: string): Promise<number> {
+    const positions = await tradingApi.getPositions().catch(() => ({ positions: [] }));
+    const match = positions.positions?.find(p => p.mint === mint);
+    return match?.amount ?? 0;
+  }
+
+  async hasTokenAccount(mint: string): Promise<boolean> {
+    const balance = await this.getTokenBalance(mint);
+    return balance > 0;
+  }
+
+  getTelemetry(): ExecutorTelemetry {
+    return {
+      successfulSwaps: 0,
+      failedSwaps: 0,
+      avgLatencyMs: 0,
+    };
+  }
 }
+
 
 

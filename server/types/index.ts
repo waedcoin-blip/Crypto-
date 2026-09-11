@@ -3,6 +3,38 @@
 // Re-export all shared types
 export * from '../../src/types/index.js';
 
+export type HardenedDecision = 'PASS' | 'FAIL' | 'UNKNOWN';
+
+export interface HardenedCriterionResult {
+  ruleId: string;
+  name: string;
+  status: HardenedDecision;
+  passed: boolean;
+  reason?: string;
+  observedValue?: any;
+  threshold?: any;
+}
+
+export interface HardenedApproval {
+  approvalId: string;
+  chain: 'solana';
+  mint: string;
+  criteriaVersion: string;
+  evaluatedAt: number;
+  evaluatedSlot: number;
+  evaluationPrice: number;
+  maxSlotLag: number;
+  maxPriceDeviationPct: number;
+  expiresAt: number;
+  checks: HardenedCriterionResult[];
+  decisionHash: string;
+  correlationId: string;
+  state: 'ISSUED' | 'CONSUMING' | 'CONSUMED' | 'EXPIRED' | 'INVALID';
+  pool?: string;
+  consumedByOrderId?: string;
+  consumedAt?: number;
+}
+
 // Server-specific extensions
 export interface ServerEntryDecision {
   allowed: boolean;

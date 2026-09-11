@@ -80,12 +80,13 @@ export class EntryGate {
     }
 
     // Retrieve criteria thresholds from state or safe defaults
-    const minLiquidity = appState.hardenedLiquidityRatio ?? 5000;
+    const criteria = appState.criteria || {};
+    const minLiquidity = criteria.hardenedLiquidityRatio ?? Number(localStorage.getItem('hd_liquidity_ratio')) ?? 5000;
     const minAgeMinutes = 0;
     const maxAgeMinutes = 1440;
-    const maxDevPct = appState.hardenedMaxDevOwnership ?? 10;
+    const maxDevPct = criteria.hardenedMaxDevOwnership ?? Number(localStorage.getItem('hd_max_dev_ownership')) ?? 10;
     const maxTop10Pct = 40;
-    const maxRiskScore = appState.hardenedMaxRiskScore ?? 22;
+    const maxRiskScore = criteria.hardenedMaxRiskScore ?? Number(localStorage.getItem('hd_max_risk_score')) ?? 22;
 
     const now = Date.now();
 

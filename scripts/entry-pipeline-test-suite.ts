@@ -267,6 +267,9 @@ async function runTestSuite() {
   const buyConfirmedCount = results.filter((r) => r.stage === 'POSITION_OPEN' || r.tradeResponse?.success).length;
   assert(buyConfirmedCount <= 1, `Atomic lock prevents multiple buys for same mint (actual buys: ${buyConfirmedCount})`);
 
+  // Teardown concurrent test position
+  positionManager.updatePositionStatus('paper', 'default', concurrentMint, 'CLOSED');
+
   // ==========================================================
   // SUMMARY
   // ==========================================================

@@ -1,6 +1,6 @@
 // src/services/UltraFastExitEngine.ts
 import { systemLogger } from './systemLogger';
-import { apiClient } from './apiClient';
+import { apiClient } from './ApiClient';
 
 export interface MarketPriceEvent {
   mint: string;

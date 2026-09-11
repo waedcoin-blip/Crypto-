@@ -1,37 +1,44 @@
 // server/trading/PriorityScheduler.ts
+import { logger } from '../utils/logger.js';
 
-export enum PriorityLevel {
-  P0_EMERGENCY_SELL = 0,
-  P1_STANDARD_SELL = 1,
-  P2_MIGRATION_BUY = 2,
-  P3_BONDING_CURVE_BUY = 3,
-  P4_HIGH_MOMENTUM_BUY = 4,
-  P5_NORMAL_BUY = 5,
-  P6_ENRICHMENT = 6,
-  P7_ANALYTICS_UI = 7,
-}
+export type PriorityLevel = 'CRITICAL' | 'HIGH' | 'NORMAL' | 'LOW';
 
-export interface ScheduledTask<T = any> {
+interface QueuedTask<T = any> {
   id: string;
   priority: PriorityLevel;
-  execute: () => Promise<T>;
-  createdAt: number;
+  fn: () => Promise<T>;
   resolve: (value: T) => void;
-  reject: (reason: any) => void;
+  reject: (error: any) => void;
+  createdAt: number;
 }
+
+const PRIORITY_ORDER: Record<PriorityLevel, number> = {
+  CRITICAL: 0,
+  HIGH: 1,
+  NORMAL: 2,
+  LOW: 3,
+};
 
 export class PriorityScheduler {
   private static instance: PriorityScheduler;
-  private queue: ScheduledTask[] = [];
-  private activeWorkers = 0;
-  private readonly maxConcurrentWorkers = 4;
-  
-  // FIX: Track emergency sells to prevent RPC overload
-  private emergencySellCount = 0;
-  private readonly maxEmergencySellsPerSecond = 10;
-  private lastEmergencySellReset = Date.now();
+  private queue: QueuedTask[] = [];
+  private activeWorkers: number = 0;
+  private readonly maxConcurrent: number;
+  private isProcessing: boolean = false;
 
-  private constructor() {}
+  // Emergency sell rate limiting
+  private emergencySellCount: number = 0;
+  private lastEmergencySellReset: number = Date.now();
+  private readonly maxEmergencySellsPerSecond: number = 10;
+
+  // Telemetry
+  private totalScheduled: number = 0;
+  private totalCompleted: number = 0;
+  private totalFailed: number = 0;
+
+  private constructor(maxConcurrent: number = 3) {
+    this.maxConcurrent = maxConcurrent;
+  }
 
   public static getInstance(): PriorityScheduler {
     if (!PriorityScheduler.instance) {
@@ -40,94 +47,103 @@ export class PriorityScheduler {
     return PriorityScheduler.instance;
   }
 
-  public async schedule<T>(priority: PriorityLevel, execute: () => Promise<T>): Promise<T> {
-    const id = `task_${Math.random().toString(36).slice(2, 11)}_${Date.now()}`;
+  // ==========================================
+  // TASK SCHEDULING
+  // ==========================================
 
-    if (priority <= PriorityLevel.P1_STANDARD_SELL) {
-      // FIX: Rate limit emergency sells
+  public schedule<T>(
+    fn: () => Promise<T>,
+    priority: PriorityLevel = 'NORMAL',
+    id?: string
+  ): Promise<T> {
+    // Emergency sell bypass: execute immediately if under rate limit
+    if (priority === 'CRITICAL') {
       const now = Date.now();
       if (now - this.lastEmergencySellReset > 1000) {
         this.emergencySellCount = 0;
         this.lastEmergencySellReset = now;
       }
-      if (this.emergencySellCount >= this.maxEmergencySellsPerSecond) {
-        // Queue it instead of bypassing if rate limit hit
-        return new Promise<T>((resolve, reject) => {
-          const task: ScheduledTask<T> = { id, priority, execute, createdAt: Date.now(), resolve, reject };
-          this.queue.push(task);
-          this.sortQueue();
-          this.processNext();
-        });
+
+      if (this.emergencySellCount < this.maxEmergencySellsPerSecond) {
+        this.emergencySellCount++;
+        this.totalScheduled++;
+        return fn().finally(() => { this.totalCompleted++; });
       }
-      this.emergencySellCount++;
-      
-      try {
-        return await execute();
-      } catch (err) {
-        throw err;
-      }
+      // Rate limit hit: queue it instead of bypassing
     }
 
     return new Promise<T>((resolve, reject) => {
-      const task: ScheduledTask<T> = {
-        id,
+      const task: QueuedTask<T> = {
+        id: id || `task_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         priority,
-        execute,
-        createdAt: Date.now(),
+        fn,
         resolve,
         reject,
+        createdAt: Date.now(),
       };
-
       this.queue.push(task);
-      this.sortQueue();
-      this.processNext();
+      this.totalScheduled++;
+      this.processQueue();
     });
   }
 
-  private sortQueue(): void {
-    this.queue.sort((a, b) => {
-      if (a.priority !== b.priority) {
-        return a.priority - b.priority;
-      }
-      return a.createdAt - b.createdAt;
-    });
-  }
+  // ==========================================
+  // QUEUE PROCESSING
+  // ==========================================
 
-  private async processNext(): Promise<void> {
-    if (this.activeWorkers >= this.maxConcurrentWorkers || this.queue.length === 0) {
-      return;
-    }
-
-    this.activeWorkers++;
-    const task = this.queue.shift()!;
+  private async processQueue(): Promise<void> {
+    if (this.isProcessing) return;
+    this.isProcessing = true;
 
     try {
-      const result = await task.execute();
-      task.resolve(result);
-    } catch (err) {
-      task.reject(err);
+      while (this.queue.length > 0 && this.activeWorkers < this.maxConcurrent) {
+        // Sort by priority (CRITICAL first)
+        this.queue.sort((a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority]);
+
+        const task = this.queue.shift();
+        if (!task) break;
+
+        this.activeWorkers++;
+        try {
+          const result = await task.fn();
+          task.resolve(result);
+          this.totalCompleted++;
+        } catch (err) {
+          task.reject(err);
+          this.totalFailed++;
+        } finally {
+          this.activeWorkers--;
+        }
+      }
     } finally {
-      this.activeWorkers--;
-      this.processNext();
+      this.isProcessing = false;
     }
   }
 
-  public getQueueDepth(): number {
-    return this.queue.length;
-  }
+  // ==========================================
+  // TELEMETRY
+  // ==========================================
 
-  public getMetrics(): any {
+  public getMetrics() {
     return {
       queueDepth: this.queue.length,
       activeWorkers: this.activeWorkers,
-      pendingTasksCount: this.queue.length,
+      maxConcurrent: this.maxConcurrent,
+      totalScheduled: this.totalScheduled,
+      totalCompleted: this.totalCompleted,
+      totalFailed: this.totalFailed,
+      emergencySellCount: this.emergencySellCount,
     };
   }
 
+  // Inspect actual tasks waiting in the queue
   public getQueueDetails(): Array<{ id: string; priority: PriorityLevel; createdAt: number; ageMs: number }> {
     const now = Date.now();
     return this.queue.map(task => ({
-      id: task.id, priority: task.priority, createdAt: task.createdAt, ageMs: now - task.createdAt,
+      id: task.id,
+      priority: task.priority,
+      createdAt: task.createdAt,
+      ageMs: now - task.createdAt,
     }));
   }
 }

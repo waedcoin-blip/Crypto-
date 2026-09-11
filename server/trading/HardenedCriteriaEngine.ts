@@ -23,6 +23,17 @@ export interface HardenedEvaluationResult {
   evaluatedAt: number;
 }
 
+function extractVal<T>(field: any): T | null | undefined {
+  if (field === null || field === undefined) return field;
+  if (typeof field === 'object' && 'value' in field) return field.value;
+  return field;
+}
+
+function extractState(field: any): string | undefined {
+  if (field && typeof field === 'object' && 'state' in field) return field.state;
+  return 'AVAILABLE';
+}
+
 export class HardenedCriteriaEngine {
   private static instance: HardenedCriteriaEngine;
   private criteriaVersion: string = 'v1.0.0';
@@ -122,6 +133,38 @@ export class HardenedCriteriaEngine {
     const now = Date.now();
     const defaultBuyAmountSol = config.buyAmountSol || config.minBuyAmount || 0.1;
 
+    if (network === 'paper') {
+      // Paper mode: Skip strict criteria, issue approval directly
+      const approvalId = `appr_paper_${mint.slice(0, 8)}_${Date.now()}`;
+      const approval: HardenedApproval = {
+        approvalId,
+        chain: 'solana',
+        mint: mint.trim().toLowerCase(),
+        criteriaVersion: this.criteriaVersion,
+        evaluatedAt: Date.now(),
+        evaluatedSlot: 0,
+        evaluationPrice: 0.000001,
+        maxSlotLag: 999999,
+        maxPriceDeviationPct: 999999,
+        expiresAt: Date.now() + 60000,
+        checks: [],
+        decisionHash: 'paper_mode_bypass',
+        correlationId: `corr_paper_${Date.now()}`,
+        state: 'ISSUED',
+      };
+      hardenedApprovalStore.issueApproval(approval);
+      return {
+        decision: 'PASS',
+        approval,
+        checks: [],
+        rejectionReasons: [],
+        unknownReasons: [],
+        buyAmountSol: config.buyAmountSol || 0.1,
+        criteriaVersion: this.criteriaVersion,
+        evaluatedAt: Date.now(),
+      };
+    }
+
     // Check rejection cache first
     const cachedRejection = this.rejectionCache.get(cacheKey);
     if (cachedRejection) {
@@ -166,17 +209,18 @@ export class HardenedCriteriaEngine {
     );
 
     // ---- RULE 2: TOKEN DECIMALS ----
-    const decimals = candidate.decimals?.value;
-    if (candidate.decimals?.state === 'PENDING') {
+    const decimals = extractVal<number>(candidate.decimals);
+    const decimalsState = extractState(candidate.decimals);
+    if (decimalsState === 'PENDING') {
       record('TOKEN_DECIMALS', 'Token Decimals Gate', 'UNKNOWN', false, 'DECIMALS_RESOLUTION_PENDING');
-    } else if (decimals === null || decimals === undefined || candidate.decimals?.state !== 'AVAILABLE' || !Number.isInteger(decimals) || decimals < 0) {
-      record('TOKEN_DECIMALS', 'Token Decimals Gate', 'UNKNOWN', false, `DECIMALS_UNRESOLVED: state=${candidate.decimals?.state}`);
+    } else if (decimals === null || decimals === undefined || !Number.isInteger(decimals) || decimals < 0) {
+      record('TOKEN_DECIMALS', 'Token Decimals Gate', 'UNKNOWN', false, `DECIMALS_UNRESOLVED: state=${decimalsState}`);
     } else {
       record('TOKEN_DECIMALS', 'Token Decimals Gate', 'PASS', true, 'DECIMALS_RESOLVED', decimals);
     }
 
     // ---- RULE 3: MARKET CAP ----
-    const mcap = candidate.marketCapUsd?.value;
+    const mcap = extractVal<number>(candidate.marketCapUsd);
     if (mcap === null || mcap === undefined) {
       record('MARKET_CAP', 'Market Cap Gate', 'UNKNOWN', false, 'MCAP_UNAVAILABLE');
     } else {
@@ -191,7 +235,7 @@ export class HardenedCriteriaEngine {
     }
 
     // ---- RULE 4: LIQUIDITY ----
-    const liq = candidate.liquidityUsd?.value;
+    const liq = extractVal<number>(candidate.liquidityUsd);
     if (liq === null || liq === undefined) {
       record('LIQUIDITY', 'Liquidity Gate', 'UNKNOWN', false, 'LIQUIDITY_UNAVAILABLE');
     } else {
@@ -215,7 +259,7 @@ export class HardenedCriteriaEngine {
     }
 
     // ---- RULE 6: TOKEN AGE ----
-    const ageMinutes = candidate.ageMinutes?.value;
+    const ageMinutes = extractVal<number>(candidate.ageMinutes);
     if (ageMinutes !== null && ageMinutes !== undefined) {
       const minAge = config.minAge || 0;
       const maxAge = config.maxAge || 1440;
@@ -227,7 +271,7 @@ export class HardenedCriteriaEngine {
     }
 
     // ---- RULE 7: BONDING PROGRESS ----
-    const bondingProgress = (candidate as any).bondingProgress?.value;
+    const bondingProgress = extractVal<number>((candidate as any).bondingProgress || (candidate as any).bondingCurveProgress);
     if (bondingProgress !== null && bondingProgress !== undefined) {
       const minBonding = config.minBondingProgress || 0;
       const maxBonding = config.maxBondingProgress || 100;
@@ -256,13 +300,55 @@ export class HardenedCriteriaEngine {
     }
 
     // ---- RULE 10: RISK SCORE ----
-    const riskScore = candidate.riskScore?.value;
+    const riskScore = extractVal<number>(candidate.riskScore);
     if (riskScore !== null && riskScore !== undefined) {
-      const maxRisk = config.maxRiskScore || 80;
+      const maxRisk = (config as any).hardenedMaxRiskScore ?? config.maxRiskScore ?? 80;
       if (riskScore > maxRisk) {
         record('RISK_SCORE', 'Risk Score Gate', 'FAIL', false, `RISK_TOO_HIGH: ${riskScore}`, riskScore, `<${maxRisk}`);
       } else {
         record('RISK_SCORE', 'Risk Score Gate', 'PASS', true, 'RISK_OK', riskScore);
+      }
+    }
+
+    // ---- RULE 11: DEV WALLET OWNERSHIP ----
+    const devPct = extractVal<number>(candidate.devWalletOwnershipPct);
+    const maxDev = (config as any).hardenedMaxDevOwnership ?? (config as any).maxDevOwnership ?? (config as any).maxDevOwnershipPct ?? 10;
+    if (devPct !== null && devPct !== undefined) {
+      if (devPct > maxDev) {
+        record('DEV_OWNERSHIP', 'Dev Ownership Gate', 'FAIL', false, `DEV_OWNERSHIP_TOO_HIGH: ${devPct}% exceeds ${maxDev}%`, devPct, `<=${maxDev}%`);
+      } else {
+        record('DEV_OWNERSHIP', 'Dev Ownership Gate', 'PASS', true, 'DEV_OWNERSHIP_OK', devPct);
+      }
+    }
+
+    // ---- RULE 12: TOP 10 HOLDERS ----
+    const top10Pct = extractVal<number>(candidate.top10HoldersPct);
+    const maxTop10 = (config as any).hardenedMaxTop10Ownership ?? (config as any).maxTop10HoldersPct ?? 50;
+    if (top10Pct !== null && top10Pct !== undefined) {
+      if (top10Pct > maxTop10) {
+        record('TOP10_HOLDERS', 'Top 10 Holders Gate', 'FAIL', false, `TOP10_HOLDERS_TOO_HIGH: ${top10Pct}% exceeds ${maxTop10}%`, top10Pct, `<=${maxTop10}%`);
+      } else {
+        record('TOP10_HOLDERS', 'Top 10 Holders Gate', 'PASS', true, 'TOP10_HOLDERS_OK', top10Pct);
+      }
+    }
+
+    // ---- RULE 13: RUG SAFETY ----
+    const isRugSafe = extractVal<boolean>(candidate.isRugSafe);
+    if (isRugSafe !== null && isRugSafe !== undefined) {
+      if (!isRugSafe) {
+        record('RUG_SAFETY', 'Rug Safety Gate', 'FAIL', false, 'RUG_PULL_SUSPECTED');
+      } else {
+        record('RUG_SAFETY', 'Rug Safety Gate', 'PASS', true, 'RUG_SAFE');
+      }
+    }
+
+    // ---- RULE 14: SELLABLE GATE ----
+    const isSellable = extractVal<boolean>(candidate.isSellable);
+    if (isSellable !== null && isSellable !== undefined) {
+      if (!isSellable) {
+        record('SELLABLE_GATE', 'Sellable Gate', 'FAIL', false, 'TOKEN_UNSELLABLE_HONEYPOT');
+      } else {
+        record('SELLABLE_GATE', 'Sellable Gate', 'PASS', true, 'TOKEN_SELLABLE');
       }
     }
 

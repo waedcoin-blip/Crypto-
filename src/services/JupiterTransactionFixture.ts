@@ -1,7 +1,13 @@
 // src/services/JupiterTransactionFixture.ts
 import { Connection, ParsedTransactionWithMeta, LAMPORTS_PER_SOL } from '@solana/web3.js';
 import { QuoteResponse } from '@jup-ag/api';
-import { ExecutionError } from './ITradeExecutor';
+
+export class ExecutionError extends Error {
+  constructor(message: string, public code?: string) {
+    super(message);
+    this.name = 'ExecutionError';
+  }
+}
 
 export interface ReplayReceiptResult {
   actualOutputAmount: number;

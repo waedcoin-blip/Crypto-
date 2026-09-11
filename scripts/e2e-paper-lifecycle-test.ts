@@ -30,9 +30,7 @@ async function runE2ELifecycleTest() {
   // Clean existing positions & trades for test mint & reset paper wallet & rebuy guard
   const allPositions = positionRepository.getAllPositions();
   for (const pos of allPositions) {
-    if (pos.mintAddress === MOCK_MINT) {
-      positionRepository.deletePosition(pos.id);
-    }
+    positionRepository.deletePosition(pos.id);
   }
   positionManager.refreshFromRepository();
 

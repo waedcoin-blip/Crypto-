@@ -1,66 +1,48 @@
 // server/trading/MomentumEngine.ts
 import { EnrichedCandidate } from './CandidateEnricher.js';
-import { bondingCurveFastLane } from './BondingCurveFastLane.js';
-import { migrationDetector } from './MigrationDetector.js';
+import { logger } from '../utils/logger.js';
 
 export interface MomentumMetrics {
   mint: string;
-  priceVelocity: number; // % change last 15s
-  priceAcceleration: number; // velocity change rate
-
-  buyVelocity: number; // buys last 15s
-  buyAcceleration: number; // buy rate change
-
-  sellVelocity: number; // sells last 15s
-  sellAcceleration: number; // sell rate change
-
-  volumeVelocity: number; // SOL vol last 15s
-  volumeAcceleration: number; // vol change rate
-
+  priceVelocity: number; // % change per second
+  priceAcceleration: number; // change in velocity
+  buyVelocity: number; // buys per second
+  buyAcceleration: number;
+  sellVelocity: number; // sells per second
+  sellAcceleration: number;
+  volumeVelocity: number; // SOL per second
+  volumeAcceleration: number;
   uniqueBuyerVelocity: number;
   uniqueBuyerAcceleration: number;
-
-  transactionVelocity: number; // total tx/s
+  transactionVelocity: number;
   liquidityVelocity: number;
   liquidityAcceleration: number;
-
   buySellRatio: number;
   netBuyPressure: number;
   bondingCurveVelocity: number;
   migrationMomentum: number;
-  
-  momentumScore: number;
+  momentumScore: number; // 0-100
 }
 
-export interface MomentumConfig {
-  weightPriceAcceleration: number;
-  weightBuyAcceleration: number;
-  weightVolumeAcceleration: number;
-  weightUniqueBuyerAcceleration: number;
-  weightBuySellImbalance: number;
-  weightLiquidityAcceleration: number;
-  weightBondingCurveVelocity: number;
-  weightMigrationMomentum: number;
+interface TradeEvent {
+  price: number;
+  isBuy: boolean;
+  solAmount: number;
+  buyer: string;
+  timestamp: number;
 }
 
 export class MomentumEngine {
   private static instance: MomentumEngine;
-  private tokenHistory: Map<string, Array<{ price: number; isBuy: boolean; solAmount: number; buyer: string; timestamp: number }>> = new Map();
-  private prevMetrics: Map<string, MomentumMetrics> = new Map();
-
-  private config: MomentumConfig = {
-    weightPriceAcceleration: 0.20,
-    weightBuyAcceleration: 0.15,
-    weightVolumeAcceleration: 0.15,
-    weightUniqueBuyerAcceleration: 0.10,
-    weightBuySellImbalance: 0.15,
-    weightLiquidityAcceleration: 0.10,
-    weightBondingCurveVelocity: 0.05,
-    weightMigrationMomentum: 0.10,
-  };
+  private tradeHistory: Map<string, TradeEvent[]> = new Map();
+  private lastMetrics: Map<string, MomentumMetrics> = new Map();
+  private readonly WINDOW_MS = 30000; // 30 second analysis window
+  private readonly MAX_EVENTS_PER_TOKEN = 1000;
 
   private constructor() {
-    setInterval(() => this.pruneHistory(), 60000);
+    // FIX: Periodic cleanup with .unref() to prevent memory leaks
+    const cleanupInterval = setInterval(() => this.cleanupOldTrades(), 60000);
+    if (cleanupInterval.unref) cleanupInterval.unref();
   }
 
   public static getInstance(): MomentumEngine {
@@ -70,142 +52,125 @@ export class MomentumEngine {
     return MomentumEngine.instance;
   }
 
-  public setConfig(config: Partial<MomentumConfig>): void {
-    this.config = { ...this.config, ...config };
-  }
+  // ==========================================
+  // EVENT RECORDING
+  // ==========================================
 
-  public getConfig(): MomentumConfig {
-    return { ...this.config };
-  }
-
-  /**
-   * Record trade event for a token to build historical momentum metrics
-   */
-  public recordTrade(mint: string, price: number, isBuy: boolean, solAmount: number, buyer: string): void {
-    let history = this.tokenHistory.get(mint);
-    if (!history) {
-      history = [];
-      this.tokenHistory.set(mint, history);
+  public recordEvent(mint: string, event: {
+    price: number;
+    isBuy: boolean;
+    solAmount: number;
+    buyer: string;
+    timestamp?: number;
+  }): void {
+    const key = mint.trim().toLowerCase();
+    let events = this.tradeHistory.get(key);
+    if (!events) {
+      events = [];
+      this.tradeHistory.set(key, events);
     }
-    history.push({ price, isBuy, solAmount, buyer, timestamp: Date.now() });
+
+    events.push({
+      ...event,
+      timestamp: event.timestamp || Date.now(),
+    });
+
+    // Cap events per token
+    if (events.length > this.MAX_EVENTS_PER_TOKEN) {
+      events.splice(0, events.length - this.MAX_EVENTS_PER_TOKEN);
+    }
   }
 
-  /**
-   * Analyzes an enriched candidate's live velocities and calculates its comprehensive momentum score.
-   */
+  // ==========================================
+  // MOMENTUM CALCULATION
+  // ==========================================
+
   public calculateMomentum(candidate: EnrichedCandidate): MomentumMetrics {
-    const mint = candidate.mintAddress;
+    const key = candidate.mint.trim().toLowerCase();
+    const events = this.tradeHistory.get(key) || [];
     const now = Date.now();
-    const history = this.tokenHistory.get(mint) || [];
+    const windowStart = now - this.WINDOW_MS;
 
-    // Rolling windows
-    const window15s = history.filter(x => now - x.timestamp <= 15000);
-    const window30s = history.filter(x => now - x.timestamp <= 30000 && now - x.timestamp > 15000);
+    // Filter events to current window
+    const recent = events.filter(e => e.timestamp >= windowStart);
 
-    const price15s = window15s.length > 0 ? window15s[window15s.length - 1].price : (candidate.priceSol?.value || 0);
-    const price30s = window30s.length > 0 ? window30s[window30s.length - 1].price : price15s;
+    // Split window into two halves for acceleration calculation
+    const midPoint = now - (this.WINDOW_MS / 2);
+    const firstHalf = recent.filter(e => e.timestamp < midPoint);
+    const secondHalf = recent.filter(e => e.timestamp >= midPoint);
 
-    // Price velocities and acceleration
-    const priceVelocity = price30s > 0 ? ((price15s - price30s) / price30s) * 100 : 0;
-    const prevMetrics = this.prevMetrics.get(mint);
-    const prevPriceVelocity = prevMetrics?.priceVelocity || 0;
-    const priceAcceleration = priceVelocity - prevPriceVelocity;
+    const halfWindowSec = (this.WINDOW_MS / 2) / 1000;
 
-    // Buy/Sell counts
-    const buys15s = window15s.filter(x => x.isBuy).length;
-    const sells15s = window15s.filter(x => !x.isBuy).length;
-    const buys30s = window30s.filter(x => x.isBuy).length;
-    const sells30s = window30s.filter(x => !x.isBuy).length;
+    // 1. Buy/Sell counts and velocities
+    const buys1 = firstHalf.filter(e => e.isBuy).length;
+    const buys2 = secondHalf.filter(e => e.isBuy).length;
+    const buyVel1 = buys1 / halfWindowSec;
+    const buyVel2 = buys2 / halfWindowSec;
+    const buyVelocity = buyVel2;
+    const buyAcceleration = (buyVel2 - buyVel1) / halfWindowSec;
 
-    const buyVelocity = buys15s;
-    const buyAcceleration = buys15s - buys30s;
+    const sells1 = firstHalf.filter(e => !e.isBuy).length;
+    const sells2 = secondHalf.filter(e => !e.isBuy).length;
+    const sellVel1 = sells1 / halfWindowSec;
+    const sellVel2 = sells2 / halfWindowSec;
+    const sellVelocity = sellVel2;
+    const sellAcceleration = (sellVel2 - sellVel1) / halfWindowSec;
 
-    const sellVelocity = sells15s;
-    const sellAcceleration = sells15s - sells30s;
+    // 2. Volume velocities
+    const vol1 = firstHalf.reduce((sum, e) => sum + e.solAmount, 0);
+    const vol2 = secondHalf.reduce((sum, e) => sum + e.solAmount, 0);
+    const volVel1 = vol1 / halfWindowSec;
+    const volVel2 = vol2 / halfWindowSec;
+    const volumeVelocity = volVel2;
+    const volumeAcceleration = (volVel2 - volVel1) / halfWindowSec;
 
-    // Volume
-    const vol15s = window15s.reduce((sum, x) => sum + x.solAmount, 0);
-    const vol30s = window30s.reduce((sum, x) => sum + x.solAmount, 0);
-    const volumeVelocity = vol15s;
-    const volumeAcceleration = vol15s - vol30s;
+    // 3. Unique buyers
+    const buyers1 = new Set(firstHalf.filter(e => e.isBuy).map(e => e.buyer)).size;
+    const buyers2 = new Set(secondHalf.filter(e => e.isBuy).map(e => e.buyer)).size;
+    const uniqueBuyerVel1 = buyers1 / halfWindowSec;
+    const uniqueBuyerVel2 = buyers2 / halfWindowSec;
+    const uniqueBuyerVelocity = uniqueBuyerVel2;
+    const uniqueBuyerAcceleration = (uniqueBuyerVel2 - uniqueBuyerVel1) / halfWindowSec;
 
-    // Unique buyers
-    const uniq15s = new Set(window15s.filter(x => x.isBuy).map(x => x.buyer)).size;
-    const uniq30s = new Set(window30s.filter(x => x.isBuy).map(x => x.buyer)).size;
-    const uniqueBuyerVelocity = uniq15s;
-    const uniqueBuyerAcceleration = uniq15s - uniq30s;
+    // 4. Price velocities
+    const prices1 = firstHalf.map(e => e.price).filter(p => p > 0);
+    const prices2 = secondHalf.map(e => e.price).filter(p => p > 0);
+    const startPrice = prices1[0] || prices2[0] || candidate.priceSol?.value || 0;
+    const midPrice = prices1[prices1.length - 1] || startPrice;
+    const endPrice = prices2[prices2.length - 1] || midPrice;
 
-    const transactionVelocity = (window15s.length) / 15;
+    const priceChange1 = startPrice > 0 ? ((midPrice - startPrice) / startPrice) * 100 : 0;
+    const priceChange2 = midPrice > 0 ? ((endPrice - midPrice) / midPrice) * 100 : 0;
+    const priceVel1 = priceChange1 / halfWindowSec;
+    const priceVel2 = priceChange2 / halfWindowSec;
+    const priceVelocity = priceVel2;
+    const priceAcceleration = (priceVel2 - priceVel1) / halfWindowSec;
 
-    // Liquidity acceleration using dynamic SOL/USD rate
-    const solUsdRate = (candidate.priceUsd?.value && candidate.priceSol?.value && candidate.priceSol.value > 0)
-      ? candidate.priceUsd.value / candidate.priceSol.value
-      : 180;
-    const liquidityVelocity = (candidate as any).liquiditySol?.value || (candidate.liquidityUsd?.value ? candidate.liquidityUsd.value / solUsdRate : 0);
-    const prevLiqVelocity = prevMetrics?.liquidityVelocity || 0;
-    const liquidityAcceleration = liquidityVelocity - prevLiqVelocity;
+    // 5. Ratios and composite metrics
+    const totalBuys = buys1 + buys2;
+    const totalSells = sells1 + sells2;
+    const buySellRatio = totalSells > 0 ? totalBuys / totalSells : totalBuys > 0 ? 10 : 1;
+    const netBuyPressure = (vol2 - firstHalf.reduce((sum, e) => e.isBuy ? sum : sum + e.solAmount, 0));
+    const transactionVelocity = recent.length / (this.WINDOW_MS / 1000);
 
-    const buySellRatio = sells15s > 0 ? buys15s / sells15s : buys15s;
-    const netBuyPressure = buys15s - sells15s;
+    // 6. Bonding curve / Migration momentum
+    const bondingCurveVelocity = 0; // populated by BondingCurveFastLane if applicable
+    const migrationMomentum = candidate.dexId ? 50 : 0;
 
-    // Fetch bonding curve and migration fast-lane statistics
-    const bCurve = bondingCurveFastLane.getState(mint);
-    const bondingCurveVelocity = bCurve ? bCurve.buyVelocity : 0;
+    // 7. Composite momentum score (0-100)
+    let score = 50; // Neutral baseline
+    if (priceAcceleration > 0) score += Math.min(15, priceAcceleration * 5);
+    if (priceAcceleration < 0) score -= Math.min(20, Math.abs(priceAcceleration) * 5);
+    if (buyAcceleration > 0) score += Math.min(15, buyAcceleration * 10);
+    if (volumeAcceleration > 0) score += Math.min(10, volumeAcceleration * 2);
+    if (uniqueBuyerAcceleration > 0) score += Math.min(10, uniqueBuyerAcceleration * 5);
+    if (buySellRatio > 2) score += Math.min(10, (buySellRatio - 2) * 3);
+    if (buySellRatio < 0.5) score -= Math.min(15, (0.5 - buySellRatio) * 20);
 
-    const migration = migrationDetector.getMigratedPool(mint);
-    const migrationMomentum = migration ? migration.postMigrationMomentumScore : 0;
-
-    // Score synthesis
-    let rawScore = 0;
-
-    // Price Acceleration Component (up to 100)
-    const scorePriceAcc = Math.max(0, Math.min(100, (priceAcceleration > 0 ? priceAcceleration * 10 : 0)));
-    rawScore += scorePriceAcc * this.config.weightPriceAcceleration;
-
-    // Buy Acceleration Component (up to 100)
-    const scoreBuyAcc = Math.max(0, Math.min(100, buyAcceleration * 5));
-    rawScore += scoreBuyAcc * this.config.weightBuyAcceleration;
-
-    // Volume Acceleration Component (up to 100)
-    const scoreVolAcc = Math.max(0, Math.min(100, volumeAcceleration * 15));
-    rawScore += scoreVolAcc * this.config.weightVolumeAcceleration;
-
-    // Unique Buyer Acceleration (up to 100)
-    const scoreUniqAcc = Math.max(0, Math.min(100, uniqueBuyerAcceleration * 10));
-    rawScore += scoreUniqAcc * this.config.weightUniqueBuyerAcceleration;
-
-    // Buy/Sell imbalance (up to 100)
-    const scoreImbalance = Math.max(0, Math.min(100, buySellRatio * 15));
-    rawScore += scoreImbalance * this.config.weightBuySellImbalance;
-
-    // Liquidity Acceleration Component (up to 100)
-    const scoreLiqAcc = Math.max(0, Math.min(100, (liquidityAcceleration > 0 ? liquidityAcceleration * 5 : 0)));
-    rawScore += scoreLiqAcc * this.config.weightLiquidityAcceleration;
-
-    // Bonding curve progress velocity (up to 100)
-    const scoreBCurve = Math.max(0, Math.min(100, bondingCurveVelocity * 4));
-    rawScore += scoreBCurve * this.config.weightBondingCurveVelocity;
-
-    // Migration momentum (up to 100)
-    const scoreMigration = migrationMomentum;
-    rawScore += scoreMigration * this.config.weightMigrationMomentum;
-
-    // Normalizing Score (0-100)
-    let momentumScore = Math.max(0, Math.min(100, rawScore));
-
-    // Safety and State Penalties
-    if (sellAcceleration > buyAcceleration) {
-      momentumScore -= Math.min(15, (sellAcceleration - buyAcceleration) * 2); // Penalty for accelerating sells
-    }
-    if (candidate.riskScore.value !== null && candidate.riskScore.value > 50) {
-      momentumScore -= 10; // Penalty for suspicious risk profile
-    }
-    if (candidate.ageMinutes.value !== null && candidate.ageMinutes.value > 120) {
-      momentumScore -= 5; // Slight penalty for aged stale tokens
-    }
+    const clampedScore = Math.max(0, Math.min(100, Math.round(score)));
 
     const metrics: MomentumMetrics = {
-      mint,
+      mint: candidate.mint,
       priceVelocity,
       priceAcceleration,
       buyVelocity,
@@ -217,32 +182,46 @@ export class MomentumEngine {
       uniqueBuyerVelocity,
       uniqueBuyerAcceleration,
       transactionVelocity,
-      liquidityVelocity,
-      liquidityAcceleration,
+      liquidityVelocity: 0,
+      liquidityAcceleration: 0,
       buySellRatio,
       netBuyPressure,
       bondingCurveVelocity,
       migrationMomentum,
-      momentumScore: Math.max(0, Math.min(100, momentumScore)),
+      momentumScore: clampedScore,
     };
 
-    this.prevMetrics.set(mint, metrics);
+    this.lastMetrics.set(key, metrics);
     return metrics;
   }
 
-  private pruneHistory(): void {
-    const now = Date.now();
-    const maxAgeMs = 5 * 60 * 1000; // Keep only 5 minutes of historical trades for momentum calculation
+  public getMetrics(mint: string): MomentumMetrics | undefined {
+    return this.lastMetrics.get(mint.trim().toLowerCase());
+  }
 
-    for (const [mint, list] of this.tokenHistory.entries()) {
-      const active = list.filter(x => now - x.timestamp <= maxAgeMs);
-      if (active.length === 0) {
-        this.tokenHistory.delete(mint);
-        this.prevMetrics.delete(mint);
+  public getMomentum(mint: string): MomentumMetrics | undefined {
+    return this.getMetrics(mint);
+  }
+
+  // ==========================================
+  // CLEANUP
+  // ==========================================
+
+  private cleanupOldTrades(): void {
+    const cutoff = Date.now() - (this.WINDOW_MS * 2);
+    for (const [key, events] of this.tradeHistory.entries()) {
+      const filtered = events.filter(e => e.timestamp >= cutoff);
+      if (filtered.length === 0) {
+        this.tradeHistory.delete(key);
       } else {
-        this.tokenHistory.set(mint, active);
+        this.tradeHistory.set(key, filtered);
       }
     }
+  }
+
+  public clear(): void {
+    this.tradeHistory.clear();
+    this.lastMetrics.clear();
   }
 }
 

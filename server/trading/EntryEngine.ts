@@ -145,11 +145,16 @@ export class EntryEngine {
     const wallet = this.defaultWallet;
     const lockKey = `${network}:${wallet}:${trimmedMint}`;
 
-    // Coalesce concurrent evaluations for the same mint
-    const existingLock = this.activeEvaluationLocks.get(lockKey);
-    if (existingLock) {
-      console.log(`[EntryEngine] Coalescing duplicate evaluation for ${trimmedMint}`);
-      return existingLock;
+    // Atomic lock: prevent multiple concurrent evaluations and buys for the same mint
+    if (this.activeEvaluationLocks.has(lockKey)) {
+      console.log(`[EntryEngine] Atomic lock blocked concurrent evaluation for ${trimmedMint}`);
+      return {
+        mintAddress: trimmedMint,
+        symbol: trimmedMint.slice(0, 6).toUpperCase(),
+        stage: 'REJECTED',
+        status: 'SKIPPED',
+        error: 'ATOMIC_LOCK_CONCURRENT_EVALUATION_BLOCKED',
+      };
     }
 
     const evaluationPromise = this.executePipeline(trimmedMint, network, wallet, triggerSource);

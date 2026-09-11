@@ -122,7 +122,17 @@ export class PaperTradeExecutor implements TradeExecutor {
       const signature = `paper_sell_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 
       // Add SOL to paper wallet (simulated output)
-      const outSol = Number(tokenAmountRaw) / 1e9; // Simplified
+      let outSol = Number(tokenAmountRaw) / Math.pow(10, params.decimals || 9);
+      try {
+        const { positionManager } = await import('../trading/PositionManager.js');
+        const pos = positionManager.getPosition('paper', params.walletAddress || 'default', params.inputMint);
+        if (pos && pos.averageEntryPrice > 0 && pos.currentPriceSol > 0) {
+          const ratio = pos.currentPriceSol / pos.averageEntryPrice;
+          outSol = (pos.totalSolSpent * ratio) * (Number(tokenAmountRaw) / pos.tokenAmount);
+        }
+      } catch (err) {
+        logger.error({ err }, '[PaperTradeExecutor] Error resolving position price for sell proceeds');
+      }
       paperWalletLedger.commitSell(params.inputMint, String(tokenAmountRaw), outSol, signature, params.walletAddress || 'default');
 
       if (params.onBroadcast) {

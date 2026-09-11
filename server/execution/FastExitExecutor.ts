@@ -94,7 +94,7 @@ export class FastExitExecutor {
     if (!validatedQuote) {
       if (position.network === 'paper') {
         const tokenAmt = position.tokenAmount || (Number(position.tokenAmountRaw || '0') / 10 ** (position.decimals || 9));
-        const estProceedsSol = (position.currentPrice || position.averageEntryPrice || 0.0001) * tokenAmt;
+        const estProceedsSol = (position.currentPriceSol || position.averageEntryPrice || 0.0001) * tokenAmt;
         validatedQuote = {
           inputMint: position.mint,
           outputMint: 'So11111111111111111111111111111111111111112',

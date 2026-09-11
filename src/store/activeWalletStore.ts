@@ -4,7 +4,7 @@ import { getSavedSessionKeypair, saveSessionKeypair } from '../utils/keypairUtil
 import { useBalanceStore } from './balanceStore';
 import { DEFAULT_PAPER_TRADING_ADDRESS } from '../constants/solana';
 import { usePaperWalletStore } from './paperWalletStore';
-import { walletBalanceService } from '../services/WalletBalanceService';
+import { useWalletBridge } from '../services/walletBridge';
 
 import { useTradingEnvironmentStore } from './tradingEnvironmentStore';
 
@@ -38,7 +38,7 @@ const getInitialActiveWallet = (): ActiveWallet | null => {
             const address = restoredKp.publicKey.toBase58();
             useBalanceStore.getState().setWalletAddress(address);
             setTimeout(() => {
-              walletBalanceService.refresh(address);
+              useWalletBridge.getState().refreshBalance();
             }, 0);
             return {
                 address,
@@ -108,7 +108,7 @@ export const useActiveWalletStore = create<ActiveWalletState>((set, get) => ({
 
         // Trigger immediate authoritative sync for the new wallet
         setTimeout(() => {
-          walletBalanceService.refresh(address);
+          useWalletBridge.getState().refreshBalance();
         }, 0);
     }
 }));

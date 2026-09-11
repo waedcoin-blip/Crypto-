@@ -45,6 +45,20 @@ export class ServerEntryGate {
   }): Promise<ServerEntryDecision> {
     const { candidate, criteria, network, wallet, autoSniperEnabled } = params;
 
+    if (autoSniperEnabled === false) {
+      return {
+        allowed: false,
+        decision: 'BLOCK',
+        mintAddress: candidate.mintAddress || candidate.mint,
+        symbol: candidate.symbol,
+        buyAmountSol: 0,
+        blockingReasons: ['AUTO_SNIPER_DISABLED'],
+        evaluatedAt: Date.now(),
+        candidateId: candidate.mintAddress || candidate.mint,
+        criteriaResults: {},
+      };
+    }
+
     try {
       const res = await hardenedCriteriaEngine.evaluateCandidate(candidate, {
         network,
@@ -54,10 +68,11 @@ export class ServerEntryGate {
       });
 
       const isPass = res.decision === 'PASS';
+      const allowed = isPass && !!res.approval;
 
       return {
-        allowed: isPass && !!res.approval,
-        decision: isPass ? 'CRITERIA_PASSED' : 'CRITERIA_FAILED',
+        allowed,
+        decision: allowed ? 'BUY' : 'BLOCK',
         mintAddress: candidate.mintAddress,
         symbol: candidate.symbol,
         buyAmountSol: res.buyAmountSol,
@@ -70,7 +85,7 @@ export class ServerEntryGate {
       // FIX: Catch unexpected errors to prevent 500s propagating to caller
       return {
         allowed: false,
-        decision: 'CRITERIA_FAILED',
+        decision: 'BLOCK',
         mintAddress: candidate.mintAddress,
         symbol: candidate.symbol,
         buyAmountSol: 0,

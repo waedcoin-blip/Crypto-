@@ -1,6 +1,7 @@
 // server/trading/MigrationDetector.ts
 import { MarketEvent } from '../market/EventNormalizer.js';
 import { tokenMintResolver } from '../market/TokenMintResolver.js';
+import { logger } from '../utils/logger.js';
 
 export interface MigratedPoolState {
   mint: string;
@@ -13,15 +14,22 @@ export interface MigratedPoolState {
   currentLiquiditySol: number;
   priceImmediatelyAfterMigration: number;
   priceCurrent: number;
-  buyVelocity: number; // trades/min
-  sellVelocity: number; // trades/min
-  volumeVelocitySol: number; // volume/min
+  buyVelocity: number;
+  sellVelocity: number;
+  volumeVelocitySol: number;
   uniqueBuyersCount: number;
-  liquidityAcceleration: number; // rate of liquidity growth
-  postMigrationMomentumScore: number; // 0 to 100
+  liquidityAcceleration: number;
+  postMigrationMomentumScore: number;
   lastUpdateTimestamp: number;
   createdAt: number;
 }
+
+// Known DEX program IDs
+const RAYDIUM_V4 = '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8';
+const RAYDIUM_CPMM = 'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C';
+const METEORA_DLMM = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
+const METEORA_DBC = 'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB';
+const PUMP_FUN_FEE = 'CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM';
 
 export class MigrationDetector {
   private static instance: MigrationDetector;
@@ -29,7 +37,9 @@ export class MigrationDetector {
   private eventLogs: Map<string, Array<{ type: 'buy' | 'sell'; solAmount: number; buyer: string; t: number }>> = new Map();
 
   private constructor() {
-    setInterval(() => this.pruneStalePools(), 120000);
+    // FIX: Periodic cleanup with .unref() to prevent memory leaks
+    const cleanupInterval = setInterval(() => this.pruneStalePools(), 120000);
+    if (cleanupInterval.unref) cleanupInterval.unref();
   }
 
   public static getInstance(): MigrationDetector {
@@ -39,16 +49,23 @@ export class MigrationDetector {
     return MigrationDetector.instance;
   }
 
-  /**
-   * Parses log messages to detect real-time pool initialization/migration events on-chain.
-   */
+  // ==========================================
+  // EVENT PROCESSING
+  // ==========================================
+
   public processEvent(event: MarketEvent): MigratedPoolState | null {
     const mint = event.mint || (event as any).candidateMint;
     if (!mint || !tokenMintResolver.isValidMint(mint)) return null;
 
     const logs = event.raw?.transaction?.meta?.logMessages || event.raw?.logs || [];
-    const isRaydiumInit = logs.some((l: string) => l.includes('675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8') && (l.includes('initialize2') || l.includes('Initialize')));
-    const isMeteoraInit = logs.some((l: string) => l.includes('Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB') && l.includes('initialize_pool'));
+    const isRaydiumInit = logs.some((l: string) =>
+      (l.includes(RAYDIUM_V4) || l.includes(RAYDIUM_CPMM)) &&
+      (l.includes('initialize2') || l.includes('Initialize') || l.includes('init_pool'))
+    );
+    const isMeteoraInit = logs.some((l: string) =>
+      (l.includes(METEORA_DLMM) || l.includes(METEORA_DBC)) &&
+      (l.includes('initialize_pool') || l.includes('InitializeLbPair'))
+    );
 
     let state = this.migratedPools.get(mint);
 
@@ -58,145 +75,121 @@ export class MigrationDetector {
 
       state = {
         mint,
-        sourceBondingCurve: '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P',
-        destinationPool: event.pool || 'unknown_pool',
+        destinationPool: (event as any).pool || 'unknown',
         poolType,
-        migrationSlot: event.slot,
-        migrationSignature: event.signature,
+        migrationSlot: event.slot || 0,
+        migrationSignature: event.signature || '',
         initialLiquiditySol: initialLiq,
         currentLiquiditySol: initialLiq,
-        priceImmediatelyAfterMigration: event.price || 0.000001,
-        priceCurrent: event.price || 0.000001,
+        priceImmediatelyAfterMigration: event.priceSol || 0,
+        priceCurrent: event.priceSol || 0,
         buyVelocity: 0,
         sellVelocity: 0,
         volumeVelocitySol: 0,
         uniqueBuyersCount: 0,
         liquidityAcceleration: 0,
-        postMigrationMomentumScore: 0,
+        postMigrationMomentumScore: 50,
         lastUpdateTimestamp: Date.now(),
         createdAt: Date.now(),
       };
 
       this.migratedPools.set(mint, state);
-      console.log(`[MIGRATION FAST LANE] Detected ${poolType.toUpperCase()} migration for ${mint}! Slot: ${event.slot}, Pool: ${state.destinationPool}`);
+      logger.info({ mint, poolType, signature: event.signature }, '[MigrationDetector] MIGRATION DETECTED');
       return state;
     }
 
     if (state) {
-      state.lastUpdateTimestamp = Date.now();
-      if (event.slot) state.migrationSlot = event.slot;
-      if (event.price) {
-        state.priceCurrent = event.price;
-      }
-
-      // Track post-migration buys & sells
-      let tradeType: 'buy' | 'sell' | null = null;
-      let solAmount = 0;
-      const buyer = event.owner || 'unknown';
-
-      const logStr = logs.join(' ');
-      if (logStr.includes('Buy') || logStr.includes('swap_exact_tokens_for_tokens') || logStr.includes('swap')) {
-        tradeType = 'buy';
-      } else if (logStr.includes('Sell')) {
-        tradeType = 'sell';
-      }
-
-      if (event.tokenAmount && event.price) {
-        solAmount = Number(event.tokenAmount) * Number(event.price);
-      }
-
-      if (tradeType) {
-        let logsList = this.eventLogs.get(mint);
-        if (!logsList) {
-          logsList = [];
-          this.eventLogs.set(mint, logsList);
-        }
-        logsList.push({ type: tradeType, solAmount, buyer, t: Date.now() });
-      }
-
-      this.updateMetrics(mint);
+      this.updatePostMigrationMetrics(state, event);
     }
 
     return state || null;
   }
 
-  private updateMetrics(mint: string): void {
-    const state = this.migratedPools.get(mint);
-    if (!state) return;
+  // ==========================================
+  // METRICS UPDATE
+  // ==========================================
 
+  private updatePostMigrationMetrics(state: MigratedPoolState, event: MarketEvent): void {
     const now = Date.now();
-    const windowMs = 60000; // 1 min window
-    const logsList = this.eventLogs.get(mint) || [];
+    state.lastUpdateTimestamp = now;
 
-    const active = logsList.filter(x => now - x.t <= windowMs);
-    this.eventLogs.set(mint, active);
+    if (event.priceSol && event.priceSol > 0) {
+      state.priceCurrent = event.priceSol;
+    }
 
-    const buys = active.filter(x => x.type === 'buy');
-    const sells = active.filter(x => x.type === 'sell');
+    let logs = this.eventLogs.get(state.mint);
+    if (!logs) {
+      logs = [];
+      this.eventLogs.set(state.mint, logs);
+    }
 
+    if (event.type === 'trade' || event.type === 'swap') {
+      const isBuy = event.side === 'buy' || (event as any).isBuy === true;
+      logs.push({
+        type: isBuy ? 'buy' : 'sell',
+        solAmount: (event as any).solAmount || 0,
+        buyer: (event as any).maker || (event as any).wallet || 'unknown',
+        t: now,
+      });
+    }
+
+    // Rolling 1-minute window
+    const windowStart = now - 60000;
+    const recent = logs.filter(l => l.t >= windowStart);
+    this.eventLogs.set(state.mint, recent);
+
+    const buys = recent.filter(l => l.type === 'buy');
+    const sells = recent.filter(l => l.type === 'sell');
     state.buyVelocity = buys.length;
     state.sellVelocity = sells.length;
-    state.volumeVelocitySol = active.reduce((sum, x) => sum + x.solAmount, 0);
-    state.uniqueBuyersCount = new Set(buys.map(x => x.buyer)).size;
+    state.volumeVelocitySol = recent.reduce((sum, l) => sum + l.solAmount, 0);
+    state.uniqueBuyersCount = new Set(buys.map(l => l.buyer)).size;
 
-    // Liquidity acceleration: growth rate in SOL liquidity
-    const liqGrowth = state.volumeVelocitySol * 0.1; // estimate liquidity retention (LP additions/pool reserves)
-    state.currentLiquiditySol = state.initialLiquiditySol + liqGrowth;
-    state.liquidityAcceleration = liqGrowth;
+    // Calculate post-migration momentum (0-100)
+    let score = 50;
+    if (state.priceImmediatelyAfterMigration > 0) {
+      const priceChange = ((state.priceCurrent - state.priceImmediatelyAfterMigration) / state.priceImmediatelyAfterMigration) * 100;
+      score += Math.min(25, Math.max(-25, priceChange));
+    }
+    if (state.buyVelocity > state.sellVelocity * 2) score += 15;
+    if (state.uniqueBuyersCount > 5) score += 10;
 
-    // Calculate Momentum using MigrationMomentumEngine
-    state.postMigrationMomentumScore = MigrationMomentumEngine.calculateScore(state);
+    state.postMigrationMomentumScore = Math.max(0, Math.min(100, Math.round(score)));
   }
 
+  // ==========================================
+  // QUERIES
+  // ==========================================
+
   public getMigratedPool(mint: string): MigratedPoolState | undefined {
-    return this.migratedPools.get(mint);
+    return this.migratedPools.get(mint.trim().toLowerCase()) || this.migratedPools.get(mint);
+  }
+
+  public getPoolState(mint: string): MigratedPoolState | undefined {
+    return this.getMigratedPool(mint);
   }
 
   public getAllMigratedPools(): MigratedPoolState[] {
     return Array.from(this.migratedPools.values());
   }
 
-  private pruneStalePools(): void {
-    const now = Date.now();
-    const maxAgeMs = 30 * 60 * 1000; // 30 minutes TTL for migration tracking
+  // ==========================================
+  // CLEANUP
+  // ==========================================
 
-    for (const [mint, state] of this.migratedPools.entries()) {
-      if (now - state.createdAt > maxAgeMs) {
+  private pruneStalePools(): void {
+    const cutoff = Date.now() - 3600000; // 1 hour
+    for (const [mint, pool] of this.migratedPools.entries()) {
+      if (pool.lastUpdateTimestamp < cutoff) {
         this.migratedPools.delete(mint);
         this.eventLogs.delete(mint);
       }
     }
   }
-}
 
-export class MigrationMomentumEngine {
-  /**
-   * Generates a 0-100 score indicating migration-level momentum
-   */
-  public static calculateScore(pool: MigratedPoolState): number {
-    let score = 50; // Base score for recently migrated tokens
-
-    // 1. Velocity bonus (up to +25)
-    const txRate = pool.buyVelocity + pool.sellVelocity;
-    score += Math.min(25, txRate * 0.5);
-
-    // 2. Buy/Sell balance bonus (up to +15)
-    if (pool.buyVelocity > pool.sellVelocity) {
-      const ratio = pool.buyVelocity / Math.max(1, pool.sellVelocity);
-      score += Math.min(15, ratio * 3);
-    } else {
-      score -= Math.min(20, (pool.sellVelocity / Math.max(1, pool.buyVelocity)) * 3);
-    }
-
-    // 3. Liquidity growth bonus (up to +10)
-    if (pool.liquidityAcceleration > 0) {
-      score += Math.min(10, pool.liquidityAcceleration * 2);
-    }
-
-    // 4. Volume acceleration bonus (up to +10)
-    score += Math.min(10, pool.volumeVelocitySol * 1.5);
-
-    return Math.max(0, Math.min(100, score));
+  public clear(): void {
+    this.migratedPools.clear();
+    this.eventLogs.clear();
   }
 }
 

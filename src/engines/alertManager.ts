@@ -12,7 +12,6 @@ export function startAlertManager() {
 
   eventBus.on('WHALE_BUY', (payload) => {
     useAppStore.getState().addTelemetryAlert({
-      id: `whale-${Date.now()}-${Math.random()}`,
       token: payload.symbol,
       address: payload.tokenAddress,
       type: 'WHALE_BUY',
@@ -23,7 +22,6 @@ export function startAlertManager() {
 
   eventBus.on('PUMPFUN_MIGRATION', (payload) => {
     useAppStore.getState().addTelemetryAlert({
-      id: `migrated-${Date.now()}-${Math.random()}`,
       token: payload.symbol,
       address: payload.tokenAddress,
       type: 'MIGRATED',
@@ -34,7 +32,6 @@ export function startAlertManager() {
 
   eventBus.on('VOLUME_SPIKE', (payload) => {
     useAppStore.getState().addTelemetryAlert({
-      id: `spike-${Date.now()}-${Math.random()}`,
       token: payload.symbol,
       address: payload.tokenAddress,
       type: 'VOLUME_SPIKE',
@@ -45,7 +42,6 @@ export function startAlertManager() {
 
   eventBus.on('HIGH_FREQUENCY_BUY', (payload) => {
     useAppStore.getState().addTelemetryAlert({
-      id: `hfb-${Date.now()}-${Math.random()}`,
       token: payload.symbol,
       address: payload.tokenAddress,
       type: 'VOLUME_SPIKE', // Map to an existing alert type or update types if needed

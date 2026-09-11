@@ -5,7 +5,7 @@ import { jupiterPreSellValidator } from '../../services/JupiterPreSellValidator'
 import { pingJupiterApi } from '../../services/jupiterService';
 import { marketDataManager } from '../../services/marketDataManager';
 import { telemetryService, TelemetrySpan } from '../../services/telemetryService';
-import { apiClient } from '../../services/apiClient';
+import { apiClient } from '../../services/ApiClient';
 
 export const SystemCheckPage = ({
   rpcUrl

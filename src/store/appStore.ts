@@ -1,187 +1,347 @@
+// src/store/appStore.ts
 import { create } from 'zustand';
-import { TokenMetric, TelemetryAlert, Trade, SniperTrade } from '../types';
-import { Keypair } from '@solana/web3.js';
-import { getSavedSessionKeypair, saveSessionKeypair } from '../utils/keypairUtils';
+import { TelemetryAlert } from '../types';
 
-export interface ActivePositionData {
-    boughtAt?: number;
-    amount?: number;
-    tokenQuantityRaw?: string;
-    symbol?: string;
-    entryPrice?: number;
-    entryPriceSol?: number;
-    buyPrice?: number;
-    currentPrice?: number;
-    entryTime?: number;
-    solSpent?: number;
-    peakPnLPct?: number;
-    initialTokens?: number;
-    soldPartial?: boolean;
-    entryFeesSol?: number;
-    hasPulled10x?: boolean;
-    hasPulledPrincipal?: boolean;
-    recoveryMode?: boolean;
-    triggersDisabled?: boolean;
-    tpPct?: number;
-    slPct?: number;
-    txid?: string;
-    buySlot?: number;
-    buyEntries?: { signature: string; solSpent: number; amount: number; buyPrice: number; slot: number }[];
-    currentStage?: any;
-    initialMoonbagSizeStr?: string;
-    isManualSellTriggered?: boolean;
-    [key: string]: any;
+// ==========================================
+// TYPES
+// ==========================================
+
+export interface LogEvent {
+  id: string;
+  time: string;
+  timestamp: number;
+  msg: string;
+  type: 'info' | 'success' | 'warn' | 'error' | 'system';
+  category?: string;
+  count?: number;
 }
 
-interface AppState {
+export interface Notification {
+  id: string;
+  title: string;
+  message: string;
+  type: 'info' | 'success' | 'warning' | 'error';
+  timestamp: number;
+  read: boolean;
+}
+
+export type TradeMode = 'paper' | 'devnet' | 'mainnet';
+
+// SAFE persisted UI settings (no secrets)
+export interface PersistedSettings {
+  tradeMode: TradeMode;
   autoSniperEnabled: boolean;
-  isLiveTrading: boolean;
   buyAmountSol: number;
   minTakeProfit: number;
   maxTakeProfit: number;
-  bondingCurveTakeProfit: number;
-  moonbagStrategy: boolean;
   stopLoss: number;
   maxPositions: number;
-  slippage: number;
-  telegramBotToken: string;
-  telegramChatId: string;
-  hardenedMaxRiskScore: number;
-  hardenedLiquidityRatio: number;
-  hardenedMaxDevOwnership: number;
-  tradeOnlyOnce: boolean;
   maxRebuyTimes: number;
-  
-  isMonitoring: boolean;
-  tokenMetrics: Record<string, TokenMetric>;
-  telemetryAlerts: TelemetryAlert[];
-  telemetryBits: boolean[];
-  trades: Trade[];
-  mySniperTrades: SniperTrade[];
-  activePositions: Record<string, ActivePositionData>;
-  monitoredWallets: {id: string, address: string, label: string}[];
-  sessionWallet: Keypair | null;
-  jupiterLogs: { id: string; timestamp: number; type: 'QUOTE' | 'SWAP' | 'ERROR' | 'INFO'; message: string; details?: any }[];
-
-  setAutoSniperEnabled: (val: boolean) => void;
-  setIsLiveTrading: (val: boolean) => void;
-  setTradeOnlyOnce: (val: boolean) => void;
-  setMaxRebuyTimes: (val: number) => void;
-  setTokenMetrics: (fn: (prev: Record<string, TokenMetric>) => Record<string, TokenMetric>) => void;
-  setTrades: (fn: (prev: Trade[]) => Trade[]) => void;
-  addTelemetryAlert: (alert: TelemetryAlert) => void;
-  setTelemetryAlerts: (fn: (prev: TelemetryAlert[]) => TelemetryAlert[]) => void;
-  setTelemetryBits: (bits: boolean[]) => void;
-  updateActivePositions: (fn: (prev: Record<string, ActivePositionData>) => Record<string, ActivePositionData>) => void;
-  setMySniperTrades: (fn: (prev: SniperTrade[]) => SniperTrade[]) => void;
-  setSessionWallet: (wallet: Keypair | null) => void;
-  setIsMonitoring: (val: boolean) => void;
-  addJupiterLog: (log: Omit<{ id: string; timestamp: number; type: 'QUOTE' | 'SWAP' | 'ERROR' | 'INFO'; message: string; details?: any }, 'id' | 'timestamp'>) => void;
-  addLog: (message: string, type?: 'info' | 'success' | 'warning' | 'error') => void;
+  tradeOnlyOnce: boolean;
+  slippageBps: number;
+  retentionLimit: number;
 }
 
-export const useAppStore = create<AppState>((set) => {
-  const lsGet = (k: string) => typeof localStorage !== 'undefined' ? localStorage.getItem(k) : null;
-  const lsSet = (k: string, v: string) => { if (typeof localStorage !== 'undefined') localStorage.setItem(k, v); };
+export interface AppStoreState extends PersistedSettings {
+  // ---- UI State ----
+  logs: LogEvent[];
+  notifications: Notification[];
+  telemetryAlerts: TelemetryAlert[];
+
+  // ---- Server-Mirrored State (backend is source of truth) ----
+  positions: Record<string, any>;
+  portfolioPnL: {
+    totalUnrealizedSol: number;
+    totalRealizedSol: number;
+    totalCostSol: number;
+    portfolioPnlPct: number;
+  } | null;
+  supervisorState: string;
+  isConnected: boolean;
+
+  // ---- Criteria Cache (hydrated from backend, never locally authoritative) ----
+  criteria: Record<string, any>;
+
+  // ---- Actions: Logging ----
+  addLog: (msg: string, type?: LogEvent['type'], category?: string) => void;
+  clearLogs: () => void;
+
+  // ---- Actions: Notifications ----
+  addNotification: (title: string, message: string, type?: Notification['type']) => void;
+  markNotificationRead: (id: string) => void;
+
+  // ---- Actions: Telemetry ----
+  addTelemetryAlert: (alert: Omit<TelemetryAlert, 'id'>) => void;
+
+  // ---- Actions: Settings ----
+  setSettings: (settings: Partial<PersistedSettings>) => void;
+  setTradeMode: (mode: TradeMode) => void;
+
+  // ---- Actions: Server State (set by hooks, not by UI directly) ----
+  setPositions: (positions: Record<string, any>) => void;
+  setPortfolioPnL: (pnl: AppStoreState['portfolioPnL']) => void;
+  setSupervisorState: (state: string) => void;
+  setConnected: (connected: boolean) => void;
+  setCriteria: (criteria: Record<string, any>) => void;
+
+  // ==========================================
+  // COMPATIBILITY ALIASES & SHIMS (safe for older callers)
+  // ==========================================
+  isLiveTrading: boolean;
+  setIsLiveTrading: (isLive: boolean) => void;
+  activePositions: Record<string, any>;
+  updateActivePositions: (updater: (prev: Record<string, any>) => Record<string, any>) => void;
+  tokenMetrics: Record<string, any>;
+  setTokenMetrics: (updater: ((prev: Record<string, any>) => Record<string, any>) | Record<string, any>) => void;
+  trades: any[];
+  setTrades: (updater: ((prev: any[]) => any[]) | any[]) => void;
+  mySniperTrades: any[];
+  setMySniperTrades: (updater: ((prev: any[]) => any[]) | any[]) => void;
+  setTelemetryAlerts: (updater: ((prev: TelemetryAlert[]) => TelemetryAlert[]) | TelemetryAlert[]) => void;
+  addJupiterLog: (log: any) => void;
+  sessionWallet: any;
+  setSessionWallet: (wallet: any) => void;
+  setTradeOnlyOnce: (tradeOnlyOnce: boolean) => void;
+  setMaxRebuyTimes: (maxRebuyTimes: number) => void;
+  isMonitoring: boolean;
+  setIsMonitoring: (isMonitoring: boolean) => void;
+  monitoredWallets: string[];
+}
+
+// ==========================================
+// SAFE PERSISTENCE (explicit whitelist, no secrets)
+// ==========================================
+
+const SETTINGS_KEY = 'arina_unified_settings_v1';
+
+const SAFE_SETTINGS_KEYS: (keyof PersistedSettings)[] = [
+  'tradeMode', 'autoSniperEnabled', 'buyAmountSol', 'minTakeProfit',
+  'maxTakeProfit', 'stopLoss', 'maxPositions', 'maxRebuyTimes',
+  'tradeOnlyOnce', 'slippageBps', 'retentionLimit',
+];
+
+const DEFAULT_SETTINGS: PersistedSettings = {
+  tradeMode: 'paper',
+  autoSniperEnabled: false,
+  buyAmountSol: 0.1,
+  minTakeProfit: 25,
+  maxTakeProfit: 100,
+  stopLoss: 15,
+  maxPositions: 10,
+  maxRebuyTimes: 3,
+  tradeOnlyOnce: true,
+  slippageBps: 250,
+  retentionLimit: 500,
+};
+
+function loadPersistedSettings(): Partial<PersistedSettings> {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    // Only restore whitelisted keys (prevents accidental secret restoration)
+    const safe: Partial<PersistedSettings> = {};
+    for (const key of SAFE_SETTINGS_KEYS) {
+      if (parsed[key] !== undefined) {
+        (safe as any)[key] = parsed[key];
+      }
+    }
+    return safe;
+  } catch {
+    return {};
+  }
+}
+
+function persistSettings(state: AppStoreState): void {
+  try {
+    const safe: Partial<PersistedSettings> = {};
+    for (const key of SAFE_SETTINGS_KEYS) {
+      (safe as any)[key] = state[key];
+    }
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(safe));
+  } catch {
+    // Ignore persistence failures
+  }
+}
+
+// ==========================================
+// STORE
+// ==========================================
+
+export const useAppStore = create<AppStoreState>((set, get) => {
+  const loaded = loadPersistedSettings();
+  const initialMode = loaded.tradeMode || DEFAULT_SETTINGS.tradeMode;
 
   return {
-    autoSniperEnabled: false,
-    isLiveTrading: lsGet('trade_mode') === 'mainnet' || lsGet('is_live_trading') === 'true',
-    buyAmountSol: Number(lsGet('app_buyAmountSol')) || 0.1,
-    minTakeProfit: Number(lsGet('app_minTakeProfit')) || 25,
-    maxTakeProfit: Number(lsGet('app_maxTakeProfit')) || 45,
-    bondingCurveTakeProfit: Number(lsGet('app_bondingCurveTakeProfit')) || 25,
-    moonbagStrategy: lsGet('app_moonbagStrategy') === 'true',
-    stopLoss: Number(lsGet('app_stopLoss')) || -30,
-    maxPositions: Number(lsGet('app_maxPositions')) || 5,
-    slippage: 1.0,
-    telegramBotToken: lsGet('tg_bot_token') || '',
-    telegramChatId: lsGet('tg_chat_id') || '',
-    hardenedMaxRiskScore: Number(lsGet('hd_max_risk_score')) || 22,
-    hardenedLiquidityRatio: Number(lsGet('hd_liquidity_ratio')) || 7,
-    hardenedMaxDevOwnership: Number(lsGet('hd_max_dev_ownership')) || 80,
-    tradeOnlyOnce: lsGet('app_tradeOnlyOnce') !== null ? lsGet('app_tradeOnlyOnce') === 'true' : true,
-    maxRebuyTimes: Number(lsGet('hd_max_rebuy_times')) || 1,
-  
-    isMonitoring: false,
-    tokenMetrics: {},
-    telemetryAlerts: [],
-    telemetryBits: Array(12).fill(false),
-    trades: [],
-    mySniperTrades: (() => {
-      try {
-        const saved = lsGet('app_mySniperTrades');
-        return saved ? JSON.parse(saved) : [];
-      } catch { return []; }
-    })(),
-    activePositions: (() => {
-      try {
-        const saved = lsGet('app_activePositions');
-        return saved ? JSON.parse(saved) : {};
-      } catch { return {}; }
-    })(),
-    monitoredWallets: [],
-    jupiterLogs: [],
-    sessionWallet: (() => {
-      try {
-        return getSavedSessionKeypair();
-      } catch {
-        return null;
-      }
-    })(),
+    ...DEFAULT_SETTINGS,
+    ...loaded,
 
-    setAutoSniperEnabled: (val) => set({ autoSniperEnabled: val }),
-    setIsLiveTrading: (val) => set({ isLiveTrading: val }),
-    setTradeOnlyOnce: (val) => {
-      lsSet('app_tradeOnlyOnce', val.toString());
-      lsSet('hd_trade_only_once', val.toString());
-      set({ tradeOnlyOnce: val });
+    logs: [],
+    notifications: [],
+    telemetryAlerts: [],
+    positions: {},
+    portfolioPnL: null,
+    supervisorState: 'STOPPED',
+    isConnected: false,
+    criteria: {},
+
+    // Compatibility state
+    isLiveTrading: initialMode === 'mainnet',
+    setIsLiveTrading: (isLive) => {
+      set({ isLiveTrading: isLive, tradeMode: isLive ? 'mainnet' : 'paper' });
+      persistSettings(get() as AppStoreState);
     },
-    setMaxRebuyTimes: (val) => {
-      const num = Math.max(1, Number(val) || 1);
-      lsSet('hd_max_rebuy_times', num.toString());
-      set({ maxRebuyTimes: num });
+    activePositions: {},
+    updateActivePositions: (updater) => set((state) => {
+      const next = typeof updater === 'function' ? updater(state.activePositions) : updater;
+      return { activePositions: next, positions: next };
+    }),
+    tokenMetrics: {},
+    setTokenMetrics: (updater) => set((state) => ({
+      tokenMetrics: typeof updater === 'function' ? updater(state.tokenMetrics) : updater,
+    })),
+    trades: [],
+    setTrades: (updater) => set((state) => ({
+      trades: typeof updater === 'function' ? updater(state.trades) : updater,
+    })),
+    mySniperTrades: [],
+    setMySniperTrades: (updater) => set((state) => ({
+      mySniperTrades: typeof updater === 'function' ? updater(state.mySniperTrades) : updater,
+    })),
+    setTelemetryAlerts: (updater) => set((state) => ({
+      telemetryAlerts: typeof updater === 'function' ? updater(state.telemetryAlerts) : updater,
+    })),
+    addJupiterLog: (log) => {
+      const msg = typeof log === 'string' ? log : (log?.message || JSON.stringify(log));
+      get().addLog(`[JUPITER] ${msg}`, 'info', 'jupiter');
     },
-    setTokenMetrics: (fn) => set((state) => ({ ...state, tokenMetrics: fn(state.tokenMetrics) })),
-    setTrades: (fn) => set((state) => ({ trades: fn(state.trades) })),
-    addTelemetryAlert: (alert) => set((state) => ({ telemetryAlerts: [alert, ...state.telemetryAlerts.slice(0, 19)] })),
-    setTelemetryAlerts: (fn) => set((state) => ({ telemetryAlerts: fn(state.telemetryAlerts) })),
-    setTelemetryBits: (bits) => set({ telemetryBits: bits }),
-    updateActivePositions: (fn) => set((state) => {
-      const newPositions = fn(state.activePositions);
-      lsSet('app_activePositions', JSON.stringify(newPositions));
-      return { activePositions: newPositions };
-    }),
-    setMySniperTrades: (fn) => set((state) => {
-      const next = fn(state.mySniperTrades);
-      lsSet('app_mySniperTrades', JSON.stringify(next));
-      return { mySniperTrades: next };
-    }),
-    setSessionWallet: (wallet) => {
-      if (wallet) {
-        saveSessionKeypair(wallet);
-      }
+    sessionWallet: null,
+    setSessionWallet: (sessionWallet) => set({ sessionWallet }),
+    setTradeOnlyOnce: (tradeOnlyOnce) => {
+      set({ tradeOnlyOnce });
+      persistSettings(get() as AppStoreState);
+    },
+    setMaxRebuyTimes: (maxRebuyTimes) => {
+      set({ maxRebuyTimes });
+      persistSettings(get() as AppStoreState);
+    },
+    isMonitoring: true,
+    setIsMonitoring: (isMonitoring) => set({ isMonitoring }),
+    monitoredWallets: [],
+
+    // ---- Logging (deduplicates consecutive identical logs) ----
+    addLog: (msg, type = 'info', category) => {
+      const now = Date.now();
       set((state) => {
-        if (
-          (state.sessionWallet === null && wallet === null) ||
-          (state.sessionWallet && wallet && state.sessionWallet.publicKey.toBase58() === wallet.publicKey.toBase58())
-        ) {
-          return state;
+        const prev = state.logs;
+        const last = prev[0];
+
+        // Deduplicate consecutive identical messages
+        if (last && last.msg === msg && last.type === type) {
+          const updated = { ...last, count: (last.count || 1) + 1, timestamp: now };
+          return { logs: [updated, ...prev.slice(1)] };
         }
-        return { sessionWallet: wallet };
+
+        const entry: LogEvent = {
+          id: `${now}-${Math.random().toString(36).slice(2, 8)}`,
+          time: new Date(now).toLocaleTimeString(),
+          timestamp: now,
+          msg,
+          type,
+          category,
+          count: 1,
+        };
+
+        let next = [entry, ...prev];
+        if (next.length > state.retentionLimit) {
+          next = next.slice(0, state.retentionLimit);
+        }
+        return { logs: next };
       });
     },
-    setIsMonitoring: (val) => set({ isMonitoring: val }),
-    addJupiterLog: (log) => set((state) => ({
-      jupiterLogs: [{ id: Math.random().toString(36).substr(2, 9), timestamp: Date.now(), ...log }, ...state.jupiterLogs].slice(0, 100)
-    })),
-    addLog: (message: string, type: 'info' | 'success' | 'warning' | 'error' = 'info') => set((state) => ({
-      jupiterLogs: [{
-        id: Math.random().toString(36).substr(2, 9),
-        timestamp: Date.now(),
-        type: (type === 'info' ? 'INFO' : type === 'error' ? 'ERROR' : 'SWAP') as 'QUOTE' | 'SWAP' | 'ERROR' | 'INFO',
-        message,
-      }, ...state.jupiterLogs].slice(0, 100)
-    })),
+
+    clearLogs: () => set({ logs: [] }),
+
+    // ---- Notifications ----
+    addNotification: (title, message, type = 'info') => {
+      set((state) => ({
+        notifications: [
+          {
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            title,
+            message,
+            type,
+            timestamp: Date.now(),
+            read: false,
+          },
+          ...state.notifications,
+        ].slice(0, 50),
+      }));
+    },
+
+    markNotificationRead: (id) => {
+      set((state) => ({
+        notifications: state.notifications.map((n) =>
+          n.id === id ? { ...n, read: true } : n
+        ),
+      }));
+    },
+
+    // ---- Telemetry Alerts ----
+    addTelemetryAlert: (alert) => {
+      set((state) => ({
+        telemetryAlerts: [
+          { ...alert, id: `${alert.type}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}` },
+          ...state.telemetryAlerts,
+        ].slice(0, 100),
+      }));
+    },
+
+    // ---- Settings ----
+    setSettings: (settings) => {
+      set((state) => ({ ...state, ...settings }));
+      persistSettings(get() as AppStoreState);
+    },
+
+    setTradeMode: (mode) => {
+      set({ tradeMode: mode, isLiveTrading: mode === 'mainnet' });
+      persistSettings(get() as AppStoreState);
+    },
+
+    // ---- Server State Setters (called by hooks) ----
+    setPositions: (positions) => set({ positions, activePositions: positions }),
+    setPortfolioPnL: (portfolioPnL) => set({ portfolioPnL }),
+    setSupervisorState: (supervisorState) => set({ supervisorState }),
+    setConnected: (isConnected) => set({ isConnected }),
+    setCriteria: (criteria) => set({ criteria }),
   };
 });
+
+// ==========================================
+// MIGRATION SHIMS (backward compatibility)
+// These let old components keep working during the transition.
+// ==========================================
+
+/** @deprecated Use useAppStore directly. Kept for migration compatibility. */
+export const usePaperWalletStore = {
+  getState: () => {
+    const state = useAppStore.getState();
+    return {
+      network: state.tradeMode,
+      // Paper balance now comes from backend via usePositions portfolio data
+      solBalance: state.portfolioPnL?.totalCostSol ?? 0,
+    };
+  },
+};
+
+/** @deprecated Use useAppStore directly. Kept for migration compatibility. */
+export const useTradingEnvironmentStore = {
+  getState: () => {
+    const state = useAppStore.getState();
+    return {
+      network: state.tradeMode,
+      isLiveTrading: state.tradeMode === 'mainnet',
+      autoSniperEnabled: state.autoSniperEnabled,
+    };
+  },
+};

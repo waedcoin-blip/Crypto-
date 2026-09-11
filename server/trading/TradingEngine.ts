@@ -1,25 +1,25 @@
 // server/trading/TradingEngine.ts
-import { orderManager, Order } from './OrderManager.js';
-import { positionManager, Position } from './PositionManager.js';
-import { rebuyGuard } from './RebuyGuard.js';
-import { riskManager } from './RiskManager.js';
-import { pnlEngine, PnLMetrics } from './PnLEngine.js';
 import { executionGateway } from '../execution/ExecutionGateway.js';
-import { ExecutionResult } from '../execution/TradeExecutor.js';
-import { tradeRepository } from '../repositories/TradeRepository.js';
+import { orderManager } from './OrderManager.js';
+import { positionManager, Position } from './PositionManager.js';
 import { tokenProgramResolver } from '../wallet/TokenProgramResolver.js';
-import { unifiedExitEngine } from './UnifiedExitEngine.js';
-import { rawToUiNumber } from '../utils/rawAmount.js';
-import { HardenedApproval } from '../types/index.js';
+import { tokenMintResolver } from '../market/TokenMintResolver.js';
 import { hardenedApprovalStore } from './HardenedApprovalStore.js';
+import type { HardenedApproval } from './HardenedApprovalStore.js';
 import { hardenedCriteriaEngine } from './HardenedCriteriaEngine.js';
 import { candidateEnricher } from './CandidateEnricher.js';
+import { rebuyGuard } from './RebuyGuard.js';
+import { riskManager } from './RiskManager.js';
 import { candidateRegistry } from '../market/CandidateRegistry.js';
-import { tokenMintResolver } from '../market/TokenMintResolver.js';
+import { tradeRepository } from '../repositories/TradeRepository.js';
+import { tokenRepository } from '../repositories/TokenRepository.js';
+import { unifiedExitEngine } from './UnifiedExitEngine.js';
+import { tradingConfigManager } from '../config/TradingConfig.js';
+import { logger } from '../utils/logger.js';
 
 export interface BuyParams {
   network: string;
-  wallet: string;
+  wallet?: string;
   mint: string;
   amountSol: number;
   decimals?: number;
@@ -30,20 +30,18 @@ export interface BuyParams {
   label?: string;
   tpPct?: number;
   slPct?: number;
-  trailingSlPct?: number;
-  maxHoldTimeMs?: number;
-  pool?: string;
   approval?: HardenedApproval;
+  pool?: string;
 }
 
 export interface SellParams {
   network: string;
-  wallet: string;
+  wallet?: string;
   mint: string;
-  amountRaw?: number | string | bigint; // Optional, defaults to full position amount
+  amountRaw?: string | number | bigint;
   slippageBps?: number;
   clientRequestId?: string;
-  reason?: 'TP' | 'SL' | 'MANUAL' | 'FORCE_EXIT' | string;
+  reason?: string;
 }
 
 export interface TradeEngineResponse {
@@ -52,36 +50,17 @@ export interface TradeEngineResponse {
   positionId?: string;
   signature?: string;
   error?: string;
-  result?: ExecutionResult;
-  status?: 'authorized' | 'rejected';
+  status?: 'success' | 'rejected' | 'error';
   reason?: string;
   stage?: string;
-  authorization?: {
-    approvalId: string;
-    chain: string;
-    network: string;
-    mint: string;
-  };
+  result?: any;
 }
 
 export class TradingEngine {
   private static instance: TradingEngine;
-  private buyLocks: Map<string, Promise<void>> = new Map();
+  private buyLocks: Map<string, Promise<any>> = new Map();
 
   private constructor() {}
-
-  private async withBuyWalletLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
-    const previous = this.buyLocks.get(key) || Promise.resolve();
-    let release!: () => void;
-    const current = new Promise<void>(resolve => { release = resolve; });
-    const queued = previous.then(() => current);
-    this.buyLocks.set(key, queued);
-    await previous;
-    try { return await fn(); } finally {
-      release();
-      if (this.buyLocks.get(key) === queued) this.buyLocks.delete(key);
-    }
-  }
 
   public static getInstance(): TradingEngine {
     if (!TradingEngine.instance) {
@@ -90,19 +69,16 @@ export class TradingEngine {
     return TradingEngine.instance;
   }
 
-  /**
-   * Centralized BUY execution.
-   * Flow: TradingEngine -> RebuyGuard (Reserve) -> OrderManager -> ExecutionGateway -> PositionManager.
-   */
+  // ==========================================
+  // BUY — Top-level with error boundary
+  // ==========================================
+
   public async buy(params: BuyParams): Promise<TradeEngineResponse> {
     let network: string;
     try {
       network = executionGateway.resolveNetwork(params.network);
     } catch (err: any) {
-      return {
-        success: false,
-        error: err?.message || String(err),
-      };
+      return { success: false, error: err?.message || String(err) };
     }
 
     if (!params.amountSol || !Number.isFinite(params.amountSol) || params.amountSol <= 0) {
@@ -115,12 +91,12 @@ export class TradingEngine {
     const wallet = params.wallet || 'default';
     const lockKey = `${network}:${wallet}`;
 
-    // FIX: Wrap the entire locked execution in try/catch to prevent 500s
+    // FIX: Top-level error boundary prevents HTTP 500 crashes
     try {
       return await this.withBuyWalletLock(lockKey, () => this.buyUnlocked({ ...params, network, wallet }));
     } catch (err: any) {
       const errorMsg = err?.message || String(err);
-      console.error(`[TradingEngine] UNCAUGHT BUY ERROR for ${params.mint}: ${errorMsg}`, err);
+      logger.error({ mint: params.mint, error: errorMsg }, '[TradingEngine] UNCAUGHT BUY ERROR');
       return {
         success: false,
         error: `INTERNAL_BUY_ERROR: ${errorMsg}`,
@@ -131,43 +107,56 @@ export class TradingEngine {
     }
   }
 
+  // ==========================================
+  // BUY — Unlocked (serialized per wallet)
+  // ==========================================
+
   private async buyUnlocked(params: BuyParams): Promise<TradeEngineResponse> {
     const network = executionGateway.resolveNetwork(params.network);
     const wallet = params.wallet || 'default';
     const mint = (params.mint || '').trim();
+    const clientRequestId = params.clientRequestId || `buy_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
     if (!mint) {
-      return {
-        success: false,
-        error: 'INVALID_MINT: Mint address is required.',
-      };
+      return { success: false, error: 'INVALID_MINT: Mint address is required.' };
     }
 
-    // 0. On-Chain Canonical Mint Validation Gate
+    // ---- 0. On-Chain Canonical Mint Validation Gate ----
     try {
-      const executor = executionGateway.getExecutor(network) as any;
-      const connection = executor?.connection || null;
-      const mintValidation = await tokenMintResolver.validateTokenMint(mint, connection);
-
-      if (!mintValidation.ok) {
-        if (mintValidation.code === 'INVALID_MINT') {
+      if (network !== 'paper') {
+        const executor = executionGateway.getExecutor(network) as any;
+        const connection = executor?.connection || null;
+        const mintValidation = await tokenMintResolver.validateTokenMint(mint, connection);
+        if (!mintValidation.ok) {
+          if (mintValidation.code === 'INVALID_MINT') {
+            return {
+              success: false,
+              error: `BUY REJECTED: Invalid token mint ${mint} (${mintValidation.reason})`,
+              status: 'rejected',
+              reason: 'INVALID_MINT',
+              stage: 'MINT_VALIDATION',
+            };
+          }
           return {
             success: false,
-            error: `BUY REJECTED: Reason: Invalid token mint ${mint} (${mintValidation.reason}). Stage: Mint Validation`,
+            error: `MINT_VALIDATION_UNAVAILABLE: ${mintValidation.reason}`,
+            status: 'error',
+            reason: mintValidation.code,
+            stage: 'MINT_VALIDATION',
+          };
+        }
+      } else {
+        if (!tokenMintResolver.isValidPublicKey(mint)) {
+          return {
+            success: false,
+            error: `BUY REJECTED: Invalid token mint ${mint} (INVALID_PUBLIC_KEY_FORMAT)`,
             status: 'rejected',
             reason: 'INVALID_MINT',
             stage: 'MINT_VALIDATION',
           };
         }
-        return {
-          success: false,
-          error: `BUY REJECTED: Reason: Mint validation unavailable for ${mint} (${mintValidation.reason}). Stage: Mint Validation`,
-          status: 'rejected',
-          reason: mintValidation.code,
-          stage: 'MINT_VALIDATION',
-        };
       }
     } catch (err: any) {
-      console.error(`[TradingEngine] Mint validation error for ${mint}:`, err);
       return {
         success: false,
         error: `MINT_VALIDATION_ERROR: ${err?.message || String(err)}`,
@@ -177,18 +166,7 @@ export class TradingEngine {
       };
     }
 
-    const clientRequestId = params.clientRequestId || `buy_${mint.slice(0, 8)}_${Date.now()}`;
-    const rawLamports = params.amountSol * 1e9;
-    if (!Number.isFinite(rawLamports) || rawLamports <= 0 || rawLamports > Number.MAX_SAFE_INTEGER) {
-      return {
-        success: false,
-        error: `INVALID_AMOUNT: Non-finite, non-positive, or too large lamports calculated: ${rawLamports}`,
-      };
-    }
-    const amountLamports = Math.floor(rawLamports);
-    const slippageBps = params.slippageBps || 250;
-
-    // 1. Fetch token decimals first (resolves from params, existing position, or chain/cache)
+    // ---- 1. Resolve Token Decimals ----
     let decimals = params.decimals;
     if (decimals === undefined || !Number.isInteger(decimals) || decimals < 0 || decimals > 255) {
       const existingPos = positionManager.getPosition(network, wallet, mint);
@@ -197,10 +175,7 @@ export class TradingEngine {
       } else {
         try {
           const executor = executionGateway.getExecutor(network) as any;
-          const tokenInfo = await tokenProgramResolver.resolve(
-            executor?.connection || null,
-            mint
-          );
+          const tokenInfo = await tokenProgramResolver.resolve(executor?.connection || null, mint);
           decimals = tokenInfo.decimals;
         } catch (err: any) {
           if (network === 'paper') {
@@ -215,67 +190,86 @@ export class TradingEngine {
       }
     }
 
-    // 2. Authoritative Invariant: NO TOKEN MAY REACH BUY EXECUTION WITHOUT A CURRENT, VALID, SINGLE-USE, MINT/POOL-BOUND HardenedApproval
-    let approval = params.approval;
+    // ---- 2. HardenedApproval Invariant ----
     try {
+      let approval = params.approval;
       if (!approval) {
-        // Pass current market data for validation
-        const currentPrice = candidateEnricher.enrichCandidate(mint, network).then(c => c.priceSol?.value).catch(() => undefined);
-        const currentSlot = 0; // Would come from actual slot provider
-        approval = hardenedApprovalStore.getLatestUsableApproval('solana', mint, params.pool, await currentPrice, currentSlot);
+        if (network === 'paper') {
+          // Bypass in paper mode, will be created below
+        } else {
+          const currentPrice = candidateEnricher.enrichCandidate(mint, network)
+            .then(c => c.priceSol?.value)
+            .catch(() => undefined);
+          const currentSlot = 0;
+          approval = hardenedApprovalStore.getLatestUsableApproval(
+            'solana', mint, params.pool, await currentPrice, currentSlot
+          );
+        }
       }
 
       if (!approval) {
-        console.log(`[TradingEngine] No pre-existing HardenedApproval for ${mint}. Running authoritative HardenedCriteriaEngine evaluation...`);
-        const candidate = await candidateEnricher.enrichCandidate(mint, network);
-        if (!candidate.isEnriched && (network !== 'paper' || candidate.symbol === 'INVALID')) {
-          const isMalformedMint = candidate.symbol === 'INVALID';
-          const failureDetail = isMalformedMint
-            ? candidate.name // holds the classifyAddress rejection reason, e.g. INVALID_BASE58_OR_BYTE_LENGTH
-            : `dataSource=${candidate.dataSource}, marketCapUsd=${candidate.marketCapUsd.state}, liquidityUsd=${candidate.liquidityUsd.state}`;
-          console.warn(`[TradingEngine] BUY REJECTED: Candidate ${mint} enrichment failed, status: ${candidate.enrichmentStatus} (${failureDetail})`);
-          return {
-            success: false,
-            error: isMalformedMint
-              ? `INVALID_MINT: ${mint} is not a valid token mint (${failureDetail})`
-              : `ENRICHMENT_DATA_UNAVAILABLE: Could not obtain market cap/liquidity for ${mint} (${failureDetail})`,
-            status: 'rejected',
-            reason: isMalformedMint ? 'INVALID_MINT' : 'ENRICHMENT_DATA_UNAVAILABLE',
-            stage: 'ENRICHMENT'
+        if (network === 'paper') {
+          const now = Date.now();
+          approval = {
+            approvalId: `appr_paper_${now}_${Math.random().toString(36).slice(2, 8)}`,
+            chain: 'solana',
+            mint,
+            criteriaVersion: '1.0.0',
+            evaluatedAt: now,
+            evaluatedSlot: 0,
+            evaluationPrice: 0.00001,
+            maxSlotLag: 100000,
+            maxPriceDeviationPct: 100,
+            expiresAt: now + 300000,
+            checks: [{ ruleId: 'PAPER_AUTO', name: 'Paper Mode Auto Approval', status: 'PASS', passed: true }],
+            decisionHash: 'paper_hash',
+            correlationId: `corr_paper_${mint.slice(0, 8)}_${now}`,
+            state: 'ISSUED',
           };
+          hardenedApprovalStore.issueApproval(approval);
+        } else {
+          logger.info({ mint }, '[TradingEngine] No pre-existing approval. Running HardenedCriteriaEngine...');
+          const candidate = await candidateEnricher.enrichCandidate(mint, network);
+
+          if (!candidate.isEnriched) {
+            return {
+              success: false,
+              error: `ENRICHMENT_DATA_UNAVAILABLE: Could not obtain market data for ${mint}`,
+              status: 'rejected',
+              reason: 'ENRICHMENT_DATA_UNAVAILABLE',
+              stage: 'ENRICHMENT',
+            };
+          }
+
+          const evalResult = await hardenedCriteriaEngine.evaluateCandidate(candidate, { network, wallet });
+          if (evalResult.decision !== 'PASS' || !evalResult.approval) {
+            return {
+              success: false,
+              error: `NO_VALID_HARDENED_APPROVAL: ${evalResult.rejectionReasons.join(', ') || 'CRITERIA_FAILED'}`,
+              status: 'rejected',
+              reason: evalResult.rejectionReasons.join(', ') || 'CRITERIA_FAILED',
+              stage: 'HARDENED_APPROVAL',
+            };
+          }
+          approval = evalResult.approval;
         }
-        const evalResult = await hardenedCriteriaEngine.evaluateCandidate(candidate, { network, wallet });
-        if (evalResult.decision !== 'PASS' || !evalResult.approval) {
-          console.warn(`[TradingEngine] BUY REJECTED: Candidate ${mint} failed hardened criteria. Reasons: ${evalResult.rejectionReasons.join(', ')}`);
-          return {
-            success: false,
-            error: `NO_VALID_HARDENED_APPROVAL: Token failed hardened criteria: ${evalResult.rejectionReasons.join(', ') || 'CRITERIA_FAILED'}`,
-            status: 'rejected',
-            reason: evalResult.rejectionReasons.join(', ') || 'CRITERIA_FAILED',
-            stage: 'HARDENED_APPROVAL'
-          };
-        }
-        approval = evalResult.approval;
       }
 
-      // Perform final recheck right before order execution
+      // Final recheck before broadcast
       const finalRecheck = await hardenedCriteriaEngine.performFinalRecheck(approval, { network, wallet });
       if (!finalRecheck.allowed) {
-        console.warn(`[TradingEngine] BUY REJECTED by final recheck: ${finalRecheck.reason}`);
         hardenedApprovalStore.markInvalid(approval.approvalId, finalRecheck.reason);
         return {
           success: false,
           error: `FINAL_RECHECK_FAILED: ${finalRecheck.reason}`,
           status: 'rejected',
           reason: finalRecheck.reason,
-          stage: 'FINAL_RECHECK'
+          stage: 'FINAL_RECHECK',
         };
       }
 
-      // Mark approval as CONSUMING
       hardenedApprovalStore.startConsuming(approval.approvalId, clientRequestId);
     } catch (err: any) {
-      console.error(`[TradingEngine] Approval resolution error for ${mint}:`, err);
       return {
         success: false,
         error: `APPROVAL_RESOLUTION_ERROR: ${err?.message || String(err)}`,
@@ -285,190 +279,172 @@ export class TradingEngine {
       };
     }
 
-    // 3. RebuyGuard Reservation Check
-    let reservation;
-    try {
-      reservation = rebuyGuard.reserveBuy({
-        network,
-        wallet,
-        mint,
-        amountSol: params.amountSol,
-        maxRebuyTimes: params.maxRebuyTimes,
-        tradeOnlyOnce: params.tradeOnlyOnce,
-      });
-    } catch (err: any) {
-      hardenedApprovalStore.markInvalid(approval.approvalId, err?.message || 'REBUY_GUARD_REJECTED');
+    // ---- 3. RebuyGuard Reservation ----
+    const config = tradingConfigManager.getConfig();
+    const maxRebuys = params.maxRebuyTimes ?? config.maxPositions;
+    const reservation = rebuyGuard.reserveBuy({
+      network,
+      wallet,
+      mint,
+      amountSol: params.amountSol,
+      maxRebuyTimes: maxRebuys,
+    });
+
+    if (!reservation || !reservation.reservationId) {
       return {
         success: false,
-        error: err?.message || String(err),
+        error: `REBUY_GUARD_BLOCKED: ${reservation?.reason || 'Reservation failed'}`,
         status: 'rejected',
-        reason: err?.message || 'REBUY_GUARD_REJECTED',
-        stage: 'REBUY_GUARD'
+        reason: 'REBUY_GUARD_BLOCKED',
+        stage: 'REBUY_GUARD',
       };
     }
 
-    // 4. Create Order in OrderManager
+    // ---- 4. Risk Manager Final Revalidation ----
+    const amountLamports = BigInt(Math.floor(params.amountSol * 1e9));
+    const revalidation = await riskManager.revalidateBuyBeforeBroadcast({
+      mint,
+      buyAmountLamports: amountLamports,
+      network,
+      wallet,
+    });
+
+    if (!revalidation.allowed) {
+      rebuyGuard.releaseReservation(reservation.reservationId);
+      return {
+        success: false,
+        error: `RISK_REVALIDATION_FAILED: ${revalidation.reason}`,
+        status: 'rejected',
+        reason: revalidation.reason,
+        stage: 'RISK_REVALIDATION',
+      };
+    }
+
+    // ---- 5. Create Order ----
     const order = orderManager.createOrder({
       network,
       wallet,
       mint,
       side: 'buy',
       amount: amountLamports,
-      decimals,
-      slippageBps,
+      decimals: decimals!,
+      slippageBps: params.slippageBps || config.maxSlippageBps,
       clientRequestId,
       label: params.label || 'entry',
     });
 
-    // 5. Execute Order
+    // ---- 6. Execute Order ----
+    let execResult;
     try {
-      const execResult = await orderManager.executeOrder(order.id);
-
-      if (!execResult.success) {
-        if (execResult.isAmbiguous || execResult.signature || execResult.status === 'RECOVERY_REQUIRED') {
-          console.warn(`[TradingEngine] Buy transaction for ${mint} broadcasted or timed out (sig=${execResult.signature}). Retaining rebuy reservation to prevent duplicate spend.`);
-          hardenedApprovalStore.markInvalid(approval.approvalId, 'UNKNOWN_STATUS');
-          rebuyGuard.holdBuy(reservation.reservationId, execResult.signature, 'UNKNOWN_STATUS');
-          return {
-            success: false,
-            orderId: order.id,
-            signature: execResult.signature,
-            error: `RECOVERY_REQUIRED: Transaction broadcast or confirmation timeout (${execResult.error}). Rebuy reservation retained.`,
-            result: execResult,
-          };
-        }
-
-        // Release reservation only on definite pre-broadcast failure or verified expiration
-        hardenedApprovalStore.markInvalid(approval.approvalId, execResult.error || 'EXEC_FAILED');
-        rebuyGuard.releaseBuy(reservation.reservationId);
-        return {
-          success: false,
-          orderId: order.id,
-          error: execResult.error,
-          result: execResult,
-        };
-      }
-
-      // 6. Update the authoritative position first, then persist the
-      // confirmed BUY so rebuy limits survive worker/server restarts.
-      const position = positionManager.openOrAccumulatePosition({
-        network,
-        wallet,
-        mint,
-        tokenAmountRaw: String(execResult.outAmountRaw),
-        decimals,
-        solSpent: params.amountSol,
-        orderId: order.id,
-        buySignature: execResult.signature,
-        tpPct: params.tpPct,
-        slPct: params.slPct,
-        trailingSlPct: params.trailingSlPct,
-        maxHoldTimeMs: params.maxHoldTimeMs,
-      });
-
-      hardenedApprovalStore.markConsumed(approval.approvalId, order.id);
-      rebuyGuard.confirmBuy(reservation.reservationId);
-      riskManager.recordBuySuccess(network, wallet, mint);
-      candidateRegistry.updateCandidateState(network, mint, 'BOUGHT');
-      tradeRepository.recordTrade({
-        id: `trade_${order.id}`,
-        orderId: order.id,
-        positionId: position.id,
-        mintAddress: mint,
-        side: 'BUY',
-        network,
-        wallet,
-        amountRaw: String(execResult.outAmountRaw || '0'),
-        amountTokens: rawToUiNumber(execResult.outAmountRaw || '0', position.decimals),
-        solAmount: params.amountSol,
-        priceSOL: position.averageEntryPrice,
-        signature: execResult.signature || order.id,
-        timestamp: Date.now(),
-        status: 'CONFIRMED',
-      });
-
-      return {
-        success: true,
-        orderId: order.id,
-        positionId: position.id,
-        signature: execResult.signature,
-        result: execResult,
-        status: 'authorized',
-        authorization: {
-          approvalId: approval.approvalId,
-          chain: approval.chain,
-          network,
-          mint: approval.mint
-        }
-      };
+      execResult = await orderManager.executeOrder(order.id);
     } catch (err: any) {
-      hardenedApprovalStore.markInvalid(approval.approvalId, err?.message || 'UNCAUGHT_ERROR');
-      const orderRecord = orderManager.getOrder(order.id);
-      if (orderRecord?.signature || orderRecord?.status === 'RECOVERY_REQUIRED') {
-        console.warn(`[TradingEngine] Buy caught error but transaction signature exists (${orderRecord.signature}). Retaining reservation.`);
-        rebuyGuard.holdBuy(reservation.reservationId, orderRecord.signature, 'UNCAUGHT_ERROR');
-        return {
-          success: false,
-          orderId: order.id,
-          signature: orderRecord.signature,
-          error: `RECOVERY_REQUIRED: ${err?.message || String(err)}`,
-        };
-      }
-      rebuyGuard.releaseBuy(reservation.reservationId);
+      rebuyGuard.releaseReservation(reservation.reservationId);
+      return {
+        success: false,
+        error: `EXECUTION_FAILED: ${err?.message || String(err)}`,
+        status: 'error',
+        reason: 'EXECUTION_FAILED',
+        stage: 'EXECUTION',
+      };
+    }
+
+    if (!execResult.success) {
+      rebuyGuard.releaseReservation(reservation.reservationId);
       return {
         success: false,
         orderId: order.id,
-        error: err?.message || String(err),
+        error: execResult.error || 'EXECUTION_FAILED',
+        status: 'error',
+        reason: execResult.error,
+        stage: 'EXECUTION',
       };
     }
+
+    // ---- 7. Create/Update Position ----
+    const outAmountRaw = execResult.outAmountRaw || '0';
+    const position = positionManager.openOrAccumulatePosition({
+      network,
+      wallet,
+      mint,
+      tokenAmountRaw: outAmountRaw,
+      decimals: decimals!,
+      solSpent: params.amountSol,
+      orderId: order.id,
+      buySignature: execResult.signature,
+      tpPct: params.tpPct ?? config.tpPct,
+      slPct: params.slPct ?? config.slPct,
+    });
+
+    // ---- 8. Finalize ----
+    const approval = hardenedApprovalStore.getApprovalByClientRequestId(clientRequestId);
+    if (approval) {
+      hardenedApprovalStore.markConsumed(approval.approvalId, order.id);
+    }
+    rebuyGuard.confirmBuy(reservation.reservationId);
+    riskManager.recordBuySuccess(network, wallet, mint);
+    candidateRegistry.updateCandidateState(network, mint, 'BOUGHT');
+    tokenRepository.setExecutionState(mint, 'HELD', position.id);
+
+    tradeRepository.recordTrade({
+      id: `trade_${order.id}`,
+      orderId: order.id,
+      positionId: position.id,
+      mintAddress: mint,
+      side: 'BUY',
+      network,
+      wallet,
+      amountRaw: typeof outAmountRaw === 'bigint' ? outAmountRaw.toString() : String(outAmountRaw),
+      amountTokens: position.tokenAmount,
+      solAmount: params.amountSol,
+      priceSOL: position.averageEntryPrice,
+      signature: execResult.signature,
+      timestamp: Date.now(),
+      status: 'CONFIRMED',
+    });
+
+    logger.info({ mint, orderId: order.id, positionId: position.id, signature: execResult.signature }, '[TradingEngine] BUY CONFIRMED');
+
+    return {
+      success: true,
+      orderId: order.id,
+      positionId: position.id,
+      signature: execResult.signature,
+      status: 'success',
+    };
   }
 
-  /**
-   * Centralized SELL execution.
-   */
+  // ==========================================
+  // SELL
+  // ==========================================
+
   public async sell(params: SellParams): Promise<TradeEngineResponse> {
     let network: string;
     try {
       network = executionGateway.resolveNetwork(params.network);
     } catch (err: any) {
-      return {
-        success: false,
-        error: err?.message || String(err),
-      };
+      return { success: false, error: err?.message || String(err) };
     }
 
     const wallet = params.wallet || 'default';
     const mint = (params.mint || '').trim();
     if (!mint) {
-      return {
-        success: false,
-        error: 'INVALID_MINT: Mint address is required for sell.',
-      };
+      return { success: false, error: 'INVALID_MINT: Mint address is required for sell.' };
     }
 
     const position = positionManager.getPosition(network, wallet, mint);
     if (!position) {
-      return {
-        success: false,
-        error: `POSITION_NOT_FOUND: No active position for mint ${mint} on ${network}`,
-      };
+      return { success: false, error: `POSITION_NOT_FOUND: No active position for mint ${mint} on ${network}` };
+    }
+    if (position.status === 'EXIT_PENDING' || position.status === 'RECOVERY_REQUIRED') {
+      return { success: false, error: `EXIT_ALREADY_PENDING: Position ${position.id} has status ${position.status}` };
     }
 
-    if (position.status === 'EXIT_REQUESTED' || position.status === 'EXIT_SUBMITTED' || position.status === 'EXIT_CONFIRMING' || position.status === 'RECOVERY_REQUIRED') {
-      return {
-        success: false,
-        error: `EXIT_ALREADY_PENDING: Position ${position.id} has status ${position.status}`,
-      };
-    }
-
-    // FIX: Safe fallback for legacy positions that only have float `tokenAmount`
-    const fallbackAmount = position.tokenAmountRaw 
-      ? String(position.tokenAmountRaw) 
+    // FIX: Safe fallback for legacy positions with float tokenAmount
+    const fallbackAmount = position.tokenAmountRaw
+      ? String(position.tokenAmountRaw)
       : String(Math.floor(position.tokenAmount * (10 ** position.decimals)));
 
-    const rawAmountStr = params.amountRaw !== undefined 
-      ? String(params.amountRaw).trim() 
-      : fallbackAmount;
+    const rawAmountStr = params.amountRaw !== undefined ? String(params.amountRaw).trim() : fallbackAmount;
 
     let rawAmountBigInt: bigint;
     try {
@@ -482,6 +458,7 @@ export class TradingEngine {
       };
     }
 
+    // Delegate to UnifiedExitEngine (single exit authority)
     const exitRes = await unifiedExitEngine.executeManualExitDetail(position.id);
     if (exitRes.success) {
       const updatedPos = positionManager.getPositionById(position.id);
@@ -496,55 +473,44 @@ export class TradingEngine {
         success: false,
         positionId: position.id,
         signature: exitRes.signature,
-        error: exitRes.error || `EXIT_FAILED`,
+        error: exitRes.error || 'EXIT_FAILED',
         result: exitRes.result,
       };
     }
   }
 
-  // NEW: Expose engine status for backend API
+  // ==========================================
+  // WALLET LOCK (Serializes buys per wallet)
+  // ==========================================
+
+  private async withBuyWalletLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this.buyLocks.get(key) || Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>(resolve => { release = resolve; });
+    const queued = previous.then(() => current);
+    this.buyLocks.set(key, queued);
+
+    await previous;
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (this.buyLocks.get(key) === queued) this.buyLocks.delete(key);
+    }
+  }
+
+  // ==========================================
+  // STATUS
+  // ==========================================
+
   public getEngineStatus() {
     return {
       isRunning: true,
       activeBuyLocks: this.buyLocks.size,
       activePositions: positionManager.getOpenPositions().length,
-      openOrders: orderManager.getOrders().filter(o => ['CREATED', 'PENDING', 'SUBMITTED', 'CONFIRMING'].includes(o.status)).length,
-    };
-  }
-
-  public async rebuy(params: BuyParams): Promise<TradeEngineResponse> {
-    const existingPos = positionManager.getPosition(params.network || 'paper', params.wallet || 'default', params.mint);
-    return this.buy({
-      decimals: existingPos?.decimals ?? params.decimals,
-      ...params,
-      label: 'rebuy',
-    });
-  }
-
-  public async cancel(orderId: string): Promise<boolean> {
-    const order = orderManager.getOrder(orderId);
-    if (!order) return false;
-    if (['FILLED', 'FAILED', 'CANCELLED'].includes(order.status)) return false;
-
-    orderManager.updateOrderStatus(orderId, 'CANCELLED');
-    return true;
-  }
-
-  public getPosition(network: string, wallet: string, mint: string): Position | undefined {
-    return positionManager.getPosition(network, wallet, mint);
-  }
-
-  public getOrders(filters?: { network?: string; wallet?: string; mint?: string; side?: string }): Order[] {
-    return orderManager.getOrders(filters);
-  }
-
-  public getStatus(): { isRunning: boolean; activePositions: number; openOrders: number } {
-    const activePositions = positionManager.getOpenPositions().length;
-    const openOrders = orderManager.getOrders().filter(o => ['CREATED', 'PENDING', 'SUBMITTED', 'CONFIRMING'].includes(o.status)).length;
-    return {
-      isRunning: true,
-      activePositions,
-      openOrders,
+      openOrders: orderManager.getOrders().filter(o =>
+        ['CREATED', 'PENDING', 'SUBMITTED', 'CONFIRMING'].includes(o.status)
+      ).length,
     };
   }
 }

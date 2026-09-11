@@ -1,21 +1,23 @@
 // server/trading/HardenedApprovalStore.ts
-import { HardenedApproval } from '../types/index.js';
-import crypto from 'crypto';
-import { canonicalizeSolanaMint } from '../../src/utils/solanaValidators.js';
+import { createHash } from 'crypto';
+import type { HardenedApproval, HardenedCriterionResult } from '../types/index.js';
+import { logger } from '../utils/logger.js';
+
+export type { HardenedApproval, HardenedCriterionResult };
+
+function canonicalizeSolanaMint(mint: string): string {
+  return mint.trim().toLowerCase();
+}
 
 export class HardenedApprovalStore {
   private static instance: HardenedApprovalStore;
-
-  // Key: approvalId
   private approvals: Map<string, HardenedApproval> = new Map();
-  // Key: `${chain}:${mint}:${pool || 'default'}` -> approvalId
-  private mintApprovals: Map<string, string> = new Map();
+  private mintIndex: Map<string, string[]> = new Map(); // canonicalMint -> approvalIds
 
   private constructor() {
-    // Periodic cleanup of expired approvals
-    setInterval(() => {
-      this.cleanupExpired();
-    }, 30000);
+    // FIX: Periodic cleanup with .unref() to prevent memory leaks
+    const cleanupInterval = setInterval(() => this.cleanupExpired(), 30000);
+    if (cleanupInterval.unref) cleanupInterval.unref();
   }
 
   public static getInstance(): HardenedApprovalStore {
@@ -25,62 +27,91 @@ export class HardenedApprovalStore {
     return HardenedApprovalStore.instance;
   }
 
-  /**
-   * Generates a deterministic audit hash of the decision.
-   */
+  // ==========================================
+  // DECISION HASH (Cryptographic binding)
+  // ==========================================
+
   public static computeDecisionHash(params: {
     approvalId: string;
     chain: string;
     mint: string;
+    criteriaVersion?: string;
     pool?: string;
-    criteriaVersion: string;
-    evaluatedSlot: number;
-    evaluationPrice: number;
-    checks: any[];
+    evaluatedSlot?: number;
+    evaluationPrice?: number;
+    checks?: HardenedCriterionResult[];
+    [key: string]: any;
   }): string {
-    const serialized = JSON.stringify({
-      id: params.approvalId,
-      c: params.chain,
-      m: params.mint,
-      p: params.pool || 'none',
-      v: params.criteriaVersion,
-      s: params.evaluatedSlot,
-      pr: params.evaluationPrice,
-      ch: params.checks.map(c => `${c.ruleId}:${c.status}:${c.passed}`),
+    const payload = JSON.stringify({
+      approvalId: params.approvalId,
+      chain: params.chain,
+      mint: canonicalizeSolanaMint(params.mint),
+      criteriaVersion: params.criteriaVersion || '1.0',
+      evaluatedSlot: params.evaluatedSlot ?? 0,
+      evaluationPrice: params.evaluationPrice ?? 0,
+      checksCount: params.checks?.length ?? 0,
+      passedCount: params.checks?.filter(c => c.passed).length ?? 0,
     });
-    return crypto.createHash('sha256').update(serialized).digest('hex');
+    return createHash('sha256').update(payload).digest('hex');
   }
 
-  /**
-   * Issues and stores a new HardenedApproval.
-   */
+  public computeDecisionHash(params: {
+    approvalId: string;
+    chain: string;
+    mint: string;
+    criteriaVersion?: string;
+    pool?: string;
+    evaluatedSlot?: number;
+    evaluationPrice?: number;
+    checks?: HardenedCriterionResult[];
+    [key: string]: any;
+  }): string {
+    return HardenedApprovalStore.computeDecisionHash(params);
+  }
+
+  // ==========================================
+  // ISSUANCE
+  // ==========================================
+
   public issueApproval(approval: HardenedApproval): HardenedApproval {
     const canonicalMint = canonicalizeSolanaMint(approval.mint);
     approval.mint = canonicalMint;
 
     this.approvals.set(approval.approvalId, approval);
-    const key = `${approval.chain}:${canonicalMint}:${approval.pool || 'default'}`;
-    this.mintApprovals.set(key, approval.approvalId);
 
-    console.log(
-      `[HARDENED_APPROVAL_ISSUED] approvalId=${approval.approvalId} mint=${canonicalMint} pool=${approval.pool || 'default'} version=${approval.criteriaVersion} expiresAt=${approval.expiresAt} price=${approval.evaluationPrice.toFixed(8)} decisionHash=${approval.decisionHash.slice(0, 12)}...`
-    );
+    // Index by mint for fast lookup
+    if (!this.mintIndex.has(canonicalMint)) {
+      this.mintIndex.set(canonicalMint, []);
+    }
+    this.mintIndex.get(canonicalMint)!.push(approval.approvalId);
+
+    logger.debug({
+      approvalId: approval.approvalId,
+      mint: canonicalMint,
+      version: approval.criteriaVersion,
+      expiresAt: approval.expiresAt,
+    }, '[HardenedApprovalStore] Approval issued');
 
     return approval;
   }
 
-  /**
-   * Retrieves an approval by its approvalId.
-   */
+  // ==========================================
+  // RETRIEVAL
+  // ==========================================
+
   public getApproval(approvalId: string): HardenedApproval | undefined {
     return this.approvals.get(approvalId);
   }
 
-  /**
-   * Finds the latest usable approval for a mint and pool.
-   */
+  public getApprovalByClientRequestId(clientRequestId: string): HardenedApproval | undefined {
+    for (const approval of this.approvals.values()) {
+      if (approval.correlationId?.includes(clientRequestId)) return approval;
+    }
+    return undefined;
+  }
+
   public getLatestUsableApproval(
-    chain: 'solana',
+    chain: string,
     mint: string,
     pool?: string,
     currentPrice?: number,
@@ -92,151 +123,105 @@ export class HardenedApprovalStore {
     } catch {
       return undefined;
     }
-    const key = `${chain}:${canonicalMint}:${pool || 'default'}`;
-    const approvalId = this.mintApprovals.get(key);
-    if (!approvalId) return undefined;
 
-    const approval = this.approvals.get(approvalId);
-    if (!approval) return undefined;
-
-    const usability = this.isApprovalUsable(approval, currentPrice, currentSlot);
-    if (!usability.valid) {
-      return undefined;
-    }
-
-    return approval;
-  }
-
-  /**
-   * Validates if an approval is currently usable.
-   */
-  public isApprovalUsable(
-    approval: HardenedApproval,
-    currentPrice?: number,
-    currentSlot?: number,
-    activeCriteriaVersion?: string
-  ): { valid: boolean; reason?: string } {
+    const approvalIds = this.mintIndex.get(canonicalMint) || [];
     const now = Date.now();
 
-    if (approval.state === 'CONSUMED') {
-      return { valid: false, reason: 'APPROVAL_ALREADY_CONSUMED: Single-use approval has already been consumed' };
-    }
+    // Iterate from newest to oldest
+    for (let i = approvalIds.length - 1; i >= 0; i--) {
+      const approval = this.approvals.get(approvalIds[i]);
+      if (!approval) continue;
 
-    if (approval.state === 'EXPIRED' || now > approval.expiresAt) {
-      approval.state = 'EXPIRED';
-      return { valid: false, reason: `APPROVAL_EXPIRED: Expiration reached (${now} > ${approval.expiresAt})` };
-    }
+      // Must be ISSUED state
+      if (approval.state !== 'ISSUED') continue;
 
-    if (approval.state === 'INVALID') {
-      return { valid: false, reason: 'APPROVAL_INVALID: Marked invalid' };
-    }
+      // Must not be expired
+      if (now > approval.expiresAt) continue;
 
-    if (activeCriteriaVersion && approval.criteriaVersion !== activeCriteriaVersion) {
-      return {
-        valid: false,
-        reason: `CRITERIA_VERSION_MISMATCH: Approval version ${approval.criteriaVersion} != active ${activeCriteriaVersion}`,
-      };
-    }
+      // Chain must match
+      if (approval.chain !== chain) continue;
 
-    if (currentSlot && currentSlot > 0 && approval.evaluatedSlot > 0) {
-      const slotLag = currentSlot - approval.evaluatedSlot;
-      if (slotLag > approval.maxSlotLag) {
-        return {
-          valid: false,
-          reason: `SLOT_LAG_EXCEEDED: Evaluated slot ${approval.evaluatedSlot}, current ${currentSlot} (lag ${slotLag} > max ${approval.maxSlotLag})`,
-        };
+      // Slot lag check (if provided)
+      if (currentSlot !== undefined && approval.evaluatedSlot > 0) {
+        const slotLag = currentSlot - approval.evaluatedSlot;
+        if (slotLag > approval.maxSlotLag) continue;
       }
-    }
 
-    if (currentPrice && currentPrice > 0 && approval.evaluationPrice > 0) {
-      const deviationPct = Math.abs((currentPrice - approval.evaluationPrice) / approval.evaluationPrice) * 100;
-      if (deviationPct > approval.maxPriceDeviationPct) {
-        return {
-          valid: false,
-          reason: `PRICE_DEVIATION_EXCEEDED: Current price ${currentPrice} deviated ${deviationPct.toFixed(2)}% from evaluated ${approval.evaluationPrice} (max ${approval.maxPriceDeviationPct}%)`,
-        };
+      // Price deviation check (if provided)
+      if (currentPrice !== undefined && approval.evaluationPrice > 0) {
+        const deviation = Math.abs((currentPrice - approval.evaluationPrice) / approval.evaluationPrice) * 100;
+        if (deviation > approval.maxPriceDeviationPct) continue;
       }
+
+      return approval;
     }
 
-    return { valid: true };
+    return undefined;
   }
 
-  /**
-   * Atomically transitions an approval to CONSUMING state for a buy attempt chain.
-   */
-  public startConsuming(approvalId: string, orderId?: string): { success: boolean; error?: string } {
-    const approval = this.approvals.get(approvalId);
-    if (!approval) {
-      return { success: false, error: 'APPROVAL_NOT_FOUND' };
-    }
+  // ==========================================
+  // STATE TRANSITIONS
+  // ==========================================
 
-    const check = this.isApprovalUsable(approval);
-    if (!check.valid) {
-      return { success: false, error: check.reason };
-    }
-
-    approval.state = 'CONSUMING';
-    if (orderId) approval.consumedByOrderId = orderId;
-
-    console.log(
-      `[HARDENED_APPROVAL_CONSUMING] approvalId=${approval.approvalId} mint=${approval.mint} orderId=${orderId || 'none'}`
-    );
-
-    return { success: true };
-  }
-
-  /**
-   * Transitions an approval to permanently CONSUMED state once execution is terminal.
-   */
-  public markConsumed(approvalId: string, orderId?: string): void {
+  public startConsuming(approvalId: string, clientRequestId?: string): void {
     const approval = this.approvals.get(approvalId);
     if (!approval) return;
-
-    approval.state = 'CONSUMED';
-    approval.consumedAt = Date.now();
-    if (orderId) approval.consumedByOrderId = orderId;
-
-    console.log(
-      `[HARDENED_APPROVAL_CONSUMED] approvalId=${approval.approvalId} mint=${approval.mint} orderId=${orderId || 'none'} at=${approval.consumedAt}`
-    );
+    approval.state = 'CONSUMING';
+    if (clientRequestId) {
+      approval.correlationId = `${approval.correlationId}:${clientRequestId}`;
+    }
   }
 
-  /**
-   * Invalidate an approval.
-   */
-  public markInvalid(approvalId: string, reason: string): void {
+  public markConsumed(approvalId: string, orderId: string): void {
+    const approval = this.approvals.get(approvalId);
+    if (!approval) return;
+    approval.state = 'CONSUMED';
+    logger.debug({ approvalId, orderId }, '[HardenedApprovalStore] Approval consumed');
+  }
+
+  public markInvalid(approvalId: string, reason?: string): void {
     const approval = this.approvals.get(approvalId);
     if (!approval) return;
     approval.state = 'INVALID';
-    console.warn(`[HARDENED_APPROVAL_INVALID] approvalId=${approvalId} mint=${approval.mint} reason=${reason}`);
+    logger.warn({ approvalId, reason }, '[HardenedApprovalStore] Approval marked invalid');
   }
 
-  /**
-   * Cleanup expired or consumed approvals from memory.
-   */
-  public cleanupExpired(): void {
+  // ==========================================
+  // CLEANUP
+  // ==========================================
+
+  private cleanupExpired(): void {
     const now = Date.now();
-    for (const [id, app] of this.approvals.entries()) {
-      if (app.state === 'CONSUMED' || now > app.expiresAt + 60000) {
+    let pruned = 0;
+
+    for (const [id, approval] of this.approvals.entries()) {
+      // Remove expired or terminal approvals older than 5 minutes
+      const isTerminal = ['CONSUMED', 'INVALID', 'EXPIRED'].includes(approval.state);
+      const isExpired = now > approval.expiresAt + 300000; // 5 min grace period
+
+      if ((isTerminal && isExpired) || (now > approval.expiresAt + 600000)) {
         this.approvals.delete(id);
-        const key = `${app.chain}:${app.mint}:${app.pool || 'default'}`;
-        if (this.mintApprovals.get(key) === id) {
-          this.mintApprovals.delete(key);
+        const mintIds = this.mintIndex.get(approval.mint);
+        if (mintIds) {
+          const idx = mintIds.indexOf(id);
+          if (idx !== -1) mintIds.splice(idx, 1);
+          if (mintIds.length === 0) this.mintIndex.delete(approval.mint);
         }
+        pruned++;
       }
     }
+
+    if (pruned > 0) {
+      logger.debug({ pruned }, '[HardenedApprovalStore] Pruned expired approvals');
+    }
   }
 
-  /**
-   * Cleans up approval for a specific mint when a position is closed.
-   */
-  public cleanupForMint(chain: 'solana', mint: string, pool?: string): void {
-    const key = `${chain}:${mint}:${pool || 'default'}`;
-    const approvalId = this.mintApprovals.get(key);
-    if (approvalId) {
-      this.approvals.delete(approvalId);
-      this.mintApprovals.delete(key);
+  public getTelemetry() {
+    const byState: Record<string, number> = {};
+    for (const approval of this.approvals.values()) {
+      byState[approval.state] = (byState[approval.state] || 0) + 1;
     }
+    return { totalApprovals: this.approvals.size, byState };
   }
 }
 

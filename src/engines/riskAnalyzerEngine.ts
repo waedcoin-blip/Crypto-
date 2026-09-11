@@ -15,11 +15,11 @@ export class RiskAnalyzerEngine {
   private riskStates: Map<string, RiskState> = new Map();
 
   public analyzeToken(token: Partial<TokenMetric> & { address: string }): RiskState {
-    const {
-      hardenedMaxRiskScore,
-      hardenedLiquidityRatio,
-      hardenedMaxDevOwnership
-    } = useAppStore.getState();
+    const appState = useAppStore.getState();
+    const criteria = appState.criteria || {};
+    const hardenedMaxRiskScore = criteria.hardenedMaxRiskScore ?? Number(localStorage.getItem('hd_max_risk_score')) ?? 18;
+    const hardenedLiquidityRatio = criteria.hardenedLiquidityRatio ?? Number(localStorage.getItem('hd_liquidity_ratio')) ?? 10;
+    const hardenedMaxDevOwnership = criteria.hardenedMaxDevOwnership ?? Number(localStorage.getItem('hd_max_dev_ownership')) ?? 10;
 
     const state: RiskState = {
       tokenAddress: token.address,

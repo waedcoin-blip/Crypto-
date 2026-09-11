@@ -1,15 +1,40 @@
 // src/services/OrderManager.ts
-import { SwapResult, ITradeExecutor } from './ITradeExecutor';
 import type { QuoteResponse } from '@jup-ag/api';
-import { executionEngine } from './ExecutionEngine';
 import { TradingNetwork, getNetworkConfig } from '../config/network';
 import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
 import { usePaperWalletStore } from '../store/paperWalletStore';
 import { useBalanceStore } from '../store/balanceStore';
 import { resolveTokenDecimals } from './TokenDecimalsResolver';
 import { Connection } from '@solana/web3.js';
-import { getSignatureStatusRobust } from './jupiterService';
-import { apiClient } from './apiClient';
+import { getSignatureStatusRobust, getJupiterQuote } from './jupiterService';
+import { apiClient } from './ApiClient';
+
+export interface SwapResult {
+  success?: boolean;
+  signature?: string;
+  error?: string;
+  inputAmount?: any;
+  outputAmount?: any;
+  inAmount?: string;
+  outAmount?: string;
+  priceImpactPct?: number;
+  routePlan?: any[];
+  txid?: string;
+  latencyMs?: number;
+  totalCostSol?: number;
+  feeSol?: number;
+  slot?: number;
+  landingTimeMs?: number;
+  method?: string;
+  inputMint?: string;
+  outputMint?: string;
+}
+
+export interface ITradeExecutor {
+  mode: string;
+  getQuote?: (params: any) => Promise<any>;
+  executeSwap?: (params: any) => Promise<SwapResult>;
+}
 
 export type OrderState =
   | 'SIGNAL'
@@ -53,7 +78,7 @@ export class OrderManager {
   private static instance: OrderManager;
   private orders: Map<string, Order> = new Map();
   private activeOrdersByNetworkSideMint: Map<string, string> = new Map();
-  private executor: ITradeExecutor = executionEngine;
+  private executor: ITradeExecutor | null = null;
 
   private constructor() {
     this.loadOrders();
@@ -224,10 +249,10 @@ export class OrderManager {
     // 1. SIGNAL & Order creation with network+mint idempotency lock
     const order = this.createOrder(targetMint, side, amount, slippageBps, undefined, currentNetwork, label);
 
-    // 2. Network-bound executor resolution (use set executor if configured for this network, else executionEngine)
+    // 2. Network-bound executor resolution
     const executor = (this.executor && this.executor.mode === order.network)
       ? this.executor
-      : executionEngine.getExecutorForNetwork(order.network);
+      : null;
 
     let submittedSignature: string | undefined;
     let confirmedOnChain = false;
@@ -243,12 +268,16 @@ export class OrderManager {
       this.transitionState(order.id, 'QUOTE_REQUESTED');
       let quote = preValidatedQuote;
       if (!quote) {
-        quote = await executor.getQuote({
-          inputMint,
-          outputMint,
-          amount,
-          slippageBps,
-        });
+        if (executor && executor.getQuote) {
+          quote = await executor.getQuote({
+            inputMint,
+            outputMint,
+            amount,
+            slippageBps,
+          });
+        } else {
+          quote = await getJupiterQuote(inputMint, outputMint, amount, slippageBps);
+        }
       }
       if (!quote || !quote.outAmount || Number(quote.outAmount) <= 0) {
         throw new Error(`ORDER_EXECUTION_FAILED: Invalid quote returned for ${inputMint} -> ${outputMint}`);

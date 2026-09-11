@@ -1,6 +1,5 @@
 // server/trading/EntryDecisionLedger.ts
-import { ServerEntryDecision } from './ServerEntryGate.js';
-import { OpportunityScoreBreakdown } from './OpportunityScorer.js';
+import { logger } from '../utils/logger.js';
 
 export interface DecisionLogEntry {
   id: string;
@@ -39,6 +38,14 @@ export interface EntryDiagnosticsReport {
   totalBuyAttempts: number;
   totalBuySuccesses: number;
   totalBuyFailures: number;
+  counters: {
+    eventsReceived: number;
+    candidatesDetected: number;
+    enriched: number;
+    scored: number;
+    buyAttempts: number;
+    buyConfirmed: number;
+  };
   config: {
     autoSniperEnabled: boolean;
     isLiveTrading: boolean;
@@ -48,21 +55,21 @@ export interface EntryDiagnosticsReport {
   recentBuyAttempts: BuyAttemptLogEntry[];
 }
 
-const MAX_LOG_SIZE = 2000;
+const MAX_LOG_SIZE = 500;
 
 export class EntryDecisionLedger {
   private static instance: EntryDecisionLedger;
+  private decisions: DecisionLogEntry[] = [];
+  private buyAttempts: BuyAttemptLogEntry[] = [];
 
-  private totalEvaluated = 0;
-  private totalEnriched = 0;
-  private totalScored = 0;
-  private totalPassedGate = 0;
-  private totalBuyAttempts = 0;
-  private totalBuySuccesses = 0;
-  private totalBuyFailures = 0;
-
-  public recentDecisions: DecisionLogEntry[] = [];
-  public recentBuyAttempts: BuyAttemptLogEntry[] = [];
+  // Cumulative counters
+  private totalEvaluated: number = 0;
+  private totalEnriched: number = 0;
+  private totalScored: number = 0;
+  private totalPassedGate: number = 0;
+  private totalBuyAttempts: number = 0;
+  private totalBuySuccesses: number = 0;
+  private totalBuyFailures: number = 0;
 
   private constructor() {}
 
@@ -73,8 +80,15 @@ export class EntryDecisionLedger {
     return EntryDecisionLedger.instance;
   }
 
-  public recordEnriched(): void {
+  // ==========================================
+  // RECORDING METHODS
+  // ==========================================
+
+  public recordEvaluated(): void {
     this.totalEvaluated++;
+  }
+
+  public recordEnriched(): void {
     this.totalEnriched++;
   }
 
@@ -82,58 +96,58 @@ export class EntryDecisionLedger {
     this.totalScored++;
   }
 
-  public recordDecision(
-    decision: ServerEntryDecision,
-    scoring: OpportunityScoreBreakdown,
-    dataSource: string
-  ): void {
-    if (decision.allowed) {
-      this.totalPassedGate++;
-    }
-
-    const logEntry: DecisionLogEntry = {
-      id: `dec_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-      timestamp: decision.evaluatedAt,
-      mintAddress: decision.mintAddress,
-      symbol: decision.symbol,
-      score: scoring.totalScore,
-      recommendedAction: scoring.recommendedAction,
-      decision: decision.allowed ? 'PASS' : 'BLOCK',
-      blockingReason: decision.blockingReasons[0],
-      blockingReasons: decision.blockingReasons,
-      criteriaResults: (decision as any).criteriaResults || {},
-      dataSource,
+  public recordGateDecision(entry: Omit<DecisionLogEntry, 'id' | 'timestamp'>): void {
+    const fullEntry: DecisionLogEntry = {
+      ...entry,
+      id: `dec_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      timestamp: Date.now(),
     };
-    
-    // FIX: O(1) push instead of O(N) unshift
-    this.recentDecisions.push(logEntry);
-    if (this.recentDecisions.length > MAX_LOG_SIZE) {
-      this.recentDecisions = this.recentDecisions.slice(-MAX_LOG_SIZE);
+
+    this.decisions.unshift(fullEntry);
+    if (this.decisions.length > MAX_LOG_SIZE) this.decisions.pop();
+
+    if (entry.decision === 'PASS') {
+      this.totalPassedGate++;
     }
   }
 
-  public recordBuyAttempt(attempt: Omit<BuyAttemptLogEntry, 'id' | 'timestamp'>): void {
+  public recordDecision(entry: any, scoreBreakdown?: any, dataSource?: any): void {
+    const fullEntry: any = {
+      decision: entry.decision || (entry.allowed ? 'PASS' : 'FAIL'),
+      mintAddress: entry.mintAddress || entry.mint,
+      symbol: entry.symbol || 'UNKNOWN',
+      criteriaVersion: entry.criteriaVersion || '1.0',
+      rejectionReasons: entry.blockingReasons || [],
+      score: scoreBreakdown?.totalScore ?? 0,
+      dataSource: dataSource || 'UNKNOWN',
+      ...entry,
+    };
+    this.recordGateDecision(fullEntry);
+  }
+
+  public recordBuyAttempt(entry: Omit<BuyAttemptLogEntry, 'id' | 'timestamp'>): void {
+    const fullEntry: BuyAttemptLogEntry = {
+      ...entry,
+      id: `buy_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      timestamp: Date.now(),
+    };
+
+    this.buyAttempts.unshift(fullEntry);
+    if (this.buyAttempts.length > MAX_LOG_SIZE) this.buyAttempts.pop();
+
     this.totalBuyAttempts++;
-    if (attempt.success) {
+    if (entry.success) {
       this.totalBuySuccesses++;
     } else {
       this.totalBuyFailures++;
     }
-    
-    const entry: BuyAttemptLogEntry = {
-      ...attempt,
-      id: `buy_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-      timestamp: Date.now(),
-    };
-    
-    // FIX: O(1) push instead of O(N) unshift
-    this.recentBuyAttempts.push(entry);
-    if (this.recentBuyAttempts.length > MAX_LOG_SIZE) {
-      this.recentBuyAttempts = this.recentBuyAttempts.slice(-MAX_LOG_SIZE);
-    }
   }
 
-  public getDiagnostics(config: { autoSniperEnabled: boolean; isLiveTrading: boolean; network: string }): EntryDiagnosticsReport {
+  // ==========================================
+  // DIAGNOSTICS & REPORTING
+  // ==========================================
+
+  public getDiagnostics(config?: Partial<EntryDiagnosticsReport['config']>): EntryDiagnosticsReport {
     return {
       totalEvaluated: this.totalEvaluated,
       totalEnriched: this.totalEnriched,
@@ -142,13 +156,35 @@ export class EntryDecisionLedger {
       totalBuyAttempts: this.totalBuyAttempts,
       totalBuySuccesses: this.totalBuySuccesses,
       totalBuyFailures: this.totalBuyFailures,
-      config,
-      recentDecisions: [...this.recentDecisions].reverse(),
-      recentBuyAttempts: [...this.recentBuyAttempts].reverse(),
+      counters: {
+        eventsReceived: this.totalEvaluated,
+        candidatesDetected: this.totalEvaluated,
+        enriched: this.totalEnriched,
+        scored: this.totalScored,
+        buyAttempts: this.totalBuyAttempts,
+        buyConfirmed: this.totalBuySuccesses,
+      },
+      config: {
+        autoSniperEnabled: config?.autoSniperEnabled ?? true,
+        isLiveTrading: config?.isLiveTrading ?? false,
+        network: config?.network ?? 'paper',
+      },
+      recentDecisions: this.decisions.slice(0, 50),
+      recentBuyAttempts: this.buyAttempts.slice(0, 50),
     };
   }
 
+  public getRecentDecisions(limit = 50): DecisionLogEntry[] {
+    return this.decisions.slice(0, limit);
+  }
+
+  public getRecentBuyAttempts(limit = 50): BuyAttemptLogEntry[] {
+    return this.buyAttempts.slice(0, limit);
+  }
+
   public clear(): void {
+    this.decisions = [];
+    this.buyAttempts = [];
     this.totalEvaluated = 0;
     this.totalEnriched = 0;
     this.totalScored = 0;
@@ -156,8 +192,6 @@ export class EntryDecisionLedger {
     this.totalBuyAttempts = 0;
     this.totalBuySuccesses = 0;
     this.totalBuyFailures = 0;
-    this.recentDecisions = [];
-    this.recentBuyAttempts = [];
   }
 }
 

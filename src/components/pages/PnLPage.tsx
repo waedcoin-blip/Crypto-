@@ -1,8 +1,8 @@
 import { useActiveWalletStore } from "../../store/activeWalletStore";
 import { getKeypairFromPrivateKey } from '../../utils/keypairUtils';
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { apiClient } from '../../services/apiClient';
-import { tradingEngine } from '../../services/tradingEngine';
+import { apiClient } from '../../services/ApiClient';
+import { tradingApi, pipelineApi } from '../../services/ApiClient';
 import { auth } from '../../lib/firebase';
 import { useNavigate } from 'react-router-dom';
 import { Play, Square, Search, ShieldCheck, ShieldAlert, AlertTriangle, Shield, TrendingUp, ChevronDown, ChevronUp, BookOpen, X, Zap, Activity, ChevronRight, Download, Trash2, Settings, Pause, Database, Copy, Check, Terminal, ArrowUpDown, SlidersHorizontal, Eye, EyeOff, Clock, Info, Bug, Filter, Server, Globe, RefreshCw, Wifi, CloudUpload } from 'lucide-react';
@@ -11,7 +11,24 @@ import bs58 from 'bs58';
 import { Buffer } from 'buffer';
 import { TokenMetric, TelemetryAlert, Trade, SniperTrade } from '../../types';
 import { useAppStore } from '../../store/appStore';
-import { TokenScanner, ScannedToken } from '../../services/tokenScanner';
+
+export interface ScannedToken {
+  address: string;
+  symbol: string;
+  name: string;
+  priceUsd: number;
+  priceChange5m?: number;
+  priceChange1h?: number;
+  priceChange24h?: number;
+  volume24h?: number;
+  liquidityUsd: number;
+  fdv?: number;
+  marketCap?: number;
+  pairCreatedAt?: number;
+  dexId?: string;
+  pairAddress?: string;
+  url?: string;
+}
 import { DEFAULT_CRITERIA } from '../../config/tokenCriteria';
 import { getTradeCount } from '../../config/rebuyGuard';
 import { getJupiterQuote, getTokenBalanceRaw, getLatestBlockhashWithFallback, pingJupiterApi } from '../../services/jupiterService';
@@ -26,15 +43,13 @@ import { WalletStatusWidget } from '../WalletStatusWidget';
 import { MasterMonitorPanel } from '../MasterMonitorPanel';
 import { marketDataManager, TokenPrice } from '../../services/marketDataManager';
 import { rpcHealthManager } from '../../services/rpcHealthManager';
-import { RealTradeExecutor } from '../../services/RealTradeExecutor';
 import { useTradeMode } from '../../context/TradeModeContext';
-import { ITradeExecutor } from '../../services/ITradeExecutor';
 import { masterMonitorHealthManager } from '../../services/MasterMonitorHealthManager';
 import { syncManager } from '../../services/SyncService';
 import { SyncStatusBadge } from '../SyncStatusBadge';
 import { useBalanceStore } from '../../store/balanceStore';
 import { useTradingEnvironmentStore } from '../../store/tradingEnvironmentStore';
-import { walletBalanceService } from '../../services/WalletBalanceService';
+import { useWalletBridge } from '../../services/walletBridge';
 import { resolveTokenDecimals } from '../../services/TokenDecimalsResolver';
 import { unifiedTradePipeline, NormalizedTradeEvent } from '../../engines/unifiedTradePipeline';
 import { isMintOnCurve } from '../../utils/solanaValidators';
@@ -1164,7 +1179,7 @@ export const PnLPage = ({
 
   // ── Simulation Store & Background Scan Refs ──
 
-  const scannerRef = useRef<TokenScanner | null>(null);
+  const discoveryAbortRef = useRef<AbortController | null>(null);
   const monitoredTokensRef = useRef<Map<string, ScannedToken>>(new Map());
   
   const stopLossPct = Math.abs(stopLoss);
@@ -4033,11 +4048,11 @@ const checkTokenCriteria = (mint: string): {
            return next;
         });
         addLog(`✅ Bought ${symbol} @ ${parsedPrice.toFixed(6)} SOL | tx: ${result.txid.slice(0, 12)}...`, 'buy');
-        walletBalanceService.refreshNow();
+        useWalletBridge.getState().refreshBalance();
       }
     } catch (e: any) {
       addLog(`Buy error for ${symbol}: ${e.message}`, 'err');
-      walletBalanceService.refreshNow();
+      useWalletBridge.getState().refreshBalance();
       if (e.message.includes('Route not found') || e.message.includes('NO_ROUTES_FOUND') || e.message.includes('Not Found') || e.message.includes('No route') || e.message.includes('TOKEN_NOT_TRADABLE')) {
         addLog(`❌ [BLACKLIST] ${symbol} added to blacklist due to unroutable liquidity/dead token.`, 'warn');
         if (!blacklistedMintsRef.current.includes(mint)) {
@@ -4131,7 +4146,7 @@ const checkTokenCriteria = (mint: string): {
     const symbol = pos?.symbol || mint.slice(0, 6);
     addLog(`🚨 Submitting exit for ${symbol} via /api/trading/sell (${reason})...`, 'sell');
     try {
-      await tradingEngine.sell({ mint, percent: 100, reason });
+      await tradingApi.sell({ mint, percent: 100, reason });
       addLog(`✅ Exit submitted for ${symbol}`, 'sell');
     } catch (err: any) {
       addLog(`❌ Exit failed for ${symbol}: ${err?.message || err}`, 'err');
@@ -4621,15 +4636,12 @@ const checkTokenCriteria = (mint: string): {
 
   const runDiscoveryScan = useCallback(async () => {
     if (!isRunning || isDiscoveryScanningRef.current) return;
-    if (!scannerRef.current) {
-      scannerRef.current = new TokenScanner(DEFAULT_CRITERIA);
-    }
-
     isDiscoveryScanningRef.current = true;
     pipelineCountersRef.current.discoveryScansStarted++;
 
     try {
-      const rawTokens = await scannerRef.current.scanForNewTokens();
+      const candidatesRes: any = await pipelineApi.getCandidates().catch(() => ({ candidates: [] }));
+      const rawTokens = (candidatesRes?.candidates || candidatesRes?.tokens || []) as ScannedToken[];
       const totalFound = rawTokens.length;
       pipelineCountersRef.current.discoveryTokensFound += totalFound;
 
@@ -4756,7 +4768,6 @@ const checkTokenCriteria = (mint: string): {
 
   useEffect(() => {
     if (!isRunning) {
-      scannerRef.current?.abort();
       return;
     }
 
@@ -4773,7 +4784,6 @@ const checkTokenCriteria = (mint: string): {
     return () => {
       clearTimeout(initialTimer);
       clearInterval(intervalTimer);
-      scannerRef.current?.abort();
     };
   }, [isRunning, runDiscoveryScan]);
 
@@ -5298,7 +5308,6 @@ const checkTokenCriteria = (mint: string): {
     store.updateActivePositions(() => ({}));
     
     store.setMySniperTrades(() => []);
-    store.setTelemetryBits([false, false, false, false, false, false]);
     
     // Clear simulation store and scanner monitored tokens
     monitoredTokensRef.current.clear();

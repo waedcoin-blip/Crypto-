@@ -97,6 +97,7 @@ export function useSupervisor(pollIntervalMs: number = 3000) {
   return {
     status,
     isLoading,
+    isConnected: status !== null,
     refresh: fetchStatus,
     startTrading,
     stopTrading,

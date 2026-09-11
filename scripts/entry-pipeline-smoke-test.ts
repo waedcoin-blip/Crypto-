@@ -1,5 +1,6 @@
 // scripts/entry-pipeline-smoke-test.ts
 import '../server/utils/polyfill.js';
+import { Keypair } from '@solana/web3.js';
 import { candidateEnricher } from '../server/trading/CandidateEnricher.js';
 import { opportunityScorer } from '../server/trading/OpportunityScorer.js';
 import { serverEntryGate } from '../server/trading/ServerEntryGate.js';
@@ -7,6 +8,7 @@ import { entryEngine } from '../server/trading/EntryEngine.js';
 import { tradingEngine } from '../server/trading/TradingEngine.js';
 import { positionManager } from '../server/trading/PositionManager.js';
 import { rebuyGuard } from '../server/trading/RebuyGuard.js';
+import { tradeRepository } from '../server/repositories/TradeRepository.js';
 
 async function runSmokeTest() {
   console.log('====================================================');
@@ -14,14 +16,20 @@ async function runSmokeTest() {
   console.log('====================================================');
 
   const testMint = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'; // USDC (safe mint)
+  tradeRepository.clear('paper');
+  rebuyGuard.clear();
 
   // 1. Test Candidate Enrichment
   console.log('\n[1/6] Testing Candidate Enrichment...');
   const enriched = await candidateEnricher.enrichCandidate(testMint, 'paper');
-  console.log(`✅ Candidate Enriched: symbol=${enriched.symbol}, priceUsd=$${enriched.priceUsd}, mcap=$${enriched.marketCapUsd}, devPct=${enriched.devWalletOwnershipPct}%, decimals=${enriched.decimals}`);
+  const devPct = typeof enriched.devWalletOwnershipPct === 'object' ? enriched.devWalletOwnershipPct?.value : enriched.devWalletOwnershipPct;
+  const priceUsd = typeof enriched.priceUsd === 'object' ? enriched.priceUsd?.value : enriched.priceUsd;
+  const mcap = typeof enriched.marketCapUsd === 'object' ? enriched.marketCapUsd?.value : enriched.marketCapUsd;
+  const decimals = typeof enriched.decimals === 'object' ? enriched.decimals?.value : enriched.decimals;
+  console.log(`✅ Candidate Enriched: symbol=${enriched.symbol}, priceUsd=$${priceUsd}, mcap=$${mcap}, devPct=${devPct}%, decimals=${decimals}`);
 
-  if (typeof enriched.devWalletOwnershipPct !== 'number' || enriched.devWalletOwnershipPct < 0 || enriched.devWalletOwnershipPct > 100) {
-    throw new Error(`Enrichment failed dev ownership validation: ${enriched.devWalletOwnershipPct}`);
+  if (typeof devPct !== 'number' || devPct < 0 || devPct > 100) {
+    throw new Error(`Enrichment failed dev ownership validation: ${devPct}`);
   }
 
   // 2. Test Opportunity Scoring
@@ -119,14 +127,14 @@ async function runSmokeTest() {
   console.log(`✅ USDC evaluation accurately BLOCKED: decision=${usdcResult.decision?.decision}, reason="${usdcResult.decision?.blockingReasons[0]}"`);
 
   // Now test an eligible candidate token (fresh unique mint per test run)
-  const eligibleTestMint = `PUMP${Date.now()}11111111111111111111111pump`;
+  const eligibleTestMint = Keypair.generate().publicKey.toBase58();
   
-  // Clean any previous positions for this test mint
-  const existing = positionManager.getPosition('paper', 'default', eligibleTestMint);
-  if (existing) {
-    positionManager.updatePositionStatus('paper', 'default', eligibleTestMint, 'CLOSED');
+  // Clean any previous positions to ensure clean test state
+  const openPositions = positionManager.getOpenPositions('paper');
+  for (const pos of openPositions) {
+    positionManager.updatePositionStatus('paper', pos.wallet, pos.mint, 'CLOSED');
   }
-  rebuyGuard.resetBuyCount('paper', 'default', eligibleTestMint);
+  rebuyGuard.resetBuyCount(eligibleTestMint, 'paper', 'default');
 
   // Directly test TradingEngine.buy with paper executor to verify BUY -> Order -> Position -> PnL flow
   const buyResp = await tradingEngine.buy({

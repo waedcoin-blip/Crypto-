@@ -1,6 +1,6 @@
 import { useActiveWalletStore } from "./store/activeWalletStore";
 import { useTradingEnvironmentStore } from "./store/tradingEnvironmentStore";
-import { apiClient } from "./services/apiClient";
+import { apiClient } from "./services/ApiClient";
 import { getKeypairFromPrivateKey, getSavedSessionKeypair, saveSessionKeypair } from './utils/keypairUtils';
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -65,7 +65,7 @@ import { syncManager } from './services/SyncService';
 import { orderManager } from './services/OrderManager';
 import { riskManager } from './services/RiskManager';
 import { resolveTokenDecimals } from './services/TokenDecimalsResolver';
-import { StartupReconciliation } from './services/StartupReconciliation';
+import { tradingApi } from './services/ApiClient';
 import { entryGate } from './services/EntryGate';
 import { parseWalletTransaction } from './services/WalletTransactionParser';
 import { unifiedTradePipeline } from './engines/unifiedTradePipeline';
@@ -683,7 +683,7 @@ function App() {
 
   useEffect(() => {
     masterMonitorHealthManager.setEndpoints(masterMonitorRpc, masterMonitorRpc2, masterMonitorWs);
-    void StartupReconciliation.runReconciliation();
+    void tradingApi.getPositions().catch(() => {});
   }, [masterMonitorRpc, masterMonitorRpc2, masterMonitorWs, rpcUrl]);
   const [isHardenedCriteriaExpanded, setIsHardenedCriteriaExpanded] = useState(false);
   const [activePreset, setActivePreset] = useState<string>(() => localStorage.getItem('app_active_preset') || 'custom');

@@ -118,8 +118,8 @@ export class UnifiedExitEngine {
     }
 
     // 3. Trailing Stop
-    if (position.trailingSlPct && position.trailingSlPct > 0 && position.peakPrice > 0) {
-      const drawdownFromPeak = ((position.peakPrice - marketPriceSol) / position.peakPrice) * 100;
+    if (position.trailingSlPct && position.trailingSlPct > 0 && position.peakPriceSol > 0) {
+      const drawdownFromPeak = ((position.peakPriceSol - marketPriceSol) / position.peakPriceSol) * 100;
       if (drawdownFromPeak >= position.trailingSlPct) {
         return {
           shouldExit: true,
@@ -157,8 +157,8 @@ export class UnifiedExitEngine {
     const makeResult = (valid: boolean, reason: string, pos?: Position, quote?: any): ExitPreCheckResult => ({
       valid,
       mint: pos?.mint || position.mint,
-      marketPriceSol: pos?.currentPrice || position.currentPrice || 0,
-      executablePriceSol: quote?.executablePriceSol || pos?.currentPrice || position.currentPrice || 0,
+      marketPriceSol: pos?.currentPriceSol || position.currentPriceSol || 0,
+      executablePriceSol: quote?.executablePriceSol || pos?.currentPriceSol || position.currentPriceSol || 0,
       priceDivergencePct: 0,
       routeAvailable: valid,
       rawBalance: pos?.tokenAmountRaw || position.tokenAmountRaw || '0',
@@ -173,7 +173,7 @@ export class UnifiedExitEngine {
       if (!currentPos || currentPos.status === 'CLOSED') {
         return makeResult(false, 'POSITION_ALREADY_CLOSED');
       }
-      if (currentPos.status === 'EXIT_REQUESTED' || currentPos.status === 'EXIT_SUBMITTED' || currentPos.status === 'EXIT_CONFIRMING' || currentPos.status === 'RECOVERY_REQUIRED') {
+      if (currentPos.status === 'EXIT_PENDING' || currentPos.status === 'RECOVERY_REQUIRED') {
         return makeResult(false, `POSITION_IN_TERMINAL_STATE: ${currentPos.status}`, currentPos);
       }
 
@@ -248,7 +248,7 @@ export class UnifiedExitEngine {
     if (position.status === 'CLOSED') {
       return { success: false, error: 'POSITION_ALREADY_CLOSED' };
     }
-    if (position.status === 'EXIT_REQUESTED' || position.status === 'EXIT_SUBMITTED' || position.status === 'EXIT_CONFIRMING') {
+    if (position.status === 'EXIT_PENDING' || position.status === 'RECOVERY_REQUIRED') {
       return { success: false, error: 'EXIT_ALREADY_PENDING' };
     }
 
@@ -294,8 +294,8 @@ export class UnifiedExitEngine {
       return { success: false, error: `EXIT_PRECHECK_FAILED: ${preCheck.reason}` };
     }
 
-    // Mark position as EXIT_REQUESTED
-    positionManager.updatePositionStatus(position.network, position.wallet, position.mint, 'EXIT_REQUESTED');
+    // Mark position as EXIT_PENDING
+    positionManager.updatePositionStatus(position.network, position.wallet, position.mint, 'EXIT_PENDING');
     this.recordAudit(position.id, position.mint, 'INFO', `EXIT_REQUESTED: ${reason}`);
 
     let lastError = '';

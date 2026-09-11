@@ -1,6 +1,6 @@
 // src/services/RiskManager.ts
 import { systemLogger } from './systemLogger';
-import { apiClient } from './apiClient';
+import { apiClient } from './ApiClient';
 
 export interface ManagedPosition {
   mint: string;

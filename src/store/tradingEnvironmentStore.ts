@@ -5,7 +5,7 @@ import { useBalanceStore } from './balanceStore';
 import { useActiveWalletStore } from './activeWalletStore';
 import { DEFAULT_PAPER_TRADING_ADDRESS } from '../constants/solana';
 import { usePaperWalletStore } from './paperWalletStore';
-import { walletBalanceService } from '../services/WalletBalanceService';
+import { useWalletBridge } from '../services/walletBridge';
 
 interface TradingEnvironmentState {
   network: TradingNetwork;
@@ -65,8 +65,7 @@ export const useTradingEnvironmentStore = create<TradingEnvironmentState>((set) 
 
           useBalanceStore.getState().setWalletAddress(newAddress);
           setTimeout(() => {
-            walletBalanceService.updateNetwork(network);
-            walletBalanceService.refresh(newAddress);
+            useWalletBridge.getState().refreshBalance();
           }, 0);
         }
 

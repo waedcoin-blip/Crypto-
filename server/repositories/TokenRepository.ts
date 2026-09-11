@@ -13,6 +13,7 @@ export type TokenExecutionState =
 
 export interface TokenRecord {
   mint: string;
+  mintAddress?: string;
   symbol: string;
   name?: string;
   network: string;
@@ -21,6 +22,9 @@ export interface TokenRecord {
   positionId?: string;
   discoveredAt: number;
   updatedAt: number;
+  metadata?: any;
+  priceUsd?: number;
+  priceNative?: number;
 }
 
 /**
@@ -47,14 +51,21 @@ export class TokenRepository {
    * Register or update a token.
    */
   public upsertToken(params: {
-    mint: string;
+    mint?: string;
+    mintAddress?: string;
     symbol?: string;
     name?: string;
     network: string;
     decimals?: number;
+    metadata?: any;
+    discoveredAt?: number;
+    updatedAt?: number;
+    signal?: string;
   }): void {
+    const mint = (params.mint || params.mintAddress || '').trim();
+    if (!mint) return;
     const all = this.store.read();
-    const key = `${params.network}:${params.mint}`;
+    const key = `${params.network}:${mint}`;
 
     // Enforce capacity limit
     if (Object.keys(all).length >= this.MAX_TOKENS && !all[key]) {
@@ -63,15 +74,19 @@ export class TokenRepository {
 
     const existing = all[key];
     all[key] = {
-      mint: params.mint,
-      symbol: params.symbol || existing?.symbol || params.mint.slice(0, 6).toUpperCase(),
+      mint,
+      mintAddress: mint,
+      symbol: params.symbol || existing?.symbol || mint.slice(0, 6).toUpperCase(),
       name: params.name || existing?.name,
       network: params.network,
-      decimals: params.decimals ?? existing?.decimals ?? 6,
+      decimals: params.decimals ?? params.metadata?.decimals ?? existing?.decimals ?? 6,
       executionState: existing?.executionState || 'DISCOVERED',
       positionId: existing?.positionId,
-      discoveredAt: existing?.discoveredAt || Date.now(),
-      updatedAt: Date.now(),
+      discoveredAt: params.discoveredAt || existing?.discoveredAt || Date.now(),
+      updatedAt: params.updatedAt || Date.now(),
+      metadata: params.metadata || existing?.metadata,
+      priceUsd: params.metadata?.priceUsd ?? existing?.priceUsd,
+      priceNative: params.metadata?.priceNative ?? existing?.priceNative,
     };
 
     this.store.write(all);
@@ -97,12 +112,16 @@ export class TokenRepository {
   /**
    * Get a token by mint address.
    */
-  public getByMint(mint: string): TokenRecord | undefined {
+  public getByMint(mint: string): (TokenRecord & { priceNative?: number; priceUsd?: number }) | undefined {
     const all = this.store.read();
     for (const record of Object.values(all)) {
       if (record.mint === mint) return record;
     }
     return undefined;
+  }
+
+  public getToken(mint: string): (TokenRecord & { priceNative?: number; priceUsd?: number }) | undefined {
+    return this.getByMint(mint);
   }
 
   /**
