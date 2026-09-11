@@ -1,5 +1,5 @@
 // src/services/marketDataManager.ts
-import { getSolPriceUsd } from '../utils/pnlCalculator';
+import { getSolPriceUsd } from '../utils/pnlUtils';
 /**
  * MarketDataManager
  * Centralized, deduplicated, batched market data service with tiered caching,

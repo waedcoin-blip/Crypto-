@@ -46,8 +46,8 @@ export class PaperTradeExecutor implements TradeExecutor {
       .find(p => p.mint === params.inputMint)
       || positionManager.getPosition(params.network || 'paper', params.walletAddress || 'default', params.inputMint);
 
-    const unitPrice = (pos && pos.currentPriceSol && pos.currentPriceSol > 0)
-      ? pos.currentPriceSol
+    const unitPrice = (pos && pos.currentPrice && pos.currentPrice > 0)
+      ? pos.currentPrice
       : (pos && (pos as any).currentPriceSOL && (pos as any).currentPriceSOL > 0)
         ? (pos as any).currentPriceSOL
         : 0.000001; // 1M tokens = 1 SOL fallback

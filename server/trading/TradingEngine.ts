@@ -355,7 +355,7 @@ export class TradingEngine {
         network,
         wallet,
         mint,
-        tokenAmountRaw: typeof execResult.outAmountRaw === 'bigint' ? execResult.outAmountRaw.toString() : execResult.outAmountRaw,
+        tokenAmountRaw: String(execResult.outAmountRaw),
         decimals,
         solSpent: execResult.totalCostSol || params.amountSol,
         orderId: order.id,
@@ -403,14 +403,14 @@ export class TradingEngine {
       };
     } catch (err: any) {
       hardenedApprovalStore.markInvalid(approval.approvalId, err?.message || 'UNCAUGHT_ERROR');
-      const orderRecord = orderManager.getOrderById(order.id);
-      if (orderRecord?.transactionSignature || orderRecord?.status === 'RECOVERY_REQUIRED') {
-        console.warn(`[TradingEngine] Buy caught error but transaction signature exists (${orderRecord.transactionSignature}). Retaining reservation.`);
-        rebuyGuard.holdBuy(reservation.reservationId, orderRecord.transactionSignature, 'UNCAUGHT_ERROR');
+      const orderRecord = orderManager.getOrder(order.id);
+      if (orderRecord?.signature || orderRecord?.status === 'RECOVERY_REQUIRED') {
+        console.warn(`[TradingEngine] Buy caught error but transaction signature exists (${orderRecord.signature}). Retaining reservation.`);
+        rebuyGuard.holdBuy(reservation.reservationId, orderRecord.signature, 'UNCAUGHT_ERROR');
         return {
           success: false,
           orderId: order.id,
-          signature: orderRecord.transactionSignature,
+          signature: orderRecord.signature,
           error: `RECOVERY_REQUIRED: ${err?.message || String(err)}`,
         };
       }
@@ -454,7 +454,7 @@ export class TradingEngine {
       };
     }
 
-    if (position.status === 'EXIT_PENDING' || position.status === 'RECOVERY_REQUIRED') {
+    if (position.status === 'EXIT_REQUESTED' || position.status === 'EXIT_SUBMITTED' || position.status === 'EXIT_CONFIRMING' || position.status === 'RECOVERY_REQUIRED') {
       return {
         success: false,
         error: `EXIT_ALREADY_PENDING: Position ${position.id} has status ${position.status}`,
@@ -522,7 +522,7 @@ export class TradingEngine {
   }
 
   public async cancel(orderId: string): Promise<boolean> {
-    const order = orderManager.getOrderById(orderId);
+    const order = orderManager.getOrder(orderId);
     if (!order) return false;
     if (['FILLED', 'FAILED', 'CANCELLED'].includes(order.status)) return false;
 

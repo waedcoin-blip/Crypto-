@@ -33,7 +33,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { cn, detectTokenStage } from './lib/utils';
-import { setSolPriceUsd, getSolPriceUsd, calcNetPnl, getDynamicOperationalFeeSol } from './utils/pnlCalculator';
+import { setSolPriceUsd, getSolPriceUsd, calcNetPnl, getDynamicOperationalFeeSol } from './utils/pnlUtils';
 import { DEFAULT_HELIUS_RPC, HELIUS_API_KEY } from './constants/solana';
 import { encryptPrivateKey, decryptPrivateKey } from './lib/crypto';
 import { auth, db, signInWithGoogle, signInWithEmailAndPassword, createUserWithEmailAndPassword, authPersistencePromise } from './lib/firebase';
@@ -64,8 +64,7 @@ import { masterMonitorHealthManager } from './services/MasterMonitorHealthManage
 import { syncManager } from './services/SyncService';
 import { orderManager } from './services/OrderManager';
 import { riskManager } from './services/RiskManager';
-import { positionExitManager } from './services/PositionExitManager';
-import { resolveTokenDecimals } from './services/PaperTradeExecutor';
+import { resolveTokenDecimals } from './services/TokenDecimalsResolver';
 import { StartupReconciliation } from './services/StartupReconciliation';
 import { entryGate } from './services/EntryGate';
 import { parseWalletTransaction } from './services/WalletTransactionParser';
@@ -1249,12 +1248,7 @@ function App() {
           const posTokensQty = position.amount || 0;
           const currentPnLPct = realCostBasis > 0 ? (((currentPriceSol * posTokensQty) - realCostBasis) / realCostBasis) * 100 : 0;
 
-          // ── SINGLE EXIT AUTHORITY: Forward fresh price observation to RiskManager ──
-          // Market price → RiskManager → TP/SL decision → Jupiter pre-sell validation → OrderManager → execution
-          // The App-level monitoring loop no longer submits automatic sells directly.
-          if (currentPriceSol > 0) {
-            positionExitManager.onPriceUpdate(tokenAddress, currentPriceSol, Date.now(), 'SOL', 'jupiter');
-          }
+          // Backend TradingMonitorWorker is now authoritative for exit monitoring
 
           // Track peak PnL in position metadata for display purposes
           if (!position.peakPnLPct || currentPnLPct > position.peakPnLPct) {

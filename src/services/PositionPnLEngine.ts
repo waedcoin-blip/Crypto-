@@ -1,6 +1,6 @@
 // src/services/PositionPnLEngine.ts
-import { calcNetPnl, NetPnlResult, getSolPriceUsd } from '../utils/pnlCalculator';
-import { resolveTokenDecimals } from './PaperTradeExecutor';
+import { calcNetPnl, NetPnlResult, getSolPriceUsd } from '../utils/pnlUtils';
+import { resolveTokenDecimals } from './TokenDecimalsResolver';
 
 export interface PositionPnLMetrics {
   mint: string;

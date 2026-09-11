@@ -6,7 +6,7 @@ import { TradingNetwork, getNetworkConfig } from '../config/network';
 import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
 import { usePaperWalletStore } from '../store/paperWalletStore';
 import { useBalanceStore } from '../store/balanceStore';
-import { resolveTokenDecimals } from './PaperTradeExecutor';
+import { resolveTokenDecimals } from './TokenDecimalsResolver';
 import { Connection } from '@solana/web3.js';
 import { getSignatureStatusRobust } from './jupiterService';
 import { apiClient } from './apiClient';

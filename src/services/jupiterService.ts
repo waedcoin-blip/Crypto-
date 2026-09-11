@@ -5,7 +5,7 @@ import { detectTokenStage } from '../lib/utils';
 import { DEFAULT_HELIUS_RPC } from '../constants/solana';
 import { telemetryService } from './telemetryService';
 import { getNetworkConfig } from '../config/network';
-import { getSolPriceUsd } from '../utils/pnlCalculator';
+import { getSolPriceUsd } from '../utils/pnlUtils';
 import { normalizePriceImpact, buildSafeQuoteDiagnostic, MAX_PRICE_IMPACT_RATIO } from '../utils/quoteSafety';
 import { httpFetch } from './httpClient';
 

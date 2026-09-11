@@ -6,44 +6,32 @@ import { fastExitExecutor } from '../execution/FastExitExecutor.js';
 import { positionRepository } from '../repositories/PositionRepository.js';
 import { activePositionMarketFeed } from '../market/ActivePositionMarketFeed.js';
 import { executionGateway } from '../execution/ExecutionGateway.js';
-import { ExitPreCheckResult } from '../types/index.js';
 import { positionValuationEngine } from './PositionValuationEngine.js';
-import { rebuyGuard } from './RebuyGuard.js';
-import { hardenedApprovalStore } from './HardenedApprovalStore.js';
-import { candidateRegistry } from '../market/CandidateRegistry.js';
-
-import { lamportsToSolNumber, rawToUiNumber } from '../utils/rawAmount.js';
-export interface ExitConfig {
-  takeProfitPercent: number;
-  stopLossPercent: number;
-  trailingEnabled: boolean;
-  trailingStopPercent?: number;
-  trailingActivationPercent?: number;
-}
-
-export interface ExitDecision {
-  shouldExit: boolean;
-  reason?: 'EMERGENCY_EXIT' | 'STOP_LOSS' | 'TAKE_PROFIT' | 'TRAILING_STOP' | 'MANUAL_EXIT' | string;
-  executablePnlPct?: number;
-  expectedOutSol?: number;
-  message?: string;
-}
+import { orderManager } from './OrderManager.js';
+import { ExitPreCheckResult } from '../types/index.js';
 
 export interface AuditTrailEntry {
   timestamp: number;
   positionId: string;
   mint: string;
-  event: 'EXIT_EVALUATED' | 'EXIT_TRIGGERED' | 'EXIT_AUTHORIZED' | 'SELL_SUBMITTED' | 'SELL_CONFIRMED' | 'SELL_FAILED' | 'SELL_RETRY' | 'POSITION_CLOSED';
-  reason?: string;
-  message?: string;
+  event: string;
+  level: 'INFO' | 'WARN' | 'ERROR' | 'SYSTEM';
+  message: string;
   metadata?: Record<string, any>;
+}
+
+export interface ExitDecision {
+  shouldExit: boolean;
+  reason: 'TP' | 'SL' | 'TRAILING_STOP' | 'MAX_HOLD' | 'MANUAL' | 'NONE';
+  currentPnlPct: number;
+  message: string;
 }
 
 export class UnifiedExitEngine {
   private static instance: UnifiedExitEngine;
   private isRunning: boolean = false;
   private auditTrail: AuditTrailEntry[] = [];
-  
+
   // High-throughput execution locks by wallet:mint to prevent duplicate sell signals
   private exitLocks: Set<string> = new Set(); // format: "network:wallet:mint"
 
@@ -56,14 +44,15 @@ export class UnifiedExitEngine {
     return UnifiedExitEngine.instance;
   }
 
-  /**
-   * Starts the UnifiedExitEngine, ActivePositionMarketFeed, and subscribes to MarketEventBus.
-   */
+  // ==========================================
+  // LIFECYCLE
+  // ==========================================
+
   public start(): void {
     if (this.isRunning) return;
     this.isRunning = true;
 
-    // 1. Start Priority P1 Active Position Market Feed
+    // Start the ActivePositionMarketFeed which drives price updates and exit evaluations
     activePositionMarketFeed.start();
 
     console.log('[UnifiedExitEngine] Sole authoritative server-side Exit Engine active; ActivePositionMarketFeed owns market-event ingestion.');
@@ -73,383 +62,211 @@ export class UnifiedExitEngine {
   public stop(): void {
     this.isRunning = false;
     activePositionMarketFeed.stop();
-    console.log('[UnifiedExitEngine] Stopped.');
+    console.log('[UnifiedExitEngine] Exit Engine stopped.');
+    this.recordGlobalLog('SYSTEM', 'Exit Engine stopped.');
   }
 
-  /**
-   * Market events are handled by ActivePositionMarketFeed. That component owns the
-   * market-event -> fresh executable Jupiter quote -> UnifiedExitEngine handoff.
-   * Keeping a second evaluator here caused duplicate/stale evaluations and could
-   * consume WSS candidate prices without an executable quote.
-   */
-/**
-   * Atomic lock acquisition to protect against duplicate sell pipelines
-   */
+  // ==========================================
+  // EXIT LOCK MANAGEMENT
+  // ==========================================
+
   public acquireExitLock(network: string, wallet: string, mint: string): boolean {
-    const lockKey = positionManager.getPositionKey(network, wallet, mint);
-    if (this.exitLocks.has(lockKey)) {
+    const key = `${network}:${wallet}:${mint}`;
+    if (this.exitLocks.has(key)) {
+      console.warn(`[UnifiedExitEngine] EXIT LOCK ALREADY HELD for ${key}`);
       return false;
     }
-    this.exitLocks.add(lockKey);
+    this.exitLocks.add(key);
     return true;
   }
 
   public releaseExitLock(network: string, wallet: string, mint: string): void {
-    const lockKey = positionManager.getPositionKey(network, wallet, mint);
-    this.exitLocks.delete(lockKey);
+    const key = `${network}:${wallet}:${mint}`;
+    this.exitLocks.delete(key);
   }
 
-  /**
-   * Core exit decision-making logic evaluating all risk scenarios.
-   * STRICT: 100% full exit ONLY. No partial take profit.
-   */
-  public async evaluatePositionExit(
-    position: Position,
-    currentPriceSol: number,
-    opts: {
-      executableQuoteSol?: number;
-      quoteTimestamp?: number;
-      maxDataAgeMs?: number;
-    } = {}
-  ): Promise<ExitDecision> {
+  // ==========================================
+  // EXIT EVALUATION (TP/SL/Trailing/MaxHold)
+  // ==========================================
+
+  public evaluatePositionExit(position: Position, marketPriceSol: number): ExitDecision {
     if (position.status !== 'OPEN') {
-      return { shouldExit: false, message: `Position status is ${position.status}, not OPEN` };
+      return { shouldExit: false, reason: 'NONE', currentPnlPct: 0, message: `Position status is ${position.status}` };
     }
 
-    const now = Date.now();
-    position.lastExitEvaluationAt = now;
+    const pnlMetrics = pnlEngine.calculatePnL(position, marketPriceSol);
+    const currentPnlPct = pnlMetrics.unrealizedPnlPercent;
 
-    // Data freshness verification
-    const maxAge = opts.maxDataAgeMs ?? 5000;
-    const lastDataAt = opts.quoteTimestamp || position.lastExecutableQuoteAt || position.lastMarketPriceAt || 0;
-    if (lastDataAt > 0 && (now - lastDataAt > maxAge)) {
-      console.warn(`[EXIT_MONITOR_BLOCKED] reason=STALE_MARKET_DATA position=${position.id} mint=${position.mint} ageMs=${now - lastDataAt}`);
-      return {
-        shouldExit: false,
-        message: `[EXIT_MONITOR_BLOCKED] reason=STALE_MARKET_DATA ageMs=${now - lastDataAt}`,
-      };
-    }
-
-    const pnl = pnlEngine.calculatePnL(position, currentPriceSol);
-    const criteria = criteriaRepository.getActiveCriteriaSync() as any;
-
-    // Calculate gross PnL percentage using actual executable SOL proceeds if provided, else current market price
-    let grossPnlPct: number;
-    if (opts.executableQuoteSol !== undefined && position.totalSolSpent > 0) {
-      grossPnlPct = ((opts.executableQuoteSol - position.totalSolSpent) / position.totalSolSpent) * 100;
-    } else if (position.averageEntryPrice > 0) {
-      grossPnlPct = ((currentPriceSol - position.averageEntryPrice) / position.averageEntryPrice) * 100;
-    } else {
-      grossPnlPct = pnl.unrealizedPnlPercent;
-    }
-
-    // Load configurations with explicit finite checks (Standardized: positive magnitude for TP/SL)
-    const tpThreshold = Number.isFinite(position.tpPct) ? Math.abs(position.tpPct) : Math.abs(criteria.minTakeProfit || 25);
-    const slThreshold = Number.isFinite(position.slPct) ? -Math.abs(position.slPct) : -Math.abs(criteria.stopLoss || 15);
-
-    // Trailing stop loss configuration
-    const trailingEnabled = criteria.trailingEnabled ?? true;
-    const trailingStopPercent = criteria.trailingStopPercent ?? 5;
-    const trailingActivationPercent = criteria.trailingActivationPercent ?? 10;
-
-    console.log(
-      `[EXIT_MONITOR] position=${position.id} mint=${position.mint} entryPrice=${position.averageEntryPrice.toFixed(6)} currentPrice=${currentPriceSol.toFixed(6)} pnlPct=${grossPnlPct.toFixed(2)}% tpThreshold=+${tpThreshold.toFixed(2)}% slThreshold=${slThreshold.toFixed(2)}%`
-    );
-
-    // 1. Check Max Hold Time (EMERGENCY_EXIT)
-    if (position.maxHoldTimeMs && position.maxHoldTimeMs > 0) {
-      const heldMs = now - position.openedAt;
-      if (heldMs >= position.maxHoldTimeMs) {
-        return {
-          shouldExit: true,
-          reason: 'EMERGENCY_EXIT',
-          executablePnlPct: grossPnlPct,
-          expectedOutSol: opts.executableQuoteSol,
-          message: `[EXIT_MONITOR] Max hold time exceeded (${(heldMs / 1000).toFixed(0)}s >= ${(position.maxHoldTimeMs / 1000).toFixed(0)}s)`,
-        };
-      }
-    }
-
-    // 2. Check Stop Loss threshold (STOP_LOSS)
-    if (grossPnlPct <= slThreshold) {
-      console.log(`[SL_TRIGGERED] Stop loss triggered for ${position.mint}: ${grossPnlPct.toFixed(2)}% <= ${slThreshold.toFixed(2)}%`);
+    // 1. Take Profit
+    if (position.tpPct > 0 && currentPnlPct >= position.tpPct) {
       return {
         shouldExit: true,
-        reason: 'STOP_LOSS',
-        executablePnlPct: grossPnlPct,
-        expectedOutSol: opts.executableQuoteSol,
-        message: `[SL_TRIGGERED] Stop loss triggered: ${grossPnlPct.toFixed(2)}% <= ${slThreshold.toFixed(2)}%`,
+        reason: 'TP',
+        currentPnlPct,
+        message: `Take Profit triggered: ${currentPnlPct.toFixed(2)}% >= ${position.tpPct}%`,
       };
     }
 
-    // 3. Check Take Profit threshold (TAKE_PROFIT)
-    if (grossPnlPct >= tpThreshold) {
-      console.log(`[TP_TRIGGERED] Take profit triggered for ${position.mint}: +${grossPnlPct.toFixed(2)}% >= +${tpThreshold.toFixed(2)}% (100% full exit)`);
+    // 2. Stop Loss
+    if (position.slPct > 0 && currentPnlPct <= -position.slPct) {
       return {
         shouldExit: true,
-        reason: 'TAKE_PROFIT',
-        executablePnlPct: grossPnlPct,
-        expectedOutSol: opts.executableQuoteSol,
-        message: `[TP_TRIGGERED] Take profit triggered: +${grossPnlPct.toFixed(2)}% >= +${tpThreshold.toFixed(2)}% (100% full exit)`,
+        reason: 'SL',
+        currentPnlPct,
+        message: `Stop Loss triggered: ${currentPnlPct.toFixed(2)}% <= -${position.slPct}%`,
       };
     }
 
-    // 4. Check Trailing Stop (TRAILING_STOP)
-    if (trailingEnabled && position.highestPnlPct >= trailingActivationPercent) {
-      const dropFromPeak = position.highestPnlPct - grossPnlPct;
-      if (dropFromPeak >= trailingStopPercent) {
+    // 3. Trailing Stop
+    if (position.trailingSlPct && position.trailingSlPct > 0 && position.peakPrice > 0) {
+      const drawdownFromPeak = ((position.peakPrice - marketPriceSol) / position.peakPrice) * 100;
+      if (drawdownFromPeak >= position.trailingSlPct) {
         return {
           shouldExit: true,
           reason: 'TRAILING_STOP',
-          executablePnlPct: grossPnlPct,
-          expectedOutSol: opts.executableQuoteSol,
-          message: `[TRAILING_STOP] Trailing stop triggered: peak +${position.highestPnlPct.toFixed(2)}%, dropped by ${dropFromPeak.toFixed(2)}% >= ${trailingStopPercent}%`,
+          currentPnlPct,
+          message: `Trailing Stop triggered: ${drawdownFromPeak.toFixed(2)}% drawdown from peak >= ${position.trailingSlPct}%`,
         };
       }
     }
 
-    return { shouldExit: false };
-  }
-
-  /**
-   * Main driver to evaluate and execute exits atomically.
-   */
-  public async evaluateAndExecuteExit(
-    position: Position,
-    priceSol: number,
-    opts: {
-      executableQuoteSol?: number;
-      quoteTimestamp?: number;
-      maxDataAgeMs?: number;
-    } = {}
-  ): Promise<boolean> {
-    const lockKey = positionManager.getPositionKey(position.network, position.wallet, position.mint);
-    if (this.exitLocks.has(lockKey) || position.status !== 'OPEN') {
-      return false; // Exit process already ongoing or position not open
-    }
-
-    if (priceSol > 0) {
-      positionManager.updatePositionPrice(position.network, position.wallet, position.mint, priceSol, {
-        isMarketEvent: true,
-        timestamp: Date.now(),
-      });
-      position.currentPriceSol = priceSol;
-    }
-
-    let decision = await this.evaluatePositionExit(position, priceSol, opts);
-    if (!decision.shouldExit || !decision.reason) return false;
-
-    // Verify raw amount safety
-    const rawBig = position.tokenAmountRaw ? BigInt(position.tokenAmountRaw) : BigInt(position.tokenAmount);
-    if (rawBig <= 0n) {
-      console.error(`[TP/SL] REJECTED mint=${position.mint} reason=INVALID_RAW_AMOUNT amount=${position.tokenAmountRaw || position.tokenAmount}`);
-      return false;
-    }
-
-    // Acquire atomic lock immediately across evaluation, quoting, revalidation, and execution!
-    // This ensures simultaneous WSS events drop immediately and cannot generate duplicate quotes or parallel sells.
-    if (!this.acquireExitLock(position.network, position.wallet, position.mint)) {
-      return false;
-    }
-
-    // Automatic exits MUST be backed by a fresh executable quote.
-    // A WSS/display price is only a trigger candidate and can never authorize a sell.
-    let executableQuoteSol = opts.executableQuoteSol;
-    let quoteTimestamp = opts.quoteTimestamp;
-    const now = Date.now();
-    const maxAge = opts.maxDataAgeMs ?? 2000;
-    const isFreshQuote = executableQuoteSol !== undefined && quoteTimestamp !== undefined && (now - quoteTimestamp <= maxAge);
-    let preValidatedQuote: any = undefined;
-
-    if (decision.reason !== 'MANUAL_EXIT' && !isFreshQuote) {
-      console.log(`[TP/SL] REQUEST_EXECUTABLE_QUOTE mint=${position.mint} rawAmount=${position.tokenAmountRaw || position.tokenAmount}`);
-      try {
-        const WSOL = 'So11111111111111111111111111111111111111112';
-        const slippageBps = decision.reason === 'TAKE_PROFIT' ? (position.slippageBpsTp || 250) : (position.slippageBpsSl || 1000);
-        const quote = await executionGateway.quoteSell({
-          inputMint: position.mint,
-          outputMint: WSOL,
-          amount: position.tokenAmountRaw || String(position.tokenAmount),
-          decimals: position.decimals !== undefined ? position.decimals : 9,
-          slippageBps,
-          network: position.network,
-          walletAddress: position.wallet,
-        });
-
-        if (!quote || !quote.outAmount) {
-          console.warn(`[TP/SL] QUOTE_REJECTED mint=${position.mint} reason=EMPTY_QUOTE`);
-          this.releaseExitLock(position.network, position.wallet, position.mint);
-          return false;
-        }
-
-        const outLamports = BigInt(quote.outAmount);
-        if (outLamports <= 0n) {
-          console.warn(`[TP/SL] QUOTE_REJECTED mint=${position.mint} reason=NON_POSITIVE_OUT_AMOUNT`);
-          this.releaseExitLock(position.network, position.wallet, position.mint);
-          return false;
-        }
-
-        executableQuoteSol = lamportsToSolNumber(outLamports);
-        quoteTimestamp = Date.now();
-        preValidatedQuote = quote;
-
-        // Re-evaluate with the fresh executable quote
-        const recheckDecision = await this.evaluatePositionExit(position, priceSol, {
-          executableQuoteSol,
-          quoteTimestamp,
-          maxDataAgeMs: maxAge,
-        });
-
-        if (!recheckDecision.shouldExit) {
-          console.warn(`[TP/SL] QUOTE_REJECTED mint=${position.mint} reason=THRESHOLD_NOT_MET_AFTER_QUOTE candidate=${decision.reason} executableProceeds=${executableQuoteSol} SOL`);
-          this.releaseExitLock(position.network, position.wallet, position.mint);
-          return false;
-        }
-
-        decision = recheckDecision;
-      } catch (err: any) {
-        console.warn(`[TP/SL] QUOTE_REJECTED mint=${position.mint} reason=${err?.message || err}`);
-        this.releaseExitLock(position.network, position.wallet, position.mint);
-        return false;
+    // 4. Max Hold Time
+    if (position.maxHoldTimeMs && position.maxHoldTimeMs > 0 && position.openedAt) {
+      const holdDuration = Date.now() - position.openedAt;
+      if (holdDuration >= position.maxHoldTimeMs) {
+        return {
+          shouldExit: true,
+          reason: 'MAX_HOLD',
+          currentPnlPct,
+          message: `Max Hold Time exceeded: ${holdDuration}ms >= ${position.maxHoldTimeMs}ms`,
+        };
       }
     }
 
-    // Confirm position is STILL OPEN
-    const currentPos = positionManager.getPositionById(position.id);
-    if (!currentPos || currentPos.status !== 'OPEN') {
-      console.warn(`[TP/SL] REJECTED mint=${position.mint} reason=POSITION_NOT_OPEN status=${currentPos?.status}`);
-      this.releaseExitLock(position.network, position.wallet, position.mint);
-      return false;
-    }
-
-    const res = await this.authorizeAndExecuteWithRetry(position, decision.reason, decision.message || '', 3, preValidatedQuote);
-    return res.success;
+    return { shouldExit: false, reason: 'NONE', currentPnlPct, message: 'No exit condition met' };
   }
 
-  /**
-   * Mandatory Exit Pre-Check enforcing:
-   * «NO SELL MAY REACH EXECUTION WITHOUT A FRESH EXECUTABLE Exit Pre-Check.»
-   */
+  // ==========================================
+  // EXIT PRE-CHECK (Fail-Closed)
+  // ==========================================
+
   public async performExitPreCheck(
     position: Position,
-    opts: {
-      executableQuoteSol?: number;
-      quoteTimestamp?: number;
-      maxDataAgeMs?: number;
-      preValidatedQuote?: any;
-    } = {}
+    opts: { preValidatedQuote?: any } = {}
   ): Promise<ExitPreCheckResult> {
-    const now = Date.now();
-    const mint = position.mint.trim();
-
-    // 1. Position Status Check
-    if (position.status !== 'OPEN' && position.status !== 'EXIT_PENDING') {
-      return {
-        valid: false,
-        mint,
-        marketPriceSol: position.currentPriceSol || 0,
-        executablePriceSol: 0,
-        priceDivergencePct: 0,
-        routeAvailable: false,
-        rawBalance: position.tokenAmountRaw || String(position.tokenAmount),
-        reason: `POSITION_STATUS_INVALID: Position status is ${position.status}, must be OPEN`,
-        timestamp: now,
-      };
-    }
-
-    // 2. Token Raw Balance Validation
-    const rawBig = position.tokenAmountRaw ? BigInt(position.tokenAmountRaw) : BigInt(position.tokenAmount);
-    if (rawBig <= 0n) {
-      return {
-        valid: false,
-        mint,
-        marketPriceSol: position.currentPriceSol || 0,
-        executablePriceSol: 0,
-        priceDivergencePct: 0,
-        routeAvailable: false,
-        rawBalance: position.tokenAmountRaw || String(position.tokenAmount),
-        reason: `INVALID_RAW_AMOUNT: Balance ${position.tokenAmountRaw || position.tokenAmount} must be positive integer`,
-        timestamp: now,
-      };
-    }
-
-    // 3. Fresh Executable Quote & Route Check
-    let quote = opts.preValidatedQuote;
-    let executableSol = opts.executableQuoteSol;
-
-    if (!quote || executableSol === undefined) {
-      try {
-        const WSOL = 'So11111111111111111111111111111111111111112';
-        quote = await executionGateway.quoteSell({
-          inputMint: mint,
-          outputMint: WSOL,
-          amount: position.tokenAmountRaw || String(position.tokenAmount),
-          decimals: position.decimals !== undefined ? position.decimals : 9,
-          slippageBps: position.slippageBpsSl || 500,
-          network: position.network,
-          walletAddress: position.wallet,
-        });
-
-        if (!quote || !quote.outAmount || BigInt(quote.outAmount) <= 0n) {
-          return {
-            valid: false,
-            mint,
-            marketPriceSol: position.currentPriceSol || 0,
-            executablePriceSol: 0,
-            priceDivergencePct: 0,
-            routeAvailable: false,
-            rawBalance: position.tokenAmountRaw || String(position.tokenAmount),
-            reason: 'NO_EXECUTABLE_ROUTE: Jupiter returned empty quote or zero output lamports',
-            timestamp: now,
-          };
-        }
-        executableSol = Number(BigInt(quote.outAmount)) / 1e9;
-      } catch (err: any) {
-        return {
-          valid: false,
-          mint,
-          marketPriceSol: position.currentPriceSol || 0,
-          executablePriceSol: 0,
-          priceDivergencePct: 0,
-          routeAvailable: false,
-          rawBalance: position.tokenAmountRaw || String(position.tokenAmount),
-          reason: `QUOTE_REQUEST_FAILED: ${err?.message || err}`,
-          timestamp: now,
-        };
-      }
-    }
-
-    // 4. Calculate Executable Price per whole token
-    const tokenWhole = rawToUiNumber(position.tokenAmountRaw || String(position.tokenAmount), position.decimals);
-    const executablePriceSol = tokenWhole > 0 ? executableSol / tokenWhole : 0;
-    const marketPriceSol = position.currentPriceSol || executablePriceSol;
-
-    // 5. Price Divergence Check
-    let divergencePct = 0;
-    if (marketPriceSol > 0 && executablePriceSol > 0) {
-      divergencePct = Math.abs((marketPriceSol - executablePriceSol) / marketPriceSol) * 100;
-    }
-
-    console.log(
-      `[EXIT_PRE_CHECK_PASSED] mint=${mint} rawAmount=${position.tokenAmountRaw || position.tokenAmount} executableSol=${executableSol.toFixed(4)} marketPrice=${marketPriceSol.toFixed(8)} execPrice=${executablePriceSol.toFixed(8)} divergence=${divergencePct.toFixed(1)}%`
-    );
-
-    return {
-      valid: true,
-      mint,
-      marketPriceSol,
-      executablePriceSol,
-      priceDivergencePct: divergencePct,
-      routeAvailable: true,
-      rawBalance: position.tokenAmountRaw || String(position.tokenAmount),
+    const makeResult = (valid: boolean, reason: string, pos?: Position, quote?: any): ExitPreCheckResult => ({
+      valid,
+      mint: pos?.mint || position.mint,
+      marketPriceSol: pos?.currentPrice || position.currentPrice || 0,
+      executablePriceSol: quote?.executablePriceSol || pos?.currentPrice || position.currentPrice || 0,
+      priceDivergencePct: 0,
+      routeAvailable: valid,
+      rawBalance: pos?.tokenAmountRaw || position.tokenAmountRaw || '0',
       quote,
-      timestamp: now,
-    };
+      reason,
+      timestamp: Date.now(),
+    });
+
+    try {
+      // 1. Verify position is still open
+      const currentPos = positionManager.getPositionById(position.id);
+      if (!currentPos || currentPos.status === 'CLOSED') {
+        return makeResult(false, 'POSITION_ALREADY_CLOSED');
+      }
+      if (currentPos.status === 'EXIT_REQUESTED' || currentPos.status === 'EXIT_SUBMITTED' || currentPos.status === 'EXIT_CONFIRMING' || currentPos.status === 'RECOVERY_REQUIRED') {
+        return makeResult(false, `POSITION_IN_TERMINAL_STATE: ${currentPos.status}`, currentPos);
+      }
+
+      // 2. Verify token amount is positive
+      const rawAmount = BigInt(currentPos.tokenAmountRaw || '0');
+      if (rawAmount <= 0n) {
+        return makeResult(false, 'ZERO_TOKEN_BALANCE', currentPos);
+      }
+
+      // 3. Verify network executor exists
+      const executor = executionGateway.getExecutor(currentPos.network);
+      if (!executor) {
+        return makeResult(false, `NO_EXECUTOR_FOR_NETWORK: ${currentPos.network}`, currentPos);
+      }
+
+      // 4. Verify quote freshness (if pre-validated quote provided)
+      if (opts.preValidatedQuote) {
+        const quoteAge = Date.now() - (opts.preValidatedQuote.timestamp || 0);
+        if (quoteAge > 10000) {
+          return makeResult(false, `STALE_QUOTE: ${quoteAge}ms old`, currentPos);
+        }
+      }
+
+      return makeResult(true, 'PRE_CHECK_PASSED', currentPos, opts.preValidatedQuote);
+    } catch (err: any) {
+      return makeResult(false, `PRE_CHECK_ERROR: ${err?.message || String(err)}`);
+    }
   }
 
-  /**
-   * Authorizes and executes exit with fast retry loop on transient execution failures.
-   */
+  // ==========================================
+  // AUTOMATED EXIT (TP/SL/Trailing/MaxHold)
+  // ==========================================
+
+  public async evaluateAndExecuteExit(
+    position: Position,
+    marketPriceSol: number,
+    opts: { maxDataAgeMs?: number } = {}
+  ): Promise<{ success: boolean; signature?: string; error?: string; reason?: string }> {
+    if (!this.isRunning) {
+      return { success: false, error: 'EXIT_ENGINE_NOT_RUNNING' };
+    }
+
+    // Evaluate exit conditions
+    const exitDecision = this.evaluatePositionExit(position, marketPriceSol);
+    if (!exitDecision.shouldExit) {
+      return { success: false, error: 'NO_EXIT_CONDITION_MET', reason: exitDecision.reason };
+    }
+
+    // Acquire exit lock to prevent concurrent exits
+    if (!this.acquireExitLock(position.network, position.wallet, position.mint)) {
+      return { success: false, error: 'EXIT_LOCK_ALREADY_HELD' };
+    }
+
+    try {
+      return await this.executeExitWithRetry(position, exitDecision.reason, exitDecision.message);
+    } finally {
+      this.releaseExitLock(position.network, position.wallet, position.mint);
+    }
+  }
+
+  // ==========================================
+  // MANUAL EXIT
+  // ==========================================
+
+  public async executeManualExitDetail(
+    positionId: string
+  ): Promise<{ success: boolean; signature?: string; error?: string; result?: any }> {
+    const position = positionManager.getPositionById(positionId);
+    if (!position) {
+      return { success: false, error: `POSITION_NOT_FOUND: ${positionId}` };
+    }
+    if (position.status === 'CLOSED') {
+      return { success: false, error: 'POSITION_ALREADY_CLOSED' };
+    }
+    if (position.status === 'EXIT_REQUESTED' || position.status === 'EXIT_SUBMITTED' || position.status === 'EXIT_CONFIRMING') {
+      return { success: false, error: 'EXIT_ALREADY_PENDING' };
+    }
+
+    if (!this.acquireExitLock(position.network, position.wallet, position.mint)) {
+      return { success: false, error: 'EXIT_LOCK_ALREADY_HELD' };
+    }
+
+    try {
+      return await this.executeExitWithRetry(position, 'MANUAL', 'Manual exit triggered');
+    } finally {
+      this.releaseExitLock(position.network, position.wallet, position.mint);
+    }
+  }
+
+  // ==========================================
+  // CORE EXIT EXECUTION WITH RETRY
+  // ==========================================
+
   public async authorizeAndExecuteWithRetry(
     position: Position,
     reason: string,
@@ -457,229 +274,124 @@ export class UnifiedExitEngine {
     maxRetries: number = 3,
     preValidatedQuote?: any
   ): Promise<{ success: boolean; signature?: string; error?: string; result?: any }> {
+    return this.executeExitWithRetry(position, reason as any, message, maxRetries, preValidatedQuote);
+  }
+
+  private async executeExitWithRetry(
+    position: Position,
+    reason: ExitDecision['reason'] | string,
+    message: string,
+    maxRetries: number = 3,
+    preValidatedQuote?: any
+  ): Promise<{ success: boolean; signature?: string; error?: string; result?: any }> {
     const startTime = Date.now();
-    console.log(`[UnifiedExitEngine] [EXIT_AUTHORIZED] position=${position.id} mint=${position.mint} reason=${reason}: ${message}`);
+    console.log(`[UnifiedExitEngine][EXIT_AUTHORIZED] position=${position.id} mint=${position.mint} reason=${reason}: ${message}`);
 
     // Mandatory Invariant: Exit Pre-Check must pass before execution
     const preCheck = await this.performExitPreCheck(position, { preValidatedQuote });
     if (!preCheck.valid) {
-      console.warn(`[EXIT_PRE_CHECK_FAILED] position=${position.id} mint=${position.mint} reason=${preCheck.reason}`);
-      this.recordAuditTrail(position.id, position.mint, 'SELL_FAILED', reason, `Exit Pre-Check Failed: ${preCheck.reason}`);
-      this.releaseExitLock(position.network, position.wallet, position.mint);
-      return {
-        success: false,
-        error: `EXIT_PRE_CHECK_FAILED: ${preCheck.reason}`,
-      };
+      this.recordAudit(position.id, position.mint, 'WARN', `EXIT_PRECHECK_FAILED: ${preCheck.reason}`);
+      return { success: false, error: `EXIT_PRECHECK_FAILED: ${preCheck.reason}` };
     }
 
-    // Update position status to EXIT_PENDING to lock out duplicate triggers
-    positionManager.updatePositionStatus(position.network, position.wallet, position.mint, 'EXIT_PENDING');
-    positionRepository.updatePosition(position.id, { state: 'EXIT_REQUESTED' });
+    // Mark position as EXIT_REQUESTED
+    positionManager.updatePositionStatus(position.network, position.wallet, position.mint, 'EXIT_REQUESTED');
+    this.recordAudit(position.id, position.mint, 'INFO', `EXIT_REQUESTED: ${reason}`);
 
-    this.recordAuditTrail(position.id, position.mint, 'EXIT_TRIGGERED', reason, message);
-    this.recordAuditTrail(position.id, position.mint, 'EXIT_AUTHORIZED', reason, `Authorized for 100% exit execution.`);
-
-    let attempt = 0;
-    const slippageBps = reason === 'TAKE_PROFIT' ? position.slippageBpsTp : position.slippageBpsSl;
-    let lastResult: any = undefined;
-
-    while (attempt < maxRetries) {
-      attempt++;
-      console.log(`[TP/SL] SELL_SUBMITTED mint=${position.mint} attempt=${attempt}`);
-      this.recordAuditTrail(
-        position.id,
-        position.mint,
-        'SELL_SUBMITTED',
-        reason,
-        `[SELL_SUBMITTED] Attempt ${attempt}/${maxRetries} submitting sell order for ${position.tokenAmount} raw tokens.`
-      );
-
+    let lastError = '';
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        const result = await fastExitExecutor.executeSell({
+        console.log(`[UnifiedExitEngine] Exit attempt ${attempt}/${maxRetries} for ${position.mint}`);
+
+        const executor = executionGateway.getExecutor(position.network);
+        if (!executor) {
+          throw new Error(`NO_EXECUTOR_FOR_NETWORK: ${position.network}`);
+        }
+
+        // Execute sell via FastExitExecutor
+        const sellResult = await fastExitExecutor.executeSell({
           positionId: position.id,
           network: position.network,
           wallet: position.wallet,
           mint: position.mint,
-          amountRaw: position.tokenAmountRaw || String(position.tokenAmount),
-          slippageBps,
-          reason,
-          clientRequestId: `exit_${position.mint.slice(0, 8)}_${Date.now()}_att${attempt}`,
-          preValidatedQuote: attempt === 1 ? (preCheck.quote || preValidatedQuote) : undefined,
+          amountRaw: position.tokenAmountRaw,
+          slippageBps: position.slippageBpsSl || 500,
+          reason: String(reason),
+          clientRequestId: `exit_${position.id}_${attempt}_${Date.now()}`,
+          preValidatedQuote,
         });
-        lastResult = result;
 
-        if (result.success) {
-          const elapsedMs = Date.now() - startTime;
-          console.log(`[TP/SL] SELL_CONFIRMED mint=${position.mint} signature=${result.signature}`);
-          this.recordAuditTrail(
-            position.id,
+        if (sellResult.success) {
+          // Update position with exit details
+          const netProceedsSol = sellResult.netProceedsSol || 0;
+          positionManager.updatePositionStatus(
+            position.network,
+            position.wallet,
             position.mint,
-            'SELL_CONFIRMED',
-            reason,
-            `[SELL_CONFIRMED] On-chain sell confirmed in ${elapsedMs}ms. Signature: ${result.signature}`,
-            { signature: result.signature, elapsedMs }
+            'CLOSED',
+            {
+              exitSignature: sellResult.signature,
+              netProceedsSol,
+            }
           );
 
-          // Authoritatively close position ONLY upon verified on-chain confirmation
-          positionManager.updatePositionStatus(position.network, position.wallet, position.mint, 'CLOSED', {
-            exitSignature: result.signature,
-            netProceedsSol: result.netProceedsSol,
-          });
-
-          this.recordAuditTrail(
-            position.id,
-            position.mint,
-            'POSITION_CLOSED',
-            reason,
-            `[POSITION_CLOSED] Position closed authoritatively. Realized PnL: ${result.netProceedsSol !== undefined ? (result.netProceedsSol - position.totalSolSpent).toFixed(4) : 0} SOL.`,
-            { netProceedsSol: result.netProceedsSol }
-          );
-
-          // Post-close RAM and subscriber cleanup
+          // FIX: Purge valuation record to prevent stale state (Fix #2 from audit)
           positionValuationEngine.removeValuation(position.network, position.wallet, position.mint);
-          rebuyGuard.releaseAllForMint(position.network, position.wallet, position.mint);
-          hardenedApprovalStore.cleanupForMint('solana', position.mint);
-          candidateRegistry.updateCandidateState(position.network, position.mint, 'EXPIRED');
 
-          this.releaseExitLock(position.network, position.wallet, position.mint);
-          return { success: true, signature: result.signature, result };
-        }
+          this.recordAudit(position.id, position.mint, 'INFO',
+            `EXIT_CONFIRMED: reason=${reason} signature=${sellResult.signature} proceeds=${netProceedsSol} SOL duration=${Date.now() - startTime}ms`);
 
-        // Check if the transaction was broadcasted or entered ambiguous/recovery state
-        if (result.signature || result.status === 'RECOVERY_REQUIRED' || result.isAmbiguous) {
-          console.warn(`[UnifiedExitEngine] Sell broadcast or timed out (sig=${result.signature}). Retaining EXIT_PENDING status.`);
-          positionManager.updatePositionStatus(position.network, position.wallet, position.mint, 'EXIT_PENDING', {
-            exitSignature: result.signature,
-          });
-          positionRepository.updatePosition(position.id, {
-            state: 'EXIT_REQUESTED',
-            exitSignature: result.signature,
-          });
-          this.recordAuditTrail(
-            position.id,
-            position.mint,
-            'SELL_FAILED',
-            reason,
-            `[SELL_BROADCAST_TIMEOUT] Transaction broadcasted (${result.signature}) but confirmation timed out. Status: EXIT_PENDING.`
-          );
-          // Do not release lock to prevent double sell
-          return {
-            success: false,
-            signature: result.signature,
-            error: result.error || 'CONFIRMATION_TIMEOUT: Sell broadcast but confirmation timed out',
-            result,
-          };
-        }
-
-        // Execution failed before broadcast
-        const isTransient = result.error?.includes('QUOTE_UNAVAILABLE') || result.error?.includes('TIMEOUT') || result.error?.includes('SLIPPAGE');
-        this.recordAuditTrail(
-          position.id,
-          position.mint,
-          'SELL_RETRY',
-          reason,
-          `[TP_SL_RETRY: ${isTransient ? 'EXECUTABLE_QUOTE_UNAVAILABLE' : 'SELL_FAILED'}] Attempt ${attempt} failed: ${result.error}. Retrying...`
-        );
-
-        if (attempt < maxRetries) {
-          await new Promise(r => setTimeout(r, 200 * attempt)); // Short backoff
+          console.log(`[UnifiedExitEngine] EXIT CONFIRMED for ${position.mint}: signature=${sellResult.signature}`);
+          return { success: true, signature: sellResult.signature, result: sellResult };
+        } else {
+          lastError = sellResult.error || 'SELL_EXECUTION_FAILED';
+          this.recordAudit(position.id, position.mint, 'WARN',
+            `EXIT_ATTEMPT_${attempt}_FAILED: ${lastError}`);
         }
       } catch (err: any) {
-        this.recordAuditTrail(
-          position.id,
-          position.mint,
-          'SELL_RETRY',
-          reason,
-          `[TP_SL_RETRY: UNEXPECTED_ERROR] Unexpected error on attempt ${attempt}: ${err.message || err}. Retrying...`
-        );
-        if (attempt < maxRetries) {
-          await new Promise(r => setTimeout(r, 200 * attempt));
-        }
+        lastError = err?.message || String(err);
+        this.recordAudit(position.id, position.mint, 'ERROR',
+          `EXIT_ATTEMPT_${attempt}_ERROR: ${lastError}`);
+        console.error(`[UnifiedExitEngine] Exit attempt ${attempt} error for ${position.mint}:`, lastError);
+      }
+
+      // Wait before retry (exponential backoff)
+      if (attempt < maxRetries) {
+        const backoffMs = Math.min(1000 * Math.pow(2, attempt - 1), 5000);
+        await new Promise(resolve => setTimeout(resolve, backoffMs));
       }
     }
 
-    // All retries failed. NEVER blindly reopen: the transaction may have landed.
-    // Leave the position in recovery so reconciliation can inspect the chain/order state.
-    console.error(`[TP/SL] RECOVERY_REQUIRED mint=${position.mint} reason=${lastResult?.error || 'RETRIES_EXHAUSTED'}`);
-    this.recordAuditTrail(
-      position.id,
-      position.mint,
-      'SELL_FAILED',
-      reason,
-      `[SELL_FAILED] All ${maxRetries} sell attempts failed. Position moved to RECOVERY_REQUIRED; blockchain reconciliation is required before another sell.`
-    );
-
+    // All retries exhausted — mark as RECOVERY_REQUIRED
     positionManager.updatePositionStatus(position.network, position.wallet, position.mint, 'RECOVERY_REQUIRED');
-    positionRepository.updatePosition(position.id, { state: 'RECOVERY_REQUIRED' });
+    this.recordAudit(position.id, position.mint, 'ERROR',
+      `EXIT_ALL_RETRIES_EXHAUSTED: ${lastError}. Position marked RECOVERY_REQUIRED.`);
 
-    this.releaseExitLock(position.network, position.wallet, position.mint);
-    return {
-      success: false,
-      signature: lastResult?.signature,
-      error: lastResult?.error || `[SELL_FAILED] All ${maxRetries} sell attempts failed.`,
-      result: lastResult,
-    };
+    return { success: false, error: `EXIT_FAILED_AFTER_${maxRetries}_RETRIES: ${lastError}` };
   }
 
-  /**
-   * Public interface to execute a manual exit request.
-   */
-  public async executeManualExit(positionId: string): Promise<boolean> {
-    const res = await this.executeManualExitDetail(positionId);
-    return res.success;
-  }
+  // ==========================================
+  // AUDIT TRAIL
+  // ==========================================
 
-  public async executeManualExitDetail(positionId: string): Promise<{ success: boolean; signature?: string; error?: string; result?: any }> {
-    const position = positionManager.getPositionById(positionId);
-    if (!position || position.status !== 'OPEN') {
-      return {
-        success: false,
-        error: position ? `Position in non-open status (${position.status})` : 'Position not found',
-      };
-    }
-
-    if (!this.acquireExitLock(position.network, position.wallet, position.mint)) {
-      return {
-        success: false,
-        error: 'EXIT_ALREADY_PENDING: Exit lock already held for this position',
-      };
-    }
-
-    return this.authorizeAndExecuteWithRetry(position, 'MANUAL_EXIT', 'Manual exit requested by user.', 3);
-  }
-
-  /**
-   * Event logging & Audit trail recorder
-   */
-  private recordAuditTrail(
-    positionId: string,
-    mint: string,
-    event: AuditTrailEntry['event'],
-    reason?: string,
-    message?: string,
-    metadata?: Record<string, any>
-  ): void {
-    const entry: AuditTrailEntry = {
+  private recordAudit(positionId: string, mint: string, level: AuditTrailEntry['level'], message: string): void {
+    this.auditTrail.push({
       timestamp: Date.now(),
       positionId,
       mint,
-      event,
-      reason,
+      event: 'EXIT_LIFECYCLE',
+      level,
       message,
-      metadata,
-    };
-    this.auditTrail.unshift(entry);
-    
-    // Cap in-memory audit logs at 1000 entries
-    if (this.auditTrail.length > 1000) {
-      this.auditTrail.pop();
+    });
+    // Cap audit trail at 5000 entries
+    if (this.auditTrail.length > 5000) {
+      this.auditTrail = this.auditTrail.slice(-5000);
     }
-
-    console.log(`[UnifiedExitEngine] [AUDIT] [${event}] [pos=${positionId}] ${message || ''}`);
+    console.log(`[UnifiedExitEngine][${level}] ${message}`);
   }
 
   private recordGlobalLog(level: string, message: string): void {
-    console.log(`[UnifiedExitEngine] [${level}] ${message}`);
+    console.log(`[UnifiedExitEngine][${level}] ${message}`);
   }
 
   public getAuditTrail(positionId?: string): AuditTrailEntry[] {

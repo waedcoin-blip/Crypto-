@@ -102,7 +102,7 @@ export class RebuyGuard {
 
     // 2. Check position status
     const existingPosition = positionManager.getPosition(network, wallet, mint);
-    if (existingPosition && existingPosition.status === 'BUY_PENDING') {
+    if (existingPosition && existingPosition.status === 'PENDING_BUY') {
       return { allowed: false, reason: 'POSITION_BUY_PENDING: Position is currently buying' };
     }
 

@@ -1,66 +1,12 @@
-/**
- * Global error handling middleware
- */
-import type { Request, Response, NextFunction } from 'express';
-import { AppError, isBenignError } from '../utils/errors.js';
-import { logger } from '../utils/logger.js';
+// server/middleware/errorHandler.ts
 import { config } from '../config/index.js';
 
-export function globalErrorHandler(
-  err: Error,
-  req: Request,
-  res: Response,
-  _next: NextFunction
-): void {
-  // Handle AppError instances
-  if (err instanceof AppError) {
-    if (!isBenignError(err)) {
-      logger.warn({
-        code: err.code,
-        message: err.message,
-        path: req.path,
-        method: req.method,
-      }, `Operational error: ${err.message}`);
-    }
-    res.status(err.statusCode).json({
-      error: err.message,
-      code: err.code,
-    });
-    return;
-  }
+export function asyncHandler(fn: Function) {
+  return (req: any, res: any, next: any) => Promise.resolve(fn(req, res, next)).catch(next);
+}
 
-  // Handle benign / network / CORS errors without spamming error logs
-  if (isBenignError(err)) {
-    logger.debug({
-      message: err.message,
-      path: req.path,
-      method: req.method,
-    }, 'Benign error suppressed');
-    
-    const statusCode = (err as any).statusCode || ((err as any).status >= 400 && (err as any).status < 600 ? (err as any).status : 400);
-    res.status(statusCode).json({
-      error: err.message,
-      code: (err as any).code || 'OPERATION_FAILED',
-    });
-    return;
-  }
-
-  // Log true unhandled errors
-  logger.error({
-    err: {
-      message: err.message,
-      stack: err.stack,
-      name: err.name,
-    },
-    req: {
-      method: req.method,
-      path: req.path,
-      query: req.query,
-      ip: req.ip,
-      body: req.body,
-    },
-  }, 'Unhandled error');
-
+export function globalErrorHandler(err: any, req: any, res: any, next: any) {
+  // FIX: Log the FULL error details for debugging
   console.error(`[GLOBAL_ERROR_HANDLER] ${req.method} ${req.path}:`, {
     message: err?.message,
     stack: err?.stack,
@@ -68,22 +14,13 @@ export function globalErrorHandler(
     query: req?.query,
   });
 
-  // Handle generic errors
-  const statusCode = (err as any).statusCode || (err as any).status || 500;
-  const message = config.IS_PRODUCTION && statusCode >= 500
-    ? 'Internal server error'
-    : err?.message || 'Internal server error';
+  const statusCode = err?.statusCode || err?.status || 500;
+  const message = config.NODE_ENV === 'production' ? 'Internal server error' : (err?.message || 'Internal server error');
 
   res.status(statusCode).json({
     error: message,
-    code: (err as any).code || 'INTERNAL_ERROR',
-    ...(!config.IS_PRODUCTION && { details: err?.message, stack: err?.stack }),
+    code: err?.code || 'INTERNAL_ERROR',
+    // FIX: Include actual error message in non-production environments
+    ...(config.NODE_ENV !== 'production' && { details: err?.message }),
   });
-}
-
-// Async handler wrapper to avoid try-catch boilerplate
-export function asyncHandler(fn: (req: Request, res: Response, next: NextFunction) => Promise<any>) {
-  return (req: Request, res: Response, next: NextFunction) => {
-    Promise.resolve(fn(req, res, next)).catch(next);
-  };
 }

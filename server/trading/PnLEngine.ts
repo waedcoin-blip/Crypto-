@@ -94,7 +94,7 @@ export class PnLEngine {
     const positionPnLs: PnLMetrics[] = [];
 
     for (const pos of positions) {
-      const currentPrice = currentPrices.get(pos.mint) || pos.currentPriceSol || 0;
+      const currentPrice = currentPrices.get(pos.mint) || pos.currentPrice || 0;
       const metrics = this.calculatePnL(pos, currentPrice);
       positionPnLs.push(metrics);
 

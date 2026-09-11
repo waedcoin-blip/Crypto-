@@ -1,18 +1,10 @@
+// server/utils/cacheRegistry.ts
 import { SwrCache } from '../cache/SwrCache.js';
 
 export const cacheRegistry = {
-  dexscreener: new SwrCache<any>({
-    name: 'dexscreener',
-    softTtl: 5000,   // 5s
-    hardTtl: 30000,  // 30s
-    maxSize: 1000,
-  }),
-  jupiter: new SwrCache<any>({
-    name: 'jupiter',
-    softTtl: 2000,   // 2s
-    hardTtl: 10000,  // 10s
-    maxSize: 500,
-  }),
+  dexscreener: new SwrCache<any>({ name: 'dexscreener', softTtl: 5000, hardTtl: 30000, maxSize: 1000 }),
+  jupiter: new SwrCache<any>({ name: 'jupiter', softTtl: 2000, hardTtl: 10000, maxSize: 500 }),
+  candidateEnricher: new SwrCache<any>({ name: 'candidate-enricher', softTtl: 3000, hardTtl: 15000, maxSize: 1000 }),
 };
 
 export function getAllCacheStats() {

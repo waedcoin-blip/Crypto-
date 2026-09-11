@@ -1,10 +1,9 @@
 // src/services/ExecutionEngine.ts
 import { ITradeExecutor, SwapResult, ExecutorTelemetry } from './ITradeExecutor';
-import { MainnetJupiterExecutor } from './MainnetJupiterExecutor';
-import { PaperTradeExecutor } from './PaperTradeExecutor';
 import { QuoteGetRequest, QuoteResponse } from '@jup-ag/api';
 import { TradingNetwork } from '../config/network';
 import { useTradingEnvironmentStore } from '../store/tradingEnvironmentStore';
+import { apiClient } from './apiClient';
 
 export interface ExecutionEngineConfig {
   network?: TradingNetwork;
@@ -12,17 +11,12 @@ export interface ExecutionEngineConfig {
 }
 
 /**
- * ExecutionEngine: The authoritative execution layer.
- * 
- * CORE PRINCIPLE: Only ONE component in the application may submit a blockchain transaction.
- * ExecutionEngine locks executor resolution per transaction to guarantee atomic quote-to-execution
- * consistency and prevent mid-flight network desynchronization.
+ * ExecutionEngine: Authoritative execution gateway.
+ * Delegates all swap execution to backend API routes (/api/trading/buy and /api/trading/sell).
  */
 export class ExecutionEngine implements ITradeExecutor {
   private static instance: ExecutionEngine;
   public mode: TradingNetwork;
-  private paperExecutor: PaperTradeExecutor | null = null;
-  private mainnetExecutor: MainnetJupiterExecutor | null = null;
 
   constructor(config: ExecutionEngineConfig = {}) {
     const network: TradingNetwork =
@@ -41,22 +35,10 @@ export class ExecutionEngine implements ITradeExecutor {
   }
 
   public getExecutorForNetwork(network: TradingNetwork): ITradeExecutor {
-    if (network === 'paper') {
-      if (!this.paperExecutor) {
-        this.paperExecutor = new PaperTradeExecutor();
-      }
-      return this.paperExecutor;
-    } else {
-      if (!this.mainnetExecutor) {
-        this.mainnetExecutor = new MainnetJupiterExecutor();
-      }
-      return this.mainnetExecutor;
-    }
+    this.mode = network;
+    return this;
   }
 
-  /**
-   * Resolves the current network and its corresponding executor atomically for a transaction.
-   */
   public resolveSession(): { network: TradingNetwork; executor: ITradeExecutor } {
     const network =
       useTradingEnvironmentStore.getState().network ||
@@ -64,16 +46,11 @@ export class ExecutionEngine implements ITradeExecutor {
       'paper';
 
     this.mode = network;
-    const executor = this.getExecutorForNetwork(network);
-    return { network, executor };
-  }
-
-  private getActiveExecutor(): ITradeExecutor {
-    return this.resolveSession().executor;
+    return { network, executor: this };
   }
 
   public get publicKey(): string {
-    return this.getActiveExecutor().publicKey;
+    return 'backend-authoritative-wallet';
   }
 
   public getNetwork(): TradingNetwork {
@@ -81,8 +58,16 @@ export class ExecutionEngine implements ITradeExecutor {
   }
 
   async getQuote(params: QuoteGetRequest): Promise<QuoteResponse> {
-    const { executor } = this.resolveSession();
-    return executor.getQuote(params);
+    const inputMint = params.inputMint;
+    const outputMint = params.outputMint;
+    const amount = params.amount;
+    const slippageBps = params.slippageBps || 100;
+
+    const res = await apiClient.get(`/api/trading/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amount}&slippageBps=${slippageBps}`);
+    if (res && res.quote) {
+      return res.quote;
+    }
+    throw new Error(res?.error || 'Failed to fetch quote from backend');
   }
 
   async swap(
@@ -90,12 +75,31 @@ export class ExecutionEngine implements ITradeExecutor {
     outputMint: string,
     amount: number,
     slippageBps: number,
-    label: 'entry' | 'exit_tp' | 'exit_sl' = 'entry',
-    preValidatedQuote?: QuoteResponse | null
+    label: 'entry' | 'exit_tp' | 'exit_sl' | string = 'entry'
   ): Promise<SwapResult> {
-    // Atomically lock session for the duration of this swap
-    const { executor } = this.resolveSession();
-    return executor.swap(inputMint, outputMint, amount, slippageBps, label, preValidatedQuote);
+    const network = this.getNetwork();
+    const isSolBuy = inputMint.startsWith('So11111111111111111111111111111111111111112');
+    const endpoint = isSolBuy ? '/api/trading/buy' : '/api/trading/sell';
+    const body = isSolBuy
+      ? { network, mint: outputMint, amountSol: amount / 1e9, slippageBps, label }
+      : { network, mint: inputMint, amountRaw: String(amount), slippageBps, reason: label };
+
+    const data = await apiClient.post(endpoint, body);
+    if (!data || !data.success) {
+      throw new Error(data?.error || 'Trade execution failed');
+    }
+
+    return {
+      signature: data.signature,
+      inputMint,
+      outputMint,
+      inputAmount: amount,
+      outputAmount: Number(data.result?.outAmountRaw || data.outAmountRaw || 0),
+      feeSol: 0,
+      slot: 0,
+      landingTimeMs: 0,
+      method: 'rpc',
+    };
   }
 
   async batchSwap(
@@ -104,38 +108,36 @@ export class ExecutionEngine implements ITradeExecutor {
       outputMint: string;
       amount: number;
       slippageBps: number;
-      label?: 'entry' | 'exit_tp' | 'exit_sl';
+      label?: 'entry' | 'exit_tp' | 'exit_sl' | string;
     }>
   ): Promise<SwapResult[]> {
-    const { executor } = this.resolveSession();
-
-    // Forward label explicitly for each swap
-    const sanitizedSwaps = swaps.map(s => ({
-      ...s,
-      label: s.label || 'entry',
-    }));
-
-    return executor.batchSwap(sanitizedSwaps);
+    const results: SwapResult[] = [];
+    for (const s of swaps) {
+      const res = await this.swap(s.inputMint, s.outputMint, s.amount, s.slippageBps, s.label || 'entry');
+      results.push(res);
+    }
+    return results;
   }
 
   async getSolBalance(): Promise<number> {
-    const { executor } = this.resolveSession();
-    return executor.getSolBalance();
+    return 0;
   }
 
   async getTokenBalance(mint: string): Promise<number> {
-    const { executor } = this.resolveSession();
-    return executor.getTokenBalance(mint);
+    return 0;
   }
 
   async hasTokenAccount(mint: string): Promise<boolean> {
-    const { executor } = this.resolveSession();
-    return executor.hasTokenAccount(mint);
+    return false;
   }
 
   getTelemetry(): ExecutorTelemetry {
-    const { executor } = this.resolveSession();
-    return executor.getTelemetry();
+    return {
+      totalSwaps: 0,
+      totalFeesPaidSol: 0,
+      avgLandingTimeMs: 0,
+      failureRate: 0,
+    };
   }
 }
 

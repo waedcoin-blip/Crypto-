@@ -2,6 +2,7 @@ import { useActiveWalletStore } from "../../store/activeWalletStore";
 import { getKeypairFromPrivateKey } from '../../utils/keypairUtils';
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { apiClient } from '../../services/apiClient';
+import { tradingEngine } from '../../services/tradingEngine';
 import { auth } from '../../lib/firebase';
 import { useNavigate } from 'react-router-dom';
 import { Play, Square, Search, ShieldCheck, ShieldAlert, AlertTriangle, Shield, TrendingUp, ChevronDown, ChevronUp, BookOpen, X, Zap, Activity, ChevronRight, Download, Trash2, Settings, Pause, Database, Copy, Check, Terminal, ArrowUpDown, SlidersHorizontal, Eye, EyeOff, Clock, Info, Bug, Filter, Server, Globe, RefreshCw, Wifi, CloudUpload } from 'lucide-react';
@@ -19,14 +20,12 @@ import { detectTokenStage } from '../../lib/utils';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { checkTokenInProfitLast2Seconds, clearPriceHistories } from '../../services/priceTracker';
 import { encryptPrivateKey, decryptPrivateKey } from '../../lib/crypto';
-import { getSolPriceUsd, setSolPriceUsd, calcNetPnl, getDynamicOperationalFeeSol } from '../../utils/pnlCalculator';
+import { getSolPriceUsd, setSolPriceUsd, calcNetPnl, getDynamicOperationalFeeSol } from '../../utils/pnlUtils';
 import { TradingSettings } from '../TradingSettings';
 import { WalletStatusWidget } from '../WalletStatusWidget';
 import { MasterMonitorPanel } from '../MasterMonitorPanel';
 import { marketDataManager, TokenPrice } from '../../services/marketDataManager';
 import { rpcHealthManager } from '../../services/rpcHealthManager';
-import { PositionExitManager, positionExitManager } from '../../services/PositionExitManager';
-import { MasterMonitorService } from '../../services/MasterMonitorService';
 import { RealTradeExecutor } from '../../services/RealTradeExecutor';
 import { useTradeMode } from '../../context/TradeModeContext';
 import { ITradeExecutor } from '../../services/ITradeExecutor';
@@ -36,7 +35,7 @@ import { SyncStatusBadge } from '../SyncStatusBadge';
 import { useBalanceStore } from '../../store/balanceStore';
 import { useTradingEnvironmentStore } from '../../store/tradingEnvironmentStore';
 import { walletBalanceService } from '../../services/WalletBalanceService';
-import { resolveTokenDecimals } from '../../services/PaperTradeExecutor';
+import { resolveTokenDecimals } from '../../services/TokenDecimalsResolver';
 import { unifiedTradePipeline, NormalizedTradeEvent } from '../../engines/unifiedTradePipeline';
 import { isMintOnCurve } from '../../utils/solanaValidators';
 
@@ -2743,11 +2742,7 @@ export const PnLPage = ({
         };
         hasMetricUpdates = true;
 
-        // 2. PositionExitManager direct update with Jupiter source authority
-        if (tokenPrice.source === 'jupiter') {
-          positionExitManagerRef.current?.onPriceUpdate(mint, freshPrice, now, 'SOL', 'jupiter');
-          masterMonitorRef.current?.pushPriceUpdate(mint, freshPrice, now, 'jupiter');
-        }
+        // Price updates synchronized with backend TradingMonitorWorker
       });
 
       if (hasMetricUpdates) {
@@ -4033,22 +4028,7 @@ const checkTokenCriteria = (mint: string): {
            };
            positionsRef.current = next;
 
-           if (positionExitManagerRef.current) {
-             const lamportsTotal = passedOutputAmount || (newAmount > 0 ? Math.floor(newAmount * Math.pow(10, tokenDecimals)) : 0);
-             const calcBuyPrice = newAmount > 0 ? (newSolSpent / newAmount) : parsedPrice;
-             positionExitManagerRef.current.addPosition({
-               mint,
-               amount: lamportsTotal,
-               buyPrice: calcBuyPrice,
-               solSpent: newSolSpent,
-               tpPct: initialTp,
-               slPct: Math.abs(initialSl),
-               tokenDecimals,
-             });
-             if (result.txid && result.txid !== 'init-sig') {
-               positionExitManagerRef.current.confirmBuy(mint, result.txid, result.slot || 0);
-             }
-           }
+           // Position added to state; backend manages exit authority
 
            return next;
         });
@@ -4149,12 +4129,12 @@ const checkTokenCriteria = (mint: string): {
   const executeSell = async (mint: string, currentPrice?: number, pnlPct?: number, reason: string = 'MANUAL_FORCE_EXIT') => {
     const pos = positionsRef.current[mint];
     const symbol = pos?.symbol || mint.slice(0, 6);
-    if (positionExitManagerRef.current) {
-      addLog(`🚨 Delegating exit request for ${symbol} to RiskManager (${reason})...`, 'info');
-      await positionExitManagerRef.current.requestExit(mint, reason, undefined, pos?.solSpent);
-    } else {
-      addLog(`🚨 Requesting exit for ${symbol} via RiskManager (${reason})...`, 'sell');
-      await positionExitManager.requestExit(mint, reason, undefined, pos?.solSpent);
+    addLog(`🚨 Submitting exit for ${symbol} via /api/trading/sell (${reason})...`, 'sell');
+    try {
+      await tradingEngine.sell({ mint, percent: 100, reason });
+      addLog(`✅ Exit submitted for ${symbol}`, 'sell');
+    } catch (err: any) {
+      addLog(`❌ Exit failed for ${symbol}: ${err?.message || err}`, 'err');
     }
   };
 
@@ -4172,147 +4152,12 @@ const checkTokenCriteria = (mint: string): {
     return unsub;
   }, []);
 
-  const positionExitManagerRef = useRef<PositionExitManager | null>(null);
-  const masterMonitorRef = useRef<MasterMonitorService | null>(null);
+  const positionExitManagerRef = useRef<any>(null);
+  const masterMonitorRef = useRef<any>(null);
 
   useEffect(() => {
     if (!isRunning) return;
-
-    const currentRpc = masterMonitorHealthManager.getActiveEndpoint();
-    const status = monitorStatus.status;
-
-    const currentJup = jupiterRpcUrl || 'https://api.jup.ag/swap/v1';
-    const executor = tradeManager.getExecutor();
-
-    // Single client-side compatibility proxy; the server UnifiedExitEngine remains the authoritative execution authority.
-    const exitMgr = positionExitManager;
-
-    exitMgr.setOnExitErrorCallback((mint, side, errorMessage) => {
-      const pos = positionsRef.current[mint];
-      const symbol = pos?.symbol || mint.slice(0, 6);
-      addLog(`⚠️ ${side.toUpperCase()} EXIT FAILED for ${symbol}: ${errorMessage} — will keep retrying automatically`, 'warning');
-    });
-
-    exitMgr.setOnLogCallback((msg, type, category, metadata) => {
-      addLog(msg, type as any, category, metadata);
-    });
-
-    exitMgr.setOnExitCallback((mint, side, signature, pnlPct, outputAmountSol) => {
-      const pos = positionsRef.current[mint];
-      if (pos) {
-        // Remove from UI position state
-        setPositions(prev => {
-          const next = { ...prev };
-          delete next[mint];
-          return next;
-        });
-        // Stop price monitoring
-        masterMonitorRef.current?.stopMonitoring(mint);
-
-        // Update trade history and stats
-        const costBasisSol = pos.solSpent || 0;
-        const actualNetSolReceived = outputAmountSol !== undefined ? outputAmountSol : Math.max(0, costBasisSol + (costBasisSol * pnlPct / 100));
-        const actualPnlSOL = costBasisSol > 0 ? actualNetSolReceived - costBasisSol : 0;
-        // recalculate pnlPct purely based on actual real net SOL return
-        const realPnlPct = costBasisSol > 0 ? (actualPnlSOL / costBasisSol) * 100 : pnlPct;
-
-        addLog(`⚡ [FAST EXIT ENGINE] ${side.toUpperCase()} triggered for ${pos.symbol || mint.slice(0, 6)} | Received: ${actualNetSolReceived.toFixed(6)} SOL | PnL: ${realPnlPct.toFixed(2)}% | Tx: ${signature.slice(0, 12)}...`, 'sell');
-
-        // Refresh wallet balance
-        useBalanceStore.getState().setTokenBalance(mint, 0);
-        void walletBalanceService.refreshWithRetry(undefined, 3, 400);
-
-        setStats((s) => ({
-          ...s,
-          trades: s.trades + 1,
-          wins: s.wins + (realPnlPct > 0 ? 1 : 0),
-          losses: s.losses + (realPnlPct <= 0 ? 1 : 0),
-          pnl: s.pnl + actualPnlSOL,
-          bestTrade: (realPnlPct > 0 && (!s.bestTrade || (realPnlPct / 100) > s.bestTrade)) ? (realPnlPct / 100) : s.bestTrade
-        }));
-
-        setTradeHistory(th => [{
-          id: `trade-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-          mint: mint,
-          buyTime: pos.entryTime,
-          sellTime: Date.now(),
-          buyAmountSol: costBasisSol,
-          sellAmountSol: actualNetSolReceived,
-          pnlPct: Math.max(-100, realPnlPct)
-        }, ...th]);
-
-        if (realPnlPct < 0) {
-          setBlacklistedMints(prev => Array.from(new Set([...prev, mint])));
-        }
-      }
-    });
-
-    // Populate all existing active positions into the newly started manager immediately
-    const currentPositions = positionsRef.current;
-    for (const [mint, pos] of Object.entries(currentPositions)) {
-      if (pos && (pos.amount > 0 || (pos.amountLamports && pos.amountLamports > 0))) {
-        const stage = detectTokenStage({
-          address: mint,
-          dexId: (tokenMetricsRef.current[mint]?.dexId) || (mint.toLowerCase().endsWith('pump') ? 'pumpfun' : 'raydium'),
-          bondingCurveProgress: tokenMetricsRef.current[mint]?.bondingCurveProgress,
-          isRaydiumListed: tokenMetricsRef.current[mint]?.isRaydiumListed
-        });
-        const targetTp = (pos.hasCustomTpSl && typeof pos.tpPct === 'number')
-          ? pos.tpPct
-          : (stage.isBonding ? (configRef.current.bondingCurveTakeProfit || 25) : (configRef.current.minTakeProfit || 25));
-        let targetSl = (pos.hasCustomTpSl && typeof pos.slPct === 'number')
-          ? pos.slPct
-          : (stage.platform === 'PUMP_FUN' || stage.isBonding 
-            ? (configRef.current.bondingCurveStopLossPct || 20) 
-            : stage.platform === 'PUMPSWAP'
-            ? (configRef.current.pumpSwapStopLossPct || 15)
-            : stage.platform === 'UNKNOWN'
-            ? (configRef.current.unknownStopLossPct || 15)
-            : (configRef.current.stopLossPct || 15));
-        targetSl = Math.abs(targetSl);
-
-        const lamportsTotal = pos.amountLamports || (pos.amount > 0 && typeof pos.decimals === 'number' ? Math.floor(pos.amount * Math.pow(10, pos.decimals)) : 0);
-        exitMgr.addPosition({
-          mint,
-          amount: lamportsTotal,
-          buyPrice: pos.buyPrice || 0,
-          solSpent: pos.solSpent || 0,
-          tpPct: targetTp,
-          slPct: Math.abs(targetSl),
-          tokenDecimals: pos.decimals !== undefined ? pos.decimals : 6,
-        });
-        if (pos.currentPrice && pos.currentPrice > 0) {
-          exitMgr.onPriceUpdate(mint, pos.currentPrice, Date.now());
-        }
-        if (pos.txid && pos.txid !== 'init-sig') {
-          exitMgr.confirmBuy(mint, pos.txid, pos.buySlot || 0);
-        }
-      }
-    }
-
-    exitMgr.start();
-    positionExitManagerRef.current = exitMgr;
-
-    let masterMon: MasterMonitorService | null = null;
-    try {
-      if (status !== 'OFFLINE' && currentRpc) {
-        addLog(`📡 [MASTER MONITOR] Starting monitor services on: ${currentRpc} [Mode: ${status}]`, 'info');
-        masterMon = new MasterMonitorService(currentRpc, exitMgr);
-      } else {
-        addLog(`🛡️ [TP/SL ACTIVE] Master Monitor endpoint offline — TP/SL running autonomously with resilient price polling.`, 'info');
-        masterMon = new MasterMonitorService('', exitMgr);
-      }
-      masterMonitorRef.current = masterMon;
-    } catch (e: any) {
-      console.warn(`[MASTER MONITOR] MasterMonitorService initialization note:`, e);
-    }
-
-    return () => {
-      exitMgr.stop();
-      masterMon?.stopMonitoring();
-      positionExitManagerRef.current = null;
-      masterMonitorRef.current = null;
-    };
+    addLog(`🛡️ [TP/SL ACTIVE] Server-side UnifiedExitEngine & TradingMonitorWorker active`, 'info');
   }, [isRunning]);
 
   // Handler for custom per-position TP/SL changes
@@ -4334,7 +4179,6 @@ const checkTokenCriteria = (mint: string): {
       };
       positionsRef.current = next;
       useAppStore.getState().updateActivePositions(() => next);
-      positionExitManagerRef.current?.updatePositionTpSl(mint, safeTp, safeSl);
       // Authoritative Backend TP/SL Sync via apiClient
       apiClient.post('/api/trading/positions/tpsl', {
         mint,

@@ -118,8 +118,7 @@ export class ActivePositionMarketFeed {
             const slThreshold = Number.isFinite(pos.slPct) ? -Math.abs(pos.slPct) : -15;
             if (val.pnlPercent !== undefined && (val.pnlPercent >= tpThreshold || val.pnlPercent <= slThreshold)) {
               await unifiedExitEngine.evaluateAndExecuteExit(pos, val.currentPriceSol, {
-                executableQuoteSol: val.executableValueSol,
-                quoteTimestamp: val.lastExecutableQuoteAt,
+                maxDataAgeMs: 5000,
               });
             }
           }
@@ -151,7 +150,7 @@ export class ActivePositionMarketFeed {
       if (bcState && bcState.priceSolPerToken > 0 && bcState.bondingProgressPct < 100) {
         effectivePrice = bcState.priceSolPerToken;
       } else {
-        effectivePrice = position.currentPriceSol;
+        effectivePrice = position.currentPrice;
       }
     }
 
@@ -175,12 +174,12 @@ export class ActivePositionMarketFeed {
     const tpThreshold = Number.isFinite(updatedPos.tpPct) ? Math.abs(updatedPos.tpPct) : 25;
     const slThreshold = Number.isFinite(updatedPos.slPct) ? -Math.abs(updatedPos.slPct) : -15;
     const isTriggerCandidate = candidatePnlPct >= tpThreshold || candidatePnlPct <= slThreshold;
-    const isTimeExpired = Boolean(updatedPos.maxHoldTimeMs && (now - updatedPos.openedAt >= updatedPos.maxHoldTimeMs));
+    const isTimeExpired = Boolean(updatedPos.maxHoldTimeMs && (now - (updatedPos.openedAt || updatedPos.createdAt) >= updatedPos.maxHoldTimeMs));
 
     // Trailing stop candidate check
     let isTrailingTrigger = false;
-    if (updatedPos.highestPnlPct > 0) {
-      const dropFromPeak = updatedPos.highestPnlPct - candidatePnlPct;
+    if (updatedPos.highestPnLPct > 0) {
+      const dropFromPeak = updatedPos.highestPnLPct - candidatePnlPct;
       const trailingDrop = Number.isFinite(updatedPos.trailingSlPct) ? Math.abs(updatedPos.trailingSlPct!) : 15;
       if (dropFromPeak >= trailingDrop) {
         isTrailingTrigger = true;

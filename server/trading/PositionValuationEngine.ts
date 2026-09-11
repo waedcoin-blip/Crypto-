@@ -257,7 +257,7 @@ export class PositionValuationEngine {
           inputMint: position.mint,
           outputMint: WSOL,
           amount: position.tokenAmountRaw || String(position.tokenAmount),
-          slippageBps: position.slippageBpsSl || 1000,
+          slippageBps: 1000,
           network: position.network,
         });
 

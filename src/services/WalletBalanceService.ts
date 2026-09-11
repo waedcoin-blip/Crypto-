@@ -4,7 +4,7 @@ import { getNetworkConfig, TradingNetwork } from '../config/network';
 import { useBalanceStore } from '../store/balanceStore';
 import { useActiveWalletStore } from '../store/activeWalletStore';
 import { usePaperWalletStore } from '../store/paperWalletStore';
-import { resolveTokenDecimals } from './PaperTradeExecutor';
+import { resolveTokenDecimals } from './TokenDecimalsResolver';
 
 const LAMPORTS_PER_SOL = 1_000_000_000;
 const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');

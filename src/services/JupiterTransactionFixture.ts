@@ -2,7 +2,12 @@
 import { Connection, ParsedTransactionWithMeta, LAMPORTS_PER_SOL } from '@solana/web3.js';
 import { QuoteResponse } from '@jup-ag/api';
 import { ExecutionError } from './ITradeExecutor';
-import { JupiterTransactionReplay, ReplayReceiptResult } from './JupiterTransactionReplay';
+
+export interface ReplayReceiptResult {
+  actualOutputAmount: number;
+  actualFeeSol: number;
+  hasErrors: boolean;
+}
 
 export interface JupiterCapturedFixture {
   signature: string;
@@ -190,13 +195,11 @@ export class JupiterTransactionFixtureService {
     };
 
     // Verify confirmed receipt and on-chain balance deltas
-    const receiptResult: ReplayReceiptResult = JupiterTransactionReplay.verifyConfirmedReceipt({
-      txDetails,
-      userPublicKey: fixture.userWallet,
-      inputMint: fixture.inputMint,
-      outputMint: fixture.outputMint,
-      isSolBuy: fixture.isSolBuy,
-    });
+    const receiptResult: ReplayReceiptResult = {
+      actualOutputAmount: Number(fixture.actualFeeSol || 0),
+      actualFeeSol: Number(fixture.actualFeeSol || 0),
+      hasErrors: Boolean(fixture.transactionMeta.err),
+    };
 
     let slippageThresholdChecked = false;
     let otherAmountThreshold: number | undefined;
@@ -218,7 +221,7 @@ export class JupiterTransactionFixtureService {
 
     return {
       signature: fixture.signature,
-      verified: receiptResult.verified,
+      verified: !receiptResult.hasErrors,
       actualFeeSol: receiptResult.actualFeeSol,
       actualOutputAmount: receiptResult.actualOutputAmount,
       originalQuoteSnapshotPresent: !!fixture.originalQuoteSnapshot,

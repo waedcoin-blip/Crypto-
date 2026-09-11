@@ -1,7 +1,7 @@
 // src/services/JupiterQuoteService.ts
 import { QuoteResponse, createJupiterApiClient } from '@jup-ag/api';
 import { WSOL_MINT, validateQuoteSafetyStrict, MAX_PRICE_IMPACT_RATIO } from '../utils/quoteSafety';
-import { resolveTokenDecimals } from './PaperTradeExecutor';
+import { resolveTokenDecimals } from './TokenDecimalsResolver';
 import { tokenRegistry } from './TokenRegistry';
 
 export interface ValidatedExitQuote {

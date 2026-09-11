@@ -1,53 +1,71 @@
 // server/trading/PositionManager.ts
-import { positionRepository, PositionRecord } from '../repositories/PositionRepository.js';
-import { positionValuationEngine } from './PositionValuationEngine.js';
-import { rawToUiNumber, parsePositiveRawAmount, safeRawNumber } from '../utils/rawAmount.js';
-
-export type PositionStatus = 'NONE' | 'BUY_PENDING' | 'OPEN' | 'EXIT_PENDING' | 'RECOVERY_REQUIRED' | 'CLOSED';
+import { positionRepository, PositionRecord, PositionState } from '../repositories/PositionRepository.js';
+import { rawToUiNumber, safeRawNumber } from '../utils/rawAmount.js';
 
 export interface Position {
   id: string;
+  mint: string;
   network: string;
   wallet: string;
-  mint: string;
+  tokenAmountRaw: string;
   tokenAmount: number;
-  tokenAmountRaw?: string;
   decimals: number;
-  totalSolSpent: number;
   averageEntryPrice: number;
-  currentPriceSol: number;
-  peakPriceSol: number;
-  highestPnlPct: number;
-  realizedPnl: number;
-  unrealizedPnl: number;
-  unrealizedPnlPct: number;
-  status: PositionStatus;
-  openedAt: number;
+  totalSolSpent: number;
+  currentPrice: number;
+  peakPrice: number;
+  highestPnLPct: number;
+  tpPct: number;
+  slPct: number;
+  status: PositionState;
+  orderIds: string[];
+  buySignature?: string;
+  exitSignature?: string;
+  maxHoldTimeMs?: number;
+  openedAt?: number;
+  slippageBpsTp?: number;
+  slippageBpsSl?: number;
+  trailingSlPct?: number;
+  createdAt: number;
   updatedAt: number;
+  closedAt?: number;
+  totalSolSpentOnSold?: number;
+  realizedPnl: number;
   lastMarketPriceAt?: number;
   lastExecutableQuoteAt?: number;
   lastMarketEventAt?: number;
   lastExitEvaluationAt?: number;
-  closedAt?: number;
-  tpPct: number;
-  slPct: number;
+  executableValueSol?: number;
+  executablePnlSol?: number;
+  executablePnlPercent?: number;
+  marketValueSol?: number;
+  marketPnlSol?: number;
+  marketPnlPercent?: number;
+  valuationSource?: string;
+}
+
+export interface OpenPositionParams {
+  network: string;
+  wallet: string;
+  mint: string;
+  tokenAmountRaw: string | bigint;
+  decimals: number;
+  solSpent: number;
+  buyPriceSol?: number;
+  orderId?: string;
+  buySignature?: string;
+  tpPct?: number;
+  slPct?: number;
   trailingSlPct?: number;
   maxHoldTimeMs?: number;
-  slippageBpsTp: number;
-  slippageBpsSl: number;
-  orderIds: string[];
-  buySignature?: string;
-  exitSignature?: string;
-  // FIX: Track cost basis of sold tokens for accurate realized PnL%
-  totalSolSpentOnSold?: number;
 }
 
 export class PositionManager {
   private static instance: PositionManager;
-  private positions: Map<string, Position> = new Map();
-  private positionKeys: Map<string, string> = new Map();
+  private positions = new Map<string, Position>();
+  private positionKeys = new Map<string, string>(); // key -> positionId
 
-  private constructor() {
+  constructor() {
     this.refreshFromRepository();
   }
 
@@ -59,110 +77,95 @@ export class PositionManager {
   }
 
   public getPositionKey(network: string, wallet: string, mint: string): string {
-    return `${network}:${wallet}:${mint.trim()}`;
-  }
-
-  private parseRawAmountSafe(value: number | string | bigint, positionId: string): number {
-    const raw = parsePositiveRawAmount(value, `position ${positionId}`);
-    // Legacy numeric field is only populated when the raw integer is exactly representable.
-    return safeRawNumber(raw);
+    return `${network.toLowerCase()}:${(wallet || 'default').toLowerCase()}:${mint.trim()}`;
   }
 
   public refreshFromRepository(): void {
-    const list = positionRepository.getAllPositions();
-    for (const record of list) {
-      const existing = this.positions.get(record.id);
-      const isClosed = record.state === 'CLOSED';
-      const key = this.getPositionKey(record.network || 'paper', record.wallet || 'default', record.mintAddress);
-
-      if (isClosed) {
-        if (existing) {
-          existing.status = 'CLOSED';
-          existing.closedAt = record.closedAt || Date.now();
-          existing.exitSignature = record.exitSignature || existing.exitSignature;
-          existing.realizedPnl = record.realizedPnLSol ?? existing.realizedPnl;
-        }
-        if (this.positionKeys.get(key) === record.id) {
-          this.positionKeys.delete(key);
-        }
-        continue;
-      }
-
-      const status = this.mapRecordStateToStatus(record.state);
-      if (existing) {
-        existing.status = status;
-        existing.tokenAmount = this.parseRawAmountSafe(record.amountRaw, record.id);
-        existing.decimals = record.decimals;
-        existing.totalSolSpent = record.solSpent || 0;
-        existing.averageEntryPrice = record.entryPriceSOL || 0;
-        existing.currentPriceSol = record.currentPriceSOL || record.entryPriceSOL || 0;
-        existing.peakPriceSol = record.peakPriceSOL || record.entryPriceSOL || 0;
-        existing.highestPnlPct = record.highestPnLPct || 0;
-        existing.unrealizedPnl = record.currentPnLSol || 0;
-        existing.unrealizedPnlPct = record.currentPnLPct || 0;
-        existing.updatedAt = record.updatedAt;
-        existing.lastMarketPriceAt = record.lastMarketPriceAt ?? existing.lastMarketPriceAt;
-        existing.lastExecutableQuoteAt = record.lastExecutableQuoteAt ?? existing.lastExecutableQuoteAt;
-        existing.lastMarketEventAt = record.lastMarketEventAt ?? existing.lastMarketEventAt;
-        existing.lastExitEvaluationAt = record.lastExitEvaluationAt ?? existing.lastExitEvaluationAt;
-      } else {
-        const pos: Position = {
-          id: record.id,
-          network: record.network || 'paper',
-          wallet: record.wallet || 'default',
-          mint: record.mintAddress,
-          tokenAmount: this.parseRawAmountSafe(record.amountRaw, record.id),
-          decimals: record.decimals,
-          totalSolSpent: record.solSpent || 0,
-          averageEntryPrice: record.entryPriceSOL || 0,
-          currentPriceSol: record.currentPriceSOL || record.entryPriceSOL || 0,
-          peakPriceSol: record.peakPriceSOL || record.entryPriceSOL || 0,
-          highestPnlPct: record.highestPnLPct || 0,
-          realizedPnl: record.realizedPnLSol || 0,
-          unrealizedPnl: record.currentPnLSol || 0,
-          unrealizedPnlPct: record.currentPnLPct || 0,
-          status,
-          openedAt: record.createdAt,
-          updatedAt: record.updatedAt,
-          lastMarketPriceAt: record.lastMarketPriceAt,
-          lastExecutableQuoteAt: record.lastExecutableQuoteAt,
-          lastMarketEventAt: record.lastMarketEventAt,
-          lastExitEvaluationAt: record.lastExitEvaluationAt,
-          closedAt: record.closedAt,
-          tpPct: Number.isFinite(record.tpPct) ? record.tpPct : 25,
-          slPct: Number.isFinite(record.slPct) ? record.slPct : 15,
-          trailingSlPct: record.trailingSlPct,
-          maxHoldTimeMs: record.maxHoldTimeMs,
-          slippageBpsTp: record.slippageBpsTp || 250,
-          slippageBpsSl: record.slippageBpsSl || 1000,
-          orderIds: record.orderIds || [],
-          buySignature: record.buySignature,
-          exitSignature: record.exitSignature,
-        };
+    try {
+      const records = positionRepository.getAllPositions();
+      for (const record of records) {
+        const pos = this.mapRecordToPosition(record);
         this.positions.set(pos.id, pos);
+        if (pos.status !== 'CLOSED') {
+          const key = this.getPositionKey(pos.network, pos.wallet, pos.mint);
+          this.positionKeys.set(key, pos.id);
+        }
       }
-
-      if (status !== 'CLOSED') {
-        this.positionKeys.set(key, record.id);
-      }
+    } catch (e) {
+      console.warn('[PositionManager] Error refreshing from repository:', e);
     }
   }
 
-  private mapRecordStateToStatus(state: string): PositionStatus {
-    switch (state) {
-      case 'PENDING_BUY': return 'BUY_PENDING';
-      case 'OPEN': return 'OPEN';
-      case 'EXIT_REQUESTED':
-      case 'EXIT_SUBMITTED':
-      case 'EXIT_CONFIRMING': return 'EXIT_PENDING';
-      case 'RECOVERY_REQUIRED': return 'RECOVERY_REQUIRED';
-      case 'CLOSED': return 'CLOSED';
-      default: return 'OPEN';
+  private mapRecordToPosition(r: PositionRecord): Position {
+    const rawBig = BigInt(r.amountRaw || '0');
+    return {
+      id: r.id,
+      mint: r.mintAddress,
+      network: r.network,
+      wallet: r.wallet || 'default',
+      tokenAmountRaw: r.amountRaw ? String(r.amountRaw) : '0',
+      tokenAmount: rawToUiNumber(rawBig, r.decimals),
+      decimals: r.decimals,
+      averageEntryPrice: r.entryPriceSOL,
+      totalSolSpent: r.solSpent,
+      currentPrice: r.currentPriceSOL,
+      peakPrice: r.peakPriceSOL,
+      highestPnLPct: r.highestPnLPct,
+      tpPct: r.tpPct,
+      slPct: r.slPct,
+      status: r.state,
+      orderIds: r.orderIds || [],
+      buySignature: r.buySignature,
+      exitSignature: r.exitSignature,
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+      closedAt: r.closedAt,
+      realizedPnl: r.realizedPnLSol || 0,
+      lastMarketPriceAt: r.lastMarketPriceAt,
+      lastExecutableQuoteAt: r.lastExecutableQuoteAt,
+      lastMarketEventAt: r.lastMarketEventAt,
+      lastExitEvaluationAt: r.lastExitEvaluationAt,
+    };
+  }
+
+  private syncRepository(pos: Position): void {
+    try {
+      positionRepository.upsertPosition({
+        id: pos.id,
+        mintAddress: pos.mint,
+        network: pos.network,
+        wallet: pos.wallet,
+        amountRaw: pos.tokenAmountRaw,
+        decimals: pos.decimals,
+        entryPriceSOL: pos.averageEntryPrice,
+        solSpent: pos.totalSolSpent,
+        currentPriceSOL: pos.currentPrice,
+        peakPriceSOL: pos.peakPrice,
+        highestPnLPct: pos.highestPnLPct,
+        tpPct: pos.tpPct,
+        slPct: pos.slPct,
+        slippageBpsTp: 150,
+        slippageBpsSl: 300,
+        state: pos.status,
+        orderIds: pos.orderIds,
+        buySignature: pos.buySignature,
+        exitSignature: pos.exitSignature,
+        createdAt: pos.createdAt,
+        updatedAt: pos.updatedAt,
+        lastMarketPriceAt: pos.lastMarketPriceAt,
+        lastExecutableQuoteAt: pos.lastExecutableQuoteAt,
+        lastMarketEventAt: pos.lastMarketEventAt,
+        lastExitEvaluationAt: pos.lastExitEvaluationAt,
+        closedAt: pos.closedAt,
+        realizedPnLSol: pos.realizedPnl,
+      });
+    } catch (err) {
+      console.warn('[PositionManager] Repository sync non-blocking error:', err);
     }
   }
 
+  // FIX 1: Read-only getter without forcing full repository refresh
   public getPosition(network: string, wallet: string, mint: string): Position | undefined {
-    this.refreshFromRepository();
     const key = this.getPositionKey(network, wallet, mint);
     const posId = this.positionKeys.get(key);
     if (!posId) return undefined;
@@ -175,204 +178,87 @@ export class PositionManager {
   }
 
   public getPositionById(id: string): Position | undefined {
-    this.refreshFromRepository();
     return this.positions.get(id);
   }
 
   public getOpenPositions(network?: string, wallet?: string): Position[] {
-    this.refreshFromRepository();
-    let list = Array.from(this.positions.values()).filter(p => p.status !== 'CLOSED');
-    if (network) list = list.filter(p => p.network === network);
-    if (wallet) list = list.filter(p => p.wallet === wallet);
-    return list;
+    return Array.from(this.positions.values()).filter(pos => {
+      if (pos.status === 'CLOSED') return false;
+      if (network && pos.network !== network) return false;
+      if (wallet && pos.wallet !== wallet) return false;
+      return true;
+    });
   }
 
   public getAllPositions(): Position[] {
-    this.refreshFromRepository();
     return Array.from(this.positions.values());
   }
 
-  public updatePositionPrice(
-    network: string,
-    wallet: string,
-    mint: string,
-    currentPriceSol: number,
-    opts: {
-      isFreshQuote?: boolean;
-      isMarketEvent?: boolean;
-      timestamp?: number;
-    } = {}
-  ): Position | undefined {
-    const pos = this.getPosition(network, wallet, mint);
-    if (!pos || pos.status === 'CLOSED') return undefined;
-
-    const now = opts.timestamp || Date.now();
-    pos.currentPriceSol = currentPriceSol;
-    pos.lastMarketPriceAt = now;
-    if (opts.isFreshQuote) {
-      pos.lastExecutableQuoteAt = now;
-    }
-    if (opts.isMarketEvent) {
-      pos.lastMarketEventAt = now;
-    }
-
-    if (currentPriceSol > pos.peakPriceSol) {
-      pos.peakPriceSol = currentPriceSol;
-    }
-
-    // FIX: Use BigInt for precise token quantity calculation
-    const tokenQty = pos.tokenAmountRaw ? rawToUiNumber(pos.tokenAmountRaw, pos.decimals) : pos.tokenAmount / (10 ** pos.decimals);
-    const currentValueSol = tokenQty * currentPriceSol;
-    pos.unrealizedPnl = currentValueSol - pos.totalSolSpent;
-    pos.unrealizedPnlPct = pos.totalSolSpent > 0 ? (pos.unrealizedPnl / pos.totalSolSpent) * 100 : 0;
-
-    if (pos.unrealizedPnlPct > pos.highestPnlPct) {
-      pos.highestPnlPct = pos.unrealizedPnlPct;
-    }
-
-    pos.updatedAt = now;
-    this.syncRepository(pos);
-    return pos;
-  }
-
-  public openOrAccumulatePosition(params: {
-    network: string;
-    wallet: string;
-    mint: string;
-    tokenAmountRaw: number | string | bigint;
-    decimals?: number;
-    solSpent: number;
-    orderId?: string;
-    buySignature?: string;
-    tpPct?: number;
-    slPct?: number;
-    trailingSlPct?: number;
-    maxHoldTimeMs?: number;
-    slippageBpsTp?: number;
-    slippageBpsSl?: number;
-  }): Position {
-    this.refreshFromRepository();
-    const key = this.getPositionKey(params.network, params.wallet, params.mint);
+  public openOrAccumulatePosition(params: OpenPositionParams): Position {
+    const network = params.network || 'paper';
+    const wallet = params.wallet || 'default';
+    const mint = params.mint.trim();
+    const key = this.getPositionKey(network, wallet, mint);
     const existingId = this.positionKeys.get(key);
     const now = Date.now();
-    const decimals = params.decimals;
-    if (decimals === undefined) {
-      throw new Error(`Cannot open position for ${params.mint}: missing decimals.`);
-    }
-    let rawBigInt: bigint;
-    try {
-      rawBigInt = BigInt(params.tokenAmountRaw);
-      if (rawBigInt <= 0n) throw new Error('NON_POSITIVE');
-    } catch {
-      throw new Error(`INVALID_RAW_TOKEN_AMOUNT: tokenAmountRaw must be a positive integer for ${params.mint}.`);
-    }
-    const tokenAmountNum = safeRawNumber(rawBigInt);
-    const tpPct = params.tpPct ?? 25;
-    const slPct = Math.abs(params.slPct ?? 15);
-    if (!Number.isFinite(tpPct) || tpPct <= 0 || !Number.isFinite(slPct) || slPct <= 0 || slPct >= 100) {
-      throw new Error(`INVALID_TP_SL: TP must be > 0 and SL must be > 0 and < 100 for ${params.mint}.`);
-    }
+
+    const rawBig = typeof params.tokenAmountRaw === 'bigint'
+      ? params.tokenAmountRaw
+      : BigInt(params.tokenAmountRaw || '0');
 
     if (existingId) {
       const existing = this.positions.get(existingId);
       if (existing && existing.status !== 'CLOSED') {
         const prevTotalCost = existing.totalSolSpent;
         const newTotalCost = prevTotalCost + params.solSpent;
-        const prevTotalRawBig = existing.tokenAmountRaw ? BigInt(existing.tokenAmountRaw) : BigInt(existing.tokenAmount);
-        const newTotalRawBig = prevTotalRawBig + BigInt(params.tokenAmountRaw);
+        const prevTotalRawBig = existing.tokenAmountRaw
+          ? BigInt(existing.tokenAmountRaw)
+          : BigInt(Math.floor(existing.tokenAmount * (10 ** existing.decimals)));
+        const newTotalRawBig = prevTotalRawBig + rawBig;
         const newTotalQty = rawToUiNumber(newTotalRawBig, existing.decimals);
-        const newTotalRawLegacy = safeRawNumber(newTotalRawBig);
-
         existing.tokenAmountRaw = newTotalRawBig.toString();
-        existing.tokenAmount = newTotalRawLegacy;
+        existing.tokenAmount = newTotalQty;
         existing.totalSolSpent = newTotalCost;
-        if (newTotalQty > 0) {
-          existing.averageEntryPrice = newTotalCost / newTotalQty;
-        }
-
-        if (params.orderId && !existing.orderIds.includes(params.orderId)) {
-          existing.orderIds.push(params.orderId);
-        }
-        if (params.tpPct !== undefined) { if (!Number.isFinite(params.tpPct) || params.tpPct <= 0) throw new Error('INVALID_TP_PERCENT'); existing.tpPct = params.tpPct; }
-        if (params.slPct !== undefined) { const sl = Math.abs(params.slPct); if (!Number.isFinite(sl) || sl <= 0 || sl >= 100) throw new Error('INVALID_SL_PERCENT'); existing.slPct = sl; }
+        if (newTotalQty > 0) existing.averageEntryPrice = newTotalCost / newTotalQty;
+        if (params.orderId && !existing.orderIds.includes(params.orderId)) existing.orderIds.push(params.orderId);
+        if (params.tpPct !== undefined) existing.tpPct = params.tpPct;
+        if (params.slPct !== undefined) existing.slPct = params.slPct;
+        if (params.buySignature) existing.buySignature = params.buySignature;
         existing.status = 'OPEN';
         existing.updatedAt = now;
-
         this.syncRepository(existing);
         return existing;
       }
     }
 
-    const posId = `pos_${now}_${params.mint.slice(0, 6)}`;
-    const tokenQty = rawToUiNumber(rawBigInt, decimals);
-    const averageEntryPrice = tokenQty > 0 ? params.solSpent / tokenQty : 0;
+    const tokenQty = rawToUiNumber(rawBig, params.decimals);
+    const buyPrice = params.buyPriceSol || (tokenQty > 0 ? params.solSpent / tokenQty : 0);
 
-    const newPos: Position = {
-      id: posId,
-      network: params.network,
-      wallet: params.wallet,
-      mint: params.mint,
-      tokenAmount: tokenAmountNum,
-      tokenAmountRaw: rawBigInt.toString(),
-      decimals,
+    const pos: Position = {
+      id: `pos-${now}-${Math.random().toString(36).substring(2, 7)}`,
+      mint,
+      network,
+      wallet,
+      tokenAmountRaw: rawBig.toString(),
+      tokenAmount: tokenQty,
+      decimals: params.decimals,
+      averageEntryPrice: buyPrice,
       totalSolSpent: params.solSpent,
-      averageEntryPrice,
-      currentPriceSol: averageEntryPrice,
-      peakPriceSol: averageEntryPrice,
-      highestPnlPct: 0,
-      realizedPnl: 0,
-      unrealizedPnl: 0,
-      unrealizedPnlPct: 0,
+      currentPrice: buyPrice,
+      peakPrice: buyPrice,
+      highestPnLPct: 0,
+      tpPct: params.tpPct || 25,
+      slPct: params.slPct || 15,
       status: 'OPEN',
-      openedAt: now,
-      updatedAt: now,
-      tpPct,
-      slPct,
-      trailingSlPct: params.trailingSlPct,
-      maxHoldTimeMs: params.maxHoldTimeMs,
-      slippageBpsTp: params.slippageBpsTp ?? 250,
-      slippageBpsSl: params.slippageBpsSl ?? 1000,
       orderIds: params.orderId ? [params.orderId] : [],
       buySignature: params.buySignature,
+      createdAt: now,
+      updatedAt: now,
+      realizedPnl: 0,
     };
 
-    this.positions.set(posId, newPos);
-    this.positionKeys.set(key, posId);
-    this.syncRepository(newPos);
-    return newPos;
-  }
-
-  public updatePositionTpSl(
-    network: string | undefined,
-    wallet: string | undefined,
-    mint: string,
-    tpPct?: number,
-    slPct?: number,
-    trailingSlPct?: number
-  ): Position | undefined {
-    this.refreshFromRepository();
-    let pos = network && wallet ? this.getPosition(network, wallet, mint) : undefined;
-    if (!pos) {
-      pos = this.getOpenPositions().find(
-        p => p.mint === mint || p.mint.toLowerCase() === mint.toLowerCase()
-      );
-    }
-    if (!pos || pos.status === 'CLOSED') return undefined;
-
-    if (tpPct !== undefined) {
-      const tp = Number(tpPct);
-      if (!Number.isFinite(tp) || tp <= 0) throw new Error('INVALID_TP_PERCENT');
-      pos.tpPct = tp;
-    }
-    if (slPct !== undefined) {
-      const sl = Math.abs(Number(slPct));
-      if (!Number.isFinite(sl) || sl <= 0 || sl >= 100) throw new Error('INVALID_SL_PERCENT');
-      pos.slPct = sl;
-    }
-    if (trailingSlPct !== undefined) {
-      pos.trailingSlPct = Math.abs(Number(trailingSlPct));
-    }
-    pos.updatedAt = Date.now();
+    this.positions.set(pos.id, pos);
+    this.positionKeys.set(key, pos.id);
     this.syncRepository(pos);
     return pos;
   }
@@ -380,104 +266,64 @@ export class PositionManager {
   public reducePositionAmount(positionId: string, tokensSoldRaw: number | string | bigint, solReceived: number): Position | undefined {
     const pos = this.getPositionById(positionId);
     if (!pos) return undefined;
-
-    const currentRaw = BigInt(pos.tokenAmountRaw || String(pos.tokenAmount));
+    const currentRaw = pos.tokenAmountRaw
+      ? BigInt(pos.tokenAmountRaw)
+      : BigInt(Math.floor(pos.tokenAmount * (10 ** pos.decimals)));
     const soldRaw = BigInt(String(tokensSoldRaw));
     if (soldRaw <= 0n || soldRaw > currentRaw) return undefined;
     const remainingRaw = currentRaw - soldRaw;
-
-    // Track cost basis of sold portion without converting raw amounts to Number.
-    const soldFraction = Number(soldRaw * 1_000_000n / currentRaw) / 1_000_000;
+    const soldFraction = Number(soldRaw * 1_000_000n / (currentRaw || 1n)) / 1_000_000;
     const soldCostBasis = pos.totalSolSpent * soldFraction;
     pos.totalSolSpentOnSold = (pos.totalSolSpentOnSold || 0) + soldCostBasis;
-    
     pos.tokenAmountRaw = remainingRaw.toString();
-    pos.tokenAmount = safeRawNumber(remainingRaw);
+    pos.tokenAmount = rawToUiNumber(remainingRaw, pos.decimals);
     pos.realizedPnl += solReceived - soldCostBasis;
     pos.updatedAt = Date.now();
-
-    if (remainingRaw <= 0) {
+    if (remainingRaw <= 0n) {
       pos.status = 'CLOSED';
       pos.closedAt = Date.now();
       const key = this.getPositionKey(pos.network, pos.wallet, pos.mint);
       this.positionKeys.delete(key);
     }
-
     this.syncRepository(pos);
     return pos;
   }
 
-  public updatePositionStatus(
-    network: string,
-    wallet: string,
-    mint: string,
-    status: PositionStatus,
-    exitDetails?: { exitSignature?: string; netProceedsSol?: number }
-  ): Position | undefined {
-    this.refreshFromRepository();
+  public updatePositionPrice(network: string, wallet: string, mint: string, priceSol: number, options?: { lastMarketEventAt?: number; source?: string; isMarketEvent?: boolean; timestamp?: number }): Position | undefined {
+    const pos = this.getPosition(network, wallet, mint);
+    if (!pos || pos.status === 'CLOSED') return undefined;
+    const now = options?.timestamp || Date.now();
+    pos.currentPrice = priceSol;
+    pos.lastMarketPriceAt = now;
+    if (options?.lastMarketEventAt) pos.lastMarketEventAt = options.lastMarketEventAt;
+    if (options?.source) pos.valuationSource = options.source;
+    if (priceSol > pos.peakPrice) {
+      pos.peakPrice = priceSol;
+      if (pos.averageEntryPrice > 0) {
+        pos.highestPnLPct = ((priceSol - pos.averageEntryPrice) / pos.averageEntryPrice) * 100;
+      }
+    }
+    pos.updatedAt = now;
+    this.syncRepository(pos);
+    return pos;
+  }
+
+  public updatePositionStatus(network: string, wallet: string, mint: string, status: PositionState, options?: { exitSignature?: string; netProceedsSol?: number }): Position | undefined {
     const pos = this.getPosition(network, wallet, mint);
     if (!pos) return undefined;
-
     pos.status = status;
     pos.updatedAt = Date.now();
-
+    if (options?.exitSignature) pos.exitSignature = options.exitSignature;
+    if (options?.netProceedsSol !== undefined) {
+      pos.realizedPnl = options.netProceedsSol - pos.totalSolSpent;
+    }
     if (status === 'CLOSED') {
       pos.closedAt = Date.now();
-      if (exitDetails?.exitSignature) pos.exitSignature = exitDetails.exitSignature;
-      if (exitDetails?.netProceedsSol !== undefined) {
-        pos.realizedPnl = exitDetails.netProceedsSol - pos.totalSolSpent;
-      }
       const key = this.getPositionKey(network, wallet, mint);
       this.positionKeys.delete(key);
-      positionValuationEngine.removeValuation(network, wallet, mint);
-
-      positionRepository.closePosition(pos.id, {
-        exitSignature: pos.exitSignature,
-        realizedPnLSol: pos.realizedPnl,
-        realizedPnLPct: pos.totalSolSpent > 0 ? (pos.realizedPnl / pos.totalSolSpent) * 100 : 0,
-      });
-      return pos;
     }
-
     this.syncRepository(pos);
     return pos;
-  }
-
-  private syncRepository(pos: Position): void {
-    const record: PositionRecord = {
-      id: pos.id,
-      mintAddress: pos.mint,
-      network: pos.network,
-      wallet: pos.wallet,
-      amountRaw: pos.tokenAmountRaw || String(pos.tokenAmount),
-      decimals: pos.decimals,
-      entryPriceSOL: pos.averageEntryPrice,
-      solSpent: pos.totalSolSpent,
-      currentPriceSOL: pos.currentPriceSol,
-      peakPriceSOL: pos.peakPriceSol,
-      highestPnLPct: pos.highestPnlPct,
-      currentPnLSol: pos.unrealizedPnl,
-      currentPnLPct: pos.unrealizedPnlPct,
-      tpPct: pos.tpPct,
-      slPct: pos.slPct,
-      trailingSlPct: pos.trailingSlPct,
-      maxHoldTimeMs: pos.maxHoldTimeMs,
-      slippageBpsTp: pos.slippageBpsTp,
-      slippageBpsSl: pos.slippageBpsSl,
-      state: pos.status === 'CLOSED' ? 'CLOSED' : pos.status === 'RECOVERY_REQUIRED' ? 'RECOVERY_REQUIRED' : pos.status === 'EXIT_PENDING' ? 'EXIT_SUBMITTED' : pos.status === 'BUY_PENDING' ? 'PENDING_BUY' : 'OPEN',
-      orderIds: pos.orderIds,
-      buySignature: pos.buySignature,
-      exitSignature: pos.exitSignature,
-      createdAt: pos.openedAt,
-      updatedAt: pos.updatedAt,
-      lastMarketPriceAt: pos.lastMarketPriceAt,
-      lastExecutableQuoteAt: pos.lastExecutableQuoteAt,
-      lastMarketEventAt: pos.lastMarketEventAt,
-      lastExitEvaluationAt: pos.lastExitEvaluationAt,
-      closedAt: pos.closedAt,
-      realizedPnLSol: pos.realizedPnl,
-    };
-    positionRepository.upsertPosition(record);
   }
 }
 

@@ -197,3 +197,6 @@ export class TokenDecimalsResolver {
     this.inFlight.clear();
   }
 }
+
+export const resolveTokenDecimals = (tokenMint: string): number => TokenDecimalsResolver.resolveSync(tokenMint);
+export const resolveTokenDecimalsAsync = (tokenMint: string, customConnection?: Connection): Promise<number> => TokenDecimalsResolver.resolveAsync(tokenMint, customConnection);

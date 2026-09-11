@@ -384,7 +384,7 @@ router.get('/tokens/discovery-pool', handleDiscoveryPool);
 // need up-to-date pricing (active-position PnL sync, stop-loss/take-profit checks)
 // don't silently serve a stale snapshot.
 router.get('/tokens/:mint', asyncHandler(async (req, res) => {
-  const mintParam = req.params.mint;
+  const mintParam = String(req.params.mint || '');
   const mintList = Array.from(new Set(mintParam.split(',').map((m) => m.trim()).filter(Boolean)));
   const forceFresh = req.query.fresh === '1' || req.query.fresh === 'true';
 

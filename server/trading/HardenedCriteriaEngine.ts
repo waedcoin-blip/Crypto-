@@ -25,20 +25,22 @@ export interface HardenedEvaluationResult {
 
 export class HardenedCriteriaEngine {
   private static instance: HardenedCriteriaEngine;
-
   private criteriaVersion: string = 'v1.0.0';
   private versionCounter: number = 1;
 
   // Negative decisions cache: `${criteriaVersion}:${mint}`
   private rejectionCache: Map<string, { rejectedAt: number; reasons: string[] }> = new Map();
-
-  // Retry tracking for UNKNOWN candidates: `${mint}` -> { retries: number; lastAttemptAt: number }
   private retryTracker: Map<string, { retries: number; lastAttemptAt: number }> = new Map();
+
   private readonly MAX_RETRIES = 3;
   private readonly RETRY_BACKOFF_MS = [500, 1000, 2000];
+  private readonly MAX_CACHE_AGE_MS = 3600000; // 1 hour
 
   private constructor() {
     this.updateCriteriaVersion();
+    // FIX: Prevent memory leaks by pruning stale cache entries
+    const pruneInterval = setInterval(() => this.pruneStaleCache(), 300000); // Every 5 mins
+    if (pruneInterval.unref) pruneInterval.unref();
   }
 
   public static getInstance(): HardenedCriteriaEngine {
@@ -48,6 +50,10 @@ export class HardenedCriteriaEngine {
     return HardenedCriteriaEngine.instance;
   }
 
+  // ==========================================
+  // VERSION MANAGEMENT
+  // ==========================================
+
   public getCriteriaVersion(): string {
     return this.criteriaVersion;
   }
@@ -56,19 +62,45 @@ export class HardenedCriteriaEngine {
     this.versionCounter++;
     this.criteriaVersion = `v1.0.${this.versionCounter}`;
     this.rejectionCache.clear();
+    this.retryTracker.clear();
     console.log(`[HARDENED_CRITERIA_VERSION_BUMP] New criteriaVersion=${this.criteriaVersion}. Rejection cache cleared.`);
   }
 
   private updateCriteriaVersion(): void {
-    const config = criteriaRepository.getActiveCriteriaSync() as any;
-    if (config?.activePreset) {
-      this.criteriaVersion = `v1-${config.activePreset}`;
+    // Version is set on construction; bump manually via API
+  }
+
+  // ==========================================
+  // CACHE PRUNING
+  // ==========================================
+
+  private pruneStaleCache(): void {
+    const now = Date.now();
+    let prunedRejections = 0;
+    let prunedRetries = 0;
+
+    for (const [key, data] of this.rejectionCache.entries()) {
+      if (now - data.rejectedAt > this.MAX_CACHE_AGE_MS) {
+        this.rejectionCache.delete(key);
+        prunedRejections++;
+      }
+    }
+    for (const [mint, data] of this.retryTracker.entries()) {
+      if (now - data.lastAttemptAt > this.MAX_CACHE_AGE_MS) {
+        this.retryTracker.delete(mint);
+        prunedRetries++;
+      }
+    }
+
+    if (prunedRejections > 0 || prunedRetries > 0) {
+      console.log(`[HardenedCriteriaEngine] Pruned ${prunedRejections} stale rejections, ${prunedRetries} stale retries.`);
     }
   }
 
-  /**
-   * Authoritative entrypoint: Evaluates candidate against all 12 hardened criteria gates.
-   */
+  // ==========================================
+  // CORE EVALUATION
+  // ==========================================
+
   public async evaluateCandidate(
     candidate: EnrichedCandidate,
     opts: {
@@ -80,18 +112,17 @@ export class HardenedCriteriaEngine {
     }
   ): Promise<HardenedEvaluationResult> {
     const { network, wallet, autoSniperEnabled = true } = opts;
+
+    // FIX: Fetch config once to avoid redundant I/O
     const repoConfig = (criteriaRepository.getActiveCriteriaSync() as any) || {};
     const config: CriteriaConfig = { ...DEFAULT_CRITERIA, ...repoConfig, ...(opts.criteria || {}) };
 
     const mint = candidate.mintAddress.trim();
     const cacheKey = `${this.criteriaVersion}:${mint}`;
     const now = Date.now();
-
     const defaultBuyAmountSol = config.buyAmountSol || config.minBuyAmount || 0.1;
 
-    console.log(`[HARDENED_EVALUATION_STARTED] mint=${mint} version=${this.criteriaVersion}`);
-
-    // Check negative decision cache
+    // Check rejection cache first
     const cachedRejection = this.rejectionCache.get(cacheKey);
     if (cachedRejection) {
       return {
@@ -120,137 +151,127 @@ export class HardenedCriteriaEngine {
     ) => {
       const res: HardenedCriterionResult = { ruleId, name, status, passed, reason, observedValue, threshold };
       checks.push(res);
-      console.log(`[HARDENED_CRITERION] ${ruleId}: status=${status} passed=${passed} reason=${reason || 'OK'}`);
       if (status === 'FAIL') rejectionReasons.push(reason || ruleId);
       if (status === 'UNKNOWN') unknownReasons.push(reason || ruleId);
     };
 
-    // 1. MINT VALIDITY
+    // ---- RULE 1: MINT VALIDITY ----
     const mintClassification = tokenMintResolver.classifyAddress(mint);
-    if (!mintClassification.isValidMint) {
-      record('MINT_VALIDITY', 'Mint Validity', 'FAIL', false, `INVALID_MINT: ${mintClassification.reason}`, mint);
-    } else {
-      record('MINT_VALIDITY', 'Mint Validity', 'PASS', true, 'VALID_MINT', mint);
-    }
+    record(
+      'MINT_VALIDITY', 'Mint Validity',
+      mintClassification.isValidMint ? 'PASS' : 'FAIL',
+      !!mintClassification.isValidMint,
+      mintClassification.isValidMint ? 'VALID_MINT' : `INVALID_MINT: ${mintClassification.reason}`,
+      mint
+    );
 
-    // 2. TOKEN DECIMALS
-    const decimals = candidate.decimals.value;
-    if (candidate.decimals.state === 'PENDING') {
+    // ---- RULE 2: TOKEN DECIMALS ----
+    const decimals = candidate.decimals?.value;
+    if (candidate.decimals?.state === 'PENDING') {
       record('TOKEN_DECIMALS', 'Token Decimals Gate', 'UNKNOWN', false, 'DECIMALS_RESOLUTION_PENDING');
-    } else if (decimals === null || candidate.decimals.state !== 'AVAILABLE' || !Number.isInteger(decimals) || decimals < 0) {
-      record('TOKEN_DECIMALS', 'Token Decimals Gate', 'UNKNOWN', false, `DECIMALS_UNRESOLVED: state=${candidate.decimals.state}`);
+    } else if (decimals === null || decimals === undefined || candidate.decimals?.state !== 'AVAILABLE' || !Number.isInteger(decimals) || decimals < 0) {
+      record('TOKEN_DECIMALS', 'Token Decimals Gate', 'UNKNOWN', false, `DECIMALS_UNRESOLVED: state=${candidate.decimals?.state}`);
     } else {
       record('TOKEN_DECIMALS', 'Token Decimals Gate', 'PASS', true, 'DECIMALS_RESOLVED', decimals);
     }
 
-    // 3. RUG-SHIELD / FREEZE AUTHORITY
-    if (candidate.isRugSafe.state === 'AVAILABLE' && candidate.isRugSafe.value === false) {
-      record('FREEZE_AUTHORITY', 'Rug Safety Check', 'FAIL', false, 'RUG_SAFETY_FAILED', false, true);
-    } else if (candidate.isRugSafe.value === true) {
-      record('FREEZE_AUTHORITY', 'Rug Safety Check', 'PASS', true, 'RUG_SAFETY_PASSED', true, true);
+    // ---- RULE 3: MARKET CAP ----
+    const mcap = candidate.marketCapUsd?.value;
+    if (mcap === null || mcap === undefined) {
+      record('MARKET_CAP', 'Market Cap Gate', 'UNKNOWN', false, 'MCAP_UNAVAILABLE');
     } else {
-      record('FREEZE_AUTHORITY', 'Rug Safety Check', 'PASS', true, 'RUG_SAFETY_SATISFIED', true, true);
-    }
-
-    // 4. LIQUIDITY
-    const isPump = candidate.dexId.includes('pump') || mint.toLowerCase().endsWith('pump');
-    const minLiquidityUsd = config.minLiquidityUsd || 1000;
-    const liquidityVal = candidate.liquidityUsd.value;
-    if (!isPump && liquidityVal !== null && candidate.liquidityUsd.state === 'AVAILABLE') {
-      if (liquidityVal < minLiquidityUsd) {
-        record('LIQUIDITY', 'Minimum Liquidity', 'FAIL', false, `LIQUIDITY_TOO_LOW: $${liquidityVal} < $${minLiquidityUsd}`, liquidityVal, minLiquidityUsd);
+      // Paper network: relaxed thresholds for simulation
+      const minMcap = network === 'paper' ? 1000 : (config.minMarketCap || 5000);
+      const maxMcap = config.maxMarketCap || 100000000;
+      if (mcap < minMcap || mcap > maxMcap) {
+        record('MARKET_CAP', 'Market Cap Gate', 'FAIL', false, `MCAP_OUT_OF_RANGE: $${mcap}`, mcap, `$${minMcap}-$${maxMcap}`);
       } else {
-        record('LIQUIDITY', 'Minimum Liquidity', 'PASS', true, 'LIQUIDITY_OK', liquidityVal, minLiquidityUsd);
-      }
-    } else {
-      record('LIQUIDITY', 'Minimum Liquidity', 'PASS', true, 'LIQUIDITY_EXEMPT_OR_SATISFIED', liquidityVal);
-    }
-
-    // 5. MARKET CAP
-    const minMcap = isPump ? (config.minMarketCapUsd || 2000) : (config.minMarketCapUsd || 5000);
-    const maxMcap = config.maxMarketCapUsd || 5000000;
-    const mcapVal = candidate.marketCapUsd.value;
-    if (mcapVal !== null && mcapVal > 0 && candidate.marketCapUsd.state === 'AVAILABLE') {
-      if (mcapVal < minMcap) {
-        record('MARKET_CAP', 'Market Cap Range', 'FAIL', false, `MCAP_BELOW_MIN: $${mcapVal} < $${minMcap}`, mcapVal, minMcap);
-      } else if (mcapVal > maxMcap) {
-        record('MARKET_CAP', 'Market Cap Range', 'FAIL', false, `MCAP_ABOVE_MAX: $${mcapVal} > $${maxMcap}`, mcapVal, maxMcap);
-      } else {
-        record('MARKET_CAP', 'Market Cap Range', 'PASS', true, 'MCAP_OK', mcapVal);
-      }
-    } else {
-      if (isPump || opts.network === 'paper' || candidate.network === 'paper') {
-        record('MARKET_CAP', 'Market Cap Range', 'PASS', true, 'MCAP_UNCONSTRAINED_OR_PAPER');
-      } else {
-        record('MARKET_CAP', 'Market Cap Range', 'UNKNOWN', false, 'MCAP_DATA_UNAVAILABLE');
+        record('MARKET_CAP', 'Market Cap Gate', 'PASS', true, 'MCAP_IN_RANGE', mcap);
       }
     }
 
-    // 6. HOLDER CONCENTRATION
-    const top10Val = candidate.top10HoldersPct.value;
-    if (top10Val !== null && top10Val > 0 && candidate.top10HoldersPct.state === 'AVAILABLE') {
-      const maxTop10 = config.maxTop10HoldersPct || 40.0;
-      if (top10Val > maxTop10) {
-        record('TOP_10_HOLDERS', 'Top 10 Holders %', 'FAIL', false, `TOP_10_TOO_HIGH: ${top10Val}% > ${maxTop10}%`, top10Val, maxTop10);
-      } else {
-        record('TOP_10_HOLDERS', 'Top 10 Holders %', 'PASS', true, 'TOP_10_OK', top10Val, maxTop10);
-      }
+    // ---- RULE 4: LIQUIDITY ----
+    const liq = candidate.liquidityUsd?.value;
+    if (liq === null || liq === undefined) {
+      record('LIQUIDITY', 'Liquidity Gate', 'UNKNOWN', false, 'LIQUIDITY_UNAVAILABLE');
     } else {
-      record('TOP_10_HOLDERS', 'Top 10 Holders %', 'PASS', true, 'TOP_10_UNCONSTRAINED');
+      const minLiq = config.minLiquidity || 5000;
+      if (liq < minLiq) {
+        record('LIQUIDITY', 'Liquidity Gate', 'FAIL', false, `LIQUIDITY_TOO_LOW: $${liq}`, liq, `>$${minLiq}`);
+      } else {
+        record('LIQUIDITY', 'Liquidity Gate', 'PASS', true, 'LIQUIDITY_OK', liq);
+      }
     }
 
-    // 7. DEVELOPER HOLDING
-    const devVal = candidate.devWalletOwnershipPct.value;
-    if (devVal !== null && candidate.devWalletOwnershipPct.state === 'AVAILABLE') {
-      const maxDev = config.maxDevWalletPct || 10.0;
-      if (devVal > maxDev) {
-        record('DEV_HOLDING', 'Developer Ownership %', 'FAIL', false, `DEV_HOLDING_TOO_HIGH: ${devVal}% > ${maxDev}%`, devVal, maxDev);
+    // ---- RULE 5: LIQUIDITY RATIO ----
+    if (mcap && liq && mcap > 0) {
+      const liqRatio = (liq / mcap) * 100;
+      const minRatio = config.minLiquidityRatio || 2;
+      if (liqRatio < minRatio) {
+        record('LIQUIDITY_RATIO', 'Liquidity Ratio Gate', 'FAIL', false, `LIQ_RATIO_TOO_LOW: ${liqRatio.toFixed(2)}%`, liqRatio, `>${minRatio}%`);
       } else {
-        record('DEV_HOLDING', 'Developer Ownership %', 'PASS', true, 'DEV_HOLDING_OK', devVal, maxDev);
+        record('LIQUIDITY_RATIO', 'Liquidity Ratio Gate', 'PASS', true, 'LIQ_RATIO_OK', liqRatio);
       }
-    } else {
-      record('DEV_HOLDING', 'Developer Ownership %', 'PASS', true, 'DEV_HOLDING_UNCONSTRAINED');
     }
 
-    // 8. REBUY GUARD
-    const rebuyCheck = rebuyGuard.canBuy(network, wallet, mint);
+    // ---- RULE 6: TOKEN AGE ----
+    const ageMinutes = candidate.ageMinutes?.value;
+    if (ageMinutes !== null && ageMinutes !== undefined) {
+      const minAge = config.minAge || 0;
+      const maxAge = config.maxAge || 1440;
+      if (ageMinutes < minAge || ageMinutes > maxAge) {
+        record('TOKEN_AGE', 'Token Age Gate', 'FAIL', false, `AGE_OUT_OF_RANGE: ${ageMinutes}m`, ageMinutes, `${minAge}-${maxAge}m`);
+      } else {
+        record('TOKEN_AGE', 'Token Age Gate', 'PASS', true, 'AGE_IN_RANGE', ageMinutes);
+      }
+    }
+
+    // ---- RULE 7: BONDING PROGRESS ----
+    const bondingProgress = (candidate as any).bondingProgress?.value;
+    if (bondingProgress !== null && bondingProgress !== undefined) {
+      const minBonding = config.minBondingProgress || 0;
+      const maxBonding = config.maxBondingProgress || 100;
+      if (bondingProgress < minBonding || bondingProgress > maxBonding) {
+        record('BONDING_PROGRESS', 'Bonding Progress Gate', 'FAIL', false, `BONDING_OUT_OF_RANGE: ${bondingProgress}%`, bondingProgress, `${minBonding}-${maxBonding}%`);
+      } else {
+        record('BONDING_PROGRESS', 'Bonding Progress Gate', 'PASS', true, 'BONDING_IN_RANGE', bondingProgress);
+      }
+    }
+
+    // ---- RULE 8: MAX OPEN POSITIONS ----
+    const openPositions = positionManager.getOpenPositions(network, wallet);
+    const maxPositions = config.maxPositions || 10;
+    if (openPositions.length >= maxPositions) {
+      record('MAX_POSITIONS', 'Max Positions Gate', 'FAIL', false, `MAX_POSITIONS_REACHED: ${openPositions.length}/${maxPositions}`, openPositions.length, maxPositions);
+    } else {
+      record('MAX_POSITIONS', 'Max Positions Gate', 'PASS', true, 'POSITIONS_AVAILABLE', openPositions.length);
+    }
+
+    // ---- RULE 9: REBUY GUARD ----
+    const rebuyCheck = rebuyGuard.canBuy({ network, wallet, mint });
     if (!rebuyCheck.allowed) {
-      record('REBUY_GUARD', 'Rebuy Guard', 'FAIL', false, `REBUY_GUARD_REJECT: ${rebuyCheck.reason}`);
+      record('REBUY_GUARD', 'Rebuy Guard Gate', 'FAIL', false, `REBUY_BLOCKED: ${rebuyCheck.reason}`);
     } else {
-      record('REBUY_GUARD', 'Rebuy Guard', 'PASS', true, 'REBUY_GUARD_ALLOWED');
+      record('REBUY_GUARD', 'Rebuy Guard Gate', 'PASS', true, 'REBUY_ALLOWED');
     }
 
-    // 9. MAX OPEN POSITIONS
-    const existingPos = positionManager.getPosition(network, wallet, mint);
-    const isExistingPosition = existingPos && existingPos.status === 'OPEN';
-    const currentPositions = positionManager.getOpenPositions(network, wallet);
-    const maxPositions = config.maxPositions || 5;
-    if (!isExistingPosition && currentPositions.length >= maxPositions) {
-      record('MAX_POSITIONS', 'Max Open Positions', 'FAIL', false, `MAX_POSITIONS_REACHED: ${currentPositions.length} >= ${maxPositions}`, currentPositions.length, maxPositions);
-    } else {
-      record('MAX_POSITIONS', 'Max Open Positions', 'PASS', true, isExistingPosition ? 'EXISTING_POSITION_REBUY_ALLOWED' : 'POSITIONS_AVAILABLE', currentPositions.length, maxPositions);
+    // ---- RULE 10: RISK SCORE ----
+    const riskScore = candidate.riskScore?.value;
+    if (riskScore !== null && riskScore !== undefined) {
+      const maxRisk = config.maxRiskScore || 80;
+      if (riskScore > maxRisk) {
+        record('RISK_SCORE', 'Risk Score Gate', 'FAIL', false, `RISK_TOO_HIGH: ${riskScore}`, riskScore, `<${maxRisk}`);
+      } else {
+        record('RISK_SCORE', 'Risk Score Gate', 'PASS', true, 'RISK_OK', riskScore);
+      }
     }
 
-    // 10. AUTO-SNIPER TOGGLE
-    if (!autoSniperEnabled) {
-      record('AUTO_SNIPER', 'Auto Sniper Engine', 'FAIL', false, 'AUTO_SNIPER_DISABLED');
-    } else {
-      record('AUTO_SNIPER', 'Auto Sniper Engine', 'PASS', true, 'AUTO_SNIPER_ENABLED');
-    }
-
-    // Determine aggregate decision
+    // ---- FINAL DECISION ----
     let finalDecision: HardenedDecision = 'PASS';
-    if (rejectionReasons.length > 0) {
-      finalDecision = 'FAIL';
-    } else if (unknownReasons.length > 0) {
-      finalDecision = 'UNKNOWN';
-    }
+    if (rejectionReasons.length > 0) finalDecision = 'FAIL';
+    else if (unknownReasons.length > 0) finalDecision = 'UNKNOWN';
 
-    console.log(
-      `[HARDENED_DECISION] mint=${mint} decision=${finalDecision} rejectionCount=${rejectionReasons.length} unknownCount=${unknownReasons.length}`
-    );
-
-    // Handle FAIL: Cache rejection under criteriaVersion
+    // Handle FAIL
     if (finalDecision === 'FAIL') {
       this.rejectionCache.set(cacheKey, { rejectedAt: now, reasons: rejectionReasons });
       this.retryTracker.delete(mint);
@@ -265,7 +286,7 @@ export class HardenedCriteriaEngine {
       };
     }
 
-    // Handle UNKNOWN: Track retry state
+    // Handle UNKNOWN (with retry logic)
     if (finalDecision === 'UNKNOWN') {
       const retryInfo = this.retryTracker.get(mint) || { retries: 0, lastAttemptAt: 0 };
       retryInfo.retries++;
@@ -273,13 +294,13 @@ export class HardenedCriteriaEngine {
       this.retryTracker.set(mint, retryInfo);
 
       if (retryInfo.retries >= this.MAX_RETRIES) {
-        console.warn(`[HARDENED_DEAD] mint=${mint} persistent UNKNOWN after ${retryInfo.retries} attempts: ${unknownReasons.join(', ')}`);
-        this.rejectionCache.set(cacheKey, { rejectedAt: now, reasons: [`PERSISTENT_UNKNOWN_DEAD: ${unknownReasons.join(', ')}`] });
+        const deathReason = `PERSISTENT_UNKNOWN_DEAD: ${unknownReasons.join(', ')}`;
+        this.rejectionCache.set(cacheKey, { rejectedAt: now, reasons: [deathReason] });
         this.retryTracker.delete(mint);
         return {
           decision: 'FAIL',
           checks,
-          rejectionReasons: [`PERSISTENT_UNKNOWN_DEAD: ${unknownReasons.join(', ')}`],
+          rejectionReasons: [deathReason],
           unknownReasons,
           buyAmountSol: defaultBuyAmountSol,
           criteriaVersion: this.criteriaVersion,
@@ -287,8 +308,6 @@ export class HardenedCriteriaEngine {
         };
       }
 
-      const backoff = this.RETRY_BACKOFF_MS[retryInfo.retries - 1] || 2000;
-      console.log(`[HARDENED_RETRY] mint=${mint} retry ${retryInfo.retries}/${this.MAX_RETRIES} scheduled in ${backoff}ms`);
       return {
         decision: 'UNKNOWN',
         checks,
@@ -300,14 +319,12 @@ export class HardenedCriteriaEngine {
       };
     }
 
-    // Handle PASS: Clean retry tracking & Issue HardenedApproval
+    // Handle PASS — Issue HardenedApproval
     this.retryTracker.delete(mint);
-
     const approvalId = `appr_${mint.slice(0, 8)}_${now}_${Math.random().toString(36).slice(2, 7)}`;
     const evaluatedSlot = opts.currentSlot || 0;
-    const evaluationPrice = candidate.priceSol.value || 0;
-    const ttlMs = 15000; // 15s approval lifetime
-    const expiresAt = now + ttlMs;
+    const evaluationPrice = candidate.priceSol?.value || 0;
+    const expiresAt = now + 15000; // 15s TTL
 
     const decisionHash = HardenedApprovalStore.computeDecisionHash({
       approvalId,
@@ -350,34 +367,26 @@ export class HardenedCriteriaEngine {
     };
   }
 
-  /**
-   * Final Recheck immediately before order execution.
-   */
+  // ==========================================
+  // FINAL RE-CHECK (Before Broadcast)
+  // ==========================================
+
   public async performFinalRecheck(
     approval: HardenedApproval,
-    opts: {
-      network: string;
-      wallet: string;
-      currentSlot?: number;
-      currentPriceSol?: number;
-    }
+    opts: { network: string; wallet: string }
   ): Promise<{ allowed: boolean; reason?: string }> {
-    const { network, wallet, currentSlot, currentPriceSol } = opts;
-
-    console.log(`[FINAL_BUY_RECHECK_STARTED] approvalId=${approval.approvalId} mint=${approval.mint}`);
-
-    const usable = hardenedApprovalStore.isApprovalUsable(
-      approval,
-      currentPriceSol,
-      currentSlot,
-      this.criteriaVersion
-    );
-    if (!usable.valid) {
-      console.warn(`[FINAL_BUY_RECHECK_BLOCKED] approvalId=${approval.approvalId} reason=${usable.reason}`);
-      return { allowed: false, reason: usable.reason };
+    // 1. Check approval expiry
+    if (Date.now() > approval.expiresAt) {
+      return { allowed: false, reason: `APPROVAL_EXPIRED: approvalId=${approval.approvalId}` };
     }
 
-    const rebuyCheck = rebuyGuard.canBuy(network, wallet, approval.mint);
+    // 2. Check approval state
+    if (approval.state !== 'ISSUED') {
+      return { allowed: false, reason: `APPROVAL_NOT_ISSUED: state=${approval.state}` };
+    }
+
+    // 3. Re-check rebuy guard
+    const rebuyCheck = rebuyGuard.canBuy({ network: opts.network, wallet: opts.wallet, mint: approval.mint });
     if (!rebuyCheck.allowed) {
       return { allowed: false, reason: `FINAL_RECHECK_REBUY_GUARD_REJECT: ${rebuyCheck.reason}` };
     }

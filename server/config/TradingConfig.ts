@@ -1,4 +1,3 @@
-// server/config/TradingConfig.ts
 /**
  * Centralized Authoritative Trading Configuration (SOL-Only, Lamports & Percentages)
  * Strictly avoids hard-coded USD rates and floating-point conversion fallbacks.
@@ -21,47 +20,52 @@ export interface TradingConfig {
   cooldownMs: number;
 }
 
+// FIX: Safe parsing helpers prevent startup crashes from malformed .env strings
+const safeBigInt = (value: string | undefined, fallback: string): bigint => {
+  try { const val = value?.trim(); return val ? BigInt(val) : BigInt(fallback); }
+  catch { return BigInt(fallback); }
+};
+const safeNumber = (value: string | undefined, fallback: number): number => {
+  try {
+    const val = value?.trim();
+    const parsed = val ? Number(val) : fallback;
+    return Number.isNaN(parsed) ? fallback : parsed;
+  } catch { return fallback; }
+};
+
 export const defaultTradingConfig: TradingConfig = {
-  minimumNetProfitLamports: BigInt(process.env.MIN_NET_PROFIT_LAMPORTS || '1000000'), // 0.001 SOL
-  minimumNetProfitPct: Number(process.env.MIN_NET_PROFIT_PCT || '0.5'), // 0.5%
-  minimumRewardRiskRatio: Number(process.env.MIN_REWARD_RISK_RATIO || '1.5'),
-  maxSlippageBps: Number(process.env.MAX_SLIPPAGE_BPS || '250'), // 2.5%
-  maxPriceImpactBps: Number(process.env.MAX_PRICE_IMPACT_BPS || '500'), // 5.0%
-  maxQuoteAgeMs: Number(process.env.MAX_QUOTE_AGE_MS || '5000'), // 5 seconds
-  maxMarketDataAgeMs: Number(process.env.MAX_MARKET_DATA_AGE_MS || '15000'), // 15 seconds
-  tpPct: Number(process.env.DEFAULT_TP_PCT || '25.0'), // +25%
-  slPct: Number(process.env.DEFAULT_SL_PCT || '15.0'), // -15%
-  trailingStopPct: Number(process.env.DEFAULT_TRAILING_STOP_PCT || '10.0'), // 10% from peak
-  maxExposureLamports: BigInt(process.env.MAX_EXPOSURE_LAMPORTS || '1000000000'), // 1.0 SOL
-  maxPositionLamports: BigInt(process.env.MAX_POSITION_LAMPORTS || '200000000'), // 0.2 SOL
-  maxPositions: Number(process.env.MAX_POSITIONS || '3'),
-  cooldownMs: Number(process.env.COOLDOWN_MS || '60000'), // 60 seconds
+  minimumNetProfitLamports: safeBigInt(process.env.MIN_NET_PROFIT_LAMPORTS, '1000000'),
+  minimumNetProfitPct: safeNumber(process.env.MIN_NET_PROFIT_PCT, 0.5),
+  minimumRewardRiskRatio: safeNumber(process.env.MIN_REWARD_RISK_RATIO, 1.5),
+  maxSlippageBps: safeNumber(process.env.MAX_SLIPPAGE_BPS, 250),
+  maxPriceImpactBps: safeNumber(process.env.MAX_PRICE_IMPACT_BPS, 500),
+  maxQuoteAgeMs: safeNumber(process.env.MAX_QUOTE_AGE_MS, 5000),
+  maxMarketDataAgeMs: safeNumber(process.env.MAX_MARKET_DATA_AGE_MS, 15000),
+  tpPct: safeNumber(process.env.DEFAULT_TP_PCT, 25.0),
+  slPct: safeNumber(process.env.DEFAULT_SL_PCT, 15.0),
+  trailingStopPct: safeNumber(process.env.DEFAULT_TRAILING_STOP_PCT, 10.0),
+  maxExposureLamports: safeBigInt(process.env.MAX_EXPOSURE_LAMPORTS, '1000000000'),
+  maxPositionLamports: safeBigInt(process.env.MAX_POSITION_LAMPORTS, '200000000'),
+  maxPositions: safeNumber(process.env.MAX_POSITIONS, 3),
+  cooldownMs: safeNumber(process.env.COOLDOWN_MS, 60000),
 };
 
 class TradingConfigManager {
   private static instance: TradingConfigManager;
   private currentConfig: TradingConfig;
-
-  private constructor() {
-    this.currentConfig = { ...defaultTradingConfig };
-  }
-
+  private constructor() { this.currentConfig = { ...defaultTradingConfig }; }
   public static getInstance(): TradingConfigManager {
-    if (!TradingConfigManager.instance) {
-      TradingConfigManager.instance = new TradingConfigManager();
-    }
+    if (!TradingConfigManager.instance) TradingConfigManager.instance = new TradingConfigManager();
     return TradingConfigManager.instance;
   }
-
-  public getConfig(): TradingConfig {
-    return { ...this.currentConfig };
-  }
-
+  public getConfig(): TradingConfig { return { ...this.currentConfig }; }
   public updateConfig(patch: Partial<TradingConfig>): TradingConfig {
-    this.currentConfig = {
-      ...this.currentConfig,
-      ...patch,
-    };
+    this.currentConfig = { ...this.currentConfig, ...patch };
+    return this.getConfig();
+  }
+  // NEW: Emergency reset to safe defaults
+  public resetToDefaults(): TradingConfig {
+    this.currentConfig = { ...defaultTradingConfig };
     return this.getConfig();
   }
 }

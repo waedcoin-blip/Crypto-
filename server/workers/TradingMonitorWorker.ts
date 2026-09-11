@@ -47,7 +47,7 @@ export class TradingMonitorWorker {
       // execution pipeline. ActivePositionMarketFeed + UnifiedExitEngine are the sole
       // automatic exit path.
       for (const pos of positions) {
-        if (pos.status !== 'EXIT_PENDING' && pos.status !== 'RECOVERY_REQUIRED') continue;
+        if (pos.status !== 'EXIT_REQUESTED' && pos.status !== 'EXIT_SUBMITTED' && pos.status !== 'EXIT_CONFIRMING' && pos.status !== 'RECOVERY_REQUIRED') continue;
 
         const age = now - (pos.updatedAt || 0);
         if (age < 10000) continue;
