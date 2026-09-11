@@ -1,13 +1,14 @@
+// shared/highFrequencyBuyDetector.ts (Adjust path as needed)
 import { eventBus } from './eventBus';
 
 export interface TradeEvent {
   tokenAddress: string;
   token?: string;
   type: 'buy' | 'sell';
-  amount: number;
-  priceSol?: number;
+  amount: number;       // Token amount
+  priceSol?: number;    // Price per token in SOL
   timestamp: number;
-  maker?: string; // Wallet address
+  maker?: string; 
 }
 
 interface TokenBuffer {
@@ -17,8 +18,8 @@ interface TokenBuffer {
 
 export class HighFrequencyBuyDetector {
   private buffers: Map<string, TokenBuffer> = new Map();
-  private readonly WINDOW_MAX_MS = 10000; // Track up to 10s
-  private readonly ALERT_COOLDOWN_MS = 5000; // Prevent spamming alerts
+  private readonly WINDOW_MAX_MS = 10000; 
+  private readonly ALERT_COOLDOWN_MS = 5000; 
 
   public analyzeTrade(trade: TradeEvent) {
     if (!trade.tokenAddress) return;
@@ -29,7 +30,6 @@ export class HighFrequencyBuyDetector {
       this.buffers.set(trade.tokenAddress, buffer);
     }
 
-    // Add new trade
     buffer.trades.push(trade);
 
     // Prune old trades
@@ -39,39 +39,42 @@ export class HighFrequencyBuyDetector {
     this.evaluateBuffer(trade.tokenAddress, trade.token || trade.tokenAddress.slice(0, 6), buffer);
   }
 
+  // NEW: Expose state for backend API monitoring
+  public getDetectorState() {
+    const state: Record<string, { tradeCount: number; lastAlert: number }> = {};
+    for (const [tokenAddress, buffer] of this.buffers.entries()) {
+      state[tokenAddress] = {
+        tradeCount: buffer.trades.length,
+        lastAlert: buffer.lastAlertTimestamp
+      };
+    }
+    return state;
+  }
+
   private evaluateBuffer(tokenAddress: string, symbol: string, buffer: TokenBuffer) {
     const now = Date.now();
-    if (now - buffer.lastAlertTimestamp < this.ALERT_COOLDOWN_MS) {
-      return;
-    }
+    if (now - buffer.lastAlertTimestamp < this.ALERT_COOLDOWN_MS) return;
 
     const trades = buffer.trades;
-    if (trades.length < 3) return; // Too few trades to matter
+    if (trades.length < 3) return; 
 
-    // Time windows
-    let buys1s = 0;
-    let buys3s = 0;
-    let buys5s = 0;
-    let buys10s = 0;
-    
-    let totalBuys = 0;
-    let totalSells = 0;
-    let buyVolumeSol = 0;
+    let buys1s = 0, buys3s = 0, buys5s = 0, buys10s = 0;
+    let totalBuys = 0, totalSells = 0, buyVolumeSol = 0;
     const uniqueWallets = new Set<string>();
     const walletBuyCounts = new Map<string, number>();
 
     for (const t of trades) {
       const ageMs = now - t.timestamp;
-      
       if (t.type === 'buy') {
         totalBuys++;
-        buyVolumeSol += (t.priceSol || 0); // Or use SOL amount if available
-
+        // FIX: Calculate actual SOL volume (Token Amount * Price per Token)
+        buyVolumeSol += (t.amount * (t.priceSol || 0)); 
+        
         if (ageMs <= 1000) buys1s++;
         if (ageMs <= 3000) buys3s++;
         if (ageMs <= 5000) buys5s++;
         if (ageMs <= 10000) buys10s++;
-
+        
         if (t.maker) {
           uniqueWallets.add(t.maker);
           walletBuyCounts.set(t.maker, (walletBuyCounts.get(t.maker) || 0) + 1);
@@ -84,34 +87,26 @@ export class HighFrequencyBuyDetector {
     if (totalBuys === 0) return;
 
     const buyToSellRatio = totalSells > 0 ? totalBuys / totalSells : totalBuys;
-    
-    // Check acceleration: more buys in recent windows
     const acceleration = (buys1s / 1) > (buys5s / 5) ? 1.5 : 1.0;
 
     let maxRepeatedBuys = 0;
     let coordinatedClusters = 0;
-    
     for (const count of walletBuyCounts.values()) {
-      if (count > maxRepeatedBuys) {
-        maxRepeatedBuys = count;
-      }
-      if (count >= 3) {
-        coordinatedClusters++; // Simple heuristic for a cluster (same wallet buying many times)
-      }
+      if (count > maxRepeatedBuys) maxRepeatedBuys = count;
+      if (count >= 3) coordinatedClusters++; 
     }
 
     // Confidence Score Calculation (0 to 100)
     let score = 0;
-    score += Math.min(30, buys5s * 3); // Up to 30 points for frequency
-    score += Math.min(20, uniqueWallets.size * 2); // Up to 20 for unique wallets
-    score += buyToSellRatio > 5 ? 15 : (buyToSellRatio > 2 ? 5 : 0); // Up to 15 for ratio
-    score += acceleration > 1.2 ? 10 : 0; // Up to 10 for acceleration
-    score += maxRepeatedBuys > 3 ? 15 : 0; // Up to 15 for repeated buys from same maker
-    score += coordinatedClusters > 0 ? 10 : 0; // Up to 10 for clusters
+    score += Math.min(30, buys5s * 3); 
+    score += Math.min(20, uniqueWallets.size * 2); 
+    score += buyToSellRatio > 5 ? 15 : (buyToSellRatio > 2 ? 5 : 0); 
+    score += acceleration > 1.2 ? 10 : 0; 
+    score += maxRepeatedBuys > 3 ? 15 : 0; 
+    score += coordinatedClusters > 0 ? 10 : 0; 
 
     const confidenceScore = Math.min(100, score);
 
-    // If confidence is high enough, emit HIGH_FREQUENCY_BUY event
     if (confidenceScore >= 60 && buys5s >= 5) {
       buffer.lastAlertTimestamp = now;
       eventBus.emit('HIGH_FREQUENCY_BUY', {
@@ -119,10 +114,7 @@ export class HighFrequencyBuyDetector {
         symbol,
         confidenceScore,
         metrics: {
-          buys1s,
-          buys3s,
-          buys5s,
-          buys10s,
+          buys1s, buys3s, buys5s, buys10s,
           uniqueWallets: uniqueWallets.size,
           buyToSellRatio: parseFloat(buyToSellRatio.toFixed(2)),
           acceleration,

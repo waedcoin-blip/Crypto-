@@ -1,21 +1,14 @@
+// shared/walletIntelligence.ts (Adjust path as needed)
 import { eventBus } from './eventBus';
 import { useAppStore } from '../store/appStore';
 
-/**
- * Wallet Intelligence Engine
- * Specialized in monitoring wallet behavior, whales, and smart money.
- */
 export class WalletIntelligenceEngine {
-  private monitoredWallets: Set<string>;
+  private monitoredWallets: Set<string> = new Set();
+  private readonly WHALE_THRESHOLD = 1000000; // Configurable threshold (SOL/USD)
 
   constructor() {
-    this.monitoredWallets = new Set();
     this.syncMonitoredWallets();
-    
-    // Subscribe to store changes to keep monitored wallets updated
-    useAppStore.subscribe((state) => {
-      this.monitoredWallets = new Set(state.monitoredWallets.map(w => w.address));
-    });
+    useAppStore.subscribe(() => this.syncMonitoredWallets());
   }
 
   private syncMonitoredWallets() {
@@ -26,21 +19,22 @@ export class WalletIntelligenceEngine {
   public analyzeTrade(trade: { type: string, token: string, tokenAddress: string, amount: number, wallet: string }) {
     if (!trade.wallet) return;
 
-    // Check if it's a monitored wallet
-    if (this.monitoredWallets.has(trade.wallet)) {
-      useAppStore.getState().addTelemetryAlert({
-        id: `wallet-alert-${Date.now()}-${Math.random()}`,
-        token: trade.token,
-        address: trade.tokenAddress,
-        type: 'WALLET_TRADE',
-        message: `Monitored Wallet ${trade.type.toUpperCase()}: ${trade.token}`,
-        timestamp: Date.now()
-      });
-      return;
+    const isMonitored = this.monitoredWallets.has(trade.wallet);
+    
+    // FIX: Removed early return so monitored wallets can ALSO trigger whale alerts
+    if (isMonitored) {
+       useAppStore.getState().addTelemetryAlert({
+         id: `wallet-alert-${Date.now()}-${Math.random()}`,
+         token: trade.token,
+         address: trade.tokenAddress,
+         type: 'WALLET_TRADE',
+         message: `Monitored Wallet ${trade.type.toUpperCase()}: ${trade.amount.toLocaleString()} ${trade.token}`,
+         timestamp: Date.now()
+       });
     }
 
     // Whale Detection
-    if (trade.type === 'buy' && trade.amount > 1000000) {
+    if (trade.type === 'buy' && trade.amount > this.WHALE_THRESHOLD) {
        eventBus.emit('WHALE_BUY', {
          tokenAddress: trade.tokenAddress,
          symbol: trade.token,
@@ -48,6 +42,10 @@ export class WalletIntelligenceEngine {
          wallet: trade.wallet
        });
     }
+  }
+
+  public getMonitoredWallets(): string[] {
+    return Array.from(this.monitoredWallets);
   }
 }
 

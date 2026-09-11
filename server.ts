@@ -33,7 +33,6 @@ import compression from "compression";
 import fs from "fs";
 import dotenv from "dotenv";
 
-
 dotenv.config({ path: ".env.local" });
 dotenv.config();
 
@@ -103,9 +102,12 @@ async function startServer() {
   app.use("/api/telegram", telegramRouter);
   app.use("/api/laserstream", laserstreamRouter);
   app.use("/api/criteria", criteriaRouter);
-  app.use("/api/trading/pipeline", pipelineRouter);
-  app.use("/api/trading", requireAuth, tradingRouter);
+  
+  // FIX 1 & 2: Centralized pipeline routing (removed duplicate /api/trading/pipeline mount)
   app.use("/api/pipeline", pipelineRouter);
+  
+  // FIX 3: Protected trading routes (no longer bypassed by earlier pipeline mount)
+  app.use("/api/trading", requireAuth, tradingRouter);
 
   // API Catch-all 404 Handler
   app.all("/api/*", (req, res) => {

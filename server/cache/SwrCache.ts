@@ -9,20 +9,29 @@ interface InFlightEntry<T> {
   startedAt: number;
 }
 
+export interface BypassCacheResult {
+  bypassCache: true;
+  data?: unknown; // Optional data to return immediately without caching
+}
+
 export interface SwrCacheOptions {
-  softTtl: number;      // Revalidate in background after this
-  hardTtl: number;      // Evict after this
+  softTtl: number;      // Revalidate in background after this (ms)
+  hardTtl: number;      // Evict after this (ms)
   maxSize: number;      // LRU capacity
   name: string;         // For logging
+  backgroundTimeoutMs?: number; // Max time for background revalidation (default: 10000ms)
 }
 
 export class SwrCache<T> {
   private cache = new Map<string, CacheEntry<T>>();
   private inFlight = new Map<string, InFlightEntry<T>>();
+  
   private readonly name: string;
   private readonly softTtl: number;
   private readonly hardTtl: number;
   private readonly maxSize: number;
+  private readonly backgroundTimeoutMs: number;
+  
   private hitCount = 0;
   private missCount = 0;
 
@@ -31,6 +40,7 @@ export class SwrCache<T> {
     this.softTtl = options.softTtl;
     this.hardTtl = options.hardTtl;
     this.maxSize = options.maxSize;
+    this.backgroundTimeoutMs = options.backgroundTimeoutMs || 10000;
   }
 
   get(key: string): CacheHit<T> | null {
@@ -46,6 +56,10 @@ export class SwrCache<T> {
       this.missCount++;
       return null;
     }
+
+    // FIX: True LRU - Move accessed item to the end of the Map (most recently used)
+    this.cache.delete(key);
+    this.cache.set(key, item);
 
     this.hitCount++;
     return {
@@ -69,7 +83,7 @@ export class SwrCache<T> {
 
   async fetch(
     key: string,
-    fetchFn: () => Promise<T | { bypassCache: true; [key: string]: unknown }>
+    fetchFn: () => Promise<T | BypassCacheResult>
   ): Promise<T> {
     const cached = this.get(key);
 
@@ -98,25 +112,19 @@ export class SwrCache<T> {
 
   private async executeFetch(
     key: string,
-    fetchFn: () => Promise<T | { bypassCache: true; [key: string]: unknown }>
+    fetchFn: () => Promise<T | BypassCacheResult>
   ): Promise<T> {
     try {
       const result = await fetchFn();
 
-      // Check if fetch result requests cache bypass
-      if (
-        result &&
-        typeof result === 'object' &&
-        'bypassCache' in result &&
-        (result as { bypassCache: boolean }).bypassCache
-      ) {
-        return result as T;
+      if (this.isBypassCache(result)) {
+        return result.data as T;
       }
 
       this.set(key, result as T);
       return result as T;
     } catch (error) {
-      logger.warn({ cache: this.name, key, errDetails: (error as Error).message }, 'Background revalidation failed');
+      logger.warn({ cache: this.name, key, errDetails: (error as Error).message }, 'Fetch failed');
       throw error;
     } finally {
       this.inFlight.delete(key);
@@ -125,30 +133,39 @@ export class SwrCache<T> {
 
   private triggerBackgroundRevalidation(
     key: string,
-    fetchFn: () => Promise<T | { bypassCache: true; [key: string]: unknown }>
+    fetchFn: () => Promise<T | BypassCacheResult>
   ): void {
     if (this.inFlight.has(key)) return;
 
-    const promise = fetchFn()
+    // FIX: Add timeout to prevent infinite hanging promises in the inFlight map
+    const timeoutPromise = new Promise<never>((_, reject) => 
+      setTimeout(() => reject(new Error('Background revalidation timeout')), this.backgroundTimeoutMs)
+    );
+
+    const promise = Promise.race([fetchFn(), timeoutPromise])
       .then((result) => {
-        if (
-          result &&
-          typeof result === 'object' &&
-          'bypassCache' in result &&
-          (result as { bypassCache: boolean }).bypassCache
-        ) {
+        if (this.isBypassCache(result)) {
           return;
         }
         this.set(key, result as T);
       })
       .catch((err) => {
-        logger.warn({ cache: this.name, key, errDetails: err.message }, 'Background revalidation failed');
+        logger.warn({ cache: this.name, key, errDetails: (err as Error).message }, 'Background revalidation failed or timed out');
       })
       .finally(() => {
         this.inFlight.delete(key);
       });
 
     this.inFlight.set(key, { promise: promise as Promise<T>, startedAt: Date.now() });
+  }
+
+  private isBypassCache(result: unknown): result is BypassCacheResult {
+    return (
+      result !== null &&
+      typeof result === 'object' &&
+      'bypassCache' in result &&
+      (result as { bypassCache: boolean }).bypassCache === true
+    );
   }
 
   pruneExpired(): number {

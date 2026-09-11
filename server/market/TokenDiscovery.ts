@@ -18,7 +18,7 @@ export class TokenDiscovery {
   public processMarketEvent(event: MarketEvent): void {
     if (event.type !== 'ON_CHAIN_TX') return;
 
-    const mintToProcess = event.candidateMint || null;
+    const mintToProcess = event.mint || null;
     if (!mintToProcess || !this.isValidMintCandidate(mintToProcess)) return;
 
     const existing = tokenRepository.getToken(mintToProcess);

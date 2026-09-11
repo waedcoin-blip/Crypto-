@@ -146,7 +146,7 @@ export class TradingEngine {
       return {
         success: false,
         error: `BUY REJECTED: Reason: Mint validation unavailable for ${mint} (${mintValidation.reason}). Stage: Mint Validation`,
-        status: 'error',
+        status: 'rejected',
         reason: mintValidation.code,
         stage: 'MINT_VALIDATION',
       };

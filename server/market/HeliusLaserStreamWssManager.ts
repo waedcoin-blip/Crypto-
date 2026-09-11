@@ -131,8 +131,22 @@ export class HeliusLaserStreamWssManager implements StreamingTransport {
   }
 
   private resolveWssUrl(): string {
+    const isRateLimited = Boolean(
+      this.lastError && (
+        this.lastError.includes('429') ||
+        this.lastError.toLowerCase().includes('rate limit') ||
+        this.lastError.toLowerCase().includes('too many requests')
+      )
+    );
+
+    if (isRateLimited && config.SEARCH_WS_BACKUP_URL && config.SEARCH_WS_BACKUP_URL.trim()) {
+      return config.SEARCH_WS_BACKUP_URL.trim();
+    }
     if (config.SEARCH_WS_URL && config.SEARCH_WS_URL.trim()) {
       return config.SEARCH_WS_URL.trim();
+    }
+    if (config.HELIUS_WSS_URL && config.HELIUS_WSS_URL.trim()) {
+      return config.HELIUS_WSS_URL.trim();
     }
     const apiKey = getHeliusApiKey();
     if (!apiKey) {
@@ -237,7 +251,13 @@ export class HeliusLaserStreamWssManager implements StreamingTransport {
           if (this.currentGeneration !== generation) return;
           const msg = err?.message || String(err);
           this.lastError = msg;
-          laserLogger.warn({ error: msg }, '[HELIUS_WSS] WebSocket error');
+
+          const isRateLimited = msg.includes('429') || msg.toLowerCase().includes('rate limit') || msg.toLowerCase().includes('too many requests');
+          if (isRateLimited) {
+            laserLogger.warn({ error: msg }, '[HELIUS_WSS] Rate limit response from server (HTTP 429)');
+          } else {
+            laserLogger.warn({ error: msg }, '[HELIUS_WSS] WebSocket error');
+          }
           laserStreamWatchdog.recordError(msg);
         });
 
@@ -683,15 +703,36 @@ export class HeliusLaserStreamWssManager implements StreamingTransport {
     this.totalReconnectCount++;
     laserStreamWatchdog.recordReconnect();
 
-    // Exponential backoff: 1s, 2s, 4s, 8s, 15s, 30s, max 60s with jitter
-    const baseBackoff = Math.min(60000, 1000 * Math.pow(2, Math.min(this.reconnectAttempts - 1, 6)));
-    const jitter = Math.floor(Math.random() * 500);
-    const delay = Math.max(1000, baseBackoff + jitter);
-
-    laserLogger.info(
-      { attempt: this.reconnectAttempts, delayMs: delay },
-      `[HELIUS_WSS] Scheduling reconnect #${this.reconnectAttempts} in ${delay}ms`
+    const isRateLimited = Boolean(
+      this.lastError && (
+        this.lastError.includes('429') ||
+        this.lastError.toLowerCase().includes('rate limit') ||
+        this.lastError.toLowerCase().includes('too many requests')
+      )
     );
+
+    let delay: number;
+    if (isRateLimited) {
+      // 429 Rate Limit exponential backoff: Start at 15s (15000ms), increasing by 1.5x up to 120s (120000ms) with jitter
+      const baseBackoff = Math.min(120000, 15000 * Math.pow(1.5, Math.min(this.reconnectAttempts - 1, 6)));
+      const jitter = Math.floor(Math.random() * 2000);
+      delay = Math.floor(baseBackoff + jitter);
+
+      laserLogger.warn(
+        { attempt: this.reconnectAttempts, delayMs: delay, error: this.lastError },
+        `[HELIUS_WSS] Rate limited (HTTP 429). Backing off reconnect #${this.reconnectAttempts} for ${Math.round(delay / 1000)}s`
+      );
+    } else {
+      // Normal exponential backoff: 1s, 2s, 4s, 8s, 15s, 30s, max 60s with jitter
+      const baseBackoff = Math.min(60000, 1000 * Math.pow(2, Math.min(this.reconnectAttempts - 1, 6)));
+      const jitter = Math.floor(Math.random() * 500);
+      delay = Math.max(1000, Math.floor(baseBackoff + jitter));
+
+      laserLogger.info(
+        { attempt: this.reconnectAttempts, delayMs: delay },
+        `[HELIUS_WSS] Scheduling reconnect #${this.reconnectAttempts} in ${delay}ms`
+      );
+    }
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;

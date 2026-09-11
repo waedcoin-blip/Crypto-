@@ -23,6 +23,7 @@ export interface TokenMetric {
   priceNative?: number;
   holderCount?: number;
   devWalletPercentage?: number;
+  devOwnership?: number;
   top10Percentage?: number;
   isRugSafe?: boolean;
   liquidityBurned?: boolean;
