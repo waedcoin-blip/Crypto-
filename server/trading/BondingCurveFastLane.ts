@@ -26,9 +26,16 @@ export class BondingCurveFastLane {
   private static instance: BondingCurveFastLane;
   private cache: Map<string, BondingCurveState> = new Map();
   private eventLogs: Map<string, Array<{ type: 'buy' | 'sell'; solAmount: number; buyer: string; t: number }>> = new Map();
+  
+  // Pump.fun Constants
+  private readonly INITIAL_VIRTUAL_SOL_LAMPORTS = 30_000_000_000n; // 30 SOL
+  private readonly TARGET_RAISED_SOL_LAMPORTS = 55_000_000_000n;  // 55 SOL raised to graduate (85 SOL total)
+  private readonly PUMP_FUN_PROGRAM_ID = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
 
   private constructor() {
-    setInterval(() => this.pruneStaleData(), 60000);
+    const interval = setInterval(() => this.pruneStaleData(), 60000);
+    // FIX: Prevent interval from keeping the Node process alive during shutdown
+    if (interval.unref) interval.unref(); 
   }
 
   public static getInstance(): BondingCurveFastLane {
@@ -44,9 +51,9 @@ export class BondingCurveFastLane {
 
     const now = Date.now();
     let state = this.cache.get(mint);
-
     const logs = event.raw?.transaction?.meta?.logMessages || event.raw?.logs || [];
-    const isPumpFun = logs.some((l: string) => l.includes('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P'));
+    
+    const isPumpFun = logs.some((l: string) => l.includes(this.PUMP_FUN_PROGRAM_ID));
     if (!isPumpFun) return;
 
     if (!state) {
@@ -78,16 +85,12 @@ export class BondingCurveFastLane {
 
     let tradeType: 'buy' | 'sell' | null = null;
     let solVolume = 0;
-    let buyerAddress = event.owner || 'unknown';
+    const buyerAddress = (event as any).buyer || (event as any).seller || event.owner || 'unknown';
 
     for (const log of logs) {
-      if (log.includes('Instruction: Buy') || log.includes('Buy')) {
-        tradeType = 'buy';
-      } else if (log.includes('Instruction: Sell') || log.includes('Sell')) {
-        tradeType = 'sell';
-      }
+      if (log.includes('Instruction: Buy') || log.includes('Buy')) tradeType = 'buy';
+      else if (log.includes('Instruction: Sell') || log.includes('Sell')) tradeType = 'sell';
 
-      // Parse real on-chain log reserves
       if (log.includes('virtual_sol_reserves')) {
         const solMatch = log.match(/virtual_sol_reserves:\s*(\d+)/);
         const tokMatch = log.match(/virtual_token_reserves:\s*(\d+)/);
@@ -99,27 +102,25 @@ export class BondingCurveFastLane {
       }
     }
 
+    // FIX: Accurate SOL volume calculation (assuming event.tokenAmount is human-readable whole tokens)
     if (event.tokenAmount && event.price) {
       solVolume = event.tokenAmount * event.price;
     } else if (event.type === 'PRICE_UPDATE' && event.price) {
       state.priceSolPerToken = event.price;
     }
 
-    // Precise BigInt reserves calculation when verified
+    // FIX: Precise BigInt math for Price and Progress
     if (state.hasVerifiedReserves && state.virtualTokenReservesRaw > 0n) {
-      // BigInt ratio: (lamports * 1000000n) / tokenRaw gives price scaled by 1e3
-      const scaledPriceBigInt = (state.virtualSolReservesLamports * 1000000n) / state.virtualTokenReservesRaw;
-      state.priceSolPerToken = Number(scaledPriceBigInt) / 1000;
+      // Price in SOL = (Lamports / 1e9) / (RawTokens / 1e6) = (Lamports * 1e6) / (RawTokens * 1e9)
+      const scaledLamportsPerToken = (state.virtualSolReservesLamports * 1000000n) / state.virtualTokenReservesRaw;
+      state.priceSolPerToken = Number(scaledLamportsPerToken) / 1_000_000_000;
 
-      const initialVirtualSol = 30_000_000_000n; // 30 SOL in lamports
-      const solRaisedLamports = state.virtualSolReservesLamports > initialVirtualSol
-        ? state.virtualSolReservesLamports - initialVirtualSol
+      const solRaisedLamports = state.virtualSolReservesLamports > this.INITIAL_VIRTUAL_SOL_LAMPORTS
+        ? state.virtualSolReservesLamports - this.INITIAL_VIRTUAL_SOL_LAMPORTS
         : 0n;
+      
       state.realSolReservesLamports = solRaisedLamports;
-
-      // Pump.fun graduation target: 85 SOL (55 SOL raised)
-      const targetLamports = 55_000_000_000n;
-      state.bondingProgressPct = Math.min(100, Math.max(0, Number((solRaisedLamports * 10000n) / targetLamports) / 100));
+      state.bondingProgressPct = Math.min(100, Math.max(0, Number((solRaisedLamports * 10000n) / this.TARGET_RAISED_SOL_LAMPORTS) / 100));
     }
 
     if (tradeType) {
@@ -141,7 +142,6 @@ export class BondingCurveFastLane {
     const now = Date.now();
     const windowMs = 60000;
     const logsList = this.eventLogs.get(mint) || [];
-
     const active = logsList.filter(x => now - x.t <= windowMs);
     this.eventLogs.set(mint, active);
 
@@ -151,7 +151,7 @@ export class BondingCurveFastLane {
     state.buyVelocity = buys.length;
     state.sellVelocity = sells.length;
     state.volumeVelocitySol = active.reduce((sum, x) => sum + x.solAmount, 0);
-
+    
     const uniqueBuyers = new Set(buys.map(x => x.buyer));
     state.uniqueBuyerVelocity = uniqueBuyers.size;
   }
@@ -167,7 +167,6 @@ export class BondingCurveFastLane {
   private pruneStaleData(): void {
     const now = Date.now();
     const maxAgeMs = 15 * 60 * 1000;
-
     for (const [mint, state] of this.cache.entries()) {
       if (now - state.lastUpdateTimestamp > maxAgeMs) {
         this.cache.delete(mint);

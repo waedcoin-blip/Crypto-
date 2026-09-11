@@ -117,6 +117,10 @@ export class OrderManager {
     return result;
   }
 
+  public getOrdersByStatus(status: OrderStatus): Order[] {
+    return Array.from(this.orders.values()).filter(o => o.status === status);
+  }
+
   public createOrder(params: {
     network: string;
     wallet: string;

@@ -1,5 +1,5 @@
 // server/routes/trading.ts
-import { Router } from 'express';
+import { Router, Request, Response } from 'express';
 import { asyncHandler } from '../middleware/errorHandler.js';
 import { tradingEngine } from '../trading/TradingEngine.js';
 import { tokenMintResolver } from '../market/TokenMintResolver.js';
@@ -12,6 +12,9 @@ import { tradeRepository } from '../repositories/TradeRepository.js';
 import { entryEngine } from '../trading/EntryEngine.js';
 import { unifiedExitEngine } from '../trading/UnifiedExitEngine.js';
 import { positionValuationEngine } from '../trading/PositionValuationEngine.js';
+import { pnlEngine } from '../trading/PnLEngine.js';
+import { priorityScheduler } from '../trading/PriorityScheduler.js';
+import { rebuyGuard } from '../trading/RebuyGuard.js';
 
 import { CriteriaService } from '../services/criteriaService.js';
 
@@ -413,6 +416,95 @@ router.get('/pipeline/candidates', asyncHandler(async (req, res) => {
     candidates,
     timestamp: Date.now(),
   });
+}));
+
+// NEW ENDPOINT: Get aggregate Portfolio PnL across all open positions
+router.get('/portfolio/pnl', asyncHandler(async (req: Request, res: Response) => {
+  const openPositions = positionManager.getOpenPositions();
+  const currentPrices = new Map<string, number>();
+  
+  // Fetch current prices from valuation engine
+  for (const pos of openPositions) {
+    const val = positionValuationEngine.getValuation(pos.network, pos.wallet, pos.mint);
+    if (val?.currentPriceSol) currentPrices.set(pos.mint, val.currentPriceSol);
+  }
+  
+  const portfolioPnL = pnlEngine.calculatePortfolioPnL(openPositions, currentPrices);
+  res.json({ status: 'success', ...portfolioPnL, timestamp: Date.now() });
+}));
+
+// NEW ENDPOINT: Get all orders stuck in RECOVERY_REQUIRED state
+router.get('/orders/recovery', asyncHandler(async (req: Request, res: Response) => {
+  const recoveryOrders = orderManager.getOrdersByStatus('RECOVERY_REQUIRED');
+  res.json({ status: 'success', count: recoveryOrders.length, orders: recoveryOrders, timestamp: Date.now() });
+}));
+
+// NEW ENDPOINT: Get PriorityScheduler queue depth and actual task details
+router.get('/scheduler/metrics', asyncHandler(async (req: Request, res: Response) => {
+  const metrics = priorityScheduler.getMetrics();
+  const details = priorityScheduler.getQueueDetails();
+  res.json({ status: 'success', metrics, queueDetails: details, timestamp: Date.now() });
+}));
+
+// NEW ENDPOINT: Manually force-refresh Jupiter executable quotes for all open positions
+router.post('/valuations/refresh', asyncHandler(async (req: Request, res: Response) => {
+  const openPositions = positionManager.getOpenPositions();
+  await positionValuationEngine.forceRefreshAllQuotes(openPositions);
+  res.json({ 
+    status: 'success', 
+    message: `Refreshed quotes for ${openPositions.length} open positions`, 
+    timestamp: Date.now() 
+  });
+}));
+
+// ==========================================
+// TRADING SUPERVISOR LIFECYCLE ENDPOINTS
+// ==========================================
+
+// GET /api/trading/supervisor/status
+router.get('/supervisor/status', asyncHandler(async (req: Request, res: Response) => {
+  const status = tradingSupervisor.getStatus();
+  res.json({ status: 'success', ...status, timestamp: Date.now() });
+}));
+
+// POST /api/trading/supervisor/start
+router.post('/supervisor/start', asyncHandler(async (req: Request, res: Response) => {
+  const result = await tradingSupervisor.startTrading(req.body);
+  res.json({ status: 'success', supervisor: result, timestamp: Date.now() });
+}));
+
+// POST /api/trading/supervisor/stop
+router.post('/supervisor/stop', asyncHandler(async (req: Request, res: Response) => {
+  const result = await tradingSupervisor.stopTrading();
+  res.json({ status: 'success', supervisor: result, timestamp: Date.now() });
+}));
+
+// POST /api/trading/supervisor/recovery (Admin Override)
+router.post('/supervisor/recovery', asyncHandler(async (req: Request, res: Response) => {
+  const { reason = 'MANUAL_ADMIN_OVERRIDE' } = req.body;
+  const result = tradingSupervisor.forceRecovery(reason);
+  res.json({ status: 'success', supervisor: result, timestamp: Date.now() });
+}));
+
+// ==========================================
+// REBUY GUARD & ENGINE STATUS ENDPOINTS
+// ==========================================
+
+// GET /api/trading/rebuy-guard/:mint
+router.get('/rebuy-guard/:mint', asyncHandler(async (req: Request, res: Response) => {
+  const { mint } = req.params;
+  const { network = 'mainnet', wallet = 'default' } = req.query;
+  
+  const state = rebuyGuard.getGuardState(network as string, wallet as string, mint);
+  const canBuy = rebuyGuard.canBuy({ network: network as string, wallet: wallet as string, mint });
+  
+  res.json({ status: 'success', mint, state, canBuy, timestamp: Date.now() });
+}));
+
+// GET /api/trading/engine/status
+router.get('/engine/status', asyncHandler(async (req: Request, res: Response) => {
+  const status = tradingEngine.getEngineStatus();
+  res.json({ status: 'success', ...status, timestamp: Date.now() });
 }));
 
 export default router;

@@ -65,11 +65,20 @@ export class RiskManager {
     }
 
     // 3. Re-check Executable Quote & SOL Profitability
-    const prof = await profitabilityEngine.evaluateExecutableProfitability(
-      mint,
-      buyAmountLamports,
-      defaultTradingConfig.maxSlippageBps
-    );
+    // FIX: Added try-catch to prevent external service failures from crashing the buy pipeline
+    let prof;
+    try {
+      prof = await profitabilityEngine.evaluateExecutableProfitability(
+        mint,
+        buyAmountLamports,
+        defaultTradingConfig.maxSlippageBps
+      );
+    } catch (err: any) {
+      return {
+        allowed: false,
+        reason: `PROFITABILITY_ENGINE_UNAVAILABLE: ${err?.message || 'Unknown error during profitability check'}`,
+      };
+    }
 
     if (prof.status !== 'AUTHORIZED') {
       return {

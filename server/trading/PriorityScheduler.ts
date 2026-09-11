@@ -123,6 +123,13 @@ export class PriorityScheduler {
       pendingTasksCount: this.queue.length,
     };
   }
+
+  public getQueueDetails(): Array<{ id: string; priority: PriorityLevel; createdAt: number; ageMs: number }> {
+    const now = Date.now();
+    return this.queue.map(task => ({
+      id: task.id, priority: task.priority, createdAt: task.createdAt, ageMs: now - task.createdAt,
+    }));
+  }
 }
 
 export const priorityScheduler = PriorityScheduler.getInstance();

@@ -168,7 +168,7 @@ export class ProfitabilityEngine {
       return this.createBlockedMetrics(mint, buyInputLamports, 'Price data is missing or non-positive', 'DATA_UNAVAILABLE');
     }
 
-    const priceAgeMs = candidate.priceSol?.timestamp ? now - candidate.priceSol.timestamp : 0;
+    const priceAgeMs = (candidate.priceSol as any)?.timestamp || candidate.priceSol?.updatedAt ? now - ((candidate.priceSol as any)?.timestamp || candidate.priceSol?.updatedAt) : 0;
     if (priceAgeMs > defaultTradingConfig.maxMarketDataAgeMs) {
       return this.createBlockedMetrics(mint, buyInputLamports, 'Price quote is stale', 'STALE');
     }

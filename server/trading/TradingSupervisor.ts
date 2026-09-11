@@ -344,6 +344,17 @@ export class TradingSupervisor {
       }
     }
   }
+
+  // NEW: Manual admin override to force recovery mode
+  public forceRecovery(reason: string): SupervisorStatus {
+    if (this.state === 'TRADING' || this.state === 'RECOVERY') {
+      this.enterRecovery(reason);
+    } else {
+      this.state = 'RECOVERY';
+      console.warn(`[TradingSupervisor] FORCED RECOVERY from ${this.state} due to: ${reason}`);
+    }
+    return this.getStatus();
+  }
 }
 
 export const tradingSupervisor = TradingSupervisor.getInstance();

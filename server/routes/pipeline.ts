@@ -15,6 +15,13 @@ import { walletIntelligence } from '../../src/engines/walletIntelligence.js';
 import { scannerEngine } from '../../src/engines/scannerEngine.js';
 import { createTokenTelemetry } from '../../src/engines/telemetryMapper.js';
 import { getAllCacheStats } from '../utils/cacheRegistry.js';
+import { bondingCurveFastLane } from '../trading/BondingCurveFastLane.js';
+import { candidateEnricher } from '../trading/CandidateEnricher.js';
+import { entryEngine } from '../trading/EntryEngine.js';
+import { momentumEngine } from '../trading/MomentumEngine.js';
+import { migrationDetector } from '../trading/MigrationDetector.js';
+import { hardenedApprovalStore } from '../trading/HardenedApprovalStore.js';
+import { hardenedCriteriaEngine } from '../trading/HardenedCriteriaEngine.js';
 
 const router = Router();
 
@@ -185,6 +192,103 @@ router.get('/cache/stats', asyncHandler(async (req: Request, res: Response) => {
     status: 'success', 
     caches: stats, 
     timestamp: Date.now() 
+  });
+}));
+
+// 10. Monitor live Pump.fun bonding curve states and velocities
+router.get('/bonding-curves', asyncHandler(async (req: Request, res: Response) => {
+  const states = bondingCurveFastLane.getAllStates();
+  const metrics = bondingCurveFastLane.getMetrics();
+  
+  // Sort by progress descending for the UI
+  const sorted = states.sort((a, b) => b.bondingProgressPct - a.bondingProgressPct);
+  
+  res.json({
+    status: 'success',
+    count: sorted.length,
+    metrics,
+    curves: sorted,
+    timestamp: Date.now()
+  });
+}));
+
+// 11. Manually trigger or force-refresh an enrichment for a specific mint
+router.post('/enrich', asyncHandler(async (req: Request, res: Response) => {
+  const { mint, network = 'mainnet' } = req.body;
+  if (!mint || typeof mint !== 'string') {
+    return res.status(400).json({ status: 'error', error: 'Valid string mint is required' });
+  }
+
+  const enriched = await candidateEnricher.enrichCandidateWithRetry(mint, network);
+  
+  res.json({
+    status: 'success',
+    enriched,
+    timestamp: Date.now()
+  });
+}));
+
+// 12. Trigger the full Entry Engine pipeline manually for a specific mint
+router.post('/trigger-entry', asyncHandler(async (req: Request, res: Response) => {
+  const { mint, source = 'MANUAL' } = req.body;
+  if (!mint || typeof mint !== 'string') {
+    return res.status(400).json({ status: 'error', error: 'Valid string mint is required' });
+  }
+
+  // Kicks off the entire authoritative pipeline (Enrich -> Score -> Gate -> Buy)
+  const result = await entryEngine.evaluateAndTrade(mint, source);
+  
+  res.json({
+    status: 'success',
+    result,
+    timestamp: Date.now()
+  });
+}));
+
+// 13. Get real-time momentum metrics for a specific token
+router.get('/momentum/:mint', asyncHandler(async (req: Request, res: Response) => {
+  const { mint } = req.params;
+  // Note: In a real scenario, you'd fetch the EnrichedCandidate first to pass to calculateMomentum.
+  // For now, we return the historical state if available, or a placeholder.
+  const metrics = (momentumEngine as any)['prevMetrics']?.get(mint) || { message: 'No momentum history recorded yet' };
+  res.json({ status: 'success', mint, metrics, timestamp: Date.now() });
+}));
+
+// 14. Get all recently detected migrations (Fast Lane)
+router.get('/migrations', asyncHandler(async (req: Request, res: Response) => {
+  const migrations = migrationDetector.getAllMigratedPools();
+  // Sort by most recent momentum score descending
+  const sorted = migrations.sort((a, b) => b.postMigrationMomentumScore - a.postMigrationMomentumScore);
+  
+  res.json({
+    status: 'success',
+    count: sorted.length,
+    migrations: sorted,
+    timestamp: Date.now()
+  });
+}));
+
+// 15. Get Hardened Approval Store statistics
+router.get('/approvals/stats', asyncHandler(async (req: Request, res: Response) => {
+  // We can infer stats by iterating the store, or add a getStats() method to HardenedApprovalStore.
+  // For now, returning the structure expectation:
+  res.json({
+    status: 'success',
+    message: 'Approval store is actively managing single-use, time-bound execution approvals.',
+    criteriaVersion: hardenedCriteriaEngine.getCriteriaVersion(),
+    timestamp: Date.now()
+  });
+}));
+
+// 16. Manually bump criteria version (Admin action to clear rejection caches)
+router.post('/criteria/bump-version', asyncHandler(async (req: Request, res: Response) => {
+  // Add auth middleware here in production!
+  hardenedCriteriaEngine.bumpCriteriaVersion();
+  res.json({
+    status: 'success',
+    newVersion: hardenedCriteriaEngine.getCriteriaVersion(),
+    message: 'Criteria version bumped and rejection caches cleared.',
+    timestamp: Date.now()
   });
 }));
 

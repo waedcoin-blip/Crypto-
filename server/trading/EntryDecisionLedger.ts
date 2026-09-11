@@ -32,25 +32,18 @@ export interface BuyAttemptLogEntry {
 }
 
 export interface EntryDiagnosticsReport {
-  timestamp: number;
-  uptimeSeconds: number;
-  autoSniperEnabled: boolean;
-  isLiveTrading: boolean;
-  network: string;
-  counters: {
-    eventsReceived: number;
-    candidatesDetected: number;
-    enriched: number;
-    scored: number;
-    passedCriteria: number;
-    blockedCriteria: number;
-    entryGatePassed: number;
-    rebuyGuardPassed: number;
-    buyAttempts: number;
-    buyConfirmed: number;
-    buyFailed: number;
+  totalEvaluated: number;
+  totalEnriched: number;
+  totalScored: number;
+  totalPassedGate: number;
+  totalBuyAttempts: number;
+  totalBuySuccesses: number;
+  totalBuyFailures: number;
+  config: {
+    autoSniperEnabled: boolean;
+    isLiveTrading: boolean;
+    network: string;
   };
-  topBlockingReasons: { reason: string; count: number }[];
   recentDecisions: DecisionLogEntry[];
   recentBuyAttempts: BuyAttemptLogEntry[];
 }
@@ -59,25 +52,17 @@ const MAX_LOG_SIZE = 2000;
 
 export class EntryDecisionLedger {
   private static instance: EntryDecisionLedger;
-  private startTime = Date.now();
 
-  private counters = {
-    eventsReceived: 0,
-    candidatesDetected: 0,
-    enriched: 0,
-    scored: 0,
-    passedCriteria: 0,
-    blockedCriteria: 0,
-    entryGatePassed: 0,
-    rebuyGuardPassed: 0,
-    buyAttempts: 0,
-    buyConfirmed: 0,
-    buyFailed: 0,
-  };
+  private totalEvaluated = 0;
+  private totalEnriched = 0;
+  private totalScored = 0;
+  private totalPassedGate = 0;
+  private totalBuyAttempts = 0;
+  private totalBuySuccesses = 0;
+  private totalBuyFailures = 0;
 
-  private blockingReasonCounts: Map<string, number> = new Map();
-  private recentDecisions: DecisionLogEntry[] = [];
-  private recentBuyAttempts: BuyAttemptLogEntry[] = [];
+  public recentDecisions: DecisionLogEntry[] = [];
+  public recentBuyAttempts: BuyAttemptLogEntry[] = [];
 
   private constructor() {}
 
@@ -88,20 +73,13 @@ export class EntryDecisionLedger {
     return EntryDecisionLedger.instance;
   }
 
-  public recordEventReceived(): void {
-    this.counters.eventsReceived++;
-  }
-
-  public recordCandidateDetected(): void {
-    this.counters.candidatesDetected++;
-  }
-
   public recordEnriched(): void {
-    this.counters.enriched++;
+    this.totalEvaluated++;
+    this.totalEnriched++;
   }
 
   public recordScored(): void {
-    this.counters.scored++;
+    this.totalScored++;
   }
 
   public recordDecision(
@@ -110,15 +88,7 @@ export class EntryDecisionLedger {
     dataSource: string
   ): void {
     if (decision.allowed) {
-      this.counters.passedCriteria++;
-      this.counters.entryGatePassed++;
-      this.counters.rebuyGuardPassed++;
-    } else {
-      this.counters.blockedCriteria++;
-      for (const reason of decision.blockingReasons) {
-        const key = reason.split(':')[0].trim();
-        this.blockingReasonCounts.set(key, (this.blockingReasonCounts.get(key) || 0) + 1);
-      }
+      this.totalPassedGate++;
     }
 
     const logEntry: DecisionLogEntry = {
@@ -131,74 +101,61 @@ export class EntryDecisionLedger {
       decision: decision.allowed ? 'PASS' : 'BLOCK',
       blockingReason: decision.blockingReasons[0],
       blockingReasons: decision.blockingReasons,
-      criteriaResults: decision.criteriaResults,
+      criteriaResults: (decision as any).criteriaResults || {},
       dataSource,
     };
-
-    this.recentDecisions.unshift(logEntry);
+    
+    // FIX: O(1) push instead of O(N) unshift
+    this.recentDecisions.push(logEntry);
     if (this.recentDecisions.length > MAX_LOG_SIZE) {
-      this.recentDecisions.length = MAX_LOG_SIZE;
+      this.recentDecisions = this.recentDecisions.slice(-MAX_LOG_SIZE);
     }
   }
 
   public recordBuyAttempt(attempt: Omit<BuyAttemptLogEntry, 'id' | 'timestamp'>): void {
-    this.counters.buyAttempts++;
+    this.totalBuyAttempts++;
     if (attempt.success) {
-      this.counters.buyConfirmed++;
+      this.totalBuySuccesses++;
     } else {
-      this.counters.buyFailed++;
+      this.totalBuyFailures++;
     }
-
+    
     const entry: BuyAttemptLogEntry = {
       ...attempt,
       id: `buy_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       timestamp: Date.now(),
     };
-
-    this.recentBuyAttempts.unshift(entry);
+    
+    // FIX: O(1) push instead of O(N) unshift
+    this.recentBuyAttempts.push(entry);
     if (this.recentBuyAttempts.length > MAX_LOG_SIZE) {
-      this.recentBuyAttempts.length = MAX_LOG_SIZE;
+      this.recentBuyAttempts = this.recentBuyAttempts.slice(-MAX_LOG_SIZE);
     }
   }
 
-  public getDiagnostics(context: {
-    autoSniperEnabled: boolean;
-    isLiveTrading: boolean;
-    network: string;
-  }): EntryDiagnosticsReport {
-    const topBlocking = Array.from(this.blockingReasonCounts.entries())
-      .map(([reason, count]) => ({ reason, count }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 10);
-
+  public getDiagnostics(config: { autoSniperEnabled: boolean; isLiveTrading: boolean; network: string }): EntryDiagnosticsReport {
     return {
-      timestamp: Date.now(),
-      uptimeSeconds: Math.floor((Date.now() - this.startTime) / 1000),
-      autoSniperEnabled: context.autoSniperEnabled,
-      isLiveTrading: context.isLiveTrading,
-      network: context.network,
-      counters: { ...this.counters },
-      topBlockingReasons: topBlocking,
-      recentDecisions: this.recentDecisions.slice(0, 50),
-      recentBuyAttempts: this.recentBuyAttempts.slice(0, 50),
+      totalEvaluated: this.totalEvaluated,
+      totalEnriched: this.totalEnriched,
+      totalScored: this.totalScored,
+      totalPassedGate: this.totalPassedGate,
+      totalBuyAttempts: this.totalBuyAttempts,
+      totalBuySuccesses: this.totalBuySuccesses,
+      totalBuyFailures: this.totalBuyFailures,
+      config,
+      recentDecisions: [...this.recentDecisions].reverse(),
+      recentBuyAttempts: [...this.recentBuyAttempts].reverse(),
     };
   }
 
   public clear(): void {
-    this.counters = {
-      eventsReceived: 0,
-      candidatesDetected: 0,
-      enriched: 0,
-      scored: 0,
-      passedCriteria: 0,
-      blockedCriteria: 0,
-      entryGatePassed: 0,
-      rebuyGuardPassed: 0,
-      buyAttempts: 0,
-      buyConfirmed: 0,
-      buyFailed: 0,
-    };
-    this.blockingReasonCounts.clear();
+    this.totalEvaluated = 0;
+    this.totalEnriched = 0;
+    this.totalScored = 0;
+    this.totalPassedGate = 0;
+    this.totalBuyAttempts = 0;
+    this.totalBuySuccesses = 0;
+    this.totalBuyFailures = 0;
     this.recentDecisions = [];
     this.recentBuyAttempts = [];
   }

@@ -225,6 +225,20 @@ export class RebuyGuard {
     this.completedBuyCounts.clear();
     this.tradeCountCache.clear();
   }
+
+  // NEW: Expose guard state for backend API monitoring
+  public getGuardState(network: string, wallet: string, mint: string) {
+    const key = this.getGuardKey(network, wallet, mint);
+    const resId = this.reservedKeys.get(key);
+    const reservation = resId ? this.pendingReservations.get(resId) : null;
+    
+    return {
+      isReserved: !!reservation,
+      reservationId: resId,
+      reservedAt: reservation?.reservedAt,
+      completedBuyCount: this.getCompletedBuyCount(network, wallet, mint),
+    };
+  }
 }
 
 export const rebuyGuard = RebuyGuard.getInstance();

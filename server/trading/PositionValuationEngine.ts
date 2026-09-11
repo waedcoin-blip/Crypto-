@@ -358,6 +358,11 @@ export class PositionValuationEngine {
     return fetchPromise;
   }
 
+  public async forceRefreshAllQuotes(positions: Position[]): Promise<void> {
+    const openPositions = positions.filter(p => p.status === 'OPEN' && BigInt(p.tokenAmountRaw || '0') > 0n);
+    await Promise.all(openPositions.map(pos => this.refreshExecutableQuote(pos).catch(() => null)));
+  }
+
   public removeValuation(network: string, wallet: string, mint: string): void {
     const key = this.getKey(network, wallet, mint);
     this.valuations.delete(key);

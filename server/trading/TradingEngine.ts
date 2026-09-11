@@ -421,14 +421,19 @@ export class TradingEngine {
     if (position.status === 'EXIT_PENDING' || position.status === 'RECOVERY_REQUIRED') {
       return {
         success: false,
-        error: `EXIT_ALREADY_PENDING: Position ${position.id} has status ${position.status} and is already in exit/recovery pipeline.`,
+        error: `EXIT_ALREADY_PENDING: Position ${position.id} has status ${position.status}`,
       };
     }
 
+    // FIX: Safe fallback for legacy positions that only have float `tokenAmount`
+    const fallbackAmount = position.tokenAmountRaw 
+      ? String(position.tokenAmountRaw) 
+      : String(Math.floor(position.tokenAmount * (10 ** position.decimals)));
+
     const rawAmountStr = params.amountRaw !== undefined 
       ? String(params.amountRaw).trim() 
-      : (position.tokenAmountRaw ? String(position.tokenAmountRaw) : String(position.tokenAmount));
-    
+      : fallbackAmount;
+
     let rawAmountBigInt: bigint;
     try {
       if (!/^\d+$/.test(rawAmountStr)) throw new Error('NON_INTEGER');
@@ -441,17 +446,8 @@ export class TradingEngine {
       };
     }
 
-    if (rawAmountBigInt <= 0n) {
-      return {
-        success: false,
-        error: `INVALID_AMOUNT: Sell amount must be greater than 0, received ${rawAmountStr}`,
-      };
-    }
-
-    // Delegate authorization and execution entirely to UnifiedExitEngine
     const exitRes = await unifiedExitEngine.executeManualExitDetail(position.id);
     if (exitRes.success) {
-      // Re-fetch the closed/closing position details to return response
       const updatedPos = positionManager.getPositionById(position.id);
       return {
         success: true,
@@ -464,10 +460,20 @@ export class TradingEngine {
         success: false,
         positionId: position.id,
         signature: exitRes.signature,
-        error: exitRes.error || `EXIT_FAILED: Manual sell request rejected or already in exit pipeline.`,
+        error: exitRes.error || `EXIT_FAILED`,
         result: exitRes.result,
       };
     }
+  }
+
+  // NEW: Expose engine status for backend API
+  public getEngineStatus() {
+    return {
+      isRunning: true,
+      activeBuyLocks: this.buyLocks.size,
+      activePositions: positionManager.getOpenPositions().length,
+      openOrders: orderManager.getOrders().filter(o => ['CREATED', 'PENDING', 'SUBMITTED', 'CONFIRMING'].includes(o.status)).length,
+    };
   }
 
   public async rebuy(params: BuyParams): Promise<TradeEngineResponse> {

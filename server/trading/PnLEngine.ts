@@ -74,6 +74,48 @@ export class PnLEngine {
       realizedPnlPercent,
     };
   }
+
+  public calculatePortfolioPnL(
+    positions: Position[],
+    currentPrices: Map<string, number>
+  ): {
+    totalValueSol: number;
+    totalCostSol: number;
+    totalUnrealizedPnlSol: number;
+    totalUnrealizedPnlPercent: number;
+    totalRealizedPnlSol: number;
+    positionsCount: number;
+    positionPnLs: PnLMetrics[];
+  } {
+    let totalValueSol = 0;
+    let totalCostSol = 0;
+    let totalUnrealizedPnlSol = 0;
+    let totalRealizedPnlSol = 0;
+    const positionPnLs: PnLMetrics[] = [];
+
+    for (const pos of positions) {
+      const currentPrice = currentPrices.get(pos.mint) || pos.currentPriceSol || 0;
+      const metrics = this.calculatePnL(pos, currentPrice);
+      positionPnLs.push(metrics);
+
+      totalValueSol += metrics.currentValueSol;
+      totalCostSol += metrics.totalSolSpent;
+      totalUnrealizedPnlSol += metrics.unrealizedPnlSol;
+      totalRealizedPnlSol += metrics.realizedPnlSol;
+    }
+
+    const totalUnrealizedPnlPercent = totalCostSol > 0 ? (totalUnrealizedPnlSol / totalCostSol) * 100 : 0;
+
+    return {
+      totalValueSol,
+      totalCostSol,
+      totalUnrealizedPnlSol,
+      totalUnrealizedPnlPercent,
+      totalRealizedPnlSol,
+      positionsCount: positions.length,
+      positionPnLs,
+    };
+  }
 }
 
 export const pnlEngine = PnLEngine.getInstance();
