@@ -1,6 +1,6 @@
 // server/repositories/PositionRepository.ts
 import { JsonStore } from './JsonStore.js';
-import { PositionRecord } from '../types/index.js';
+import type { PositionRecord } from '../types/index.js';
 
 export type PositionState =
   | 'PENDING_BUY'
@@ -11,7 +11,7 @@ export type PositionState =
   | 'CLOSED'
   | 'RECOVERY_REQUIRED';
 
-export { PositionRecord };
+export type { PositionRecord };
 
 /**
  * PositionRepository: Authoritative persistence layer for all trading positions.

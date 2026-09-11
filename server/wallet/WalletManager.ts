@@ -85,6 +85,44 @@ export class WalletManager {
     return keypair.publicKey.toBase58();
   }
 
+  /**
+   * Synchronously get or initialize a wallet keypair/account representation.
+   */
+  public getAccount(walletId: string = 'default'): { publicKey: PublicKey; keypair: Keypair } | undefined {
+    let keypair = this.keypairs.get(walletId);
+    if (!keypair && this.keypairs.has('default')) {
+      keypair = this.keypairs.get('default');
+    }
+    if (!keypair) {
+      try {
+        const privateKeyEnv = process.env.PRIVATE_KEY || process.env.SOLANA_PRIVATE_KEY;
+        if (privateKeyEnv) {
+          if (privateKeyEnv.startsWith('[')) {
+            const bytes = JSON.parse(privateKeyEnv);
+            keypair = Keypair.fromSecretKey(Uint8Array.from(bytes));
+          } else {
+            const bytes = bs58.decode(privateKeyEnv);
+            keypair = Keypair.fromSecretKey(bytes);
+          }
+        } else {
+          keypair = Keypair.generate();
+        }
+        this.keypairs.set(walletId, keypair);
+      } catch {
+        keypair = Keypair.generate();
+        this.keypairs.set(walletId, keypair);
+      }
+    }
+    return keypair ? { publicKey: keypair.publicKey, keypair } : undefined;
+  }
+
+  /**
+   * Look up account by network and wallet name.
+   */
+  public getAccountByNetworkAndWallet(network: string, wallet: string): { publicKey: PublicKey; keypair: Keypair } | undefined {
+    return this.getAccount(`${network}:${wallet}`) || this.getAccount(wallet);
+  }
+
   // ==========================================
   // TRANSACTION SIGNING & BROADCASTING
   // ==========================================

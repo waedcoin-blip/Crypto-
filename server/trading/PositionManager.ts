@@ -113,7 +113,7 @@ export class PositionManager {
       highestPnLPct: r.highestPnLPct,
       tpPct: r.tpPct,
       slPct: r.slPct,
-      status: r.state,
+      status: r.state as PositionState,
       orderIds: r.orderIds || [],
       buySignature: r.buySignature,
       exitSignature: r.exitSignature,

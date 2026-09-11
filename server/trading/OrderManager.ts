@@ -51,22 +51,27 @@ export class OrderManager {
   }
 
   private loadFromRepository(): void {
-    const records = orderRepository.getOrders();
+    // FIX: Changed from getOrders() to getAllOrders() to match OrderRepository
+    const records = orderRepository.getAllOrders();
     for (const record of records) {
+      const orderId = record.id || record.order_id || '';
+      if (!orderId) continue;
       const order: Order = {
-        id: record.order_id,
+        id: orderId,
         network: record.network || 'mainnet',
         wallet: record.wallet || 'default',
         mint: record.mint,
         side: record.side as 'buy' | 'sell',
-        amount: record.amount_raw,
+        amount: record.amountRaw || record.amount_raw || '0',
         decimals: record.decimals || 9,
         slippageBps: record.slippageBps || 250,
-        status: (record.state === 'CONFIRMED' ? 'FILLED' : record.state) as OrderStatus,
-        createdAt: record.created_at,
-        updatedAt: record.updated_at,
+        status: (record.state === 'CONFIRMED' || record.status === 'CONFIRMED' ? 'FILLED' : (record.status || record.state || 'CREATED')) as OrderStatus,
+        createdAt: record.createdAt || record.created_at || Date.now(),
+        updatedAt: record.updatedAt || record.updated_at || Date.now(),
+        filledAt: record.filledAt || record.filled_at,
         signature: record.signature,
         error: record.error,
+        clientRequestId: record.clientRequestId,
         label: record.label,
       };
       this.orders.set(order.id, order);

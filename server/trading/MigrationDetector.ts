@@ -102,7 +102,7 @@ export class MigrationDetector {
       }
 
       if (event.tokenAmount && event.price) {
-        solAmount = event.tokenAmount * event.price;
+        solAmount = Number(event.tokenAmount) * Number(event.price);
       }
 
       if (tradeType) {

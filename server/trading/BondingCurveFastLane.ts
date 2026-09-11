@@ -104,9 +104,9 @@ export class BondingCurveFastLane {
 
     // FIX: Accurate SOL volume calculation (assuming event.tokenAmount is human-readable whole tokens)
     if (event.tokenAmount && event.price) {
-      solVolume = event.tokenAmount * event.price;
+      solVolume = Number(event.tokenAmount) * Number(event.price);
     } else if (event.type === 'PRICE_UPDATE' && event.price) {
-      state.priceSolPerToken = event.price;
+      state.priceSolPerToken = Number(event.price);
     }
 
     // FIX: Precise BigInt math for Price and Progress

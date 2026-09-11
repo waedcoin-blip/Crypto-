@@ -186,6 +186,19 @@ export class TokenProgramResolver {
     }
   }
 
+  /**
+   * Derive associated token account (ATA) address for a given wallet and mint.
+   */
+  public getAtaAddress(walletPublicKey: PublicKey, mintPublicKey: PublicKey, programId: string | PublicKey = TOKEN_PROGRAM_ID): PublicKey {
+    const progId = typeof programId === 'string' ? new PublicKey(programId) : programId;
+    const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
+    const [ata] = PublicKey.findProgramAddressSync(
+      [walletPublicKey.toBuffer(), progId.toBuffer(), mintPublicKey.toBuffer()],
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+    return ata;
+  }
+
   private async getConnection(): Promise<Connection | null> {
     try {
       const rpcUrl = getPrimaryRpc('search');

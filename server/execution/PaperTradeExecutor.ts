@@ -70,7 +70,7 @@ export class PaperTradeExecutor implements TradeExecutor {
 
       // Commit buy to paper wallet
       const tokenAmount = amountLamports; // Simplified: 1:1 for paper
-      paperWalletLedger.commitBuy(params.outputMint, amountLamports / 1e9, tokenAmount, params.decimals || 9, signature);
+      paperWalletLedger.commitBuy(params.outputMint, amountLamports / 1e9, String(tokenAmount), params.decimals || 9, signature);
 
       if (params.onBroadcast) {
         await params.onBroadcast(signature);
@@ -122,7 +122,7 @@ export class PaperTradeExecutor implements TradeExecutor {
 
       // Add SOL to paper wallet (simulated output)
       const outSol = Number(tokenAmountRaw) / 1e9; // Simplified
-      paperWalletLedger.commitSell(params.inputMint, outSol, tokenAmountRaw, params.decimals || 9, signature);
+      paperWalletLedger.commitSell(params.inputMint, String(tokenAmountRaw), outSol, signature);
 
       if (params.onBroadcast) {
         await params.onBroadcast(signature);

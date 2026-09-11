@@ -144,7 +144,7 @@ export class TradingSupervisor {
       this.transitionTo('WALLET_READY');
 
       // 3. Verify execution readiness
-      const readiness = await executionGateway.verifyReadiness(this.network, account.publicKey);
+      const readiness = await executionGateway.verifyReadiness(this.network, account.publicKey.toBase58());
       if (!readiness.ready) {
         throw new Error(`EXECUTION_NOT_READY: ${readiness.reason}`);
       }
