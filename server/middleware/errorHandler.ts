@@ -57,19 +57,27 @@ export function globalErrorHandler(
       path: req.path,
       query: req.query,
       ip: req.ip,
+      body: req.body,
     },
   }, 'Unhandled error');
 
+  console.error(`[GLOBAL_ERROR_HANDLER] ${req.method} ${req.path}:`, {
+    message: err?.message,
+    stack: err?.stack,
+    body: req?.body,
+    query: req?.query,
+  });
+
   // Handle generic errors
-  const statusCode = (err as any).statusCode || 500;
+  const statusCode = (err as any).statusCode || (err as any).status || 500;
   const message = config.IS_PRODUCTION && statusCode >= 500
     ? 'Internal server error'
-    : err.message;
+    : err?.message || 'Internal server error';
 
   res.status(statusCode).json({
     error: message,
-    code: 'INTERNAL_ERROR',
-    ...(config.IS_DEVELOPMENT && { stack: err.stack }),
+    code: (err as any).code || 'INTERNAL_ERROR',
+    ...(!config.IS_PRODUCTION && { details: err?.message, stack: err?.stack }),
   });
 }
 

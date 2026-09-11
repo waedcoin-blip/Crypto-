@@ -114,7 +114,21 @@ export class TradingEngine {
 
     const wallet = params.wallet || 'default';
     const lockKey = `${network}:${wallet}`;
-    return this.withBuyWalletLock(lockKey, () => this.buyUnlocked({ ...params, network, wallet }));
+
+    // FIX: Wrap the entire locked execution in try/catch to prevent 500s
+    try {
+      return await this.withBuyWalletLock(lockKey, () => this.buyUnlocked({ ...params, network, wallet }));
+    } catch (err: any) {
+      const errorMsg = err?.message || String(err);
+      console.error(`[TradingEngine] UNCAUGHT BUY ERROR for ${params.mint}: ${errorMsg}`, err);
+      return {
+        success: false,
+        error: `INTERNAL_BUY_ERROR: ${errorMsg}`,
+        status: 'rejected',
+        reason: 'UNCAUGHT_EXCEPTION',
+        stage: 'EXECUTION',
+      };
+    }
   }
 
   private async buyUnlocked(params: BuyParams): Promise<TradeEngineResponse> {
@@ -129,25 +143,36 @@ export class TradingEngine {
     }
 
     // 0. On-Chain Canonical Mint Validation Gate
-    const executor = executionGateway.getExecutor(network) as any;
-    const connection = executor?.connection || null;
-    const mintValidation = await tokenMintResolver.validateTokenMint(mint, connection);
+    try {
+      const executor = executionGateway.getExecutor(network) as any;
+      const connection = executor?.connection || null;
+      const mintValidation = await tokenMintResolver.validateTokenMint(mint, connection);
 
-    if (!mintValidation.ok) {
-      if (mintValidation.code === 'INVALID_MINT') {
+      if (!mintValidation.ok) {
+        if (mintValidation.code === 'INVALID_MINT') {
+          return {
+            success: false,
+            error: `BUY REJECTED: Reason: Invalid token mint ${mint} (${mintValidation.reason}). Stage: Mint Validation`,
+            status: 'rejected',
+            reason: 'INVALID_MINT',
+            stage: 'MINT_VALIDATION',
+          };
+        }
         return {
           success: false,
-          error: `BUY REJECTED: Reason: Invalid token mint ${mint} (${mintValidation.reason}). Stage: Mint Validation`,
+          error: `BUY REJECTED: Reason: Mint validation unavailable for ${mint} (${mintValidation.reason}). Stage: Mint Validation`,
           status: 'rejected',
-          reason: 'INVALID_MINT',
+          reason: mintValidation.code,
           stage: 'MINT_VALIDATION',
         };
       }
+    } catch (err: any) {
+      console.error(`[TradingEngine] Mint validation error for ${mint}:`, err);
       return {
         success: false,
-        error: `BUY REJECTED: Reason: Mint validation unavailable for ${mint} (${mintValidation.reason}). Stage: Mint Validation`,
+        error: `MINT_VALIDATION_ERROR: ${err?.message || String(err)}`,
         status: 'rejected',
-        reason: mintValidation.code,
+        reason: 'MINT_VALIDATION_ERROR',
         stage: 'MINT_VALIDATION',
       };
     }
@@ -192,62 +217,73 @@ export class TradingEngine {
 
     // 2. Authoritative Invariant: NO TOKEN MAY REACH BUY EXECUTION WITHOUT A CURRENT, VALID, SINGLE-USE, MINT/POOL-BOUND HardenedApproval
     let approval = params.approval;
-    if (!approval) {
-      // Pass current market data for validation
-      const currentPrice = candidateEnricher.enrichCandidate(mint, network).then(c => c.priceSol?.value).catch(() => undefined);
-      const currentSlot = 0; // Would come from actual slot provider
-      approval = hardenedApprovalStore.getLatestUsableApproval('solana', mint, params.pool, await currentPrice, currentSlot);
-    }
+    try {
+      if (!approval) {
+        // Pass current market data for validation
+        const currentPrice = candidateEnricher.enrichCandidate(mint, network).then(c => c.priceSol?.value).catch(() => undefined);
+        const currentSlot = 0; // Would come from actual slot provider
+        approval = hardenedApprovalStore.getLatestUsableApproval('solana', mint, params.pool, await currentPrice, currentSlot);
+      }
 
-    if (!approval) {
-      console.log(`[TradingEngine] No pre-existing HardenedApproval for ${mint}. Running authoritative HardenedCriteriaEngine evaluation...`);
-      const candidate = await candidateEnricher.enrichCandidate(mint, network);
-      if (!candidate.isEnriched && (network !== 'paper' || candidate.symbol === 'INVALID')) {
-        const isMalformedMint = candidate.symbol === 'INVALID';
-        const failureDetail = isMalformedMint
-          ? candidate.name // holds the classifyAddress rejection reason, e.g. INVALID_BASE58_OR_BYTE_LENGTH
-          : `dataSource=${candidate.dataSource}, marketCapUsd=${candidate.marketCapUsd.state}, liquidityUsd=${candidate.liquidityUsd.state}`;
-        console.warn(`[TradingEngine] BUY REJECTED: Candidate ${mint} enrichment failed, status: ${candidate.enrichmentStatus} (${failureDetail})`);
+      if (!approval) {
+        console.log(`[TradingEngine] No pre-existing HardenedApproval for ${mint}. Running authoritative HardenedCriteriaEngine evaluation...`);
+        const candidate = await candidateEnricher.enrichCandidate(mint, network);
+        if (!candidate.isEnriched && (network !== 'paper' || candidate.symbol === 'INVALID')) {
+          const isMalformedMint = candidate.symbol === 'INVALID';
+          const failureDetail = isMalformedMint
+            ? candidate.name // holds the classifyAddress rejection reason, e.g. INVALID_BASE58_OR_BYTE_LENGTH
+            : `dataSource=${candidate.dataSource}, marketCapUsd=${candidate.marketCapUsd.state}, liquidityUsd=${candidate.liquidityUsd.state}`;
+          console.warn(`[TradingEngine] BUY REJECTED: Candidate ${mint} enrichment failed, status: ${candidate.enrichmentStatus} (${failureDetail})`);
+          return {
+            success: false,
+            error: isMalformedMint
+              ? `INVALID_MINT: ${mint} is not a valid token mint (${failureDetail})`
+              : `ENRICHMENT_DATA_UNAVAILABLE: Could not obtain market cap/liquidity for ${mint} (${failureDetail})`,
+            status: 'rejected',
+            reason: isMalformedMint ? 'INVALID_MINT' : 'ENRICHMENT_DATA_UNAVAILABLE',
+            stage: 'ENRICHMENT'
+          };
+        }
+        const evalResult = await hardenedCriteriaEngine.evaluateCandidate(candidate, { network, wallet });
+        if (evalResult.decision !== 'PASS' || !evalResult.approval) {
+          console.warn(`[TradingEngine] BUY REJECTED: Candidate ${mint} failed hardened criteria. Reasons: ${evalResult.rejectionReasons.join(', ')}`);
+          return {
+            success: false,
+            error: `NO_VALID_HARDENED_APPROVAL: Token failed hardened criteria: ${evalResult.rejectionReasons.join(', ') || 'CRITERIA_FAILED'}`,
+            status: 'rejected',
+            reason: evalResult.rejectionReasons.join(', ') || 'CRITERIA_FAILED',
+            stage: 'HARDENED_APPROVAL'
+          };
+        }
+        approval = evalResult.approval;
+      }
+
+      // Perform final recheck right before order execution
+      const finalRecheck = await hardenedCriteriaEngine.performFinalRecheck(approval, { network, wallet });
+      if (!finalRecheck.allowed) {
+        console.warn(`[TradingEngine] BUY REJECTED by final recheck: ${finalRecheck.reason}`);
+        hardenedApprovalStore.markInvalid(approval.approvalId, finalRecheck.reason);
         return {
           success: false,
-          error: isMalformedMint
-            ? `INVALID_MINT: ${mint} is not a valid token mint (${failureDetail})`
-            : `ENRICHMENT_DATA_UNAVAILABLE: Could not obtain market cap/liquidity for ${mint} (${failureDetail})`,
+          error: `FINAL_RECHECK_FAILED: ${finalRecheck.reason}`,
           status: 'rejected',
-          reason: isMalformedMint ? 'INVALID_MINT' : 'ENRICHMENT_DATA_UNAVAILABLE',
-          stage: 'ENRICHMENT'
+          reason: finalRecheck.reason,
+          stage: 'FINAL_RECHECK'
         };
       }
-      const evalResult = await hardenedCriteriaEngine.evaluateCandidate(candidate, { network, wallet });
-      if (evalResult.decision !== 'PASS' || !evalResult.approval) {
-        console.warn(`[TradingEngine] BUY REJECTED: Candidate ${mint} failed hardened criteria. Reasons: ${evalResult.rejectionReasons.join(', ')}`);
-        return {
-          success: false,
-          error: `NO_VALID_HARDENED_APPROVAL: Token failed hardened criteria: ${evalResult.rejectionReasons.join(', ') || 'CRITERIA_FAILED'}`,
-          status: 'rejected',
-          reason: evalResult.rejectionReasons.join(', ') || 'CRITERIA_FAILED',
-          stage: 'HARDENED_APPROVAL'
-        };
-      }
-      approval = evalResult.approval;
-    }
 
-    // Perform final recheck right before order execution
-    const finalRecheck = await hardenedCriteriaEngine.performFinalRecheck(approval, { network, wallet });
-    if (!finalRecheck.allowed) {
-      console.warn(`[TradingEngine] BUY REJECTED by final recheck: ${finalRecheck.reason}`);
-      hardenedApprovalStore.markInvalid(approval.approvalId, finalRecheck.reason);
+      // Mark approval as CONSUMING
+      hardenedApprovalStore.startConsuming(approval.approvalId, clientRequestId);
+    } catch (err: any) {
+      console.error(`[TradingEngine] Approval resolution error for ${mint}:`, err);
       return {
         success: false,
-        error: `FINAL_RECHECK_FAILED: ${finalRecheck.reason}`,
+        error: `APPROVAL_RESOLUTION_ERROR: ${err?.message || String(err)}`,
         status: 'rejected',
-        reason: finalRecheck.reason,
-        stage: 'FINAL_RECHECK'
+        reason: 'APPROVAL_RESOLUTION_ERROR',
+        stage: 'HARDENED_APPROVAL',
       };
     }
-
-    // Mark approval as CONSUMING
-    hardenedApprovalStore.startConsuming(approval.approvalId, clientRequestId);
 
     // 3. RebuyGuard Reservation Check
     let reservation;
