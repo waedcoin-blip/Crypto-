@@ -1,577 +1,297 @@
 // server/execution/MainnetTradeExecutor.ts
-import '../utils/polyfill.js';
-import { Connection, PublicKey, VersionedTransaction } from '@solana/web3.js';
-import * as jupApi from '@jup-ag/api';
-import { TradeExecutor, QuoteParams, QuoteResult, ExecuteParams, ExecutionResult } from './TradeExecutor.js';
-import { walletManager } from '../wallet/WalletManager.js';
-import { tokenProgramResolver } from '../wallet/TokenProgramResolver.js';
-import { validateQuoteSafetyStrict } from '../utils/quoteSafety.js';
+import {
+  TradeExecutor,
+  QuoteParams,
+  QuoteResult,
+  ExecuteParams,
+  ExecutionResult,
+  ExecutionError,
+  classifyExecutionError,
+} from './TradeExecutor.js';
+import { config, getJupiterApiKey } from '../config/index.js';
+import { fetchWithRetry } from '../utils/fetch.js';
+import { logger } from '../utils/logger.js';
 
-const createJupiterApiClient = (jupApi as any).createJupiterApiClient || (jupApi as any).default?.createJupiterApiClient || (() => ({}));
+const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 
-function getExecutionRpcUrls(): string[] {
-  return [...new Set([
-    process.env.EXECUTION_RPC_URL,
-    process.env.EXECUTION_RPC_BACKUP_URL,
-    process.env.MAINNET_RPC_URL,
-    process.env.SEARCH_RPC_URL,
-    process.env.SEARCH_RPC_BACKUP_URL,
-    'https://api.mainnet-beta.solana.com',
-  ].filter((v): v is string => !!v && v.trim().length > 0).map(v => v.trim()))];
-}
-
-import { lamportsToSolNumber } from '../utils/rawAmount.js';
 export class MainnetTradeExecutor implements TradeExecutor {
-  private connection: Connection;
-  private backupConnections: Connection[];
-  private jupiterApi: any;
+  public readonly network: string = 'mainnet';
 
-  constructor(options?: { rpcUrl?: string }) {
-    const urls = getExecutionRpcUrls();
-    const primaryUrl = options?.rpcUrl || urls[0] || 'https://api.mainnet-beta.solana.com';
-    this.connection = new Connection(primaryUrl, 'confirmed');
-    this.backupConnections = urls.filter(u => u !== primaryUrl).map(u => new Connection(u, 'confirmed'));
-    this.jupiterApi = createJupiterApiClient();
-  }
+  private telemetryTotalSwaps: number = 0;
+  private telemetryFailedSwaps: number = 0;
+  private telemetryTotalFeesPaidSol: number = 0;
+  private telemetryLandingTimeTotalMs: number = 0;
+  private lastFailureReason: string = '';
 
-  private getAllConnections(): Connection[] {
-    return [this.connection, ...this.backupConnections];
-  }
+  // ==========================================
+  // QUOTE
+  // ==========================================
 
-  private async fetchJupiterQuote(params: QuoteParams): Promise<any> {
-    const apiKey = process.env.JUPITER_API_KEY;
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (apiKey) headers['x-api-key'] = apiKey;
-
-    const amountStr = String(params.amount);
-    const url = `https://quote-api.jup.ag/v6/quote?inputMint=${encodeURIComponent(params.inputMint)}&outputMint=${encodeURIComponent(params.outputMint)}&amount=${encodeURIComponent(amountStr)}&slippageBps=${params.slippageBps ?? 250}`;
-
+  async getQuote(params: QuoteParams): Promise<QuoteResult> {
     try {
-      const res = await fetch(url, { headers });
-      if (!res.ok) {
-        const errText = await res.text().catch(() => '');
-        throw new Error(`QUOTE_FETCH_FAILED: Jupiter Quote Failed [${res.status}]: ${errText}`);
+      const jupBaseUrl = 'https://api.jup.ag/swap/v1';
+      const apiKey = getJupiterApiKey();
+      const queryParams = new URLSearchParams({
+        inputMint: params.inputMint,
+        outputMint: params.outputMint,
+        amount: String(params.amount),
+        slippageBps: String(params.slippageBps),
+        swapMode: 'ExactIn',
+      });
+
+      const url = `${jupBaseUrl}/quote?${queryParams.toString()}`;
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (apiKey) headers['x-api-key'] = apiKey;
+
+      const { response, text } = await fetchWithRetry(url, { method: 'GET', headers, timeoutMs: 8000 }, 2, 500);
+
+      if (!response.ok) {
+        return { success: false, error: `JUPITER_QUOTE_HTTP_${response.status}` };
       }
-      return await res.json();
+
+      const quote = JSON.parse(text);
+      if (!quote || !quote.routePlan || quote.routePlan.length === 0) {
+        return { success: false, error: 'NO_ROUTE_FOUND' };
+      }
+
+      return {
+        success: true,
+        quote,
+        outAmountLamports: Number(quote.outAmount) || 0,
+        outAmountRaw: String(quote.outAmount),
+        priceImpactPct: Number(quote.priceImpactPct) || 0,
+        routePlanLength: quote.routePlan.length,
+      };
     } catch (err: any) {
-      if (err.message && err.message.startsWith('QUOTE_FETCH_FAILED')) {
-        throw err;
-      }
-      throw new Error(`QUOTE_FETCH_FAILED: Jupiter Quote Network/API Error: ${err?.message || err}`);
+      return { success: false, error: `QUOTE_EXCEPTION: ${err?.message || String(err)}` };
     }
   }
 
-  async quoteBuy(params: QuoteParams): Promise<QuoteResult> {
-    let quote: any;
-    if (this.jupiterApi && typeof this.jupiterApi.quoteGet === 'function') {
-      try {
-        quote = await this.jupiterApi.quoteGet({
-          inputMint: params.inputMint,
-          outputMint: params.outputMint,
-          amount: params.amount,
-          slippageBps: params.slippageBps === undefined ? 250 : params.slippageBps,
-          userPublicKey: params.userPublicKey,
-        });
-      } catch (err) {
-        quote = await this.fetchJupiterQuote(params);
-      }
-    } else {
-      quote = await this.fetchJupiterQuote(params);
-    }
-
-    if (!quote || !quote.outAmount) {
-      throw new Error(`QUOTE_FETCH_FAILED: Empty quote returned for ${params.inputMint} -> ${params.outputMint}`);
-    }
-
-    const validated = validateQuoteSafetyStrict({
-      quote,
-      inputAmount: params.amount,
-      slippageBps: params.slippageBps === undefined ? 250 : params.slippageBps,
-      expectedInputMint: params.inputMint,
-      expectedOutputMint: params.outputMint,
-      isBuy: true,
-    });
-
-    return {
-      inAmount: quote.inAmount,
-      outAmount: quote.outAmount,
-      otherAmountThreshold: String(validated.otherAmountThreshold),
-      priceImpactPct: validated.normalizedPriceImpactRatio * 100,
-      routePlan: quote.routePlan,
-      rawQuote: quote,
-    };
-  }
-
-  async quoteSell(params: QuoteParams): Promise<QuoteResult> {
-    let quote: any;
-    if (this.jupiterApi && typeof this.jupiterApi.quoteGet === 'function') {
-      try {
-        quote = await this.jupiterApi.quoteGet({
-          inputMint: params.inputMint,
-          outputMint: params.outputMint,
-          amount: params.amount,
-          slippageBps: params.slippageBps === undefined ? 250 : params.slippageBps,
-          userPublicKey: params.userPublicKey,
-        });
-      } catch (err) {
-        quote = await this.fetchJupiterQuote(params);
-      }
-    } else {
-      quote = await this.fetchJupiterQuote(params);
-    }
-
-    if (!quote || !quote.outAmount) {
-      throw new Error(`QUOTE_FETCH_FAILED: Empty quote returned for ${params.inputMint} -> ${params.outputMint}`);
-    }
-
-    const validated = validateQuoteSafetyStrict({
-      quote,
-      inputAmount: params.amount,
-      slippageBps: params.slippageBps === undefined ? 250 : params.slippageBps,
-      expectedInputMint: params.inputMint,
-      expectedOutputMint: params.outputMint,
-      isBuy: false,
-    });
-
-    return {
-      inAmount: quote.inAmount,
-      outAmount: quote.outAmount,
-      otherAmountThreshold: String(validated.otherAmountThreshold),
-      priceImpactPct: validated.normalizedPriceImpactRatio * 100,
-      routePlan: quote.routePlan,
-      rawQuote: quote,
-    };
-  }
-
-  /**
-   * Confirms a transaction signature using modern Solana getLatestBlockhash +
-   * block height expiration check with multi-RPC failover.
-   *
-   * Returns:
-   *  - 'CONFIRMED' if on-chain confirmation succeeded
-   *  - 'FAILED' if on-chain error or blockhash definitively expired without inclusion
-   *  - 'RECOVERY_REQUIRED' if timeout occurred and transaction may still be in-flight
-   */
-  private async verifyTransactionConfirmation(
-    txid: string,
-    blockhash: string,
-    lastValidBlockHeight: number
-  ): Promise<{ status: 'CONFIRMED' | 'FAILED' | 'RECOVERY_REQUIRED'; error?: string }> {
-    const connections = this.getAllConnections();
-
-    // 1. Try standard confirmTransaction
-    for (const conn of connections) {
-      try {
-        const confirmation = await conn.confirmTransaction(
-          {
-            signature: txid,
-            blockhash,
-            lastValidBlockHeight,
-          },
-          'confirmed'
-        );
-
-        if (confirmation.value.err) {
-          return {
-            status: 'FAILED',
-            error: `ON_CHAIN_FAILURE: ${JSON.stringify(confirmation.value.err)}`,
-          };
-        }
-        return { status: 'CONFIRMED' };
-      } catch (err: any) {
-        console.warn(`[MainnetTradeExecutor] confirmTransaction on ${conn.rpcEndpoint} threw: ${err?.message || err}`);
-      }
-    }
-
-    // 2. Poll getSignatureStatuses across all connections
-    for (const conn of connections) {
-      try {
-        const statusRes = await conn.getSignatureStatuses([txid]);
-        const status = statusRes?.value?.[0];
-        if (status) {
-          if (status.err) {
-            return {
-              status: 'FAILED',
-              error: `ON_CHAIN_FAILURE: ${JSON.stringify(status.err)}`,
-            };
-          }
-          if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized') {
-            return { status: 'CONFIRMED' };
-          }
-        }
-      } catch (err: any) {
-        console.warn(`[MainnetTradeExecutor] getSignatureStatuses on ${conn.rpcEndpoint} failed:`, err?.message || err);
-      }
-    }
-
-    // 3. Inspect block height expiration
-    for (const conn of connections) {
-      try {
-        const currentBlockHeight = await conn.getBlockHeight('confirmed');
-        if (currentBlockHeight > lastValidBlockHeight) {
-          console.warn(`[MainnetTradeExecutor] Transaction ${txid} expired: block height ${currentBlockHeight} > ${lastValidBlockHeight}`);
-          return {
-            status: 'FAILED',
-            error: `TRANSACTION_EXPIRED_UNCONFIRMED: Block height ${currentBlockHeight} exceeded lastValidBlockHeight ${lastValidBlockHeight}`,
-          };
-        }
-      } catch (err: any) {
-        console.warn(`[MainnetTradeExecutor] getBlockHeight on ${conn.rpcEndpoint} failed:`, err?.message || err);
-      }
-    }
-
-    // 4. If neither confirmed, nor definitively failed on-chain, nor expired:
-    // MUST BE MARKED RECOVERY_REQUIRED to prevent duplicate spend!
-    return {
-      status: 'RECOVERY_REQUIRED',
-      error: `CONFIRMATION_TIMEOUT: Transaction ${txid} broadcasted but not yet confirmed or expired on-chain.`,
-    };
-  }
-
-  private parseAmountBigInt(amount: bigint | string | number): bigint {
-    if (typeof amount === 'bigint') return amount;
-    const str = String(amount).trim();
-    if (str.includes('.')) {
-      throw new Error(`INVALID_RAW_AMOUNT: Floating point not allowed for raw token amount (${str})`);
-    }
-    return BigInt(str);
-  }
+  // ==========================================
+  // BUY (SOL → Token)
+  // ==========================================
 
   async buy(params: ExecuteParams): Promise<ExecutionResult> {
-    const amountBigInt = this.parseAmountBigInt(params.amount);
-    const walletAccount = walletManager.getAccount('mainnet:default');
-    if (!walletAccount.keypair) {
-      throw new Error('EXECUTION_FAILED: Mainnet private key not configured on server');
-    }
-
-    const quoteRes = params.preValidatedQuote || (await this.quoteBuy({
-      inputMint: params.inputMint,
-      outputMint: params.outputMint,
-      amount: amountBigInt,
-      slippageBps: params.slippageBps,
-      userPublicKey: walletAccount.publicKey,
-    }));
-
-    // If test context without active key, produce valid result
-    if (process.env.NODE_ENV === 'test' && !process.env.MAINNET_PRIVATE_KEY) {
-      const outAmountStr = quoteRes.outAmount;
-      const solSpent = Number(amountBigInt) / 1e9;
-      return {
-        success: true,
-        signature: `mock_mainnet_buy_${Date.now()}`,
-        status: 'CONFIRMED',
-        inputMint: params.inputMint,
-        outputMint: params.outputMint,
-        inAmountRaw: amountBigInt.toString(),
-        outAmountRaw: outAmountStr,
-        totalCostSol: solSpent,
-        effectivePriceSol: solSpent / (Number(outAmountStr) / (10 ** params.decimals)),
-      };
-    }
-
-    let txid: string | undefined;
-    let blockhash: string = '';
-    let lastValidBlockHeight: number = 0;
-
-    try {
-      // Obtain latest blockhash to ensure accurate expiration bounds
-      const latestBlockhash = await this.connection.getLatestBlockhash('confirmed');
-      blockhash = latestBlockhash.blockhash;
-      lastValidBlockHeight = latestBlockhash.lastValidBlockHeight;
-
-      const swapRes = await this.jupiterApi.swapPost({
-        swapRequest: {
-          quoteResponse: quoteRes.rawQuote || quoteRes,
-          userPublicKey: walletAccount.publicKey,
-          wrapAndUnwrapSol: true,
-          dynamicComputeUnitLimit: true,
-          prioritizationFeeLamports: 'auto',
-        },
-      });
-
-      if (swapRes.lastValidBlockHeight) {
-        lastValidBlockHeight = swapRes.lastValidBlockHeight;
-      }
-
-      const swapTransactionBuf = Buffer.from(swapRes.swapTransaction, 'base64');
-      const transaction = VersionedTransaction.deserialize(swapTransactionBuf);
-      transaction.sign([walletAccount.keypair]);
-
-      const rawTransaction = transaction.serialize();
-      txid = await this.connection.sendRawTransaction(rawTransaction, {
-        skipPreflight: true,
-        maxRetries: 3,
-      });
-
-      // 🔴 IMMEDIATE BROADCAST CALLBACK WITH FAIL-CLOSED RECOVERY_REQUIRED
-      if (params.onBroadcast) {
-        try {
-          await params.onBroadcast(txid, { blockhash, lastValidBlockHeight });
-        } catch (callbackErr: any) {
-          console.error(`🚨 [CRITICAL_EXECUTION_ALERT] onBroadcast / persistSignature FAILED for ${txid}: ${callbackErr?.message || callbackErr}`);
-          return {
-            success: false,
-            signature: txid,
-            status: 'RECOVERY_REQUIRED',
-            isAmbiguous: true,
-            lastValidBlockHeight,
-            blockhash,
-            inputMint: params.inputMint,
-            outputMint: params.outputMint,
-            inAmountRaw: amountBigInt.toString(),
-            outAmountRaw: '0',
-            error: `SIGNATURE_PERSISTENCE_FAILED_RECOVERY_REQUIRED: Signature ${txid} broadcasted but persistence callback failed: ${callbackErr?.message || callbackErr}`,
-          };
-        }
-      }
-
-      // Verify confirmation with failover and block height check
-      const verification = await this.verifyTransactionConfirmation(txid, blockhash, lastValidBlockHeight);
-
-      if (verification.status === 'CONFIRMED') {
-        const solSpent = Number(amountBigInt) / 1e9;
-        const outAmountStr = quoteRes.outAmount;
-        return {
-          success: true,
-          signature: txid,
-          status: 'CONFIRMED',
-          inputMint: params.inputMint,
-          outputMint: params.outputMint,
-          inAmountRaw: amountBigInt.toString(),
-          outAmountRaw: outAmountStr,
-          totalCostSol: solSpent,
-          effectivePriceSol: solSpent / (Number(outAmountStr) / (10 ** params.decimals)),
-        };
-      } else if (verification.status === 'FAILED') {
-        return {
-          success: false,
-          signature: txid,
-          status: 'FAILED',
-          inputMint: params.inputMint,
-          outputMint: params.outputMint,
-          inAmountRaw: amountBigInt.toString(),
-          outAmountRaw: '0',
-          error: verification.error,
-        };
-      } else {
-        // RECOVERY_REQUIRED / AMBIGUOUS
-        return {
-          success: false,
-          signature: txid,
-          status: 'RECOVERY_REQUIRED',
-          isAmbiguous: true,
-          lastValidBlockHeight,
-          blockhash,
-          inputMint: params.inputMint,
-          outputMint: params.outputMint,
-          inAmountRaw: amountBigInt.toString(),
-          outAmountRaw: '0',
-          error: verification.error,
-        };
-      }
-    } catch (e: any) {
-      if (txid) {
-        // If broadcast succeeded but unexpected error occurred in downstream handling
-        return {
-          success: false,
-          signature: txid,
-          status: 'RECOVERY_REQUIRED',
-          isAmbiguous: true,
-          lastValidBlockHeight,
-          blockhash,
-          inputMint: params.inputMint,
-          outputMint: params.outputMint,
-          inAmountRaw: amountBigInt.toString(),
-          outAmountRaw: '0',
-          error: `BROADCAST_COMPLETED_BUT_ERROR: ${e?.message || e}`,
-        };
-      }
-      return {
-        success: false,
-        status: 'FAILED',
-        inputMint: params.inputMint,
-        outputMint: params.outputMint,
-        inAmountRaw: amountBigInt.toString(),
-        outAmountRaw: '0',
-        error: `MAINNET_EXECUTION_ERROR: ${e?.message || e}`,
-      };
-    }
+    return this.executeSwap({ ...params, isBuy: true });
   }
+
+  // ==========================================
+  // SELL (Token → SOL)
+  // ==========================================
 
   async sell(params: ExecuteParams): Promise<ExecutionResult> {
-    const amountBigInt = this.parseAmountBigInt(params.amount);
-    const walletAccount = walletManager.getAccount('mainnet:default');
-    if (!walletAccount.keypair) {
-      throw new Error('EXECUTION_FAILED: Mainnet private key not configured on server');
-    }
+    return this.executeSwap({ ...params, isBuy: false });
+  }
 
-    const quoteRes = params.preValidatedQuote || (await this.quoteSell({
-      inputMint: params.inputMint,
-      outputMint: params.outputMint,
-      amount: amountBigInt,
-      slippageBps: params.slippageBps,
-      userPublicKey: walletAccount.publicKey,
-    }));
+  // ==========================================
+  // CORE SWAP EXECUTION
+  // ==========================================
 
-    if (process.env.NODE_ENV === 'test' && !process.env.MAINNET_PRIVATE_KEY) {
-      const outLamportsStr = quoteRes.outAmount;
-      const outLamportsNum = lamportsToSolNumber(outLamportsStr);
-      return {
-        success: true,
-        signature: `mock_mainnet_sell_${Date.now()}`,
-        status: 'CONFIRMED',
-        inputMint: params.inputMint,
-        outputMint: params.outputMint,
-        inAmountRaw: amountBigInt.toString(),
-        outAmountRaw: outLamportsStr,
-        netProceedsSol: outLamportsNum,
-      };
-    }
-
-    let txid: string | undefined;
-    let blockhash: string = '';
-    let lastValidBlockHeight: number = 0;
+  private async executeSwap(params: ExecuteParams & { isBuy: boolean }): Promise<ExecutionResult> {
+    const startTime = Date.now();
 
     try {
-      const latestBlockhash = await this.connection.getLatestBlockhash('confirmed');
-      blockhash = latestBlockhash.blockhash;
-      lastValidBlockHeight = latestBlockhash.lastValidBlockHeight;
-
-      const swapRes = await this.jupiterApi.swapPost({
-        swapRequest: {
-          quoteResponse: quoteRes.rawQuote || quoteRes,
-          userPublicKey: walletAccount.publicKey,
-          wrapAndUnwrapSol: true,
-          dynamicComputeUnitLimit: true,
-          prioritizationFeeLamports: 'auto',
-        },
-      });
-
-      if (swapRes.lastValidBlockHeight) {
-        lastValidBlockHeight = swapRes.lastValidBlockHeight;
-      }
-
-      const swapTransactionBuf = Buffer.from(swapRes.swapTransaction, 'base64');
-      const transaction = VersionedTransaction.deserialize(swapTransactionBuf);
-      transaction.sign([walletAccount.keypair]);
-
-      const rawTransaction = transaction.serialize();
-      txid = await this.connection.sendRawTransaction(rawTransaction, {
-        skipPreflight: true,
-        maxRetries: 3,
-      });
-
-      // 🔴 IMMEDIATE BROADCAST CALLBACK WITH FAIL-CLOSED RECOVERY_REQUIRED
-      if (params.onBroadcast) {
-        try {
-          await params.onBroadcast(txid, { blockhash, lastValidBlockHeight });
-        } catch (callbackErr: any) {
-          console.error(`🚨 [CRITICAL_EXECUTION_ALERT] onBroadcast / persistSignature FAILED for ${txid}: ${callbackErr?.message || callbackErr}`);
-          return {
-            success: false,
-            signature: txid,
-            status: 'RECOVERY_REQUIRED',
-            isAmbiguous: true,
-            lastValidBlockHeight,
-            blockhash,
-            inputMint: params.inputMint,
-            outputMint: params.outputMint,
-            inAmountRaw: amountBigInt.toString(),
-            outAmountRaw: '0',
-            error: `SIGNATURE_PERSISTENCE_FAILED_RECOVERY_REQUIRED: Signature ${txid} broadcasted but persistence callback failed: ${callbackErr?.message || callbackErr}`,
-          };
+      // 1. Get or validate quote
+      let quote = params.preValidatedQuote;
+      if (!quote) {
+        const quoteResult = await this.getQuote({
+          inputMint: params.inputMint,
+          outputMint: params.outputMint,
+          amount: params.amount,
+          slippageBps: params.slippageBps,
+          network: params.network,
+          walletAddress: params.walletAddress,
+        });
+        if (!quoteResult.success || !quoteResult.quote) {
+          throw new ExecutionError('NO_ROUTE_FOUND', `Quote failed: ${quoteResult.error}`);
         }
+        quote = quoteResult.quote;
       }
 
-      const verification = await this.verifyTransactionConfirmation(txid, blockhash, lastValidBlockHeight);
+      // 2. Get swap transaction from Jupiter
+      const jupBaseUrl = 'https://api.jup.ag/swap/v1';
+      const apiKey = getJupiterApiKey();
+      const swapUrl = `${jupBaseUrl}/swap`;
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (apiKey) headers['x-api-key'] = apiKey;
 
-      if (verification.status === 'CONFIRMED') {
-        const outLamportsStr = quoteRes.outAmount;
-        const outLamportsNum = lamportsToSolNumber(outLamportsStr);
-        return {
-          success: true,
-          signature: txid,
-          status: 'CONFIRMED',
-          inputMint: params.inputMint,
-          outputMint: params.outputMint,
-          inAmountRaw: amountBigInt.toString(),
-          outAmountRaw: outLamportsStr,
-          netProceedsSol: outLamportsNum,
-        };
-      } else if (verification.status === 'FAILED') {
+      const swapPayload = {
+        quoteResponse: quote,
+        userPublicKey: params.walletAddress,
+        wrapAndUnwrapSol: true,
+        dynamicComputeUnitLimit: true,
+        prioritizationFeeLamports: 'auto',
+      };
+
+      const swapResponse = await fetchWithRetry(swapUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(swapPayload),
+        timeoutMs: 15000,
+      }, 2, 1000);
+
+      if (!swapResponse.response.ok) {
+        throw new ExecutionError('RPC_ERROR', `Jupiter swap HTTP ${swapResponse.response.status}`);
+      }
+
+      const swapData = JSON.parse(swapResponse.text);
+      if (!swapData.swapTransaction) {
+        throw new ExecutionError('RPC_ERROR', 'Jupiter returned no swapTransaction');
+      }
+
+      // 3. Sign and broadcast (delegated to WalletManager via ExecutionGateway)
+      // In production, this would use the server-side keypair to sign
+      const { walletManager } = await import('../wallet/WalletManager.js');
+      const signature = await walletManager.signAndBroadcast(
+        swapData.swapTransaction,
+        params.walletAddress,
+        params.network
+      );
+
+      if (!signature) {
+        throw new ExecutionError('SIGNATURE_ERROR', 'Transaction signing or broadcast failed');
+      }
+
+      // 4. Notify broadcast
+      if (params.onBroadcast) {
+        await params.onBroadcast(signature);
+      }
+
+      // 5. Confirm transaction
+      const confirmed = await this.confirmTransaction(signature, params.network);
+      if (!confirmed) {
         return {
           success: false,
-          signature: txid,
-          status: 'FAILED',
-          inputMint: params.inputMint,
-          outputMint: params.outputMint,
-          inAmountRaw: amountBigInt.toString(),
-          outAmountRaw: '0',
-          error: verification.error,
-        };
-      } else {
-        // RECOVERY_REQUIRED / AMBIGUOUS
-        return {
-          success: false,
-          signature: txid,
-          status: 'RECOVERY_REQUIRED',
+          signature,
+          error: 'CONFIRMATION_TIMEOUT',
+          isBroadcasted: true,
           isAmbiguous: true,
-          lastValidBlockHeight,
-          blockhash,
-          inputMint: params.inputMint,
-          outputMint: params.outputMint,
-          inAmountRaw: amountBigInt.toString(),
-          outAmountRaw: '0',
-          error: verification.error,
+          durationMs: Date.now() - startTime,
         };
       }
-    } catch (e: any) {
-      if (txid) {
-        return {
-          success: false,
-          signature: txid,
-          status: 'RECOVERY_REQUIRED',
-          isAmbiguous: true,
-          lastValidBlockHeight,
-          blockhash,
-          inputMint: params.inputMint,
-          outputMint: params.outputMint,
-          inAmountRaw: amountBigInt.toString(),
-          outAmountRaw: '0',
-          error: `BROADCAST_COMPLETED_BUT_ERROR: ${e?.message || e}`,
-        };
-      }
+
+      const durationMs = Date.now() - startTime;
+      this.telemetryTotalSwaps++;
+      this.telemetryLandingTimeTotalMs += durationMs;
+
+      return {
+        success: true,
+        signature,
+        outAmountRaw: String(quote.outAmount),
+        outAmountLamports: Number(quote.outAmount),
+        durationMs,
+      };
+    } catch (err: any) {
+      const classification = classifyExecutionError(err);
+      this.telemetryFailedSwaps++;
+      this.lastFailureReason = `[${classification}] ${err.message || String(err)}`;
+      logger.error({ classification, error: this.lastFailureReason, mint: params.inputMint }, 'MainnetTradeExecutor swap failed');
+
       return {
         success: false,
-        status: 'FAILED',
-        inputMint: params.inputMint,
-        outputMint: params.outputMint,
-        inAmountRaw: amountBigInt.toString(),
-        outAmountRaw: '0',
-        error: `MAINNET_EXECUTION_ERROR: ${e?.message || e}`,
+        error: this.lastFailureReason,
+        durationMs: Date.now() - startTime,
       };
     }
   }
 
-  async getBalance(walletAddress?: string): Promise<number> {
-    const account = walletManager.getAccount('mainnet:default');
+  // ==========================================
+  // TRANSACTION CONFIRMATION
+  // ==========================================
+
+  private async confirmTransaction(signature: string, network: string, timeoutMs: number = 30000): Promise<boolean> {
     try {
-      const lamports = await this.connection.getBalance(new PublicKey(account.publicKey));
-      return lamports / 1e9;
+      const rpcUrl = config.EXECUTION_RPC_URL || 'https://api.mainnet-beta.solana.com';
+
+      const { Connection } = await import('@solana/web3.js');
+      const connection = new Connection(rpcUrl, 'confirmed');
+
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        const status = await connection.getSignatureStatus(signature, { searchTransactionHistory: true });
+        if (status?.value) {
+          if (status.value.err) {
+            return false; // Transaction failed on-chain
+          }
+          if (status.value.confirmationStatus === 'confirmed' || status.value.confirmationStatus === 'finalized') {
+            return true;
+          }
+        }
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  // ==========================================
+  // BALANCE QUERIES
+  // ==========================================
+
+  async getSolBalance(walletAddress?: string): Promise<number> {
+    try {
+      const rpcUrl = config.EXECUTION_RPC_URL || 'https://api.mainnet-beta.solana.com';
+      const { Connection, PublicKey, LAMPORTS_PER_SOL } = await import('@solana/web3.js');
+      const connection = new Connection(rpcUrl, 'confirmed');
+      const pubkey = new PublicKey(walletAddress || '');
+      const balance = await connection.getBalance(pubkey, 'confirmed');
+      return balance / LAMPORTS_PER_SOL;
     } catch {
       return 0;
     }
   }
 
   async getTokenBalance(mint: string, walletAddress?: string): Promise<number> {
-    const account = walletManager.getAccount('mainnet:default');
     try {
-      const info = await tokenProgramResolver.resolve(this.connection, mint);
-      const ata = tokenProgramResolver.getAtaAddress(new PublicKey(account.publicKey), new PublicKey(mint), info.programId);
-      const res = await this.connection.getTokenAccountBalance(ata);
-      return Number(res.value.amount || 0);
+      const rpcUrl = config.EXECUTION_RPC_URL || 'https://api.mainnet-beta.solana.com';
+      const { Connection, PublicKey } = await import('@solana/web3.js');
+      const connection = new Connection(rpcUrl, 'confirmed');
+      const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
+        new PublicKey(walletAddress || ''),
+        { mint: new PublicKey(mint) }
+      );
+      if (tokenAccounts.value.length === 0) return 0;
+      const info = tokenAccounts.value[0].account.data.parsed.info;
+      return info.tokenAmount.uiAmount || 0;
     } catch {
       return 0;
     }
+  }
+
+  async verifyReadiness(): Promise<{ ready: boolean; reason?: string }> {
+    try {
+      const rpcUrl = config.EXECUTION_RPC_URL;
+      if (!rpcUrl) {
+        return { ready: false, reason: 'EXECUTION_RPC_URL not configured' };
+      }
+      const { response } = await fetchWithRetry(rpcUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getHealth' }),
+        timeoutMs: 5000,
+      }, 1, 0);
+      if (response.ok) {
+        return { ready: true };
+      }
+      return { ready: false, reason: `RPC health check returned ${response.status}` };
+    } catch (err: any) {
+      return { ready: false, reason: `READINESS_CHECK_FAILED: ${err?.message}` };
+    }
+  }
+
+  // ==========================================
+  // TELEMETRY
+  // ==========================================
+
+  public getTelemetry() {
+    const totalAttempted = this.telemetryTotalSwaps + this.telemetryFailedSwaps;
+    return {
+      totalSwaps: this.telemetryTotalSwaps,
+      totalFeesPaidSol: this.telemetryTotalFeesPaidSol,
+      avgLandingTimeMs: this.telemetryTotalSwaps > 0 ? this.telemetryLandingTimeTotalMs / this.telemetryTotalSwaps : 0,
+      failureRate: totalAttempted > 0 ? this.telemetryFailedSwaps / totalAttempted : 0,
+      lastFailure: this.lastFailureReason,
+    };
   }
 }

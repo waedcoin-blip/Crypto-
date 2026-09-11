@@ -1,36 +1,36 @@
 // server/wallet/PaperWalletLedger.ts
-import { DatabaseSync } from 'node:sqlite';
-import fs from 'node:fs';
-import path from 'node:path';
+import { logger } from '../utils/logger.js';
 
-import { safeRawNumber } from '../utils/rawAmount.js';
-
-export interface PaperTransaction {
-  id: string;
-  type: 'BUY' | 'SELL' | 'RESET';
-  mint?: string;
-  solAmount: number;
-  tokenAmountRaw: number;
+interface PaperTokenBalance {
+  mint: string;
+  amountRaw: string; // BigInt as string
   decimals: number;
-  signature: string;
-  timestamp: number;
+  avgEntryPriceSol: number;
+  updatedAt: number;
 }
 
+interface PaperWalletState {
+  solBalance: number;
+  tokens: Map<string, PaperTokenBalance>;
+  totalTrades: number;
+  totalBuySol: number;
+  totalSellSol: number;
+  realizedPnlSol: number;
+}
+
+/**
+ * PaperWalletLedger: Authoritative paper trading balance tracker.
+ * Simulates real wallet behavior without touching the blockchain.
+ * 
+ * All paper trades flow through this ledger to maintain accurate
+ * balance state for PnL calculation and position tracking.
+ */
 export class PaperWalletLedger {
   private static instance: PaperWalletLedger;
-  private db: DatabaseSync;
+  private wallets: Map<string, PaperWalletState> = new Map();
+  private readonly DEFAULT_STARTING_SOL = 10.0; // 10 SOL starting balance
 
-  private constructor() {
-    const dataDir = path.join(process.cwd(), 'data');
-    if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true });
-    }
-    const dbPath = path.join(dataDir, 'paper_wallet.db');
-    this.db = new DatabaseSync(dbPath);
-    this.db.exec('PRAGMA journal_mode = WAL;');
-    this.db.exec('PRAGMA busy_timeout = 5000;');
-    this.initTables();
-  }
+  private constructor() {}
 
   public static getInstance(): PaperWalletLedger {
     if (!PaperWalletLedger.instance) {
@@ -39,112 +39,233 @@ export class PaperWalletLedger {
     return PaperWalletLedger.instance;
   }
 
-  private initTables(): void {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS wallet_balances (
-        asset_key TEXT PRIMARY KEY,
-        balance_raw TEXT NOT NULL,
-        decimals INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      );
+  // ==========================================
+  // WALLET STATE MANAGEMENT
+  // ==========================================
 
-      CREATE TABLE IF NOT EXISTS paper_transactions (
-        id TEXT PRIMARY KEY,
-        type TEXT NOT NULL,
-        mint TEXT,
-        sol_amount REAL NOT NULL,
-        token_amount_raw TEXT NOT NULL,
-        decimals INTEGER NOT NULL,
-        signature TEXT NOT NULL,
-        timestamp INTEGER NOT NULL
-      );
-    `);
+  private getOrCreateWallet(walletId: string): PaperWalletState {
+    let wallet = this.wallets.get(walletId);
+    if (!wallet) {
+      wallet = {
+        solBalance: this.DEFAULT_STARTING_SOL,
+        tokens: new Map(),
+        totalTrades: 0,
+        totalBuySol: 0,
+        totalSellSol: 0,
+        realizedPnlSol: 0,
+      };
+      this.wallets.set(walletId, wallet);
+      logger.info({ walletId, startingSol: this.DEFAULT_STARTING_SOL }, '[PaperWalletLedger] New paper wallet created');
+    }
+    return wallet;
+  }
 
-    // Ensure initial SOL balance exists
-    const solStmt = this.db.prepare("SELECT * FROM wallet_balances WHERE asset_key = 'SOL'");
-    const existingSol = solStmt.get() as any;
-    if (!existingSol) {
-      this.setSolBalance(100.0);
+  // ==========================================
+  // BALANCE QUERIES
+  // ==========================================
+
+  public getSolBalance(walletId: string = 'default'): number {
+    const wallet = this.getOrCreateWallet(walletId);
+    return wallet.solBalance;
+  }
+
+  public getTokenBalance(mint: string, walletId: string = 'default'): number {
+    const wallet = this.getOrCreateWallet(walletId);
+    const token = wallet.tokens.get(mint);
+    if (!token) return 0;
+    return Number(token.amountRaw) / (10 ** token.decimals);
+  }
+
+  public getTokenBalanceRaw(mint: string, walletId: string = 'default'): string {
+    const wallet = this.getOrCreateWallet(walletId);
+    const token = wallet.tokens.get(mint);
+    return token?.amountRaw || '0';
+  }
+
+  public getAllTokenBalances(walletId: string = 'default'): Array<{ mint: string; amount: number; decimals: number }> {
+    const wallet = this.getOrCreateWallet(walletId);
+    const balances: Array<{ mint: string; amount: number; decimals: number }> = [];
+    for (const [mint, token] of wallet.tokens.entries()) {
+      const amount = Number(token.amountRaw) / (10 ** token.decimals);
+      if (amount > 0) {
+        balances.push({ mint, amount, decimals: token.decimals });
+      }
+    }
+    return balances;
+  }
+
+  // ==========================================
+  // TRADE OPERATIONS
+  // ==========================================
+
+  /**
+   * Commit a paper buy: deduct SOL, add tokens.
+   */
+  public commitBuy(
+    mint: string,
+    solSpent: number,
+    tokenAmountRaw: string,
+    decimals: number,
+    signature: string,
+    walletId: string = 'default'
+  ): boolean {
+    const wallet = this.getOrCreateWallet(walletId);
+
+    // Verify sufficient SOL balance
+    if (wallet.solBalance < solSpent) {
+      logger.warn({ walletId, required: solSpent, available: wallet.solBalance }, '[PaperWalletLedger] Insufficient SOL for paper buy');
+      return false;
+    }
+
+    // Deduct SOL
+    wallet.solBalance -= solSpent;
+    wallet.totalBuySol += solSpent;
+    wallet.totalTrades++;
+
+    // Add tokens
+    const existing = wallet.tokens.get(mint);
+    if (existing) {
+      const newRaw = (BigInt(existing.amountRaw) + BigInt(tokenAmountRaw)).toString();
+      const newQty = Number(newRaw) / (10 ** decimals);
+      const oldQty = Number(existing.amountRaw) / (10 ** existing.decimals);
+      const oldCost = oldQty * existing.avgEntryPriceSol;
+      const newCost = (Number(tokenAmountRaw) / (10 ** decimals)) * (solSpent / (Number(tokenAmountRaw) / (10 ** decimals)));
+      existing.amountRaw = newRaw;
+      existing.avgEntryPriceSol = (oldCost + newCost) / (newQty || 1);
+      existing.updatedAt = Date.now();
+    } else {
+      const tokenQty = Number(tokenAmountRaw) / (10 ** decimals);
+      wallet.tokens.set(mint, {
+        mint,
+        amountRaw: tokenAmountRaw,
+        decimals,
+        avgEntryPriceSol: tokenQty > 0 ? solSpent / tokenQty : 0,
+        updatedAt: Date.now(),
+      });
+    }
+
+    logger.info({ mint, solSpent, tokenAmountRaw, signature }, '[PaperWalletLedger] Paper BUY committed');
+    return true;
+  }
+
+  /**
+   * Commit a paper sell: remove tokens, add SOL.
+   */
+  public commitSell(
+    mint: string,
+    tokenAmountRaw: string,
+    solReceived: number,
+    signature: string,
+    walletId: string = 'default'
+  ): boolean {
+    const wallet = this.getOrCreateWallet(walletId);
+    const token = wallet.tokens.get(mint);
+
+    if (!token) {
+      logger.warn({ mint, walletId }, '[PaperWalletLedger] No token balance for paper sell');
+      return false;
+    }
+
+    const sellRaw = BigInt(tokenAmountRaw);
+    const currentRaw = BigInt(token.amountRaw);
+    if (sellRaw > currentRaw) {
+      logger.warn({ mint, sellRaw: sellRaw.toString(), currentRaw: currentRaw.toString() }, '[PaperWalletLedger] Insufficient token balance for paper sell');
+      return false;
+    }
+
+    // Calculate realized PnL
+    const sellQty = Number(sellRaw) / (10 ** token.decimals);
+    const costBasis = sellQty * token.avgEntryPriceSol;
+    const pnl = solReceived - costBasis;
+    wallet.realizedPnlSol += pnl;
+
+    // Remove tokens
+    const remainingRaw = currentRaw - sellRaw;
+    if (remainingRaw <= 0n) {
+      wallet.tokens.delete(mint);
+    } else {
+      token.amountRaw = remainingRaw.toString();
+      token.updatedAt = Date.now();
+    }
+
+    // Add SOL
+    wallet.solBalance += solReceived;
+    wallet.totalSellSol += solReceived;
+    wallet.totalTrades++;
+
+    logger.info({ mint, solReceived, pnl: pnl.toFixed(6), signature }, '[PaperWalletLedger] Paper SELL committed');
+    return true;
+  }
+
+  // ==========================================
+  // DIRECT BALANCE ADJUSTMENTS (for testing)
+  // ==========================================
+
+  public addSol(amount: number, walletId: string = 'default'): void {
+    const wallet = this.getOrCreateWallet(walletId);
+    wallet.solBalance += amount;
+  }
+
+  public deductSol(amount: number, walletId: string = 'default'): boolean {
+    const wallet = this.getOrCreateWallet(walletId);
+    if (wallet.solBalance < amount) return false;
+    wallet.solBalance -= amount;
+    return true;
+  }
+
+  public addToken(mint: string, amountRaw: number, walletId: string = 'default', decimals: number = 6): void {
+    const wallet = this.getOrCreateWallet(walletId);
+    const existing = wallet.tokens.get(mint);
+    if (existing) {
+      existing.amountRaw = (BigInt(existing.amountRaw) + BigInt(amountRaw)).toString();
+      existing.updatedAt = Date.now();
+    } else {
+      wallet.tokens.set(mint, {
+        mint,
+        amountRaw: String(amountRaw),
+        decimals,
+        avgEntryPriceSol: 0,
+        updatedAt: Date.now(),
+      });
     }
   }
 
-  public getSolBalance(): number {
-    const stmt = this.db.prepare("SELECT balance_raw FROM wallet_balances WHERE asset_key = 'SOL'");
-    const row = stmt.get() as any;
-    if (!row) return 100.0;
-    return Number(row.balance_raw) / 1e9;
+  public deductToken(mint: string, amountRaw: number, walletId: string = 'default'): boolean {
+    const wallet = this.getOrCreateWallet(walletId);
+    const token = wallet.tokens.get(mint);
+    if (!token) return false;
+    const current = BigInt(token.amountRaw);
+    const deduct = BigInt(amountRaw);
+    if (deduct > current) return false;
+    const remaining = current - deduct;
+    if (remaining <= 0n) {
+      wallet.tokens.delete(mint);
+    } else {
+      token.amountRaw = remaining.toString();
+      token.updatedAt = Date.now();
+    }
+    return true;
   }
 
-  public setSolBalance(solAmount: number): void {
-    const lamportsStr = String(Math.floor(solAmount * 1e9));
-    const stmt = this.db.prepare(`
-      INSERT INTO wallet_balances (asset_key, balance_raw, decimals, updated_at)
-      VALUES ('SOL', ?, 9, ?)
-      ON CONFLICT(asset_key) DO UPDATE SET balance_raw = excluded.balance_raw, updated_at = excluded.updated_at
-    `);
-    stmt.run(lamportsStr, Date.now());
+  // ==========================================
+  // RESET & TELEMETRY
+  // ==========================================
+
+  public resetWallet(walletId: string = 'default'): void {
+    this.wallets.delete(walletId);
+    logger.info({ walletId }, '[PaperWalletLedger] Paper wallet reset');
   }
 
-  public getTokenBalanceRaw(mint: string): bigint {
-    const stmt = this.db.prepare('SELECT balance_raw FROM wallet_balances WHERE asset_key = ?');
-    const row = stmt.get(mint) as any;
-    if (!row) return 0n;
-    try { return BigInt(String(row.balance_raw)); } catch { throw new Error(`CORRUPT_PAPER_BALANCE: ${mint}`); }
-  }
-
-  /** Legacy display API. Trading logic must use getTokenBalanceRaw(). */
-  public getTokenBalance(mint: string): number {
-    const raw = this.getTokenBalanceRaw(mint);
-    return safeRawNumber(raw);
-  }
-
-  public setTokenBalance(mint: string, rawAmount: number | string | bigint, decimals: number = 9): void {
-    const rawStr = typeof rawAmount === 'bigint' ? rawAmount.toString() : String(rawAmount);
-    if (!/^\d+$/.test(rawStr)) throw new Error(`INVALID_TOKEN_BALANCE: ${mint}`);
-    const stmt = this.db.prepare(`
-      INSERT INTO wallet_balances (asset_key, balance_raw, decimals, updated_at)
-      VALUES (?, ?, ?, ?)
-      ON CONFLICT(asset_key) DO UPDATE SET balance_raw = excluded.balance_raw, updated_at = excluded.updated_at
-    `);
-    stmt.run(mint, rawStr, decimals, Date.now());
-  }
-
-  public commitBuy(mint: string, solSpent: number, tokenAmountRaw: number | string | bigint, decimals: number, signature: string): void {
-    const currentSol = this.getSolBalance();
-    const newSol = Math.max(0, currentSol - solSpent);
-    this.setSolBalance(newSol);
-
-    const currentToken = this.getTokenBalanceRaw(mint);
-    const incoming = BigInt(String(tokenAmountRaw));
-    this.setTokenBalance(mint, currentToken + incoming, decimals);
-
-    const txStmt = this.db.prepare(`
-      INSERT INTO paper_transactions (id, type, mint, sol_amount, token_amount_raw, decimals, signature, timestamp)
-      VALUES (?, 'BUY', ?, ?, ?, ?, ?, ?)
-    `);
-    txStmt.run(`tx_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`, mint, solSpent, String(tokenAmountRaw), decimals, signature, Date.now());
-  }
-
-  public commitSell(mint: string, solGained: number, tokenAmountRaw: number | string | bigint, decimals: number, signature: string): void {
-    const currentSol = this.getSolBalance();
-    this.setSolBalance(currentSol + solGained);
-
-    const currentToken = this.getTokenBalanceRaw(mint);
-    const sold = BigInt(String(tokenAmountRaw));
-    if (sold > currentToken) throw new Error(`INSUFFICIENT_TOKEN_BALANCE: ${mint}`);
-    this.setTokenBalance(mint, currentToken - sold, decimals);
-
-    const txStmt = this.db.prepare(`
-      INSERT INTO paper_transactions (id, type, mint, sol_amount, token_amount_raw, decimals, signature, timestamp)
-      VALUES (?, 'SELL', ?, ?, ?, ?, ?, ?)
-    `);
-    txStmt.run(`tx_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`, mint, solGained, String(tokenAmountRaw), decimals, signature, Date.now());
-  }
-
-  public reset(solBalance: number = 100.0): void {
-    this.db.exec('DELETE FROM wallet_balances;');
-    this.db.exec('DELETE FROM paper_transactions;');
-    this.setSolBalance(solBalance);
+  public getTelemetry(walletId: string = 'default') {
+    const wallet = this.getOrCreateWallet(walletId);
+    return {
+      solBalance: wallet.solBalance,
+      tokenCount: wallet.tokens.size,
+      totalTrades: wallet.totalTrades,
+      totalBuySol: wallet.totalBuySol,
+      totalSellSol: wallet.totalSellSol,
+      realizedPnlSol: wallet.realizedPnlSol,
+    };
   }
 }
 

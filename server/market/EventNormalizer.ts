@@ -1,80 +1,190 @@
 // server/market/EventNormalizer.ts
-import { tokenMintResolver } from './TokenMintResolver.js';
+import { UnifiedMarketEvent, EventSource } from '../types/index.js';
+import { CanonicalEventNormalizer } from './CanonicalEventNormalizer.js';
 
 export interface MarketEvent {
-  network: string;
-  slot: number;
-  signature: string;
+  eventId?: string;
+  correlationId?: string;
+  chain: 'solana';
+  source: EventSource;
+  mint: string;
+  signature?: string;
+  slot?: number;
   timestamp: number;
-  type: 'ON_CHAIN_TX' | 'SLOT_UPDATE' | 'ACCOUNT_UPDATE' | 'PRICE_UPDATE';
-  mint?: string;
-  owner?: string;
-  pool?: string;
+  type?: string;
+  eventType?: string;
+  side?: 'buy' | 'sell';
+  tokenAmount?: string;
+  tokenAmountRaw?: string;
+  solAmount?: string;
+  solAmountRaw?: string;
   price?: number;
-  tokenAmount?: number;
-  accountKeys?: string[];
+  priceSol?: number;
+  buyer?: string;
+  seller?: string;
+  owner?: string;
+  confidence?: number;
+  symbol?: string;
+  pool?: string;
+  protocol?: string;
+  network?: string;
   raw?: any;
+  accountKeys?: string[];
 }
 
+/**
+ * Event Normalizer: Converts raw blockchain events to UnifiedMarketEvent format.
+ */
 export class EventNormalizer {
-  public static normalizeYellowstoneUpdate(update: any, network: string = 'mainnet'): MarketEvent | null {
-    if (!update) return null;
+  private static instance: EventNormalizer;
+  private normalizer = CanonicalEventNormalizer.getInstance();
 
-    const now = Date.now();
+  private constructor() {}
 
-    // Transaction update
-    if (update.transaction) {
-      const tx = update.transaction;
-      const signature = tx.signature || tx.transaction?.signature || `sig_${now}`;
-      const slot = Number(tx.slot || update.slot || 0);
-
-      const accountKeys: string[] = [];
-      const keys = tx.transaction?.transaction?.message?.accountKeys || tx.accountKeys || [];
-      for (const k of keys) {
-        if (typeof k === 'string') accountKeys.push(k);
-        else if (k && typeof k.toString === 'function') accountKeys.push(k.toString());
-      }
-
-      const logs: string[] = tx.meta?.logMessages || tx.transaction?.meta?.logMessages || tx.logs || [];
-      let extractedMint: string | undefined = undefined;
-
-      // 1. Try log extraction
-      const logMint = tokenMintResolver.extractMintFromLogs(logs);
-      if (logMint) {
-        extractedMint = logMint;
-      } else {
-        // 2. Scan account keys for first valid candidate mint
-        const candidates = tokenMintResolver.extractCandidateMintsFromAccountKeys(accountKeys);
-        if (candidates.length > 0) {
-          extractedMint = candidates[0];
-        }
-      }
-
-      return {
-        network,
-        slot,
-        signature: typeof signature === 'string' ? signature : String(signature),
-        timestamp: now,
-        type: 'ON_CHAIN_TX',
-        mint: extractedMint,
-        accountKeys,
-        raw: update,
-      };
+  public static getInstance(): EventNormalizer {
+    if (!EventNormalizer.instance) {
+      EventNormalizer.instance = new EventNormalizer();
     }
+    return EventNormalizer.instance;
+  }
 
-    // Slot update
-    if (update.slot) {
-      return {
-        network,
-        slot: Number(update.slot.slot || update.slot || 0),
-        signature: `slot_${update.slot}`,
-        timestamp: now,
-        type: 'SLOT_UPDATE',
-        raw: update,
-      };
-    }
+  /**
+   * Normalize a raw WSS notification into a UnifiedMarketEvent.
+   */
+  public normalizeWssNotification(msg: any, network: string = 'mainnet'): UnifiedMarketEvent | null {
+    if (!msg || !msg.params) return null;
 
-    return null;
+    const { result, subscription } = msg.params;
+    if (!result) return null;
+
+    const slot = result.slot || result.context?.slot;
+    if (!slot) return null;
+
+    const eventId = this.normalizer.generateEventId('HELIUS_WSS', '', `slot_${slot}`, slot, 'ACCOUNT_UPDATE');
+    const correlationId = this.normalizer.generateCorrelationId('HELIUS_WSS', '');
+
+    return {
+      eventId,
+      correlationId,
+      chain: 'solana',
+      source: 'HELIUS_WSS',
+      mint: '',
+      signature: `acc_slot_${slot}`,
+      slot,
+      timestamp: Date.now(),
+      eventType: 'ACCOUNT_UPDATE',
+      confidence: 1.0,
+      network,
+      raw: msg,
+    };
+  }
+
+  /**
+   * Normalize a Helius WSS account update event.
+   */
+  public normalizeHeliusWssEvent(msg: any, network: string = 'mainnet'): UnifiedMarketEvent | null {
+    if (!msg || !msg.params?.result) return null;
+
+    const result = msg.params.result;
+    const pubkey = result.value?.pubkey || result.pubkey;
+    const owner = result.value?.owner || result.owner;
+    const slot = result.context?.slot || result.slot || 0;
+
+    if (!pubkey) return null;
+
+    const eventId = this.normalizer.generateEventId('HELIUS_WSS', pubkey, `acc_${pubkey}`, slot, 'ACCOUNT_UPDATE');
+    const correlationId = this.normalizer.generateCorrelationId('HELIUS_WSS', pubkey);
+
+    return {
+      eventId,
+      correlationId,
+      chain: 'solana',
+      source: 'HELIUS_WSS',
+      mint: pubkey,
+      signature: `acc_${pubkey.slice(0, 8)}_${slot}`,
+      slot,
+      timestamp: Date.now(),
+      eventType: 'ACCOUNT_UPDATE',
+      confidence: 1.0,
+      network,
+      raw: msg,
+    };
+  }
+
+  /**
+   * Normalize a trade event from LaserStream gRPC.
+   */
+  public normalizeLaserStreamTrade(txData: any, network: string = 'mainnet'): UnifiedMarketEvent | null {
+    if (!txData) return null;
+
+    const signature = txData.signature || '';
+    const slot = txData.slot || 0;
+    const mint = txData.mint || '';
+
+    if (!mint) return null;
+
+    const eventId = this.normalizer.generateEventId('LASERSTREAM', mint, signature, slot, 'TRADE');
+    const correlationId = this.normalizer.generateCorrelationId('LASERSTREAM', mint);
+
+    return {
+      eventId,
+      correlationId,
+      chain: 'solana',
+      source: 'LASERSTREAM',
+      mint,
+      signature,
+      slot,
+      timestamp: txData.timestamp || Date.now(),
+      eventType: 'TRADE',
+      side: txData.side === 'buy' ? 'buy' : txData.side === 'sell' ? 'sell' : undefined,
+      tokenAmount: txData.tokenAmount ? String(txData.tokenAmount) : undefined,
+      solAmount: txData.solAmount ? String(txData.solAmount) : undefined,
+      priceSol: txData.priceSol,
+      buyer: txData.buyer,
+      seller: txData.seller,
+      confidence: 1.0,
+      symbol: txData.symbol,
+      pool: txData.pool,
+      protocol: txData.protocol,
+      network,
+      raw: txData,
+    };
+  }
+
+  /**
+   * Normalize a manual API event.
+   */
+  public normalizeManualEvent(body: any): UnifiedMarketEvent | null {
+    if (!body || !body.mint) return null;
+
+    const source: EventSource = body.source || 'MANUAL';
+    const eventId = body.eventId || this.normalizer.generateManualEventId(body.mint);
+    const correlationId = body.correlationId || this.normalizer.generateCorrelationId(source, body.mint);
+
+    return {
+      eventId,
+      correlationId,
+      chain: 'solana',
+      source,
+      mint: body.mint.trim(),
+      signature: body.signature,
+      slot: body.slot ? Number(body.slot) : undefined,
+      timestamp: body.timestamp || Date.now(),
+      eventType: body.eventType || 'TRADE',
+      side: body.side,
+      tokenAmount: body.tokenAmount ? String(body.tokenAmount) : undefined,
+      solAmount: body.solAmount ? String(body.solAmount) : undefined,
+      priceSol: body.priceSol ? Number(body.priceSol) : undefined,
+      buyer: body.buyer,
+      seller: body.seller,
+      confidence: body.confidence !== undefined ? Number(body.confidence) : 1.0,
+      symbol: body.symbol,
+      pool: body.pool,
+      protocol: body.protocol,
+      network: body.network || 'mainnet',
+      raw: body.raw,
+    };
   }
 }
 
+export const eventNormalizer = EventNormalizer.getInstance();

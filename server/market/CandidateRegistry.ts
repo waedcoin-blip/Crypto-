@@ -1,28 +1,43 @@
 // server/market/CandidateRegistry.ts
-import {
-  EventSource,
-  CandidateLifecycleState,
-  CandidatePipelineRecord,
-  UnifiedMarketEvent,
-} from '../types/index.js';
-import { sourceHealthMonitor } from './SourceHealthMonitor.js';
-import { canonicalizeSolanaMint } from '../../src/utils/solanaValidators.js';
 
+export type CandidateState =
+  | 'DISCOVERED'
+  | 'ENRICHING'
+  | 'READY_FOR_EVALUATION'
+  | 'EVALUATING'
+  | 'BUYING'
+  | 'BOUGHT'
+  | 'REJECTED'
+  | 'EXPIRED';
+
+export interface CandidateRecord {
+  mint: string;
+  symbol: string;
+  network: string;
+  state: CandidateState;
+  source: string;
+  discoveredAt: number;
+  updatedAt: number;
+  rejectionReason?: string;
+  pool?: string;
+  protocol?: string;
+  score?: number;
+}
+
+/**
+ * Candidate Registry: Single source of truth for all discovered token candidates.
+ * Prevents duplicate processing of the same token.
+ */
 export class CandidateRegistry {
   private static instance: CandidateRegistry;
-
-  // Key: `${network}:${mint}`
-  private candidates: Map<string, CandidatePipelineRecord> = new Map();
-  // Key: eventId (deduplication cache)
-  private processedEventIds: Set<string> = new Set();
-  private readonly MAX_EVENT_CACHE = 50000;
-  private readonly CANDIDATE_TTL_MS = 15 * 60 * 1000; // 15 minutes TTL
+  private candidates: Map<string, CandidateRecord> = new Map();
+  private readonly MAX_CANDIDATES = 5000;
+  private readonly EXPIRY_MS = 30 * 60 * 1000; // 30 minutes
 
   private constructor() {
-    // Periodic cleanup of stale candidate records
-    setInterval(() => {
-      this.cleanupStaleCandidates();
-    }, 60000);
+    // Periodic cleanup of expired candidates
+    const interval = setInterval(() => this.pruneExpired(), 60000);
+    if (interval.unref) interval.unref();
   }
 
   public static getInstance(): CandidateRegistry {
@@ -32,169 +47,148 @@ export class CandidateRegistry {
     return CandidateRegistry.instance;
   }
 
-  /**
-   * Checks if an event is duplicate by eventId.
-   */
-  public isEventDuplicate(eventId: string): boolean {
-    return this.processedEventIds.has(eventId);
+  private getKey(network: string, mint: string): string {
+    return `${network}:${mint.trim().toLowerCase()}`;
   }
 
   /**
-   * Registers event as processed.
+   * Register a new candidate. Returns false if already exists.
    */
-  public markEventProcessed(eventId: string): void {
-    this.processedEventIds.add(eventId);
-    if (this.processedEventIds.size > this.MAX_EVENT_CACHE) {
-      const arr = Array.from(this.processedEventIds);
-      this.processedEventIds = new Set(arr.slice(arr.length - 25000));
-    }
-  }
+  public registerCandidate(params: {
+    mint: string;
+    symbol?: string;
+    network: string;
+    source: string;
+    pool?: string;
+    protocol?: string;
+  }): boolean {
+    const key = this.getKey(params.network, params.mint);
 
-  public buildKey(networkOrChain: string, mint: string, pool: string = 'default'): string {
-    return `${networkOrChain}:${mint}:${pool}`;
-  }
-
-  /**
-   * Ingests or updates a candidate token from any discovery source.
-   * Merges sources and preserves the authoritative state.
-   */
-  public registerOrUpdateCandidate(
-    event: UnifiedMarketEvent,
-    network: string = 'mainnet'
-  ): { candidate: CandidatePipelineRecord; isNewCandidate: boolean } {
-    const canonicalMint = canonicalizeSolanaMint(event.mint);
-    event.mint = canonicalMint; // normalize event in-place just in case
-    
-    const pool = event.pool || 'default';
-    const key = this.buildKey(network, canonicalMint, pool);
-    const fallbackKey = `${network}:${canonicalMint}`;
-    const now = Date.now();
-    let isNewCandidate = false;
-
-    let candidate = this.candidates.get(key) || this.candidates.get(fallbackKey);
-
-    if (!candidate) {
-      const src = event.source as EventSource;
-      isNewCandidate = true;
-      candidate = {
-        mint: event.mint,
-        network,
-        pool,
-        symbol: event.symbol || event.mint.slice(0, 6).toUpperCase(),
-        firstDiscoveredSource: src,
-        sources: [src],
-        firstDiscoveredAt: now,
-        lastEventAt: now,
-        state: 'DISCOVERED',
-        correlationId: event.correlationId || `corr_${event.source.toLowerCase()}_${event.mint.slice(0, 8)}_${now}`,
-      };
-      this.candidates.set(key, candidate);
-      sourceHealthMonitor.recordCandidate(src);
-    } else {
-      const src = event.source as EventSource;
-      candidate.lastEventAt = now;
-      if (pool && pool !== 'default') {
-        candidate.pool = pool;
-      }
-      if (!candidate.sources.includes(src)) {
-        candidate.sources.push(src);
-      }
-      if (event.symbol && (!candidate.symbol || candidate.symbol.startsWith('0x') || candidate.symbol.length > 10)) {
-        candidate.symbol = event.symbol;
-      }
-      // re-key to specific pool if it was default
-      this.candidates.set(key, candidate);
+    // Prevent duplicate registration
+    if (this.candidates.has(key)) {
+      return false;
     }
 
-    return { candidate, isNewCandidate };
+    // Enforce capacity limit
+    if (this.candidates.size >= this.MAX_CANDIDATES) {
+      this.evictOldest();
+    }
+
+    const record: CandidateRecord = {
+      mint: params.mint.trim(),
+      symbol: params.symbol || params.mint.slice(0, 6).toUpperCase(),
+      network: params.network,
+      state: 'DISCOVERED',
+      source: params.source,
+      discoveredAt: Date.now(),
+      updatedAt: Date.now(),
+      pool: params.pool,
+      protocol: params.protocol,
+    };
+
+    this.candidates.set(key, record);
+    return true;
   }
 
   /**
-   * Check if a candidate can attempt a BUY.
-   * Rejects if already BUYING, BOUGHT, or actively locked.
+   * Get a candidate by network and mint.
    */
-  public canAttemptBuy(network: string, mint: string, pool: string = 'default'): { allowed: boolean; reason?: string } {
-    const candidate = this.getCandidate(network, mint, pool);
+  public getCandidate(network: string, mint: string, pool?: string): CandidateRecord | undefined {
+    const key = this.getKey(network, mint);
+    return this.candidates.get(key);
+  }
 
+  /**
+   * Get all candidates.
+   */
+  public getAllCandidates(): CandidateRecord[] {
+    return Array.from(this.candidates.values());
+  }
+
+  /**
+   * Check if a buy attempt is allowed for a candidate.
+   */
+  public canAttemptBuy(network: string, wallet: string, mint: string): { allowed: boolean; reason?: string } {
+    const candidate = this.getCandidate(network, mint);
     if (!candidate) {
+      // Allow buys for tokens not in registry (manual API calls)
       return { allowed: true };
     }
-
     if (candidate.state === 'BUYING') {
       return { allowed: false, reason: 'BUY_IN_PROGRESS: Token is currently undergoing buy transaction' };
     }
-
     if (candidate.state === 'BOUGHT') {
       return { allowed: false, reason: 'ALREADY_BOUGHT: Token was already purchased' };
     }
-
     return { allowed: true };
   }
 
   /**
-   * Transitions candidate state with validation.
+   * Update candidate state with validation.
    */
   public updateCandidateState(
     network: string,
     mint: string,
-    state: CandidateLifecycleState,
-    details?: {
-      score?: number;
-      rejectionReason?: string;
-      orderId?: string;
-      signature?: string;
-      positionId?: string;
-      pool?: string;
-    }
+    newState: CandidateState,
+    metadata?: { rejectionReason?: string; score?: number }
   ): void {
-    const candidate = this.getCandidate(network, mint, details?.pool);
+    const key = this.getKey(network, mint);
+    const candidate = this.candidates.get(key);
     if (!candidate) return;
 
-    candidate.state = state;
-    candidate.lastEventAt = Date.now();
-
-    if (details?.score !== undefined) candidate.score = details.score;
-    if (details?.rejectionReason) candidate.rejectionReason = details.rejectionReason;
-    if (details?.orderId) candidate.buyOrderId = details.orderId;
-    if (details?.signature) candidate.buySignature = details.signature;
-    if (details?.positionId) candidate.positionId = details.positionId;
+    candidate.state = newState;
+    candidate.updatedAt = Date.now();
+    if (metadata?.rejectionReason) candidate.rejectionReason = metadata.rejectionReason;
+    if (metadata?.score !== undefined) candidate.score = metadata.score;
   }
 
-  public getCandidate(network: string, mint: string, pool: string = 'default'): CandidatePipelineRecord | undefined {
-    let canonicalMint: string;
-    try {
-      canonicalMint = canonicalizeSolanaMint(mint);
-    } catch {
-      return undefined;
-    }
-    const key = this.buildKey(network, canonicalMint, pool);
-    if (this.candidates.has(key)) return this.candidates.get(key);
-    const fallbackKey = `${network}:${canonicalMint}`;
-    if (this.candidates.has(fallbackKey)) return this.candidates.get(fallbackKey);
-    // Search any matching pool key
-    for (const [k, c] of this.candidates.entries()) {
-      if (k.startsWith(`${network}:${canonicalMint}:`) || k.startsWith(`solana:${canonicalMint}:`)) {
-        return c;
-      }
-    }
-    return undefined;
-  }
-
-  public getAllCandidates(network?: string): CandidatePipelineRecord[] {
-    const list = Array.from(this.candidates.values());
-    if (network) {
-      return list.filter((c) => c.network === network);
-    }
-    return list;
-  }
-
-  private cleanupStaleCandidates(): void {
+  /**
+   * Prune expired candidates.
+   */
+  private pruneExpired(): void {
     const now = Date.now();
+    let pruned = 0;
     for (const [key, candidate] of this.candidates.entries()) {
-      if (now - candidate.lastEventAt > this.CANDIDATE_TTL_MS && candidate.state !== 'BUYING') {
+      if (now - candidate.discoveredAt > this.EXPIRY_MS) {
         this.candidates.delete(key);
+        pruned++;
       }
     }
+    if (pruned > 0) {
+      console.log(`[CandidateRegistry] Pruned ${pruned} expired candidates. Active: ${this.candidates.size}`);
+    }
+  }
+
+  /**
+   * Evict oldest candidate when at capacity.
+   */
+  private evictOldest(): void {
+    let oldestKey: string | null = null;
+    let oldestTime = Infinity;
+    for (const [key, candidate] of this.candidates.entries()) {
+      if (candidate.discoveredAt < oldestTime) {
+        oldestTime = candidate.discoveredAt;
+        oldestKey = key;
+      }
+    }
+    if (oldestKey) {
+      this.candidates.delete(oldestKey);
+    }
+  }
+
+  /**
+   * Get registry telemetry.
+   */
+  public getTelemetry() {
+    const byState: Record<string, number> = {};
+    for (const candidate of this.candidates.values()) {
+      byState[candidate.state] = (byState[candidate.state] || 0) + 1;
+    }
+    return {
+      totalCandidates: this.candidates.size,
+      maxCapacity: this.MAX_CANDIDATES,
+      byState,
+    };
   }
 }
 

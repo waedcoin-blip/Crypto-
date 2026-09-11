@@ -1,12 +1,27 @@
 // server/market/CanonicalEventNormalizer.ts
-import { UnifiedMarketEvent, EventSource, MarketEventType } from '../types/index.js';
-import { tokenMintResolver } from './TokenMintResolver.js';
-import { canonicalizeSolanaMint } from '../../src/utils/solanaValidators.js';
+import { createHash } from 'crypto';
+import { EventSource } from '../types/index.js';
 
+/**
+ * Canonical Event Normalizer.
+ * Generates deterministic event IDs and correlation IDs for deduplication.
+ */
 export class CanonicalEventNormalizer {
-  /**
-   * Generates deterministic eventId.
-   */
+  private static instance: CanonicalEventNormalizer;
+
+  private constructor() {}
+
+  public static getInstance(): CanonicalEventNormalizer {
+    if (!CanonicalEventNormalizer.instance) {
+      CanonicalEventNormalizer.instance = new CanonicalEventNormalizer();
+    }
+    return CanonicalEventNormalizer.instance;
+  }
+
+  public static generateCorrelationId(source: EventSource, mint: string): string {
+    return CanonicalEventNormalizer.getInstance().generateCorrelationId(source, mint);
+  }
+
   public static generateEventId(
     source: EventSource,
     mint: string,
@@ -14,232 +29,54 @@ export class CanonicalEventNormalizer {
     slot?: number,
     eventType?: string
   ): string {
-    if (signature && signature !== 'none' && !signature.startsWith('sig_')) {
-      return `${source}:${signature}:${mint}:${eventType || 'TRADE'}`;
-    }
-    const slotPart = slot ? String(slot) : Math.floor(Date.now() / 3000).toString();
-    return `${source}:${mint}:${eventType || 'TRADE'}:${slotPart}`;
+    return CanonicalEventNormalizer.getInstance().generateEventId(source, mint, signature, slot, eventType);
   }
 
   /**
-   * Generates correlationId for tracing token through pipeline.
+   * Generates a deterministic correlation ID for a source+mint pair.
+   * Used to correlate all events for the same token from the same source.
    */
-  public static generateCorrelationId(source: EventSource, mint: string): string {
-    return `corr_${source.toLowerCase()}_${mint.slice(0, 8)}_${Date.now()}`;
+  public generateCorrelationId(source: EventSource, mint: string): string {
+    const raw = `${source}:${mint.trim().toLowerCase()}`;
+    return createHash('sha256').update(raw).digest('hex').slice(0, 16);
   }
 
   /**
-   * Normalizes Pulse Feed incoming payload.
+   * Generates a deterministic event ID for deduplication.
+   * Combines source, mint, signature, slot, and event type.
    */
-  public static normalizePulseTrade(rawTrade: any, network: string = 'mainnet'): UnifiedMarketEvent | null {
-    if (!rawTrade) return null;
-    const tradePayload = rawTrade;
-
-    let mint: string;
-    try {
-      mint = canonicalizeSolanaMint(tradePayload.tokenAddress || tradePayload.token || tradePayload.mint);
-    } catch {
-      return null;
-    }
-
-    if (!tokenMintResolver.isValidMint(mint)) {
-      return null;
-    }
-
-    const now = Date.now();
-    const side = (tradePayload.type || tradePayload.side || 'BUY').toUpperCase() === 'SELL' ? 'SELL' : 'BUY';
-    const signature = tradePayload.signature || undefined;
-    const solAmount = tradePayload.solAmount ? String(tradePayload.solAmount) : (tradePayload.amount ? String(tradePayload.amount) : undefined);
-    const priceSol = tradePayload.priceSol ? Number(tradePayload.priceSol) : (tradePayload.price ? Number(tradePayload.price) : undefined);
-
-    const eventId = this.generateEventId('PULSE_FEED', mint, signature, tradePayload.slot, side);
-    const correlationId = this.generateCorrelationId('PULSE_FEED', mint);
-
-    return {
-      eventId,
-      correlationId,
-      chain: 'solana',
-      source: 'PULSE_FEED',
-      mint,
-      signature,
-      slot: tradePayload.slot ? Number(tradePayload.slot) : undefined,
-      timestamp: tradePayload.timestamp || now,
-      eventType: side === 'BUY' ? 'BUY' : 'SELL',
-      side,
-      tokenAmount: tradePayload.tokenAmount ? String(tradePayload.tokenAmount) : undefined,
-      tokenAmountRaw: tradePayload.tokenAmount ? String(tradePayload.tokenAmount) : undefined,
-      solAmount,
-      solAmountRaw: solAmount,
-      priceSol,
-      buyer: side === 'BUY' ? (tradePayload.fromAccount || tradePayload.buyer || tradePayload.wallet) : undefined,
-      seller: side === 'SELL' ? (tradePayload.fromAccount || tradePayload.seller || tradePayload.wallet) : undefined,
-      confidence: 1.0,
-      symbol: tradePayload.symbol || tradePayload.tokenSymbol || tradePayload.name || undefined,
-      raw: tradePayload,
-      network,
-    };
+  public generateEventId(
+    source: EventSource,
+    mint: string,
+    signature?: string,
+    slot?: number,
+    eventType?: string
+  ): string {
+    const parts = [
+      source,
+      mint.trim().toLowerCase(),
+      signature || 'no-sig',
+      slot?.toString() || 'no-slot',
+      eventType || 'TRADE',
+    ];
+    const raw = parts.join(':');
+    return createHash('sha256').update(raw).digest('hex').slice(0, 24);
   }
 
   /**
-   * Normalizes Pump.fun bonding curve trade or creation event.
+   * Validates that an event ID is well-formed.
    */
-  public static normalizePumpFunEvent(
-    params: {
-      mint: string;
-      signature?: string;
-      slot?: number;
-      isCreate?: boolean;
-      isBuy?: boolean;
-      tokenAmount?: string;
-      solAmount?: string;
-      priceSol?: number;
-      trader?: string;
-      symbol?: string;
-      raw?: any;
-    },
-    network: string = 'mainnet'
-  ): UnifiedMarketEvent | null {
-    let mint: string;
-    try {
-      mint = canonicalizeSolanaMint(params.mint);
-    } catch {
-      return null;
-    }
-
-    if (!tokenMintResolver.isValidMint(mint)) {
-      return null;
-    }
-
-    const now = Date.now();
-    const eventType = params.isCreate ? 'TOKEN_DISCOVERED' : 'BONDING_TRADE';
-    const side = params.isBuy ? 'BUY' : 'SELL';
-    const eventId = this.generateEventId('PUMP_FUN', mint, params.signature, params.slot, eventType);
-    const correlationId = this.generateCorrelationId('PUMP_FUN', mint);
-
-    return {
-      eventId,
-      correlationId,
-      chain: 'solana',
-      source: 'PUMP_FUN',
-      mint,
-      signature: params.signature,
-      slot: params.slot,
-      timestamp: now,
-      eventType,
-      side: params.isCreate ? undefined : side,
-      tokenAmount: params.tokenAmount,
-      tokenAmountRaw: params.tokenAmount,
-      solAmount: params.solAmount,
-      solAmountRaw: params.solAmount,
-      priceSol: params.priceSol,
-      buyer: side === 'BUY' ? params.trader : undefined,
-      seller: side === 'SELL' ? params.trader : undefined,
-      confidence: 1.0,
-      symbol: params.symbol,
-      protocol: 'PUMP_FUN',
-      raw: params.raw,
-      network,
-    };
+  public isValidEventId(eventId: string): boolean {
+    return typeof eventId === 'string' && eventId.length >= 8 && eventId.length <= 64;
   }
 
   /**
-   * Normalizes DexScreener pair discovery into candidate event.
+   * Generates a timestamp-based event ID for manual/API events.
    */
-  public static normalizeDexScreenerCandidate(
-    pair: any,
-    network: string = 'mainnet'
-  ): UnifiedMarketEvent | null {
-    if (!pair || !pair.baseToken?.address) return null;
-
-    let mint: string;
-    try {
-      mint = canonicalizeSolanaMint(pair.baseToken.address);
-    } catch {
-      return null;
-    }
-
-    if (!tokenMintResolver.isValidMint(mint)) {
-      return null;
-    }
-
-    const now = Date.now();
-    const eventId = this.generateEventId('DEXSCREENER', mint, pair.pairAddress, undefined, 'TOKEN_DISCOVERED');
-    const correlationId = this.generateCorrelationId('DEXSCREENER', mint);
-
-    return {
-      eventId,
-      correlationId,
-      chain: 'solana',
-      source: 'DEXSCREENER',
-      mint,
-      signature: pair.pairAddress,
-      timestamp: now,
-      eventType: 'TOKEN_DISCOVERED',
-      priceSol: pair.priceNative ? Number(pair.priceNative) : undefined,
-      confidence: 0.9,
-      symbol: pair.baseToken.symbol || undefined,
-      pool: pair.pairAddress,
-      protocol: pair.dexId,
-      raw: pair,
-      network,
-    };
-  }
-
-  /**
-   * Normalizes LaserStream or Helius WSS transaction event.
-   */
-  public static normalizeLaserStreamEvent(
-    params: {
-      source: 'LASERSTREAM' | 'HELIUS_WSS' | 'HELIUS_GRPC';
-      mint: string;
-      pool?: string;
-      signature?: string;
-      slot?: number;
-      priceSol?: number;
-      tokenAmount?: string;
-      solAmount?: string;
-      side?: 'BUY' | 'SELL';
-      eventType?: string;
-      protocol?: string;
-      raw?: unknown;
-    },
-    network: string = 'mainnet'
-  ): UnifiedMarketEvent | null {
-    let mint: string;
-    try {
-      mint = canonicalizeSolanaMint(params.mint);
-    } catch {
-      return null;
-    }
-
-    if (!tokenMintResolver.isValidMint(mint)) return null;
-
-    const now = Date.now();
-    const eventType = params.eventType || (params.side ? params.side : 'TRADE');
-    const eventId = this.generateEventId(params.source, mint, params.signature, params.slot, eventType);
-    const correlationId = this.generateCorrelationId(params.source, mint);
-
-    return {
-      eventId,
-      correlationId,
-      chain: 'solana',
-      source: params.source,
-      mint,
-      pool: params.pool,
-      signature: params.signature,
-      slot: params.slot,
-      timestamp: now,
-      eventType,
-      side: params.side,
-      tokenAmount: params.tokenAmount,
-      tokenAmountRaw: params.tokenAmount,
-      solAmount: params.solAmount,
-      solAmountRaw: params.solAmount,
-      priceSol: params.priceSol,
-      protocol: params.protocol,
-      confidence: 1.0,
-      raw: params.raw,
-      network,
-    };
+  public generateManualEventId(mint: string): string {
+    const raw = `MANUAL:${mint.trim().toLowerCase()}:${Date.now()}`;
+    return createHash('sha256').update(raw).digest('hex').slice(0, 24);
   }
 }
+
+export const canonicalEventNormalizer = CanonicalEventNormalizer.getInstance();

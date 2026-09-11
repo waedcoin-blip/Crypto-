@@ -253,7 +253,7 @@ export class PositionValuationEngine {
     const fetchPromise = (async (): Promise<PositionValuation | null> => {
       try {
         const WSOL = 'So11111111111111111111111111111111111111112';
-        const quote = await executionGateway.quoteSell({
+        const quote = await executionGateway.getQuote({
           inputMint: position.mint,
           outputMint: WSOL,
           amount: position.tokenAmountRaw || String(position.tokenAmount),
@@ -268,8 +268,8 @@ export class PositionValuationEngine {
           return this.valuations.get(key) || null;
         }
 
-        if (quote && quote.outAmount) {
-          const outLamports = BigInt(quote.outAmount);
+        if (quote && quote.outAmountRaw) {
+          const outLamports = BigInt(quote.outAmountRaw);
           const executableValueSol = lamportsToSolNumber(outLamports);
           const decimals = position.decimals;
           const tokenQuantity = safeTokenQuantity(position.tokenAmountRaw || String(position.tokenAmount), decimals);

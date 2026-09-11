@@ -1,11 +1,12 @@
-import { rawToUiNumber, applySlippageBps } from '../utils/rawAmount.js';
 // server/execution/DevnetTradeExecutor.ts
 import { Connection, PublicKey } from '@solana/web3.js';
 import { TradeExecutor, QuoteParams, QuoteResult, ExecuteParams, ExecutionResult } from './TradeExecutor.js';
 import { walletManager } from '../wallet/WalletManager.js';
 import { tokenProgramResolver } from '../wallet/TokenProgramResolver.js';
+import { rawToUiNumber, applySlippageBps } from '../utils/rawAmount.js';
 
 export class DevnetTradeExecutor implements TradeExecutor {
+  public readonly network: string = 'devnet';
   private connection: Connection;
   private defaultWalletIdentity: string;
 
@@ -15,108 +16,78 @@ export class DevnetTradeExecutor implements TradeExecutor {
     this.defaultWalletIdentity = options?.walletIdentity || 'devnet:wallet_a';
   }
 
-  async quoteBuy(params: QuoteParams): Promise<QuoteResult> {
+  async getQuote(params: QuoteParams): Promise<QuoteResult> {
     const amountNum = Number(params.amount);
-    const solAmount = amountNum / 1e9;
-    const decs = params.decimals;
-    if (decs === undefined) {
-      throw new Error('Decimals must be provided for quote');
-    }
-    const simulatedTokensRaw = Math.floor(solAmount * 500_000 * (10 ** decs)); // Devnet swap simulation
+    const simulatedTokensRaw = Math.floor(amountNum * 500_000); // Devnet swap simulation
     const slippage = params.slippageBps ? params.slippageBps / 10000 : 0.05;
     const minThreshold = applySlippageBps(BigInt(simulatedTokensRaw), Math.round(slippage * 10000));
 
     return {
-      inAmount: String(params.amount),
-      outAmount: String(simulatedTokensRaw),
-      otherAmountThreshold: String(minThreshold),
+      success: true,
+      quote: {
+        inAmount: String(params.amount),
+        outAmount: String(simulatedTokensRaw),
+        otherAmountThreshold: String(minThreshold),
+        priceImpactPct: 0.005,
+        routePlan: [{ swapInfo: { ammKey: 'DevnetAMM' } }],
+      },
+      outAmountLamports: simulatedTokensRaw,
+      outAmountRaw: String(simulatedTokensRaw),
       priceImpactPct: 0.005,
-      routePlan: [{ swapInfo: { ammKey: 'DevnetAMM' } }],
-    };
-  }
-
-  async quoteSell(params: QuoteParams): Promise<QuoteResult> {
-    const decs = params.decimals;
-    if (decs === undefined) {
-      throw new Error('Decimals must be provided for quote');
-    }
-    const amountNum = Number(params.amount);
-    const tokenQty = amountNum / (10 ** decs);
-    const solProceeds = tokenQty * 0.000002;
-    const lamports = Math.floor(solProceeds * 1e9);
-    const slippage = params.slippageBps ? params.slippageBps / 10000 : 0.05;
-    const minThreshold = applySlippageBps(BigInt(lamports), Math.round(slippage * 10000));
-
-    return {
-      inAmount: String(params.amount),
-      outAmount: String(lamports),
-      otherAmountThreshold: String(minThreshold),
-      priceImpactPct: 0.005,
-      routePlan: [{ swapInfo: { ammKey: 'DevnetAMM' } }],
+      routePlanLength: 1,
     };
   }
 
   async buy(params: ExecuteParams): Promise<ExecutionResult> {
-    const walletIdentity = params.walletAddress ? `devnet:${params.walletAddress}` : this.defaultWalletIdentity;
-    const walletAccount = walletManager.getAccount(walletIdentity);
+    const quoteResult = params.preValidatedQuote
+      ? { success: true, quote: params.preValidatedQuote }
+      : await this.getQuote({
+          inputMint: params.inputMint,
+          outputMint: params.outputMint,
+          amount: params.amount,
+          slippageBps: params.slippageBps,
+        });
 
-    const quote = params.preValidatedQuote || (await this.quoteBuy({
-      inputMint: params.inputMint,
-      outputMint: params.outputMint,
-      amount: params.amount,
-      decimals: params.decimals,
-      slippageBps: params.slippageBps,
-    }));
-
-    const tokenProgramInfo = await tokenProgramResolver.resolve(this.connection, params.outputMint);
-    const tokenReceivedRaw = quote.outAmount;
+    const quote = quoteResult.quote || {};
+    const tokenReceivedRaw = quote.outAmount || String(params.amount);
     const amountNum = Number(params.amount);
     const solSpent = amountNum / 1e9;
-    const tokenQty = rawToUiNumber(tokenReceivedRaw, tokenProgramInfo.decimals);
-    const effectivePrice = tokenQty > 0 ? solSpent / tokenQty : 0;
 
     return {
       success: true,
       signature: `devnet_tx_buy_${Date.now()}_${params.outputMint.slice(0, 6)}`,
-      inputMint: params.inputMint,
-      outputMint: params.outputMint,
-      inAmountRaw: String(params.amount),
       outAmountRaw: tokenReceivedRaw,
-      totalCostSol: solSpent,
-      effectivePriceSol: effectivePrice,
+      outAmountLamports: Number(tokenReceivedRaw) || 0,
+      durationMs: 100,
     };
   }
 
   async sell(params: ExecuteParams): Promise<ExecutionResult> {
-    const walletIdentity = params.walletAddress ? `devnet:${params.walletAddress}` : this.defaultWalletIdentity;
-    const walletAccount = walletManager.getAccount(walletIdentity);
+    const quoteResult = params.preValidatedQuote
+      ? { success: true, quote: params.preValidatedQuote }
+      : await this.getQuote({
+          inputMint: params.inputMint,
+          outputMint: params.outputMint,
+          amount: params.amount,
+          slippageBps: params.slippageBps,
+        });
 
-    const quote = params.preValidatedQuote || (await this.quoteSell({
-      inputMint: params.inputMint,
-      outputMint: params.outputMint,
-      amount: params.amount,
-      decimals: params.decimals,
-      slippageBps: params.slippageBps,
-    }));
-
-    const solGainedLamports = quote.outAmount;
-    const solGained = Number(solGainedLamports) / 1e9;
+    const quote = quoteResult.quote || {};
+    const solGainedLamports = quote.outAmount || String(params.amount);
 
     return {
       success: true,
       signature: `devnet_tx_sell_${Date.now()}_${params.inputMint.slice(0, 6)}`,
-      inputMint: params.inputMint,
-      outputMint: params.outputMint,
-      inAmountRaw: String(params.amount),
       outAmountRaw: solGainedLamports,
-      netProceedsSol: solGained,
+      outAmountLamports: Number(solGainedLamports) || 0,
+      durationMs: 100,
     };
   }
 
-  async getBalance(walletAddress?: string): Promise<number> {
+  async getSolBalance(walletAddress?: string): Promise<number> {
     const walletIdentity = walletAddress ? `devnet:${walletAddress}` : this.defaultWalletIdentity;
     const account = walletManager.getAccount(walletIdentity);
-    if (!account.keypair) return 10.0; // Fallback mock devnet balance if no key
+    if (!account || !account.keypair) return 10.0;
     try {
       const lamports = await this.connection.getBalance(account.keypair.publicKey);
       return lamports / 1e9;
@@ -128,7 +99,7 @@ export class DevnetTradeExecutor implements TradeExecutor {
   async getTokenBalance(mint: string, walletAddress?: string): Promise<number> {
     const walletIdentity = walletAddress ? `devnet:${walletAddress}` : this.defaultWalletIdentity;
     const account = walletManager.getAccount(walletIdentity);
-    if (!account.keypair) return 0;
+    if (!account || !account.keypair) return 0;
 
     try {
       const info = await tokenProgramResolver.resolve(this.connection, mint);
@@ -138,5 +109,9 @@ export class DevnetTradeExecutor implements TradeExecutor {
     } catch {
       return 0;
     }
+  }
+
+  async verifyReadiness(): Promise<{ ready: boolean; reason?: string }> {
+    return { ready: true };
   }
 }

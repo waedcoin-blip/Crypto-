@@ -35,19 +35,17 @@ export class JupiterTradingService {
     slippageBps?: number;
   }) {
     const executor = executionGateway.getExecutor('mainnet');
-    const res = await executor.quoteBuy({
+    const res = await executor.getQuote({
       inputMint: params.inputMint,
       outputMint: params.outputMint,
       amount: params.amount,
-      slippageBps: params.slippageBps,
+      slippageBps: params.slippageBps || 250,
       network: 'mainnet',
     });
-    return res.rawQuote || {
-      inAmount: res.inAmount,
-      outAmount: res.outAmount,
-      otherAmountThreshold: res.otherAmountThreshold,
-      priceImpactPct: res.priceImpactPct,
-      routePlan: res.routePlan,
+    return res.quote || {
+      inAmount: String(params.amount),
+      outAmount: String(res.outAmountLamports || 0),
+      priceImpactPct: res.priceImpactPct || 0,
     };
   }
 
@@ -67,6 +65,7 @@ export class JupiterTradingService {
       amount: String(params.quoteResponse?.inAmount || '0'),
       slippageBps: params.quoteResponse?.slippageBps || 250,
       decimals: 9,
+      walletAddress: 'default',
       network: net,
       preValidatedQuote: params.quoteResponse,
     };

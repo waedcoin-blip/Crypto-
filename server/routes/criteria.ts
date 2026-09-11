@@ -26,20 +26,20 @@ const requireAuth = asyncHandler(async (req, res, next) => {
 // GET /api/criteria
 router.get('/', requireAuth, asyncHandler(async (req, res) => {
   try {
-    const state = await criteriaService.fetchCriteriaFromFirestore((req as any).user.uid, (req as any).idToken);
+    const criteria = criteriaService.getCriteria();
     res.json({
       status: 'success',
-      version: state.version,
-      updatedAt: state.updatedAt,
-      source: state.source,
-      userId: state.userId,
-      criteria: state.criteria,
+      version: 1,
+      updatedAt: Date.now(),
+      source: 'memory',
+      userId: (req as any).user?.uid,
+      criteria,
       timestamp: Date.now(),
     });
   } catch (err: any) {
     res.status(502).json({
       status: 'error',
-      error: 'Persistence storage error: ' + (err.message || 'Failed to read criteria from database'),
+      error: 'Persistence storage error: ' + (err.message || 'Failed to read criteria'),
       timestamp: Date.now(),
     });
   }
@@ -47,47 +47,41 @@ router.get('/', requireAuth, asyncHandler(async (req, res) => {
 
 // PATCH /api/criteria
 router.patch('/', requireAuth, asyncHandler(async (req, res) => {
-  const { expectedVersion, changes } = req.body;
+  const { changes } = req.body;
+  const patch = changes || req.body;
   
-  if (!changes) {
+  if (!patch) {
     res.status(400).json({ error: 'Missing changes in payload' });
     return;
   }
 
   try {
-    const updatedState = await criteriaService.updateCriteria((req as any).idToken, changes, {
-      expectedVersion
-    });
+    const updatedCriteria = criteriaService.updateCriteria(patch);
 
     res.json({
       status: 'success',
-      message: 'Criteria validated, persisted to storage, and applied to backend engine',
-      version: updatedState.version,
-      updatedAt: updatedState.updatedAt,
-      source: updatedState.source,
-      criteria: updatedState.criteria,
+      message: 'Criteria validated and applied to backend engine',
+      version: 1,
+      updatedAt: Date.now(),
+      source: 'memory',
+      criteria: updatedCriteria,
       timestamp: Date.now(),
     });
   } catch (e: any) {
-    if (e.message?.startsWith('Conflict:')) {
-      res.status(409).json({ error: e.message, code: 'VERSION_CONFLICT' });
-      return;
-    }
     res.status(500).json({ error: e.message || 'Criteria update failed', code: 'PERSISTENCE_ERROR' });
   }
 }));
 
-
 // Legacy PUT
 router.put('/', requireAuth, asyncHandler(async (req, res) => {
-  const updatedState = await criteriaService.updateCriteria((req as any).idToken, req.body);
+  const updatedCriteria = criteriaService.updateCriteria(req.body);
   res.json({
     status: 'success',
-    message: 'Criteria validated, persisted to storage, and applied to backend engine',
-    version: updatedState.version,
-    updatedAt: updatedState.updatedAt,
-    source: updatedState.source,
-    criteria: updatedState.criteria,
+    message: 'Criteria validated and applied to backend engine',
+    version: 1,
+    updatedAt: Date.now(),
+    source: 'memory',
+    criteria: updatedCriteria,
     timestamp: Date.now(),
   });
 }));

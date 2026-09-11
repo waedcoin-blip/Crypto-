@@ -1,33 +1,39 @@
 // server/market/StreamingTransportManager.ts
-import { config, getHeliusApiKey } from '../config/index.js';
-import {
-  StreamingTransport,
-  StreamingTransportTelemetry,
-  StreamEventCallback,
-} from './StreamingTransport.js';
-import { heliusLaserStreamWssManager } from './HeliusLaserStreamWssManager.js';
-import { yellowstoneConnectionManager } from './YellowstoneConnectionManager.js';
-import { laserLogger } from '../utils/logger.js';
-import { laserStreamWatchdog } from '../services/LaserStreamWatchdog.js';
-import { maskApiKey } from './HeliusErrors.js';
+import { laserStreamPipeline } from './LaserStreamPipeline.js';
 
-export type ConfiguredTransport = 'wss' | 'grpc' | 'auto';
+export type TransportState = 'DISCONNECTED' | 'CONNECTING' | 'CONNECTED' | 'RECONNECTING' | 'FAILED';
 
+export interface StreamingTransportTelemetry {
+  transport: 'grpc' | 'wss';
+  state: TransportState;
+  connectedAt: number | null;
+  lastMessageAt: number | null;
+  messagesReceived: number;
+  messagesPerSecond: number;
+  lastSlot: number;
+  activeEndpoint: string | null;
+  reconnectAttempts: number;
+}
+
+/**
+ * Streaming Transport Manager: Manages Helius LaserStream gRPC/WSS connections.
+ */
 export class StreamingTransportManager {
   private static instance: StreamingTransportManager;
-  private _activeTransport: StreamingTransport | null = null;
-  private configuredMode: ConfiguredTransport = 'wss';
+  private state: TransportState = 'DISCONNECTED';
+  private telemetry: StreamingTransportTelemetry = {
+    transport: 'grpc',
+    state: 'DISCONNECTED',
+    connectedAt: null,
+    lastMessageAt: null,
+    messagesReceived: 0,
+    messagesPerSecond: 0,
+    lastSlot: 0,
+    activeEndpoint: null,
+    reconnectAttempts: 0,
+  };
 
-  private constructor() {
-    this.configuredMode = (process.env.HELIUS_STREAM_TRANSPORT as ConfiguredTransport) || 'wss';
-  }
-
-  private get activeTransport(): StreamingTransport {
-    if (!this._activeTransport) {
-      this.resolveActiveTransport();
-    }
-    return this._activeTransport!;
-  }
+  private constructor() {}
 
   public static getInstance(): StreamingTransportManager {
     if (!StreamingTransportManager.instance) {
@@ -36,66 +42,48 @@ export class StreamingTransportManager {
     return StreamingTransportManager.instance;
   }
 
-  private resolveActiveTransport(): void {
-    // If explicitly set to 'grpc', check if gRPC credentials exist
-    if (this.configuredMode === 'grpc') {
-      const xToken = process.env.YELLOWSTONE_GRPC_X_TOKEN || getHeliusApiKey();
-      const endpoint = process.env.YELLOWSTONE_GRPC_ENDPOINT;
-      if (xToken && endpoint) {
-        // gRPC configured
-        this._activeTransport = yellowstoneConnectionManager as any as StreamingTransport;
-        laserLogger.info('[STREAMING TRANSPORT] Selected gRPC transport mode (Yellowstone)');
-        return;
-      }
-      laserLogger.warn(
-        '[STREAMING TRANSPORT] gRPC transport requested but credentials not fully set. Falling back to Helius Standard WSS.'
-      );
+  public async start(): Promise<void> {
+    if (this.state === 'CONNECTED' || this.state === 'CONNECTING') return;
+
+    this.state = 'CONNECTING';
+    this.telemetry.state = 'CONNECTING';
+
+    try {
+      await laserStreamPipeline.start();
+      this.state = 'CONNECTED';
+      this.telemetry.state = 'CONNECTED';
+      this.telemetry.connectedAt = Date.now();
+      console.log('[StreamingTransportManager] LaserStream transport connected.');
+    } catch (err: any) {
+      this.state = 'FAILED';
+      this.telemetry.state = 'FAILED';
+      console.error('[StreamingTransportManager] Failed to start transport:', err?.message);
+      throw err;
     }
-
-    // Default: Helius Standard WSS
-    this._activeTransport = heliusLaserStreamWssManager;
-    laserLogger.info('[STREAMING TRANSPORT] Authoritative transport: Helius Standard WSS');
   }
 
-  public async start(callback?: StreamEventCallback): Promise<boolean> {
-    const apiKey = getHeliusApiKey();
-    if (!apiKey) {
-      laserLogger.warn('[STREAMING TRANSPORT] HELIUS_API_KEY not configured. Real-time streaming waiting for API key.');
-      return false;
-    }
-
-    return this.activeTransport.start(callback || (() => {}));
+  public stop(): void {
+    laserStreamPipeline.stop();
+    this.state = 'DISCONNECTED';
+    this.telemetry.state = 'DISCONNECTED';
+    this.telemetry.connectedAt = null;
   }
 
-  public async stop(): Promise<void> {
-    await this.activeTransport.stop();
-  }
-
-  public getActiveTransport(): StreamingTransport {
-    return this.activeTransport;
+  public getState(): TransportState {
+    return this.state;
   }
 
   public getTelemetry(): StreamingTransportTelemetry {
-    return this.activeTransport.getTelemetry();
+    return { ...this.telemetry };
   }
 
-  public isHealthy(): boolean {
-    return this.activeTransport.isHealthy();
+  public recordMessage(): void {
+    this.telemetry.messagesReceived++;
+    this.telemetry.lastMessageAt = Date.now();
   }
 
-  public printDiagnostics(): void {
-    const apiKey = getHeliusApiKey();
-    const telemetry = this.getTelemetry();
-
-    console.log('\n════════════════ STREAMING TRANSPORT DIAGNOSTICS ════════════════');
-    console.log(` MODE:          ${this.configuredMode.toUpperCase()}`);
-    console.log(` ACTIVE:        ${this.activeTransport.transportName.toUpperCase()}`);
-    console.log(` API KEY:       ${apiKey ? 'CONFIGURED (' + maskApiKey(apiKey) + ')' : 'MISSING'}`);
-    console.log(` STATUS:        ${telemetry.status.toUpperCase()}`);
-    console.log(` CONNECTED:     ${telemetry.connected ? 'YES' : 'NO'}`);
-    console.log(` LAST SLOT:     ${telemetry.lastSlot || 'NONE'}`);
-    console.log(` MESSAGES:      ${telemetry.messagesReceived} (${telemetry.messagesPerSecond.toFixed(1)}/s)`);
-    console.log('═════════════════════════════════════════════════════════════════\n');
+  public recordSlot(slot: number): void {
+    this.telemetry.lastSlot = slot;
   }
 }
 

@@ -1,24 +1,32 @@
 // server/wallet/WalletManager.ts
-import { Keypair, PublicKey, Connection } from '@solana/web3.js';
+import {
+  Connection,
+  Keypair,
+  PublicKey,
+  VersionedTransaction,
+  Transaction,
+  sendAndConfirmRawTransaction,
+} from '@solana/web3.js';
 import bs58 from 'bs58';
+import { config } from '../config/index.js';
+import { getPrimaryRpc } from '../config/rpcRouting.js';
+import { logger } from '../utils/logger.js';
 
-export type WalletIdentity = 'paper:default' | 'devnet:wallet_a' | 'devnet:wallet_b' | 'mainnet:default' | string;
-
-export interface WalletAccount {
-  identity: WalletIdentity;
-  network: 'paper' | 'devnet' | 'mainnet';
-  publicKey: string;
-  keypair?: Keypair;
-  description: string;
-}
-
+/**
+ * WalletManager: Authoritative server-side keypair management.
+ * 
+ * SECURITY INVARIANTS:
+ * - Private keys are ONLY loaded from process.env
+ * - Private keys are NEVER logged, serialized, or exposed via API
+ * - All signing happens server-side; frontend never sees keys
+ * - Paper mode uses ephemeral keypairs (no real funds at risk)
+ */
 export class WalletManager {
   private static instance: WalletManager;
-  private accounts: Map<WalletIdentity, WalletAccount> = new Map();
+  private keypairs: Map<string, Keypair> = new Map();
+  private defaultWallet: string = 'default';
 
-  private constructor() {
-    this.initializeWallets();
-  }
+  private constructor() {}
 
   public static getInstance(): WalletManager {
     if (!WalletManager.instance) {
@@ -27,108 +35,200 @@ export class WalletManager {
     return WalletManager.instance;
   }
 
-  private initializeWallets(): void {
-    // 1. Paper Wallet
-    this.accounts.set('paper:default', {
-      identity: 'paper:default',
-      network: 'paper',
-      publicKey: '11111111111111111111111111111111',
-      description: 'Paper Trading Simulated Wallet',
-    });
+  // ==========================================
+  // WALLET CREATION / LOADING
+  // ==========================================
 
-    // 2. Devnet Wallet A
-    const devnetKeyA = process.env.DEVNET_WALLET_A_PRIVATE_KEY || process.env.DEVNET_PRIVATE_KEY;
-    let keypairDevnetA: Keypair | undefined;
-    let pubkeyDevnetA = '11111111111111111111111111111111';
-    if (devnetKeyA) {
+  /**
+   * Get or create a wallet keypair.
+   * In production, loads from PRIVATE_KEY env var.
+   * In paper mode, generates an ephemeral keypair.
+   */
+  public async getOrCreateWallet(walletId: string = 'default'): Promise<Keypair> {
+    const existing = this.keypairs.get(walletId);
+    if (existing) return existing;
+
+    let keypair: Keypair;
+
+    // Try to load from environment
+    const privateKeyEnv = process.env.PRIVATE_KEY || process.env.SOLANA_PRIVATE_KEY;
+    if (privateKeyEnv && walletId === 'default') {
       try {
-        const secret = bs58.decode(devnetKeyA);
-        keypairDevnetA = Keypair.fromSecretKey(secret);
-        pubkeyDevnetA = keypairDevnetA.publicKey.toBase58();
-      } catch (e) {
-        // Fallback
+        // Support both base58 and JSON array formats
+        if (privateKeyEnv.startsWith('[')) {
+          const bytes = JSON.parse(privateKeyEnv);
+          keypair = Keypair.fromSecretKey(Uint8Array.from(bytes));
+        } else {
+          const bytes = bs58.decode(privateKeyEnv);
+          keypair = Keypair.fromSecretKey(bytes);
+        }
+        logger.info({ wallet: keypair.publicKey.toBase58().slice(0, 8) + '...' }, '[WalletManager] Loaded wallet from env');
+      } catch (err: any) {
+        logger.error({ error: err.message }, '[WalletManager] Failed to parse PRIVATE_KEY from env. Generating ephemeral wallet.');
+        keypair = Keypair.generate();
       }
+    } else {
+      // Paper mode or no key configured: generate ephemeral
+      keypair = Keypair.generate();
+      logger.info({ wallet: keypair.publicKey.toBase58().slice(0, 8) + '...' }, '[WalletManager] Generated ephemeral wallet (paper mode)');
     }
-    this.accounts.set('devnet:wallet_a', {
-      identity: 'devnet:wallet_a',
-      network: 'devnet',
-      publicKey: pubkeyDevnetA,
-      keypair: keypairDevnetA,
-      description: 'Devnet Trading Wallet A',
-    });
 
-    // 3. Devnet Wallet B
-    const devnetKeyB = process.env.DEVNET_WALLET_B_PRIVATE_KEY;
-    let keypairDevnetB: Keypair | undefined;
-    let pubkeyDevnetB = '11111111111111111111111111111111';
-    if (devnetKeyB) {
+    this.keypairs.set(walletId, keypair);
+    return keypair;
+  }
+
+  /**
+   * Get the public key (address) for a wallet. Safe to expose.
+   */
+  public async getWalletAddress(walletId: string = 'default'): Promise<string> {
+    const keypair = await this.getOrCreateWallet(walletId);
+    return keypair.publicKey.toBase58();
+  }
+
+  // ==========================================
+  // TRANSACTION SIGNING & BROADCASTING
+  // ==========================================
+
+  /**
+   * Sign a base64-encoded transaction and broadcast it.
+   * Returns the transaction signature.
+   */
+  public async signAndBroadcast(
+    serializedTx: string,
+    walletId: string = 'default',
+    network: string = 'mainnet'
+  ): Promise<string | null> {
+    try {
+      const keypair = await this.getOrCreateWallet(walletId);
+      const rpcUrl = getPrimaryRpc('execution');
+      if (!rpcUrl) {
+        logger.error('[WalletManager] No execution RPC URL configured');
+        return null;
+      }
+
+      const connection = new Connection(rpcUrl, 'confirmed');
+
+      // Deserialize the transaction
+      const txBuffer = Buffer.from(serializedTx, 'base64');
+      let transaction: VersionedTransaction | Transaction;
+
       try {
-        const secret = bs58.decode(devnetKeyB);
-        keypairDevnetB = Keypair.fromSecretKey(secret);
-        pubkeyDevnetB = keypairDevnetB.publicKey.toBase58();
-      } catch (e) {
-        // Fallback
+        // Try VersionedTransaction first (Jupiter v6+)
+        transaction = VersionedTransaction.deserialize(txBuffer);
+        transaction.sign([keypair]);
+      } catch {
+        // Fallback to legacy Transaction
+        transaction = Transaction.from(txBuffer);
+        transaction.sign(keypair);
       }
-    }
-    this.accounts.set('devnet:wallet_b', {
-      identity: 'devnet:wallet_b',
-      network: 'devnet',
-      publicKey: pubkeyDevnetB,
-      keypair: keypairDevnetB,
-      description: 'Devnet Trading Wallet B',
-    });
 
-    // 4. Mainnet Wallet
-    const mainnetKey = process.env.MAINNET_PRIVATE_KEY || process.env.SOLANA_PRIVATE_KEY;
-    let keypairMainnet: Keypair | undefined;
-    let pubkeyMainnet = '11111111111111111111111111111111';
-    if (mainnetKey) {
+      // Serialize signed transaction
+      const signedBuffer = Buffer.from(
+        transaction instanceof VersionedTransaction
+          ? transaction.serialize()
+          : transaction.serialize()
+      );
+
+      // Broadcast
+      const signature = await connection.sendRawTransaction(signedBuffer, {
+        skipPreflight: false,
+        preflightCommitment: 'confirmed',
+        maxRetries: 3,
+      });
+
+      logger.info({ signature: signature.slice(0, 16) + '...', network }, '[WalletManager] Transaction broadcast');
+      return signature;
+    } catch (err: any) {
+      logger.error({ error: err.message }, '[WalletManager] Sign and broadcast failed');
+      return null;
+    }
+  }
+
+  /**
+   * Sign a transaction without broadcasting (for multi-sig or deferred execution).
+   */
+  public async signTransaction(
+    serializedTx: string,
+    walletId: string = 'default'
+  ): Promise<string | null> {
+    try {
+      const keypair = await this.getOrCreateWallet(walletId);
+      const txBuffer = Buffer.from(serializedTx, 'base64');
+
+      let transaction: VersionedTransaction | Transaction;
       try {
-        const secret = bs58.decode(mainnetKey);
-        keypairMainnet = Keypair.fromSecretKey(secret);
-        pubkeyMainnet = keypairMainnet.publicKey.toBase58();
-      } catch (e) {
-        // Fallback
+        transaction = VersionedTransaction.deserialize(txBuffer);
+        transaction.sign([keypair]);
+        return Buffer.from(transaction.serialize()).toString('base64');
+      } catch {
+        transaction = Transaction.from(txBuffer);
+        transaction.sign(keypair);
+        return Buffer.from(transaction.serialize()).toString('base64');
       }
+    } catch (err: any) {
+      logger.error({ error: err.message }, '[WalletManager] Transaction signing failed');
+      return null;
     }
-    this.accounts.set('mainnet:default', {
-      identity: 'mainnet:default',
-      network: 'mainnet',
-      publicKey: pubkeyMainnet,
-      keypair: keypairMainnet,
-      description: 'Mainnet Trading Primary Wallet',
-    });
   }
 
-  public getAccount(identity: WalletIdentity): WalletAccount {
-    const acc = this.accounts.get(identity);
-    if (acc) return acc;
+  // ==========================================
+  // BALANCE QUERIES
+  // ==========================================
 
-    // Fallback resolution by network prefix
-    if (identity.startsWith('paper')) return this.accounts.get('paper:default')!;
-    if (identity.startsWith('devnet')) return this.accounts.get('devnet:wallet_a')!;
-    if (identity.startsWith('mainnet')) return this.accounts.get('mainnet:default')!;
+  /**
+   * Get SOL balance for a wallet.
+   */
+  public async getSolBalance(walletId: string = 'default'): Promise<number> {
+    try {
+      const keypair = await this.getOrCreateWallet(walletId);
+      const rpcUrl = getPrimaryRpc('execution');
+      if (!rpcUrl) return 0;
 
-    throw new Error(`UNKNOWN_WALLET_IDENTITY: ${identity}`);
-  }
-
-  public getAccountByNetworkAndWallet(network: string, walletName?: string): WalletAccount {
-    if (network === 'paper') return this.getAccount('paper:default');
-    if (network === 'devnet') {
-      if (walletName === 'wallet_b' || walletName === 'devnet:wallet_b') {
-        return this.getAccount('devnet:wallet_b');
-      }
-      return this.getAccount('devnet:wallet_a');
+      const connection = new Connection(rpcUrl, 'confirmed');
+      const balance = await connection.getBalance(keypair.publicKey, 'confirmed');
+      return balance / 1e9;
+    } catch {
+      return 0;
     }
-    return this.getAccount('mainnet:default');
   }
 
-  public getAllAccounts(): WalletAccount[] {
-    return Array.from(this.accounts.values());
+  /**
+   * Get token balance for a specific mint.
+   */
+  public async getTokenBalance(mint: string, walletId: string = 'default'): Promise<number> {
+    try {
+      const keypair = await this.getOrCreateWallet(walletId);
+      const rpcUrl = getPrimaryRpc('execution');
+      if (!rpcUrl) return 0;
+
+      const connection = new Connection(rpcUrl, 'confirmed');
+      const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
+        keypair.publicKey,
+        { mint: new PublicKey(mint) }
+      );
+
+      if (tokenAccounts.value.length === 0) return 0;
+      const info = tokenAccounts.value[0].account.data.parsed.info;
+      return info.tokenAmount.uiAmount || 0;
+    } catch {
+      return 0;
+    }
   }
 
-  public setAccount(account: WalletAccount): void {
-    this.accounts.set(account.identity, account);
+  // ==========================================
+  // SECURITY: Never expose private keys
+  // ==========================================
+
+  /**
+   * Returns a safe summary of wallet state (no secrets).
+   */
+  public getWalletSummary(walletId: string = 'default'): { address: string | null; hasKey: boolean } {
+    const keypair = this.keypairs.get(walletId);
+    if (!keypair) return { address: null, hasKey: false };
+    return {
+      address: keypair.publicKey.toBase58(),
+      hasKey: true,
+    };
   }
 }
 

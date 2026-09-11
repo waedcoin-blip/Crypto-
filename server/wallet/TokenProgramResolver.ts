@@ -1,85 +1,213 @@
 // server/wallet/TokenProgramResolver.ts
 import { Connection, PublicKey } from '@solana/web3.js';
-import {
-  TOKEN_PROGRAM_ID,
-  TOKEN_2022_PROGRAM_ID,
-  getAssociatedTokenAddressSync,
-  getMint,
-} from '@solana/spl-token';
+import { getPrimaryRpc } from '../config/rpcRouting.js';
+import { logger } from '../utils/logger.js';
+
+const TOKEN_PROGRAM_ID = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+const TOKEN_2022_PROGRAM_ID = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
 
 export interface TokenProgramInfo {
   mint: string;
-  programId: PublicKey;
-  programName: 'spl-token' | 'token-2022';
+  program: 'SPL Token' | 'Token-2022' | 'Unknown';
+  programId: string;
   decimals: number;
+  supply: string;
+  isInitialized: boolean;
+  freezeAuthority: string | null;
+  mintAuthority: string | null;
+  resolvedAt: number;
 }
 
-function rpcEndpoints(): string[] {
-  return [...new Set([
-    process.env.EXECUTION_RPC_URL,
-    process.env.EXECUTION_RPC_BACKUP_URL,
-    process.env.SEARCH_RPC_URL,
-    process.env.SEARCH_RPC_BACKUP_URL,
-    process.env.MONITOR_RPC_URL,
-    process.env.MONITOR_RPC_BACKUP_URL,
-    process.env.MAINNET_RPC_URL,
-    'https://api.mainnet-beta.solana.com',
-  ].filter((v): v is string => !!v && v.trim().length > 0).map(v => v.trim()))];
-}
-
+/**
+ * TokenProgramResolver: Resolves token program type and metadata.
+ * Detects SPL Token vs Token-2022 and extracts decimals.
+ * Uses caching to avoid redundant RPC calls.
+ */
 export class TokenProgramResolver {
   private static instance: TokenProgramResolver;
-  private cache: Map<string, TokenProgramInfo> = new Map();
+  private cache: Map<string, { info: TokenProgramInfo; expiresAt: number }> = new Map();
+  private readonly CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
-  private constructor() {}
+  private constructor() {
+    // Periodic cache pruning
+    const interval = setInterval(() => this.pruneCache(), 60000);
+    if (interval.unref) interval.unref();
+  }
 
   public static getInstance(): TokenProgramResolver {
-    if (!TokenProgramResolver.instance) TokenProgramResolver.instance = new TokenProgramResolver();
+    if (!TokenProgramResolver.instance) {
+      TokenProgramResolver.instance = new TokenProgramResolver();
+    }
     return TokenProgramResolver.instance;
   }
 
-  public async resolve(connection: Connection | null, mintAddress: string): Promise<TokenProgramInfo> {
-    const mintStr = mintAddress.trim();
-    if (!mintStr) throw new Error('INVALID_TOKEN_MINT: Empty mint address');
-    const cached = this.cache.get(mintStr);
-    if (cached) return cached;
+  /**
+   * Resolve token program info for a mint address.
+   */
+  public async resolve(connection: Connection | null, mint: string): Promise<TokenProgramInfo> {
+    const trimmed = mint.trim();
 
-    let mintPubkey: PublicKey;
-    try { mintPubkey = new PublicKey(mintStr); }
-    catch { throw new Error(`INVALID_TOKEN_MINT: Invalid public key ${mintStr}`); }
-
-    const connections: Connection[] = connection ? [connection] : rpcEndpoints().map(url => new Connection(url, 'confirmed'));
-    if (!connections.length) throw new Error('EXECUTION_RPC_UNAVAILABLE: No RPC endpoint configured for token metadata resolution');
-
-    let lastError: unknown = null;
-    for (let i = 0; i < connections.length; i++) {
-      const conn = connections[i];
-      try {
-        const accInfo = await conn.getAccountInfo(mintPubkey, 'confirmed');
-        if (!accInfo) throw new Error(`INVALID_TOKEN_MINT: Mint account ${mintStr} does not exist on-chain`);
-        const ownerStr = accInfo.owner.toBase58();
-        const isToken2022 = ownerStr === TOKEN_2022_PROGRAM_ID.toBase58();
-        const isSpl = ownerStr === TOKEN_PROGRAM_ID.toBase58();
-        if (!isSpl && !isToken2022) throw new Error(`TOKEN_PROGRAM_UNSUPPORTED: Account owner ${ownerStr} is not a valid SPL Token or Token-2022 program`);
-        const programId = isToken2022 ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
-        const mintData = await getMint(conn, mintPubkey, undefined, programId);
-        const decimals = mintData.decimals;
-        if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) throw new Error(`INVALID_DECIMALS_VALUE: ${decimals}`);
-        const info: TokenProgramInfo = { mint: mintStr, programId, programName: isToken2022 ? 'token-2022' : 'spl-token', decimals };
-        this.cache.set(mintStr, info);
-        return info;
-      } catch (e: any) {
-        lastError = e;
-        console.warn(`[TOKEN] DECIMALS_RPC_FAILED mint=${mintStr} endpoint=${i + 1}/${connections.length} reason=${e?.message || e}`);
-        const msg = String(e?.message || e);
-        if (msg.startsWith('INVALID_TOKEN_MINT') || msg.startsWith('TOKEN_PROGRAM_UNSUPPORTED') || msg.startsWith('INVALID_DECIMALS_VALUE')) throw e;
-      }
+    // Check cache first
+    const cached = this.cache.get(trimmed);
+    if (cached && Date.now() < cached.expiresAt) {
+      return cached.info;
     }
-    throw new Error(`TOKEN_DECIMALS_RESOLUTION_FAILED: Unable to resolve token decimals for mint ${mintStr}. RPC Error: ${lastError instanceof Error ? lastError.message : String(lastError || 'Unknown')}`);
+
+    // Resolve on-chain
+    const info = await this.resolveOnChain(connection, trimmed);
+
+    // Cache the result
+    this.cache.set(trimmed, {
+      info,
+      expiresAt: Date.now() + this.CACHE_TTL_MS,
+    });
+
+    return info;
   }
 
-  public getAtaAddress(ownerPublicKey: PublicKey, mintPublicKey: PublicKey, programId: PublicKey = TOKEN_PROGRAM_ID): PublicKey {
-    return getAssociatedTokenAddressSync(mintPublicKey, ownerPublicKey, false, programId);
+  private async resolveOnChain(connection: Connection | null, mint: string): Promise<TokenProgramInfo> {
+    const fallback: TokenProgramInfo = {
+      mint,
+      program: 'Unknown',
+      programId: TOKEN_PROGRAM_ID,
+      decimals: 6,
+      supply: '0',
+      isInitialized: false,
+      freezeAuthority: null,
+      mintAuthority: null,
+      resolvedAt: Date.now(),
+    };
+
+    try {
+      const conn = connection || await this.getConnection();
+      if (!conn) {
+        logger.warn({ mint }, '[TokenProgramResolver] No RPC connection available');
+        return fallback;
+      }
+
+      const pubkey = new PublicKey(mint);
+      const accountInfo = await conn.getAccountInfo(pubkey, 'confirmed');
+
+      if (!accountInfo) {
+        return fallback;
+      }
+
+      const ownerStr = accountInfo.owner.toBase58();
+      const isSPL = ownerStr === TOKEN_PROGRAM_ID;
+      const isToken2022 = ownerStr === TOKEN_2022_PROGRAM_ID;
+
+      if (!isSPL && !isToken2022) {
+        return { ...fallback, program: 'Unknown', programId: ownerStr };
+      }
+
+      // Parse mint account data
+      // SPL Token mint layout:
+      // - bytes 0-3: mintAuthorityOption (4 bytes)
+      // - bytes 4-35: mintAuthority (32 bytes)
+      // - bytes 36-43: supply (8 bytes, u64)
+      // - byte 44: decimals (1 byte)
+      // - byte 45: isInitialized (1 byte)
+      // - bytes 46-49: freezeAuthorityOption (4 bytes)
+      // - bytes 50-81: freezeAuthority (32 bytes)
+
+      let decimals = 6;
+      let supply = '0';
+      let isInitialized = false;
+      let freezeAuthority: string | null = null;
+      let mintAuthority: string | null = null;
+
+      try {
+        if (accountInfo.data && accountInfo.data.length >= 82) {
+          const data = accountInfo.data;
+
+          // Mint authority (bytes 4-35, if option at 0-3 is 1)
+          const mintAuthOption = data.readUInt32LE(0);
+          if (mintAuthOption === 1) {
+            mintAuthority = new PublicKey(data.slice(4, 36)).toBase58();
+          }
+
+          // Supply (bytes 36-43)
+          supply = data.readBigUInt64LE(36).toString();
+
+          // Decimals (byte 44)
+          decimals = data.readUInt8(44);
+
+          // Is initialized (byte 45)
+          isInitialized = data.readUInt8(45) === 1;
+
+          // Freeze authority (bytes 50-81, if option at 46-49 is 1)
+          const freezeAuthOption = data.readUInt32LE(46);
+          if (freezeAuthOption === 1) {
+            freezeAuthority = new PublicKey(data.slice(50, 82)).toBase58();
+          }
+        }
+      } catch (parseErr: any) {
+        logger.warn({ mint, error: parseErr.message }, '[TokenProgramResolver] Failed to parse mint data, using defaults');
+      }
+
+      return {
+        mint,
+        program: isToken2022 ? 'Token-2022' : 'SPL Token',
+        programId: ownerStr,
+        decimals,
+        supply,
+        isInitialized,
+        freezeAuthority,
+        mintAuthority,
+        resolvedAt: Date.now(),
+      };
+    } catch (err: any) {
+      logger.error({ mint, error: err.message }, '[TokenProgramResolver] On-chain resolution failed');
+      return fallback;
+    }
+  }
+
+  /**
+   * Quick decimals lookup (most common use case).
+   */
+  public async resolveDecimals(mint: string): Promise<number> {
+    try {
+      const info = await this.resolve(null, mint);
+      return info.decimals;
+    } catch {
+      return 6; // Default fallback
+    }
+  }
+
+  /**
+   * Check if a mint is a Token-2022 program token.
+   */
+  public async isToken2022(mint: string): Promise<boolean> {
+    try {
+      const info = await this.resolve(null, mint);
+      return info.program === 'Token-2022';
+    } catch {
+      return false;
+    }
+  }
+
+  private async getConnection(): Promise<Connection | null> {
+    try {
+      const rpcUrl = getPrimaryRpc('search');
+      if (!rpcUrl) return null;
+      return new Connection(rpcUrl, 'confirmed');
+    } catch {
+      return null;
+    }
+  }
+
+  private pruneCache(): void {
+    const now = Date.now();
+    let pruned = 0;
+    for (const [key, val] of this.cache.entries()) {
+      if (now > val.expiresAt) {
+        this.cache.delete(key);
+        pruned++;
+      }
+    }
+    if (pruned > 0) {
+      logger.debug({ pruned }, '[TokenProgramResolver] Pruned expired cache entries');
+    }
   }
 }
 

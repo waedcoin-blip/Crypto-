@@ -1,18 +1,25 @@
 // server/market/ActivePositionMarketFeed.ts
-import { marketEventBus } from './MarketEventBus.js';
-import { MarketEvent } from './EventNormalizer.js';
 import { positionManager, Position } from '../trading/PositionManager.js';
-import { bondingCurveFastLane } from '../trading/BondingCurveFastLane.js';
-import { unifiedExitEngine } from '../trading/UnifiedExitEngine.js';
-import { executionGateway } from '../execution/ExecutionGateway.js';
 import { positionValuationEngine } from '../trading/PositionValuationEngine.js';
+import { unifiedExitEngine } from '../trading/UnifiedExitEngine.js';
+import { tradingSupervisor } from '../trading/TradingSupervisor.js';
+import { marketEventBus } from './MarketEventBus.js';
+import { UnifiedMarketEvent } from '../types/index.js';
 
+/**
+ * Active Position Market Feed:
+ * Owns market-event ingestion for OPEN positions.
+ * Drives price updates, PnL recalculation, and exit evaluations.
+ *
+ * This is the SINGLE authoritative component responsible for
+ * monitoring open positions and triggering TP/SL/Trailing exits.
+ */
 export class ActivePositionMarketFeed {
   private static instance: ActivePositionMarketFeed;
   private isRunning: boolean = false;
-  private activeSubscriptions: Set<string> = new Set(); // Mints of open positions
-  private pollIntervalTimer?: NodeJS.Timeout;
-  private lastPriceQueryTime: Map<string, number> = new Map();
+  private unsubscribeBus: (() => void) | null = null;
+  private valuationTimer: NodeJS.Timeout | null = null;
+  private readonly VALUATION_REFRESH_MS = 3000; // Refresh valuations every 3s
 
   private constructor() {}
 
@@ -27,173 +34,112 @@ export class ActivePositionMarketFeed {
     if (this.isRunning) return;
     this.isRunning = true;
 
-    // 1. Subscribe to real-time market event bus
-    marketEventBus.subscribe((event) => this.handleMarketEvent(event));
+    // 1. Subscribe to market events for price updates
+    this.unsubscribeBus = marketEventBus.subscribe((event: UnifiedMarketEvent) => {
+      this.handleMarketEvent(event);
+    });
 
-    // 2. Start high-frequency active position monitor (every 500ms)
-    this.pollIntervalTimer = setInterval(() => this.pollActivePositions(), 500);
+    // 2. Start periodic valuation refresh for positions without live events
+    this.valuationTimer = setInterval(() => this.refreshAllValuations(), this.VALUATION_REFRESH_MS);
+    if (this.valuationTimer.unref) this.valuationTimer.unref();
 
-    console.log('[ActivePositionMarketFeed] Priority P1 Active Position Market Feed started.');
+    console.log('[ActivePositionMarketFeed] Started. Monitoring open positions for exit signals.');
   }
 
   public stop(): void {
     this.isRunning = false;
-    if (this.pollIntervalTimer) {
-      clearInterval(this.pollIntervalTimer);
+    if (this.unsubscribeBus) {
+      this.unsubscribeBus();
+      this.unsubscribeBus = null;
+    }
+    if (this.valuationTimer) {
+      clearInterval(this.valuationTimer);
+      this.valuationTimer = null;
+    }
+    console.log('[ActivePositionMarketFeed] Stopped.');
+  }
+
+  /**
+   * Handle incoming market event: update position prices if relevant.
+   */
+  private handleMarketEvent(event: UnifiedMarketEvent): void {
+    if (!this.isRunning || !event.mint) return;
+
+    const supervisorStatus = tradingSupervisor.getStatus();
+    if (supervisorStatus.state !== 'TRADING') return;
+
+    // Find all open positions for this mint
+    const openPositions = positionManager.getOpenPositions();
+    const relevantPositions = openPositions.filter(p => p.mint === event.mint);
+
+    if (relevantPositions.length === 0) return;
+
+    // Use event price if available
+    const marketPrice = event.priceSol;
+    if (marketPrice && marketPrice > 0) {
+      for (const position of relevantPositions) {
+        this.updatePositionAndEvaluate(position, marketPrice);
+      }
     }
   }
 
   /**
-   * Evaluates incoming real-time on-chain WSS market events.
-   * Priority P1: Matches events directly to active open positions bypassing discovery filters.
+   * Update position price and evaluate exit conditions.
    */
-  private async handleMarketEvent(event: MarketEvent): Promise<void> {
+  private updatePositionAndEvaluate(position: Position, marketPriceSol: number): void {
+    try {
+      // Update position with new price
+      positionManager.updatePositionPrice(
+        position.network,
+        position.wallet,
+        position.mint,
+        marketPriceSol,
+        { isMarketEvent: true, timestamp: Date.now() }
+      );
+
+      // Evaluate exit conditions (TP/SL/Trailing/MaxHold)
+      const exitDecision = unifiedExitEngine.evaluatePositionExit(position, marketPriceSol);
+      if (exitDecision.shouldExit) {
+        console.log(`[ActivePositionMarketFeed] EXIT TRIGGERED: mint=${position.mint} reason=${exitDecision.reason} pnl=${exitDecision.currentPnlPct.toFixed(2)}%`);
+        unifiedExitEngine.evaluateAndExecuteExit(position, marketPriceSol).catch(err => {
+          console.error(`[ActivePositionMarketFeed] Exit execution error for ${position.mint}:`, err);
+        });
+      }
+    } catch (err: any) {
+      console.error(`[ActivePositionMarketFeed] Error processing position ${position.mint}:`, err);
+    }
+  }
+
+  /**
+   * Periodic refresh: Fetch latest valuations for all open positions.
+   * This ensures positions get price updates even without live market events.
+   */
+  private refreshAllValuations(): void {
+    if (!this.isRunning) return;
+
+    const supervisorStatus = tradingSupervisor.getStatus();
+    if (supervisorStatus.state !== 'TRADING') return;
+
     const openPositions = positionManager.getOpenPositions();
     if (openPositions.length === 0) return;
 
-    const activeMap = new Map<string, Position>();
-    for (const pos of openPositions) {
-      activeMap.set(pos.mint, pos);
-      if (pos.mint) activeMap.set(pos.mint.toLowerCase(), pos);
-    }
-
-    const mint = event.mint;
-    const now = Date.now();
-    const eventTime = event.timestamp || now;
-    const candidatePrice = event.price || 0;
-
-    // Check direct mint or account keys
-    const matchedPositions: Position[] = [];
-
-    if (mint && activeMap.has(mint)) {
-      matchedPositions.push(activeMap.get(mint)!);
-    }
-
-    if (event.accountKeys && event.accountKeys.length > 0) {
-      for (const key of event.accountKeys) {
-        if (activeMap.has(key)) {
-          const pos = activeMap.get(key)!;
-          if (!matchedPositions.includes(pos)) {
-            matchedPositions.push(pos);
-          }
+    for (const position of openPositions) {
+      try {
+        const valuation = positionValuationEngine.getValuation(position.network, position.wallet, position.mint);
+        if (valuation && valuation.currentPriceSol > 0) {
+          this.updatePositionAndEvaluate(position, valuation.currentPriceSol);
         }
-      }
-    }
-
-    if (matchedPositions.length === 0) {
-      if (mint) {
-        console.log(`[ACTIVE_POSITION_MARKET_EVENT_UNMATCHED] mint=${mint} price=${candidatePrice} timestamp=${eventTime}`);
-      }
-      return;
-    }
-
-    for (const pos of matchedPositions) {
-      console.log(`[ACTIVE_POSITION_MARKET_EVENT] mint=${pos.mint} price=${candidatePrice} timestamp=${eventTime}`);
-      await this.processPositionUpdate(pos, candidatePrice);
-    }
-  }
-
-  /**
-   * Periodic active position poll (500ms interval).
-   * Ensures positions are periodically refreshed with executable valuation quotes in the background.
-   */
-  private async pollActivePositions(): Promise<void> {
-    const openPositions = positionManager.getOpenPositions();
-    if (openPositions.length === 0) return;
-
-    const now = Date.now();
-
-    for (const pos of openPositions) {
-      if (pos.status !== 'OPEN') continue;
-      const lastQuoteTime = pos.lastExecutableQuoteAt || 0;
-      const lastQuery = this.lastPriceQueryTime.get(pos.mint) || 0;
-
-      // Poll executable quote if older than 2000ms and last query was > 1000ms ago
-      if (now - lastQuoteTime >= 2000 && now - lastQuery >= 1000) {
-        this.lastPriceQueryTime.set(pos.mint, now);
-        try {
-          const val = await positionValuationEngine.refreshExecutableQuote(pos);
-          if (val && val.currentPriceSol && val.executableValueSol) {
-            const tpThreshold = Number.isFinite(pos.tpPct) ? Math.abs(pos.tpPct) : 25;
-            const slThreshold = Number.isFinite(pos.slPct) ? -Math.abs(pos.slPct) : -15;
-            if (val.pnlPercent !== undefined && (val.pnlPercent >= tpThreshold || val.pnlPercent <= slThreshold)) {
-              await unifiedExitEngine.evaluateAndExecuteExit(pos, val.currentPriceSol, {
-                maxDataAgeMs: 5000,
-              });
-            }
-          }
-        } catch (err: any) {
-          console.warn(`[ACTIVE_FEED_POLL_ERROR] mint=${pos.mint}: ${err?.message || err}`);
-        }
+      } catch (err: any) {
+        // Silently skip individual position errors
       }
     }
   }
 
-  /**
-   * Ingests candidate market price, updates live market valuation,
-   * checks if candidate crosses exit thresholds, and hands off to UnifiedExitEngine.
-   */
-  public async processPositionUpdate(position: Position, candidatePrice?: number): Promise<void> {
-    const mint = position.mint;
-    const now = Date.now();
-    let rawAmount: bigint;
-    try { rawAmount = BigInt(position.tokenAmountRaw || String(position.tokenAmount)); } catch { rawAmount = 0n; }
-    if (rawAmount <= 0n) {
-      console.error(`[EXIT_MONITOR_BLOCKED] reason=INVALID_RAW_AMOUNT mint=${mint} amount=${String(position.tokenAmountRaw || position.tokenAmount)}`);
-      return;
-    }
-
-    // Determine effective candidate price: candidatePrice, bonding curve, or last known price
-    let effectivePrice = candidatePrice;
-    if (!effectivePrice || effectivePrice <= 0) {
-      const bcState = bondingCurveFastLane.getState(mint);
-      if (bcState && bcState.priceSolPerToken > 0 && bcState.bondingProgressPct < 100) {
-        effectivePrice = bcState.priceSolPerToken;
-      } else {
-        effectivePrice = position.currentPrice;
-      }
-    }
-
-    if (!effectivePrice || effectivePrice <= 0) return;
-
-    // 1. Update candidate market price and valuation immediately
-    const updatedPos = positionManager.updatePositionPrice(
-      position.network,
-      position.wallet,
-      position.mint,
-      effectivePrice,
-      { isMarketEvent: true, timestamp: now }
-    ) || position;
-
-    positionValuationEngine.updateFromMarketEvent(updatedPos, effectivePrice, now, 'WSS');
-
-    // 2. Check whether TP/SL or risk parameters might be crossed
-    const candidatePnlPct = updatedPos.averageEntryPrice > 0
-      ? ((effectivePrice - updatedPos.averageEntryPrice) / updatedPos.averageEntryPrice) * 100
-      : 0;
-    const tpThreshold = Number.isFinite(updatedPos.tpPct) ? Math.abs(updatedPos.tpPct) : 25;
-    const slThreshold = Number.isFinite(updatedPos.slPct) ? -Math.abs(updatedPos.slPct) : -15;
-    const isTriggerCandidate = candidatePnlPct >= tpThreshold || candidatePnlPct <= slThreshold;
-    const isTimeExpired = Boolean(updatedPos.maxHoldTimeMs && (now - (updatedPos.openedAt || updatedPos.createdAt) >= updatedPos.maxHoldTimeMs));
-
-    // Trailing stop candidate check
-    let isTrailingTrigger = false;
-    if (updatedPos.highestPnLPct > 0) {
-      const dropFromPeak = updatedPos.highestPnLPct - candidatePnlPct;
-      const trailingDrop = Number.isFinite(updatedPos.trailingSlPct) ? Math.abs(updatedPos.trailingSlPct!) : 15;
-      if (dropFromPeak >= trailingDrop) {
-        isTrailingTrigger = true;
-      }
-    }
-
-    // 3. If candidate crosses any exit threshold, hand off directly to UnifiedExitEngine.
-    // UnifiedExitEngine will acquire the atomic lock, fetch ONE fresh executable Jupiter quote,
-    // revalidate with executable proceeds, and execute atomically.
-    if (isTriggerCandidate || isTimeExpired || isTrailingTrigger) {
-      await unifiedExitEngine.evaluateAndExecuteExit(updatedPos, effectivePrice, {
-        maxDataAgeMs: 2000,
-      });
-    }
+  public getTelemetry() {
+    return {
+      isRunning: this.isRunning,
+      valuationRefreshMs: this.VALUATION_REFRESH_MS,
+    };
   }
 }
 

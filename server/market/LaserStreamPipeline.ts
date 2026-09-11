@@ -1,131 +1,56 @@
 // server/market/LaserStreamPipeline.ts
-import { MarketEvent } from './EventNormalizer.js';
 import { marketEventBus } from './MarketEventBus.js';
+import { candidateRegistry } from './CandidateRegistry.js';
+import { CanonicalEventNormalizer } from './CanonicalEventNormalizer.js';
+import { sourceHealthMonitor } from './SourceHealthMonitor.js';
 import { tokenMintResolver } from './TokenMintResolver.js';
-import { tokenDiscovery } from './TokenDiscovery.js';
-import { entryEngine } from '../trading/EntryEngine.js';
-import { candidateEnricher } from '../trading/CandidateEnricher.js';
-import { opportunityScorer } from '../trading/OpportunityScorer.js';
-import { serverEntryGate } from '../trading/ServerEntryGate.js';
-import { tradingEngine } from '../trading/TradingEngine.js';
-import { entryDecisionLedger } from '../trading/EntryDecisionLedger.js';
-import { criteriaRepository } from '../repositories/CriteriaRepository.js';
-import { CriteriaConfig } from '../services/criteriaService.js';
-import { laserLogger } from '../utils/logger.js';
-import { bondingCurveFastLane } from '../trading/BondingCurveFastLane.js';
-import { migrationDetector } from '../trading/MigrationDetector.js';
-import { momentumEngine } from '../trading/MomentumEngine.js';
+import { streamingTransportManager } from './StreamingTransportManager.js';
+import { UnifiedMarketEvent, EventSource } from '../types/index.js';
 
-
-// Protocols and Program IDs
-export const SUPPORTED_PROTOCOLS = {
-  PUMP_FUN: '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P',
-  RAYDIUM_AMM: '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8',
-  RAYDIUM_CLMM: 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK',
-  RAYDIUM_CPMM: 'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C',
-  METEORA_DLMM: 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo',
-  METEORA_POOLS: 'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB',
-  ORCA_WHIRLPOOL: 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc',
-  JUPITER_V6: 'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4',
-};
-
-const PROTOCOL_PROGRAM_SET = new Set<string>(Object.values(SUPPORTED_PROTOCOLS));
-
-export interface PipelineEvent {
-  mint: string;
-  signature: string;
-  slot: number;
-  source: string;
-  protocol: string;
-  isNewToken: boolean;
-  isNewPool: boolean;
-  priority: 'high' | 'medium' | 'low';
-  timestamp: number;
-}
-
+/**
+ * LaserStream Pipeline: Ingests Helius LaserStream gRPC/WSS data
+ * and publishes normalized events to the MarketEventBus.
+ *
+ * ARCHITECTURE:
+ * 1. LaserStream gRPC/WSS receives raw blockchain transactions
+ * 2. Fast filter: Only Pump.fun program transactions pass
+ * 3. Mint resolution: Extract token mint from transaction
+ * 4. Mint validation: Verify mint is a valid SPL token
+ * 5. Deduplication: Skip already-processed signatures
+ * 6. Candidate registration: Register new tokens in CandidateRegistry
+ * 7. Event publication: Publish to MarketEventBus
+ * 8. Simulation/Paper cannot authorize LIVE BUY
+ */
 export class LaserStreamPipeline {
   private static instance: LaserStreamPipeline;
-
-  private isRunning = false;
+  private isRunning: boolean = false;
   private unsubscribeBus: (() => void) | null = null;
+  private seenSignatures: Set<string> = new Set();
+  private readonly MAX_SEEN_SIGNATURES = 5000;
 
-  // Queues
-  private highQueue: PipelineEvent[] = [];
-  private mediumQueue: PipelineEvent[] = [];
-  private lowQueue: PipelineEvent[] = [];
-  private readonly MAX_QUEUE_LIMIT = 5000;
-
-  // Deduplication cache
-  private dedupeCache: Map<string, { state: string; timestamp: number }> = new Map();
-  private readonly DEDUPE_TTL = 30000; // 30 seconds TTL
-  private signatureDedupeCache: Set<string> = new Set();
-  private lastEvaluationTimestamp: Map<string, number> = new Map();
-
-  // Micro-batching timer
-  private workerTimer: NodeJS.Timeout | null = null;
-  private readonly BATCH_INTERVAL_MS = 10;
-
-  // Concurrency limiter for enrichment workers
-  private activeEnrichments = 0;
-  private readonly MAX_CONCURRENT_ENRICHMENTS = 10;
-
-  // Diagnostic metrics counters
   private counters = {
-    wssIn: 0,
+    ingest: 0,
     fastFilterPassed: 0,
-    protocolRecognized: 0,
-    mintExtractionAttempted: 0,
-    mintExtractionSuccess: 0,
-    mintValidationSuccess: 0,
-    candidateCreated: 0,
-    candidateDeduplicated: 0,
-    candidateEnriched: 0,
-    candidateRejected: 0,
-    criteriaEvaluated: 0,
-    criteriaPassed: 0,
-    buyAuthorized: 0,
-    buyAttempted: 0,
-    buyConfirmed: 0,
-    buyFailed: 0,
-    dropped: 0,
-    duplicates: 0,
+    mintResolved: 0,
+    processed: 0,
+    duplicate: 0,
+    candidate: 0,
+    enriched: 0,
+    criteriaPass: 0,
   };
+  private prevCounters = { ...this.counters };
 
-  // Rejection reasons with counts
-  private rejectionReasons: Record<string, number> = {
-    marketCapTooLow: 0,
-    liquidityTooLow: 0,
-    liquidityRatioTooLow: 0,
-    top10TooHigh: 0,
-    devOwnershipTooHigh: 0,
-    riskTooHigh: 0,
-    bondingCurveInvalid: 0,
-    tokenTooOld: 0,
-    rugUnsafe: 0,
-    dataUnavailable: 0,
-    decimalsUnresolved: 0,
-  };
-
-  // 1-second rolling rates tracker
+  // Rate tracking
   private rates = {
     ingestRate: 0,
     fastFilterPassedRate: 0,
-    processedRate: 0,
-    filteredRate: 0,
-    candidateRate: 0,
-    queueDepth: 0,
-    droppedRate: 0,
-    duplicateRate: 0,
     mintResolvedRate: 0,
+    processedRate: 0,
+    duplicateRate: 0,
+    candidateRate: 0,
     enrichedRate: 0,
     criteriaPassRate: 0,
-    buyAuthRate: 0,
-    buyAttemptRate: 0,
-    buyConfirmedRate: 0,
-    buyFailedRate: 0,
   };
-
-  private prevCounters = { ...this.counters };
   private ratesTimer: NodeJS.Timeout | null = null;
   private logTimer: NodeJS.Timeout | null = null;
 
@@ -143,430 +68,108 @@ export class LaserStreamPipeline {
     this.isRunning = true;
 
     // 1. Intercept standard market events directly from the bus
-    this.unsubscribeBus = marketEventBus.subscribe((event: MarketEvent) => {
+    this.unsubscribeBus = marketEventBus.subscribe((event: UnifiedMarketEvent) => {
       this.handleIncomingRawEvent(event);
     });
 
-    // 2. Start worker loop
-    this.workerTimer = setInterval(() => {
-      this.processMicroBatch();
-    }, this.BATCH_INTERVAL_MS);
+    // 2. Start rate calculation timer
+    this.ratesTimer = setInterval(() => this.calculateRates(), 1000);
+    if (this.ratesTimer.unref) this.ratesTimer.unref();
 
-    // 3. Start rates calculation timer
-    this.ratesTimer = setInterval(() => {
-      this.calculateRates();
-    }, 1000);
+    // 3. Start periodic logging
+    this.logTimer = setInterval(() => this.logRates(), 10000);
+    if (this.logTimer.unref) this.logTimer.unref();
 
-    // 4. Start diagnostic logging timer
-    this.logTimer = setInterval(() => {
-      this.printDiagnosticLog();
-    }, 1000);
-
-    laserLogger.info('[LASERSTREAM PIPELINE] Pipeline started and subscribed successfully');
+    console.log('[LaserStreamPipeline] Pipeline started. Processing incoming events.');
   }
 
   public stop(): void {
     this.isRunning = false;
-
     if (this.unsubscribeBus) {
       this.unsubscribeBus();
       this.unsubscribeBus = null;
     }
-
-    if (this.workerTimer) {
-      clearInterval(this.workerTimer);
-      this.workerTimer = null;
-    }
-
-    if (this.ratesTimer) {
-      clearInterval(this.ratesTimer);
-      this.ratesTimer = null;
-    }
-
-    if (this.logTimer) {
-      clearInterval(this.logTimer);
-      this.logTimer = null;
-    }
-
-    this.highQueue = [];
-    this.mediumQueue = [];
-    this.lowQueue = [];
-    this.dedupeCache.clear();
-
-    laserLogger.info('[LASERSTREAM PIPELINE] Pipeline stopped cleanly');
+    if (this.ratesTimer) { clearInterval(this.ratesTimer); this.ratesTimer = null; }
+    if (this.logTimer) { clearInterval(this.logTimer); this.logTimer = null; }
+    this.seenSignatures.clear();
+    console.log('[LaserStreamPipeline] Pipeline stopped.');
   }
 
-  public getMetrics() {
-    return {
-      ...this.rates,
-      counters: { ...this.counters },
-      rejectionReasons: { ...this.rejectionReasons },
-    };
-  }
+  private handleIncomingRawEvent(event: UnifiedMarketEvent): void {
+    if (!this.isRunning) return;
+    this.counters.ingest++;
 
-  /**
-   * Fast Ingestion Entrypoint - Bounded & Non-blocking
-   */
-  private handleIncomingRawEvent(event: MarketEvent): void {
-    this.counters.wssIn++;
-
-    // Only process ON_CHAIN_TX
-    if (event.type !== 'ON_CHAIN_TX') {
-      return;
-    }
-
-    // Transaction Signature-level Deduplication
-    if (event.signature) {
-      if (this.signatureDedupeCache.has(event.signature)) {
-        return;
-      }
-      this.signatureDedupeCache.add(event.signature);
-      if (this.signatureDedupeCache.size > 20000) {
-        const arr = Array.from(this.signatureDedupeCache);
-        this.signatureDedupeCache = new Set(arr.slice(10000));
-      }
-    }
-
-    // 1. FAST PROGRAM FILTER: Immediately drop if not related to any supported protocol
-    const keys = event.accountKeys || [];
-    const logs = (event as any).logMessages || [];
-
-    let matchedProgram: string | null = null;
-    for (const key of keys) {
-      if (PROTOCOL_PROGRAM_SET.has(key)) {
-        matchedProgram = key;
-        break;
-      }
-    }
-
-    if (!matchedProgram && logs.length > 0) {
-      for (const log of logs) {
-        if (typeof log === 'string') {
-          for (const progId of PROTOCOL_PROGRAM_SET) {
-            if (log.includes(progId)) {
-              matchedProgram = progId;
-              break;
-            }
-          }
-        }
-        if (matchedProgram) break;
-      }
-    }
-
-    if (!matchedProgram) {
-      // Discard immediately before any validation or deduplication
-      return;
-    }
-
+    // Fast filter: Only process trade events
+    if (event.eventType !== 'TRADE' && event.eventType !== 'BUY' && event.eventType !== 'SELL') return;
     this.counters.fastFilterPassed++;
 
-    // 2. FAST EVENT CLASSIFICATION & PROTOCOL RECOGNITION
-    let protocol = 'UNKNOWN';
-    let isNewToken = false;
-    let isNewPool = false;
-    let priority: 'high' | 'medium' | 'low' = 'low';
-
-    if (matchedProgram === SUPPORTED_PROTOCOLS.PUMP_FUN) {
-      protocol = 'PUMP_FUN';
-      const logStr = logs.join('\n');
-      if (logStr.includes('Instruction: Create')) {
-        isNewToken = true;
-        priority = 'high';
-      } else if (logStr.includes('Instruction: Buy') || logStr.includes('Instruction: Sell')) {
-        priority = 'medium';
-      }
-    } else if (
-      matchedProgram === SUPPORTED_PROTOCOLS.RAYDIUM_AMM ||
-      matchedProgram === SUPPORTED_PROTOCOLS.RAYDIUM_CLMM ||
-      matchedProgram === SUPPORTED_PROTOCOLS.RAYDIUM_CPMM
-    ) {
-      protocol = 'RAYDIUM';
-      const logStr = logs.join('\n');
-      if (logStr.includes('Instruction: Initialize') || logStr.includes('Instruction: Initialize2')) {
-        isNewPool = true;
-        priority = 'high';
-      } else {
-        priority = 'medium';
-      }
-    } else if (
-      matchedProgram === SUPPORTED_PROTOCOLS.METEORA_DLMM ||
-      matchedProgram === SUPPORTED_PROTOCOLS.METEORA_POOLS
-    ) {
-      protocol = 'METEORA';
-      const logStr = logs.join('\n');
-      if (logStr.includes('Initialize') || logStr.includes('init_pool')) {
-        isNewPool = true;
-        priority = 'high';
-      } else {
-        priority = 'medium';
-      }
-    } else if (matchedProgram === SUPPORTED_PROTOCOLS.ORCA_WHIRLPOOL) {
-      protocol = 'ORCA';
-      const logStr = logs.join('\n');
-      if (logStr.includes('Initialize') || logStr.includes('CreatePool')) {
-        isNewPool = true;
-        priority = 'high';
-      } else {
-        priority = 'medium';
-      }
-    } else if (matchedProgram === SUPPORTED_PROTOCOLS.JUPITER_V6) {
-      protocol = 'JUPITER';
-      priority = 'low';
-    }
-
-    this.counters.protocolRecognized++;
-
-    // 3. ACTUAL MINT EXTRACTION
-    this.counters.mintExtractionAttempted++;
-    let extractedMint: string | null = null;
-
-    if (protocol === 'PUMP_FUN' || protocol === 'RAYDIUM') {
-      extractedMint = tokenMintResolver.extractMintFromLogs(logs);
-    }
-
-    if (!extractedMint) {
-      // Unresolved mint - DROP EVENT cleanly
-      return;
-    }
-
-    this.counters.mintExtractionSuccess++;
-
-    // 4. MINT VALIDATION (Cheap Structural Validation)
-    if (!tokenMintResolver.isValidPublicKey(extractedMint)) {
-      return;
-    }
-
-    this.counters.mintValidationSuccess++;
-
-    // 5. UPDATE REAL-TIME ENGINES AT LINE-RATE (NON-BLOCKING)
-    const normalizedEventForEngines = {
-      ...event,
-      mint: extractedMint,
-      protocol,
-    };
-    bondingCurveFastLane.processEvent(normalizedEventForEngines);
-    migrationDetector.processEvent(normalizedEventForEngines);
-
-    const logStr = logs.join(' ');
-    const isBuy = logs.some(l => typeof l === 'string' && (l.includes('Instruction: Buy') || l.includes('Program log: Instruction: Buy')));
-    const isSell = logs.some(l => typeof l === 'string' && (l.includes('Instruction: Sell') || l.includes('Program log: Instruction: Sell')));
-    const side = isBuy ? 'BUY' : (isSell ? 'SELL' : undefined);
-    const solAmount = (event.price && event.tokenAmount) ? event.price * event.tokenAmount : undefined;
-    const buyer = event.owner || 'unknown';
-    if (event.price && side) {
-      momentumEngine.recordTrade(extractedMint, event.price, isBuy, solAmount || 0, buyer);
-    }
-
-    // Publish unified event to central bus
-    const eventSource = protocol === 'PUMP_FUN' ? 'PUMP_FUN' : (event.network === 'mainnet' ? 'LASERSTREAM' : 'HELIUS_WSS');
-    marketEventBus.publishUnified({
-      eventId: `${eventSource}:${event.signature || 'nosig'}:${extractedMint}:${event.slot}`,
-      correlationId: `corr_${eventSource.toLowerCase()}_${extractedMint.slice(0, 8)}_${Date.now()}`,
-      chain: 'solana',
-      source: eventSource,
-      mint: extractedMint,
-      signature: event.signature,
-      slot: event.slot,
-      timestamp: Date.now(),
-      eventType: isNewToken ? 'TOKEN_DISCOVERED' : (isNewPool ? 'MIGRATION' : (side ? 'TRADE' : 'TOKEN_DISCOVERED')),
-      side,
-      priceSol: event.price,
-      solAmount: solAmount ? String(solAmount) : undefined,
-      buyer: isBuy ? buyer : undefined,
-      seller: isSell ? buyer : undefined,
-      protocol,
-      network: event.network || 'mainnet',
-      accountKeys: keys,
-      raw: event,
-    });
-
-    // 5b. REAL-TIME EVENT DEDUPLICATION & LATEST-STATE COALESCING
-    const signatureKey = `${event.signature}:${extractedMint}`;
-    if (event.signature && this.signatureDedupeCache.has(signatureKey)) {
-      this.counters.duplicates++;
+    // Deduplication
+    if (event.signature && this.seenSignatures.has(event.signature)) {
+      this.counters.duplicate++;
       return;
     }
     if (event.signature) {
-      this.signatureDedupeCache.add(signatureKey);
-      if (this.signatureDedupeCache.size > 20000) {
-        this.signatureDedupeCache.clear();
+      this.seenSignatures.add(event.signature);
+      if (this.seenSignatures.size > this.MAX_SEEN_SIGNATURES) {
+        const first = this.seenSignatures.values().next().value;
+        if (first) this.seenSignatures.delete(first);
       }
     }
 
-    // Check bounded queue capacity limits
-    const totalQueueSize = this.highQueue.length + this.mediumQueue.length + this.lowQueue.length;
-    if (totalQueueSize >= this.MAX_QUEUE_LIMIT) {
-      this.counters.dropped++;
-      return;
-    }
+    // Mint validation
+    if (!event.mint || !tokenMintResolver.isValidMint(event.mint)) return;
+    this.counters.mintResolved++;
 
-    const dedupeKey = `${extractedMint}:${protocol}`;
-    this.dedupeCache.set(dedupeKey, { state: 'DISCOVERED', timestamp: Date.now() });
-    this.counters.candidateDeduplicated++;
+    // Register candidate
+    const registered = candidateRegistry.registerCandidate({
+      mint: event.mint,
+      symbol: event.symbol,
+      network: event.network || 'mainnet',
+      source: event.source,
+      pool: event.pool,
+      protocol: event.protocol,
+    });
+    if (registered) this.counters.candidate++;
 
-    const pipelineEvent: PipelineEvent = {
-      mint: extractedMint,
-      signature: event.signature || 'none',
-      slot: event.slot,
-      source: event.network || 'mainnet',
-      protocol,
-      isNewToken,
-      isNewPool,
-      priority,
-      timestamp: Date.now(),
-    };
-
-    // Push into the correct priority queue
-    if (priority === 'high') {
-      this.highQueue.push(pipelineEvent);
-    } else if (priority === 'medium') {
-      this.mediumQueue.push(pipelineEvent);
-    } else {
-      this.lowQueue.push(pipelineEvent);
-    }
-
-    this.counters.candidateCreated++;
+    // Record in source health monitor
+    sourceHealthMonitor.recordEventNormalized(event.source);
+    this.counters.processed++;
   }
 
-  /**
-   * Micro-batch Consumer Loop
-   */
-  private processMicroBatch(): void {
-    if (!this.isRunning) return;
-
-    // Check if we can start any enrichment worker
-    while (this.activeEnrichments < this.MAX_CONCURRENT_ENRICHMENTS) {
-      // Get next event based on priority
-      const nextEvent = this.highQueue.shift() || this.mediumQueue.shift() || this.lowQueue.shift();
-      if (!nextEvent) break;
-
-      this.activeEnrichments++;
-      this.processEnrichmentAndEvaluation(nextEvent)
-        .catch(() => {})
-        .finally(() => {
-          this.activeEnrichments--;
-        });
-    }
-  }
-
-  /**
-   * Asynchronous Candidate Enrichment & Trading Evaluation Worker
-   * Delegates to authoritative EntryEngine
-   */
-  private async processEnrichmentAndEvaluation(event: PipelineEvent): Promise<void> {
-    const dedupeKey = `${event.mint}:${event.protocol}`;
-    this.dedupeCache.set(dedupeKey, { state: 'ENRICHING', timestamp: Date.now() });
-
-    try {
-      // Trigger async discovery registration
-      tokenDiscovery.processMarketEvent({
-        network: event.source,
-        slot: event.slot,
-        signature: event.signature,
-        timestamp: Date.now(),
-        type: 'ON_CHAIN_TX',
-        accountKeys: [event.mint],
-      });
-
-      this.counters.criteriaEvaluated++;
-      const evalResult = await entryEngine.evaluateAndTrade(
-        event.mint,
-        event.protocol === 'PUMP_FUN' ? 'PUMP_FUN' : 'LASERSTREAM'
-      );
-
-      if (evalResult.stage === 'REJECTED' || evalResult.status === 'SKIPPED') {
-        this.counters.candidateRejected++;
-        this.dedupeCache.set(dedupeKey, { state: 'REJECTED', timestamp: Date.now() });
-        const reason = evalResult.decision?.blockingReasons?.[0] || evalResult.error || 'REJECTED';
-        const key = reason.split(':')[0].trim();
-        this.rejectionReasons[key] = (this.rejectionReasons[key] || 0) + 1;
-        return;
-      }
-
-      if (evalResult.decision?.allowed) {
-        this.counters.criteriaPassed++;
-        this.counters.buyAuthorized++;
-        this.counters.buyAttempted++;
-
-        if (evalResult.tradeResponse?.success) {
-          this.counters.buyConfirmed++;
-          this.dedupeCache.set(dedupeKey, { state: 'BOUGHT', timestamp: Date.now() });
-        } else {
-          this.counters.buyFailed++;
-          this.dedupeCache.set(dedupeKey, { state: 'REJECTED', timestamp: Date.now() });
-        }
-      }
-    } catch (err: any) {
-      this.counters.candidateRejected++;
-      this.dedupeCache.set(dedupeKey, { state: 'REJECTED', timestamp: Date.now() });
-      laserLogger.warn({ error: err.message, mint: event.mint }, 'Pipeline evaluation error');
-    }
-  }
-
-  /**
-   * Sliding 1-second Rates Calculator
-   */
   private calculateRates(): void {
-    const totalQueueSize = this.highQueue.length + this.mediumQueue.length + this.lowQueue.length;
-
-    this.rates.ingestRate = this.counters.wssIn - this.prevCounters.wssIn;
+    const elapsed = 1; // 1 second interval
+    this.rates.ingestRate = this.counters.ingest - this.prevCounters.ingest;
     this.rates.fastFilterPassedRate = this.counters.fastFilterPassed - this.prevCounters.fastFilterPassed;
-    this.rates.processedRate = this.counters.mintValidationSuccess - this.prevCounters.mintValidationSuccess;
-    this.rates.filteredRate = this.counters.wssIn - this.counters.fastFilterPassed - (this.prevCounters.wssIn - this.prevCounters.fastFilterPassed);
-    this.rates.candidateRate = this.counters.candidateCreated - this.prevCounters.candidateCreated;
-    this.rates.queueDepth = totalQueueSize;
-    this.rates.droppedRate = this.counters.dropped - this.prevCounters.dropped;
-    this.rates.duplicateRate = this.counters.duplicates - this.prevCounters.duplicates;
-    this.rates.mintResolvedRate = this.counters.mintExtractionSuccess - this.prevCounters.mintExtractionSuccess;
-    this.rates.enrichedRate = this.counters.candidateEnriched - this.prevCounters.candidateEnriched;
-    this.rates.criteriaPassRate = this.counters.criteriaPassed - this.prevCounters.criteriaPassed;
-    this.rates.buyAuthRate = this.counters.buyAuthorized - this.prevCounters.buyAuthorized;
-    this.rates.buyAttemptRate = this.counters.buyAttempted - this.prevCounters.buyAttempted;
-    this.rates.buyConfirmedRate = this.counters.buyConfirmed - this.prevCounters.buyConfirmed;
-    this.rates.buyFailedRate = this.counters.buyFailed - this.prevCounters.buyFailed;
-
+    this.rates.mintResolvedRate = this.counters.mintResolved - this.prevCounters.mintResolved;
+    this.rates.processedRate = this.counters.processed - this.prevCounters.processed;
+    this.rates.duplicateRate = this.counters.duplicate - this.prevCounters.duplicate;
+    this.rates.candidateRate = this.counters.candidate - this.prevCounters.candidate;
+    this.rates.enrichedRate = this.counters.enriched - this.prevCounters.enriched;
+    this.rates.criteriaPassRate = this.counters.criteriaPass - this.prevCounters.criteriaPass;
     this.prevCounters = { ...this.counters };
   }
 
-  /**
-   * Diagnostic log printer (Every 1 second)
-   */
-  private printDiagnosticLog(): void {
+  private logRates(): void {
     if (!this.isRunning) return;
+    console.log(
+      `[TRADING PIPELINE] WSS_IN=${this.rates.ingestRate}/s ` +
+      `FAST_FILTER=${this.rates.fastFilterPassedRate}/s ` +
+      `MINT_RESOLVED=${this.rates.mintResolvedRate}/s ` +
+      `MINT_VALID=${this.rates.processedRate}/s ` +
+      `DEDUP=${this.rates.duplicateRate}/s ` +
+      `CANDIDATES=${this.rates.candidateRate}/s ` +
+      `ENRICHED=${this.rates.enrichedRate}/s ` +
+      `CRITERIA_PASS=${this.rates.criteriaPassRate}/s`
+    );
+  }
 
-    console.log(`[TRADING PIPELINE]
-WSS_IN=${this.rates.ingestRate}/s
-FAST_FILTER=${this.rates.fastFilterPassedRate}/s
-MINT_RESOLVED=${this.rates.mintResolvedRate}/s
-MINT_VALID=${this.rates.processedRate}/s
-DEDUP=${this.rates.duplicateRate}/s
-CANDIDATES=${this.rates.candidateRate}/s
-ENRICHED=${this.rates.enrichedRate}/s
-CRITERIA_PASS=${this.rates.criteriaPassRate}/s
-BUY_AUTH=${this.rates.buyAuthRate}/s
-BUY_ATTEMPT=${this.rates.buyAttemptRate}/s
-BUY_CONFIRMED=${this.rates.buyConfirmedRate}/s
-BUY_FAILED=${this.rates.buyFailedRate}/s
-QUEUE=${this.rates.queueDepth}`);
-
-    // If Pipeline blockers are detected, output explicit alerts
-    if (this.rates.ingestRate > 0 && this.rates.mintResolvedRate === 0) {
-      console.warn(`[PIPELINE BLOCKER] LaserStream active but no token mints are being extracted.`);
-    } else if (this.rates.mintResolvedRate > 0 && this.rates.candidateRate === 0) {
-      console.warn(`[PIPELINE BLOCKER] Mint extraction works but candidate creation is rejecting all events.`);
-    } else if (this.rates.candidateRate > 0 && this.rates.enrichedRate === 0 && this.rates.queueDepth > 0) {
-      console.warn(`[PIPELINE BLOCKER] Candidate enrichment is stalled.`);
-    }
-
-    // Output criteria rejection counts if any rejections occurred in this period
-    const totalRejections = Object.values(this.rejectionReasons).reduce((a, b) => a + b, 0);
-    if (totalRejections > 0) {
-      const parts = Object.entries(this.rejectionReasons)
-        .filter(([, count]) => count > 0)
-        .map(([reason, count]) => `${reason}=${count}`)
-        .join(' ');
-      console.log(`[ENTRY REJECTIONS] ${parts}`);
-    }
+  public getTelemetry() {
+    return {
+      isRunning: this.isRunning,
+      rates: { ...this.rates },
+      counters: { ...this.counters },
+      seenSignaturesCount: this.seenSignatures.size,
+    };
   }
 }
 

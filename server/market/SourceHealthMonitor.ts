@@ -1,46 +1,25 @@
 // server/market/SourceHealthMonitor.ts
-import { EventSource, SourceHealthStats } from '../types/index.js';
 
+export interface SourceStats {
+  source: string;
+  eventsReceived: number;
+  eventsNormalized: number;
+  candidatesCreated: number;
+  buyConfirmed: number;
+  buyFailed: number;
+  lastEventAt: number;
+  avgLatencyMs: number;
+}
+
+/**
+ * Source Health Monitor: Tracks the health and throughput of all event sources.
+ */
 export class SourceHealthMonitor {
   private static instance: SourceHealthMonitor;
+  private stats: Map<string, SourceStats> = new Map();
+  private readonly STALE_THRESHOLD_MS = 120000; // 2 minutes without events = stale
 
-  private sources: Map<EventSource, SourceHealthStats> = new Map();
-  private eventCounters: Map<EventSource, { current: number; prev: number }> = new Map();
-  private rateTimer: NodeJS.Timeout | null = null;
-
-  private constructor() {
-    const supportedSources: EventSource[] = [
-      'PULSE_FEED',
-      'LASERSTREAM',
-      'HELIUS_WSS',
-      'HELIUS_GRPC',
-      'PUMP_FUN',
-      'DEXSCREENER',
-      'MANUAL',
-      'SIMULATION',
-    ];
-
-    for (const src of supportedSources) {
-      this.sources.set(src, {
-        source: src,
-        connected: false,
-        status: 'DISCONNECTED',
-        lastEventAt: null,
-        eventsPerSec: 0,
-        totalEventsReceived: 0,
-        candidatesDiscovered: 0,
-        qualifiedCount: 0,
-        buyAttempts: 0,
-        buysConfirmed: 0,
-        buysFailed: 0,
-        rejectionsCount: 0,
-        errorCount: 0,
-      });
-      this.eventCounters.set(src, { current: 0, prev: 0 });
-    }
-
-    this.startRateCalculator();
-  }
+  private constructor() {}
 
   public static getInstance(): SourceHealthMonitor {
     if (!SourceHealthMonitor.instance) {
@@ -49,142 +28,68 @@ export class SourceHealthMonitor {
     return SourceHealthMonitor.instance;
   }
 
-  private startRateCalculator(): void {
-    this.rateTimer = setInterval(() => {
-      const now = Date.now();
-      for (const [src, stats] of this.sources.entries()) {
-        const counters = this.eventCounters.get(src);
-        if (counters) {
-          stats.eventsPerSec = counters.current - counters.prev;
-          counters.prev = counters.current;
-        }
-
-        // Determine connectivity & status based on recent activity
-        if (stats.lastEventAt) {
-          const ageMs = now - stats.lastEventAt;
-          if (ageMs < 10000) {
-            stats.connected = true;
-            stats.status = stats.errorCount > 10 ? 'DEGRADED' : 'ONLINE';
-          } else if (ageMs < 60000) {
-            stats.connected = true;
-            stats.status = 'STALE';
-          } else {
-            stats.connected = false;
-            stats.status = 'DISCONNECTED';
-          }
-        }
-      }
-    }, 1000);
-  }
-
-  public recordEvent(source: EventSource, latencyMs?: number): void {
-    const stats = this.sources.get(source);
-    if (!stats) return;
-
-    stats.totalEventsReceived++;
+  public recordEventReceived(source: string): void {
+    const stats = this.getOrCreateStats(source);
+    stats.eventsReceived++;
     stats.lastEventAt = Date.now();
-    stats.connected = true;
-    stats.status = 'ONLINE';
-    if (latencyMs !== undefined) {
-      stats.latencyMs = latencyMs;
-    }
-
-    const counters = this.eventCounters.get(source);
-    if (counters) {
-      counters.current++;
-    }
   }
 
-  public recordCandidate(source: EventSource): void {
-    const stats = this.sources.get(source);
-    if (stats) stats.candidatesDiscovered++;
+  public recordEventNormalized(source: string): void {
+    const stats = this.getOrCreateStats(source);
+    stats.eventsNormalized++;
   }
 
-  public recordQualified(source: EventSource): void {
-    const stats = this.sources.get(source);
-    if (stats) stats.qualifiedCount++;
+  public recordCandidateCreated(source: string): void {
+    const stats = this.getOrCreateStats(source);
+    stats.candidatesCreated++;
   }
 
-  public recordBuyAttempt(source: EventSource): void {
-    const stats = this.sources.get(source);
-    if (stats) stats.buyAttempts++;
+  public recordBuyConfirmed(source: string): void {
+    const stats = this.getOrCreateStats(source);
+    stats.buyConfirmed++;
   }
 
-  public recordBuyConfirmed(source: EventSource): void {
-    const stats = this.sources.get(source);
-    if (stats) stats.buysConfirmed++;
+  public recordBuyFailed(source: string): void {
+    const stats = this.getOrCreateStats(source);
+    stats.buyFailed++;
   }
 
-  public recordBuyFailed(source: EventSource, error?: string): void {
-    const stats = this.sources.get(source);
-    if (stats) {
-      stats.buysFailed++;
-      if (error) {
-        stats.lastError = error;
-      }
-    }
-  }
-
-  public recordRejection(source: EventSource, reason?: string): void {
-    const stats = this.sources.get(source);
-    if (stats) {
-      stats.rejectionsCount++;
-    }
-  }
-
-  public recordError(source: EventSource, error: string): void {
-    const stats = this.sources.get(source);
-    if (stats) {
-      stats.errorCount++;
-      stats.lastError = error;
-      stats.status = 'DEGRADED';
-    }
-  }
-
-  public setConnectionStatus(source: EventSource, connected: boolean, status?: 'ONLINE' | 'DEGRADED' | 'DISCONNECTED' | 'STALE'): void {
-    const stats = this.sources.get(source);
-    if (stats) {
-      stats.connected = connected;
-      if (status) {
-        stats.status = status;
-      } else {
-        stats.status = connected ? 'ONLINE' : 'DISCONNECTED';
-      }
-    }
-  }
-
-  public getSnapshot(): Record<EventSource, SourceHealthStats> {
-    const all: Record<string, SourceHealthStats> = {};
-    for (const [src, stats] of this.sources.entries()) {
-      all[src] = { ...stats };
-    }
-    return all as Record<EventSource, SourceHealthStats>;
-  }
-
-  public getStats(source?: EventSource): SourceHealthStats | Record<EventSource, SourceHealthStats> {
-    if (source) {
-      return this.sources.get(source) || {
+  private getOrCreateStats(source: string): SourceStats {
+    let stats = this.stats.get(source);
+    if (!stats) {
+      stats = {
         source,
-        connected: false,
-        status: 'DISCONNECTED',
-        lastEventAt: null,
-        eventsPerSec: 0,
-        totalEventsReceived: 0,
-        candidatesDiscovered: 0,
-        qualifiedCount: 0,
-        buyAttempts: 0,
-        buysConfirmed: 0,
-        buysFailed: 0,
-        rejectionsCount: 0,
-        errorCount: 0,
+        eventsReceived: 0,
+        eventsNormalized: 0,
+        candidatesCreated: 0,
+        buyConfirmed: 0,
+        buyFailed: 0,
+        lastEventAt: Date.now(),
+        avgLatencyMs: 0,
       };
+      this.stats.set(source, stats);
     }
+    return stats;
+  }
 
-    const all: Record<string, SourceHealthStats> = {};
-    for (const [src, stats] of this.sources.entries()) {
-      all[src] = { ...stats };
+  public getSnapshot(): Record<string, SourceStats & { isStale: boolean; health: 'healthy' | 'degraded' | 'stale' }> {
+    const now = Date.now();
+    const snapshot: Record<string, any> = {};
+    for (const [source, stats] of this.stats.entries()) {
+      const age = now - stats.lastEventAt;
+      const isStale = age > this.STALE_THRESHOLD_MS;
+      const health = isStale ? 'stale' : (stats.eventsReceived > 0 ? 'healthy' : 'degraded');
+      snapshot[source] = { ...stats, isStale, health };
     }
-    return all as Record<EventSource, SourceHealthStats>;
+    return snapshot;
+  }
+
+  public getSourceHealth(source: string): 'healthy' | 'degraded' | 'stale' {
+    const stats = this.stats.get(source);
+    if (!stats) return 'degraded';
+    const age = Date.now() - stats.lastEventAt;
+    if (age > this.STALE_THRESHOLD_MS) return 'stale';
+    return 'healthy';
   }
 }
 

@@ -1,164 +1,163 @@
 // server/execution/PaperTradeExecutor.ts
-import { TradeExecutor, QuoteParams, QuoteResult, ExecuteParams, ExecutionResult } from './TradeExecutor.js';
-import { positionManager } from '../trading/PositionManager.js';
+import {
+  TradeExecutor,
+  QuoteParams,
+  QuoteResult,
+  ExecuteParams,
+  ExecutionResult,
+} from './TradeExecutor.js';
 import { paperWalletLedger } from '../wallet/PaperWalletLedger.js';
-import { applySlippageBps, lamportsToSolNumber, parsePositiveRawAmount, rawToUiNumber } from '../utils/rawAmount.js';
+import { logger } from '../utils/logger.js';
+
+const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 
 export class PaperTradeExecutor implements TradeExecutor {
-  private parseAmountBigInt(amount: bigint | string | number): bigint {
-    if (typeof amount === 'bigint') return amount;
-    const str = String(amount).trim();
-    if (str.includes('.')) {
-      throw new Error(`INVALID_RAW_AMOUNT: Floating point not allowed for raw token amount (${str})`);
-    }
-    return BigInt(str);
-  }
+  public readonly network: string = 'paper';
 
-  async quoteBuy(params: QuoteParams): Promise<QuoteResult> {
-    const amountLamports = this.parseAmountBigInt(params.amount);
-    const decs = params.decimals !== undefined ? params.decimals : 9;
-    if (!Number.isInteger(decs) || decs < 0 || decs > 18) throw new Error(`INVALID_DECIMALS: ${decs}`);
-    // Paper price is exactly 1,000,000 tokens per SOL. Keep all raw arithmetic in BigInt.
-    const scale = 10n ** BigInt(decs);
-    const simulatedTokensRaw = decs >= 3
-      ? amountLamports * 10n ** BigInt(decs - 3)
-      : amountLamports / 10n ** BigInt(3 - decs);
-    const slippageBps = params.slippageBps ?? 250;
-    const minOutputRaw = applySlippageBps(simulatedTokensRaw, slippageBps);
+  // ==========================================
+  // QUOTE (Simulated)
+  // ==========================================
+
+  async getQuote(params: QuoteParams): Promise<QuoteResult> {
+    // Paper mode: simulate a quote with realistic slippage
+    const amountNum = Number(params.amount);
+    const simulatedSlippage = 1 + (params.slippageBps / 10000) * 0.5; // Half the requested slippage
+    const outAmount = Math.floor(amountNum * simulatedSlippage);
 
     return {
-      inAmount: amountLamports.toString(),
-      outAmount: simulatedTokensRaw.toString(),
-      otherAmountThreshold: minOutputRaw.toString(),
-      priceImpactPct: 0.001,
-      routePlan: [{ swapInfo: { ammKey: 'PaperSimulatedAMM' } }],
+      success: true,
+      quote: {
+        inputMint: params.inputMint,
+        outputMint: params.outputMint,
+        inAmount: String(params.amount),
+        outAmount: String(outAmount),
+        routePlan: [{ swapInfo: { label: 'PaperSimulated' } }],
+        priceImpactPct: 0.1,
+      },
+      outAmountLamports: outAmount,
+      outAmountRaw: String(outAmount),
+      priceImpactPct: 0.1,
+      routePlanLength: 1,
     };
   }
 
-  async quoteSell(params: QuoteParams): Promise<QuoteResult> {
-    // Input is raw token base units
-    const amountRaw = this.parseAmountBigInt(params.amount);
-    const decs = params.decimals !== undefined ? params.decimals : 9;
-    const tokenQty = rawToUiNumber(amountRaw, decs);
-
-    // Look up position's live/market price if available in Paper mode
-    const pos = (positionManager.getOpenPositions(params.network, params.walletAddress) || [])
-      .find(p => p.mint === params.inputMint)
-      || positionManager.getPosition(params.network || 'paper', params.walletAddress || 'default', params.inputMint);
-
-    const unitPrice = (pos && pos.currentPrice && pos.currentPrice > 0)
-      ? pos.currentPrice
-      : (pos && (pos as any).currentPriceSOL && (pos as any).currentPriceSOL > 0)
-        ? (pos as any).currentPriceSOL
-        : 0.000001; // 1M tokens = 1 SOL fallback
-
-    const solProceeds = tokenQty * unitPrice;
-    const priceLamportsPerToken = BigInt(Math.max(0, Math.floor(unitPrice * 1e9)));
-    const scale = 10n ** BigInt(decs);
-    const lamports = (amountRaw * priceLamportsPerToken) / scale;
-    const minLamports = applySlippageBps(lamports, params.slippageBps ?? 250);
-
-    return {
-      inAmount: amountRaw.toString(),
-      outAmount: lamports.toString(),
-      otherAmountThreshold: minLamports.toString(),
-      priceImpactPct: 0.001,
-      routePlan: [{ swapInfo: { ammKey: 'PaperSimulatedAMM' } }],
-    };
-  }
+  // ==========================================
+  // BUY (Simulated)
+  // ==========================================
 
   async buy(params: ExecuteParams): Promise<ExecutionResult> {
-    const amountLamports = this.parseAmountBigInt(params.amount);
-    const quote = params.preValidatedQuote || (await this.quoteBuy({
-      inputMint: params.inputMint,
-      outputMint: params.outputMint,
-      amount: amountLamports,
-      decimals: params.decimals,
-      slippageBps: params.slippageBps,
-    }));
+    const startTime = Date.now();
 
-    const solSpent = lamportsToSolNumber(amountLamports);
-    const currentSolBalance = paperWalletLedger.getSolBalance();
-    if (currentSolBalance < solSpent) {
+    try {
+      const amountLamports = Number(params.amount);
+
+      // Check paper balance
+      const balance = paperWalletLedger.getSolBalance();
+      if (balance < amountLamports / 1e9) {
+        return {
+          success: false,
+          error: `INSUFFICIENT_BALANCE: Paper balance ${balance.toFixed(4)} SOL < required ${(amountLamports / 1e9).toFixed(4)} SOL`,
+          durationMs: Date.now() - startTime,
+        };
+      }
+
+      // Simulate execution delay (50-200ms)
+      const simulatedDelay = 50 + Math.random() * 150;
+      await new Promise(resolve => setTimeout(resolve, simulatedDelay));
+
+      // Generate simulated signature
+      const signature = `paper_buy_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+
+      // Commit buy to paper wallet
+      const tokenAmount = amountLamports; // Simplified: 1:1 for paper
+      paperWalletLedger.commitBuy(params.outputMint, amountLamports / 1e9, tokenAmount, params.decimals || 9, signature);
+
+      if (params.onBroadcast) {
+        await params.onBroadcast(signature);
+      }
+
+      logger.info({ mint: params.outputMint, amountSol: amountLamports / 1e9, signature }, '[PaperTradeExecutor] BUY executed');
+
+      return {
+        success: true,
+        signature,
+        outAmountRaw: String(tokenAmount),
+        durationMs: Date.now() - startTime,
+      };
+    } catch (err: any) {
       return {
         success: false,
-        inputMint: params.inputMint,
-        outputMint: params.outputMint,
-        inAmountRaw: amountLamports.toString(),
-        outAmountRaw: '0',
-        error: `INSUFFICIENT_PAPER_BALANCE: Required ${solSpent.toFixed(4)} SOL, available ${currentSolBalance.toFixed(4)} SOL`,
+        error: `PAPER_BUY_ERROR: ${err?.message || String(err)}`,
+        durationMs: Date.now() - startTime,
       };
     }
-
-    const tokenReceivedRaw = parsePositiveRawAmount(quote.outAmount, 'paper buy output');
-    const signature = `paper_buy_${Date.now()}_${params.outputMint.slice(0, 8)}`;
-    paperWalletLedger.commitBuy(params.outputMint, solSpent, tokenReceivedRaw, params.decimals, signature);
-
-    const tokenQty = rawToUiNumber(tokenReceivedRaw, params.decimals);
-    const effectivePrice = tokenQty > 0 ? solSpent / tokenQty : 0;
-
-    return {
-      success: true,
-      signature,
-      inputMint: params.inputMint,
-      outputMint: params.outputMint,
-      inAmountRaw: amountLamports.toString(),
-      outAmountRaw: tokenReceivedRaw,
-      totalCostSol: solSpent,
-      effectivePriceSol: effectivePrice,
-    };
   }
+
+  // ==========================================
+  // SELL (Simulated)
+  // ==========================================
 
   async sell(params: ExecuteParams): Promise<ExecutionResult> {
-    const amountRaw = this.parseAmountBigInt(params.amount);
-    const currentTokenRaw = paperWalletLedger.getTokenBalanceRaw(params.inputMint);
-    if (currentTokenRaw < amountRaw) {
-      return { success: false, inputMint: params.inputMint, outputMint: params.outputMint, inAmountRaw: amountRaw.toString(), outAmountRaw: '0', error: `INSUFFICIENT_TOKEN_BALANCE: Available ${currentTokenRaw.toString()} raw base units` };
-    }
-    const sellAmountRaw = amountRaw;
+    const startTime = Date.now();
 
-    if (sellAmountRaw <= 0n) {
+    try {
+      const tokenAmountRaw = BigInt(String(params.amount));
+
+      // Check paper token balance
+      const tokenBalance = paperWalletLedger.getTokenBalance(params.inputMint);
+      if (BigInt(String(tokenBalance)) < tokenAmountRaw) {
+        return {
+          success: false,
+          error: `INSUFFICIENT_TOKEN_BALANCE: Paper balance < sell amount`,
+          durationMs: Date.now() - startTime,
+        };
+      }
+
+      // Simulate execution delay
+      const simulatedDelay = 50 + Math.random() * 150;
+      await new Promise(resolve => setTimeout(resolve, simulatedDelay));
+
+      // Generate simulated signature
+      const signature = `paper_sell_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+
+      // Add SOL to paper wallet (simulated output)
+      const outSol = Number(tokenAmountRaw) / 1e9; // Simplified
+      paperWalletLedger.commitSell(params.inputMint, outSol, tokenAmountRaw, params.decimals || 9, signature);
+
+      if (params.onBroadcast) {
+        await params.onBroadcast(signature);
+      }
+
+      logger.info({ mint: params.inputMint, amountRaw: String(tokenAmountRaw), signature }, '[PaperTradeExecutor] SELL executed');
+
+      return {
+        success: true,
+        signature,
+        outAmountLamports: Math.floor(outSol * 1e9),
+        durationMs: Date.now() - startTime,
+      };
+    } catch (err: any) {
       return {
         success: false,
-        inputMint: params.inputMint,
-        outputMint: params.outputMint,
-        inAmountRaw: amountRaw.toString(),
-        outAmountRaw: '0',
-        error: `INSUFFICIENT_TOKEN_BALANCE: Available ${currentTokenRaw.toString()} raw base units`,
+        error: `PAPER_SELL_ERROR: ${err?.message || String(err)}`,
+        durationMs: Date.now() - startTime,
       };
     }
-
-    const quote = params.preValidatedQuote || (await this.quoteSell({
-      inputMint: params.inputMint,
-      outputMint: params.outputMint,
-      amount: sellAmountRaw,
-      decimals: params.decimals,
-      slippageBps: params.slippageBps,
-    }));
-
-    const solGainedLamports = quote.outAmount;
-    const solGained = Number(solGainedLamports) / 1e9;
-    const signature = `paper_sell_${Date.now()}_${params.inputMint.slice(0, 8)}`;
-
-    paperWalletLedger.commitSell(params.inputMint, solGained, sellAmountRaw, params.decimals, signature);
-
-    return {
-      success: true,
-      signature,
-      inputMint: params.inputMint,
-      outputMint: params.outputMint,
-      inAmountRaw: sellAmountRaw.toString(),
-      outAmountRaw: solGainedLamports,
-      netProceedsSol: solGained,
-    };
   }
 
-  async getBalance(walletAddress?: string): Promise<number> {
+  // ==========================================
+  // BALANCE QUERIES
+  // ==========================================
+
+  async getSolBalance(_walletAddress?: string): Promise<number> {
     return paperWalletLedger.getSolBalance();
   }
 
-  async getTokenBalance(mint: string, walletAddress?: string): Promise<number> {
+  async getTokenBalance(mint: string, _walletAddress?: string): Promise<number> {
     return paperWalletLedger.getTokenBalance(mint);
   }
-}
 
+  async verifyReadiness(): Promise<{ ready: boolean; reason?: string }> {
+    return { ready: true }; // Paper mode is always ready
+  }
+}
