@@ -12,7 +12,8 @@ ARINA X-RAY Alpha is an institutional-grade, **backend-authoritative** algorithm
 2. **Single-Use Hardened Approvals:** Every buy requires a cryptographically bound, single-use `HardenedApproval` token. Once consumed, it cannot be reused, preventing duplicate buys from race conditions.
 3. **Executable Quote Invariant:** No exit (TP/SL/Manual) is executed based on synthetic or cached prices. Every exit requires a fresh, validated Jupiter Executable Quote (`JupiterPreSellValidator`).
 4. **BigInt Raw Precision:** All token amounts and lamports are handled as `BigInt` or string representations of raw base units. IEEE-754 floating-point math is strictly forbidden in the execution path.
-5. **Strict Network Isolation:** Paper, Devnet, and Mainnet execution paths are firewalled via the `ExecutionGateway`. Paper mode cannot accidentally trigger live RPC calls.
+5. **Atomic Persistence:** Position, Order, and Trade states are persisted via `JsonStore` with atomic file writes and stale-lock recovery to prevent repository corruption during server restarts.
+6. **Strict Network Isolation:** Paper, Devnet, and Mainnet execution paths are firewalled via the `ExecutionGateway`. Paper mode cannot accidentally trigger live RPC calls.
 
 ---
 
@@ -24,7 +25,7 @@ arina-x-ray/
 │   ├── execution/               # TradeExecutor interface, Mainnet/Paper/Devnet executors
 │   ├── market/                  # Event ingestion, normalization, CandidateRegistry
 │   ├── middleware/              # Auth, Rate Limiting, Error Handling
-│   ├── repositories/            # Atomic JSON/Firestore persistence layer
+│   ├── repositories/            # Atomic JsonStore persistence layer
 │   ├── routes/                  # Express API routers (trading, pipeline, health)
 │   ├── trading/                 # Core engines (Trading, Exit, Criteria, PnL, Positions)
 │   ├── wallet/                  # Server-side keypair management & Paper Ledger
