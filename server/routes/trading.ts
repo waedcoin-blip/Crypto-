@@ -47,15 +47,32 @@ router.get('/positions', asyncHandler(async (req: Request, res: Response) => {
 
   const enriched = openPositions.map(pos => {
     const val = positionValuationEngine.getValuation(pos.network, pos.wallet, pos.mint);
-    const currentPriceSol = val?.currentPriceSol || pos.currentPriceSol || pos.averageEntryPrice || 0;
-    const unrealizedPnlSol = val?.pnlSol ?? val?.executablePnlSol ?? (currentPriceSol > 0 && pos.averageEntryPrice > 0 ? (currentPriceSol - pos.averageEntryPrice) * pos.tokenAmount : 0);
-    const unrealizedPnlPct = val?.pnlPercent ?? val?.executablePnlPercent ?? (pos.averageEntryPrice > 0 ? ((currentPriceSol - pos.averageEntryPrice) / pos.averageEntryPrice) * 100 : 0);
+    const hasValidPrice = Boolean(val && val.currentPriceSol && val.currentPriceSol > 0 && val.status !== 'UNAVAILABLE');
+
+    if (hasValidPrice && val) {
+      return {
+        ...pos,
+        currentPriceSol: val.currentPriceSol,
+        unrealizedPnlSol: val.pnlSol ?? 0,
+        unrealizedPnlPct: val.pnlPercent ?? 0,
+        valStatus: val.status,
+        valSource: val.source,
+        lastMarketPriceAt: val.lastMarketPriceAt,
+        marketDataAgeMs: val.lastMarketPriceAt ? Date.now() - val.lastMarketPriceAt : undefined,
+        hasLiveMarketPrice: true,
+      };
+    }
 
     return {
       ...pos,
-      currentPriceSol,
-      unrealizedPnlSol,
-      unrealizedPnlPct,
+      currentPriceSol: null,
+      unrealizedPnlSol: null,
+      unrealizedPnlPct: null,
+      valStatus: 'UNAVAILABLE',
+      valSource: 'UNAVAILABLE',
+      lastMarketPriceAt: null,
+      marketDataAgeMs: null,
+      hasLiveMarketPrice: false,
     };
   });
 

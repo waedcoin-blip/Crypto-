@@ -6707,13 +6707,14 @@ const checkTokenCriteria = (mint: string): {
                   }).map(([mint, pos]: [string, Position]) => {
                     const token = tokenMetrics[mint];
                     const liveMarketPrice = token?.priceNative ? (typeof token.priceNative === 'number' ? token.priceNative : parseFloat(String(token.priceNative))) : 0;
-                    const displayPrice = (liveMarketPrice > 0 ? liveMarketPrice : 0) || pos.currentPriceSol || pos.currentPrice || pos.buyPrice || 0;
+                    const hasLivePrice = (liveMarketPrice > 0) || (typeof pos.currentPriceSol === 'number' && pos.currentPriceSol > 0);
+                    const displayPrice = liveMarketPrice > 0 ? liveMarketPrice : (pos.currentPriceSol && pos.currentPriceSol > 0 ? pos.currentPriceSol : 0);
                     const entryCostSol = pos.entryCostSol !== undefined && pos.entryCostSol > 0 ? pos.entryCostSol : (pos.solSpent || 0);
-                    const currentPriceSol = displayPrice > 0 ? displayPrice : (pos.currentPriceSol || pos.buyPrice || 0);
-                    const currentValueSol = pos.amount > 0 && currentPriceSol > 0 ? pos.amount * currentPriceSol : 0;
-                    const marketValueSol = pos.marketValueSol !== undefined && pos.marketValueSol > 0 ? pos.marketValueSol : currentValueSol;
-                    const marketPnlSol = pos.marketPnlSol !== undefined ? pos.marketPnlSol : (entryCostSol > 0 ? marketValueSol - entryCostSol : 0);
-                    const marketPnlPercent = pos.marketPnlPercent !== undefined ? pos.marketPnlPercent : (entryCostSol > 0 ? (marketPnlSol / entryCostSol) * 100 : 0);
+                    const currentPriceSol = displayPrice;
+                    const currentValueSol = hasLivePrice && pos.amount > 0 ? pos.amount * currentPriceSol : 0;
+                    const marketValueSol = hasLivePrice ? (pos.marketValueSol !== undefined && pos.marketValueSol > 0 ? pos.marketValueSol : currentValueSol) : 0;
+                    const marketPnlSol = hasLivePrice ? (pos.marketPnlSol !== undefined ? pos.marketPnlSol : (entryCostSol > 0 ? marketValueSol - entryCostSol : 0)) : 0;
+                    const marketPnlPercent = hasLivePrice ? (pos.marketPnlPercent !== undefined ? pos.marketPnlPercent : (entryCostSol > 0 ? (marketPnlSol / entryCostSol) * 100 : 0)) : 0;
 
                     const executableValueSol = pos.executableValueSol !== undefined && pos.executableValueSol > 0 ? pos.executableValueSol : marketValueSol;
                     const executablePnlSol = pos.executablePnlSol !== undefined ? pos.executablePnlSol : (entryCostSol > 0 ? executableValueSol - entryCostSol : 0);
@@ -6722,11 +6723,11 @@ const checkTokenCriteria = (mint: string): {
                     const pnlSol = marketPnlSol;
                     const pnlPercent = marketPnlPercent;
                     const entryPriceSol = pos.amount > 0 && entryCostSol > 0 ? entryCostSol / pos.amount : (pos.buyPrice || 0);
-                    const valStatus = pos.status || (displayPrice > 0 ? 'LIVE' : 'UNAVAILABLE');
-                    const valSource = pos.source || (token?.priceNative ? 'LASERSTREAM' : 'JUPITER');
+                    const valStatus = (pos.status === 'LIVE' || pos.status === 'STALE') ? pos.status : (hasLivePrice ? 'LIVE' : 'UNAVAILABLE');
+                    const valSource = pos.source || (token?.priceNative ? 'LASERSTREAM' : 'WSS');
                     
                     const isPos = pnlPercent >= 0;
-                    const isStalePos = valStatus === 'STALE' || (!!pos.isStale && (!displayPrice || displayPrice === 0));
+                    const isStalePos = valStatus === 'STALE' || (valStatus === 'LIVE' && !hasLivePrice);
                     const stage = detectTokenStage({
                       address: mint,
                       dexId: token?.dexId,
@@ -6971,8 +6972,8 @@ const checkTokenCriteria = (mint: string): {
                               )}
                             </div>
                             <div className="text-[10px] text-[#64748b] mt-0.5 flex items-center justify-between">
-                              <span>Market Val: {marketValueSol.toFixed(4)} SOL</span>
-                              <span className="text-slate-400">Exec: {executableValueSol.toFixed(4)} SOL</span>
+                              <span>Market Val: {valStatus === 'UNAVAILABLE' ? '--' : `${marketValueSol.toFixed(4)} SOL`}</span>
+                              <span className="text-slate-400">Exec: {valStatus === 'UNAVAILABLE' ? '--' : `${executableValueSol.toFixed(4)} SOL`}</span>
                             </div>
                           </div>
                         </div>

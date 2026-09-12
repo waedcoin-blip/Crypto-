@@ -133,26 +133,26 @@ export class FastExitExecutor {
       }
     }
 
-    // 2. CREATE ORDER
+    // 2. EXECUTE WITH RETRY (Fresh order creation per attempt)
     const rawAmount = position.tokenAmountRaw || params.amountRaw || String(Math.floor((position.tokenAmount || 0) * (10 ** (position.decimals || 9))));
-    const order = orderManager.createOrder({
-      network: position.network,
-      wallet: position.wallet,
-      mint: position.mint,
-      side: 'sell',
-      amount: rawAmount,
-      decimals: position.decimals || 9,
-      slippageBps: position.slippageBpsSl || params.slippageBps || 1000,
-      label: `exit_${reason.toLowerCase()}`,
-      quote: validatedQuote,
-      clientRequestId: params.clientRequestId,
-    });
-
-    // 3. EXECUTE WITH RETRY
     let lastError = '';
+
     for (let attempt = 1; attempt <= this.MAX_RETRIES; attempt++) {
       try {
         console.log(`[FastExitExecutor] Sell attempt ${attempt}/${this.MAX_RETRIES} for ${position.mint}`);
+
+        const order = orderManager.createOrder({
+          network: position.network,
+          wallet: position.wallet,
+          mint: position.mint,
+          side: 'sell',
+          amount: rawAmount,
+          decimals: position.decimals || 9,
+          slippageBps: position.slippageBpsSl || params.slippageBps || 1000,
+          label: `exit_${reason.toLowerCase()}_try${attempt}`,
+          quote: validatedQuote,
+          clientRequestId: params.clientRequestId ? `${params.clientRequestId}_try${attempt}` : undefined,
+        });
 
         const execResult = await orderManager.executeOrder(order.id, validatedQuote);
 

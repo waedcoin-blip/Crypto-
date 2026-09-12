@@ -10,9 +10,12 @@ export interface PositionItem {
   tokenAmountRaw?: string;
   decimals: number;
   averageEntryPrice: number;
-  currentPriceSol: number;
-  unrealizedPnlSol: number;
-  unrealizedPnlPct: number;
+  currentPriceSol: number | null;
+  unrealizedPnlSol: number | null;
+  unrealizedPnlPct: number | null;
+  valStatus?: 'LIVE' | 'STALE' | 'UNAVAILABLE' | string;
+  valSource?: string;
+  hasLiveMarketPrice?: boolean;
   realizedPnlSol?: number;
   status: 'OPEN' | 'CLOSING' | 'CLOSED' | string;
   openedAt?: number;
@@ -58,9 +61,12 @@ export function usePositions(pollIntervalMs: number = 3000) {
           tokenAmountRaw: p.tokenAmountRaw || p.amountRaw,
           decimals: p.decimals || 9,
           averageEntryPrice: p.averageEntryPrice ?? p.entryPrice ?? p.priceSolPerToken ?? 0,
-          currentPriceSol: p.currentPriceSol ?? p.currentPrice ?? p.averageEntryPrice ?? 0,
-          unrealizedPnlSol: p.unrealizedPnlSol ?? 0,
-          unrealizedPnlPct: p.unrealizedPnlPct ?? 0,
+          currentPriceSol: p.currentPriceSol ?? null,
+          unrealizedPnlSol: p.unrealizedPnlSol ?? null,
+          unrealizedPnlPct: p.unrealizedPnlPct ?? null,
+          valStatus: p.valStatus ?? 'UNAVAILABLE',
+          valSource: p.valSource,
+          hasLiveMarketPrice: p.hasLiveMarketPrice ?? false,
           realizedPnlSol: p.realizedPnlSol ?? 0,
           status: p.status || p.state || 'OPEN',
           openedAt: p.openedAt || p.createdAt,

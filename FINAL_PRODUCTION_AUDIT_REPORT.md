@@ -1,5 +1,5 @@
 # Final Production Audit Report
-Generated at: 2026-09-12T17:25:32.396Z
+Generated at: 2026-09-12T19:03:18.957Z
 Total Findings: 139
 Bugs: 6
 Warnings: 133
@@ -110,9 +110,9 @@ Warnings: 133
 - **[WARNING]** `src/components/pages/PnLPage.tsx:3922`: Hardcoded Secret / Private Key (`if (isMainnet && !privateKey && !activeWalletAddress) {`)
 - **[WARNING]** `src/components/pages/PnLPage.tsx:4615`: Hardcoded Secret / Private Key (`}, [privateKey, addLog]);`)
 - **[WARNING]** `src/components/pages/PnLPage.tsx:5242`: Hardcoded Secret / Private Key (`if (!privateKey) {`)
-- **[WARNING]** `src/components/pages/PnLPage.tsx:7264`: Artificial History Truncation (slice(-500)) (`{alert.address.slice(0, 12)}...{alert.address.slice(-6)}`)
-- **[WARNING]** `src/components/pages/PnLPage.tsx:7640`: Artificial History Truncation (slice(-500)) (`<span className="text-white font-bold">{t.mint.slice(0, 6)}...{t.mint.slice(-6)}</span>`)
-- **[WARNING]** `src/components/pages/PnLPage.tsx:7853`: Artificial History Truncation (slice(-500)) (`const mintDisplay = mintStr.length > 12 ? `${mintStr.slice(0, 6)}...${mintStr.slice(-6)}` : mintStr || 'Unknown';`)
+- **[WARNING]** `src/components/pages/PnLPage.tsx:7265`: Artificial History Truncation (slice(-500)) (`{alert.address.slice(0, 12)}...{alert.address.slice(-6)}`)
+- **[WARNING]** `src/components/pages/PnLPage.tsx:7641`: Artificial History Truncation (slice(-500)) (`<span className="text-white font-bold">{t.mint.slice(0, 6)}...{t.mint.slice(-6)}</span>`)
+- **[WARNING]** `src/components/pages/PnLPage.tsx:7854`: Artificial History Truncation (slice(-500)) (`const mintDisplay = mintStr.length > 12 ? `${mintStr.slice(0, 6)}...${mintStr.slice(-6)}` : mintStr || 'Unknown';`)
 - **[WARNING]** `src/components/pages/SafetyPage.tsx:49`: Artificial History Truncation (slice(-500)) (`{token.address ? `${token.address.slice(0, 6)}...${token.address.slice(-4)}` : 'N/A'}`)
 - **[WARNING]** `src/components/pages/SystemCheckPage.tsx:947`: Hardcoded Secret / Private Key (`OneUptime Telemetry Token / Ingestion Secret`)
 - **[WARNING]** `src/lib/crypto.ts:10`: Hardcoded Secret / Private Key (`async function deriveKey(secretMaterial: string, salt: Uint8Array): Promise<CryptoKey> {`)

@@ -1,6 +1,7 @@
 // server/trading/PositionManager.ts
 import { positionRepository, PositionRecord } from '../repositories/PositionRepository.js';
 import { positionValuationEngine } from './PositionValuationEngine.js';
+import { heliusLaserStreamWssManager } from '../market/HeliusLaserStreamWssManager.js';
 import { rawToUiNumber, parsePositiveRawAmount, safeRawNumber } from '../utils/rawAmount.js';
 import { logger } from '../utils/logger.js';
 
@@ -11,6 +12,7 @@ export interface Position {
   network: string;
   wallet: string;
   mint: string;
+  symbol?: string;
   tokenAmount: number;
   tokenAmountRaw?: string;
   decimals: number;
@@ -327,6 +329,11 @@ export class PositionManager {
     this.positions.set(posId, newPos);
     this.positionKeys.set(key, posId);
     this.syncRepository(newPos);
+
+    try {
+      heliusLaserStreamWssManager.subscribeActivePositionMint(params.mint);
+    } catch {}
+
     return newPos;
   }
 
@@ -391,6 +398,9 @@ export class PositionManager {
       const key = this.getPositionKey(network, wallet, mint);
       this.positionKeys.delete(key);
       positionValuationEngine.removeValuation(network, wallet, mint);
+      try {
+        heliusLaserStreamWssManager.unsubscribeActivePositionMint(mint);
+      } catch {}
       positionRepository.closePosition(pos.id, {
         exitSignature: pos.exitSignature,
         realizedPnLSol: pos.realizedPnl,

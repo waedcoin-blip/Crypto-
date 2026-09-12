@@ -65,6 +65,8 @@ export class HeliusLaserStreamWssManager implements StreamingTransport {
   private connectedAt: number | null = null;
   private lastMessageAt: number | null = null;
   private lastHeartbeatAt: number | null = null;
+  private lastPingSentAt: number | null = null;
+  private lastPongAt: number | null = null;
   private lastSlot = 0;
   private messagesReceived = 0;
   private messageRateWindow: number[] = [];
@@ -72,6 +74,7 @@ export class HeliusLaserStreamWssManager implements StreamingTransport {
   private latencySamples: number[] = [];
   private lastError: string | null = null;
   private activeEndpoint: string | null = null;
+  private activePositionMints: Set<string> = new Set();
 
   private constructor() {
     // Default subscriptions: slot stream & high-throughput program logs
@@ -83,6 +86,22 @@ export class HeliusLaserStreamWssManager implements StreamingTransport {
       HeliusLaserStreamWssManager.instance = new HeliusLaserStreamWssManager();
     }
     return HeliusLaserStreamWssManager.instance;
+  }
+
+  public subscribeActivePositionMint(mint: string): void {
+    if (!mint) return;
+    const trimmed = mint.trim();
+    this.activePositionMints.add(trimmed);
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.subscribeLogs({ mentions: [trimmed] }, `pos_${trimmed}`).catch(() => {});
+    }
+  }
+
+  public unsubscribeActivePositionMint(mint: string): void {
+    if (!mint) return;
+    const trimmed = mint.trim();
+    this.activePositionMints.delete(trimmed);
+    this.unsubscribe(`pos_${trimmed}`).catch(() => {});
   }
 
   private addDefaultSubscriptions(): void {
@@ -130,6 +149,37 @@ export class HeliusLaserStreamWssManager implements StreamingTransport {
     });
   }
 
+  public normalizeWssUrl(rawUrl: string): string {
+    let urlStr = rawUrl.trim();
+    if (urlStr.startsWith('https://')) {
+      urlStr = 'wss://' + urlStr.slice(8);
+    } else if (urlStr.startsWith('http://')) {
+      urlStr = 'ws://' + urlStr.slice(7);
+    }
+    if (!urlStr.startsWith('wss://') && !urlStr.startsWith('ws://')) {
+      throw new Error(`INVALID_WSS_URL_PROTOCOL: URL must start with wss:// or ws:// (got ${rawUrl})`);
+    }
+    try {
+      new URL(urlStr);
+    } catch {
+      throw new Error(`INVALID_WSS_URL_FORMAT: Malformed URL string: ${rawUrl}`);
+    }
+    return urlStr;
+  }
+
+  public maskEndpointUrl(rawUrl: string): string {
+    try {
+      const u = new URL(rawUrl);
+      const apiKey = u.searchParams.get('api-key');
+      if (apiKey) {
+        u.searchParams.set('api-key', maskApiKey(apiKey));
+      }
+      return u.toString();
+    } catch {
+      return maskApiKey(rawUrl);
+    }
+  }
+
   private resolveWssUrl(): string {
     const isRateLimited = Boolean(
       this.lastError && (
@@ -140,19 +190,19 @@ export class HeliusLaserStreamWssManager implements StreamingTransport {
     );
 
     if (isRateLimited && config.SEARCH_WS_BACKUP_URL && config.SEARCH_WS_BACKUP_URL.trim()) {
-      return config.SEARCH_WS_BACKUP_URL.trim();
+      return this.normalizeWssUrl(config.SEARCH_WS_BACKUP_URL.trim());
     }
     if (config.SEARCH_WS_URL && config.SEARCH_WS_URL.trim()) {
-      return config.SEARCH_WS_URL.trim();
+      return this.normalizeWssUrl(config.SEARCH_WS_URL.trim());
     }
     if (config.HELIUS_WSS_URL && config.HELIUS_WSS_URL.trim()) {
-      return config.HELIUS_WSS_URL.trim();
+      return this.normalizeWssUrl(config.HELIUS_WSS_URL.trim());
     }
     const apiKey = getHeliusApiKey();
     if (!apiKey) {
-      return 'wss://api.mainnet-beta.solana.com';
+      throw new Error('MISSING_HELIUS_API_KEY');
     }
-    return `wss://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(apiKey)}`;
+    return this.normalizeWssUrl(`wss://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(apiKey)}`);
   }
 
   public async start(callback?: StreamEventCallback): Promise<boolean> {
@@ -180,17 +230,17 @@ export class HeliusLaserStreamWssManager implements StreamingTransport {
     } catch (err: any) {
       this.isConnecting = false;
       this.lastError = err.message || String(err);
-      laserLogger.warn({ error: this.lastError }, '[HELIUS_WSS] Cannot connect: missing credentials');
+      this.activeEndpoint = null;
+      laserLogger.warn({ error: this.lastError }, '[HELIUS_WSS] Cannot connect to WSS stream');
       laserStreamWatchdog.recordError(this.lastError);
       laserStreamWatchdog.setTransportState(false, null, 'wss', 'mainnet');
       return false;
     }
 
-    this.activeEndpoint = 'wss://mainnet.helius-rpc.com';
-    const maskedKey = maskApiKey(getHeliusApiKey());
+    this.activeEndpoint = this.maskEndpointUrl(targetUrl);
     laserLogger.info(
-      { endpoint: this.activeEndpoint, key: maskedKey, generation },
-      '[HELIUS_WSS] Connecting to Helius LaserStream-powered Standard WebSocket'
+      { endpoint: this.activeEndpoint, generation },
+      '[HELIUS_WSS] Connecting to Helius Standard WSS endpoint'
     );
 
     laserStreamWatchdog.setTransportState(false, this.activeEndpoint, 'wss', 'mainnet');
@@ -217,6 +267,8 @@ export class HeliusLaserStreamWssManager implements StreamingTransport {
           this.connectedAt = Date.now();
           this.lastMessageAt = Date.now();
           this.lastHeartbeatAt = Date.now();
+          this.lastPingSentAt = null;
+          this.lastPongAt = Date.now();
           this.lastError = null;
 
           laserLogger.info(
@@ -227,7 +279,7 @@ export class HeliusLaserStreamWssManager implements StreamingTransport {
           laserStreamWatchdog.setTransportState(true, this.activeEndpoint, 'wss', 'mainnet');
           laserStreamWatchdog.recordError(null);
 
-          // Restore logical subscriptions
+          // Restore logical subscriptions & position subscriptions
           this.restoreSubscriptions();
 
           // Start heartbeat & staleness monitor
@@ -263,7 +315,9 @@ export class HeliusLaserStreamWssManager implements StreamingTransport {
 
         socket.on('close', (code, reason) => {
           if (this.currentGeneration !== generation) return;
-          this.handleDisconnect(code, reason ? reason.toString() : 'Unknown');
+          const reasonStr = reason ? reason.toString() : `WebSocket closed code ${code}`;
+          this.lastError = reasonStr;
+          this.handleDisconnect(code, reasonStr);
           if (!resolved) {
             resolved = true;
             resolve(false);
@@ -272,7 +326,10 @@ export class HeliusLaserStreamWssManager implements StreamingTransport {
 
         socket.on('pong', () => {
           if (this.currentGeneration !== generation) return;
-          this.lastHeartbeatAt = Date.now();
+          const now = Date.now();
+          this.lastPongAt = now;
+          this.lastHeartbeatAt = now;
+          this.lastPingSentAt = null;
           laserStreamWatchdog.recordHeartbeat();
         });
 
@@ -429,6 +486,10 @@ export class HeliusLaserStreamWssManager implements StreamingTransport {
       this.sendJsonRpc(sub.method, sub.params, logicalId).catch((err) => {
         laserLogger.warn({ logicalId, method: sub.method, error: err }, '[HELIUS_WSS] Failed to restore subscription');
       });
+    }
+
+    for (const mint of this.activePositionMints) {
+      this.subscribeLogs({ mentions: [mint] }, `pos_${mint}`).catch(() => {});
     }
   }
 
@@ -637,15 +698,37 @@ export class HeliusLaserStreamWssManager implements StreamingTransport {
   private startHeartbeatTimer(): void {
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     
-    // Ping every 60s
+    // Ping & pong timeout check every 25s
     this.heartbeatTimer = setInterval(() => {
-      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+
+      const now = Date.now();
+
+      // Check if previous ping went un-ponged for > 10s
+      if (
+        this.lastPingSentAt !== null &&
+        (!this.lastPongAt || this.lastPongAt < this.lastPingSentAt) &&
+        (now - this.lastPingSentAt > 10000)
+      ) {
+        laserLogger.warn(
+          { lastPingAgeMs: now - this.lastPingSentAt },
+          '[HELIUS_WSS] Pong timeout (no pong received within 10s). Terminating socket.'
+        );
+        this.lastError = 'PONG_TIMEOUT';
+        laserStreamWatchdog.recordError('Pong timeout (no pong received in 10s)');
         try {
-          this.ws.ping();
-          this.lastHeartbeatAt = Date.now();
+          this.ws.terminate();
         } catch {}
+        return;
       }
-    }, 60000);
+
+      try {
+        this.lastPingSentAt = now;
+        this.ws.ping();
+      } catch (err: any) {
+        laserLogger.warn({ error: err?.message || err }, '[HELIUS_WSS] Failed to send ping');
+      }
+    }, 25000);
   }
 
   private startStaleCheckTimer(): void {
@@ -827,10 +910,10 @@ export class HeliusLaserStreamWssManager implements StreamingTransport {
     console.log('\n════════════════ HELIUS STREAM DIAGNOSTIC ════════════════');
     console.log(` API KEY:       ${apiKey ? 'PRESENT (' + masked + ')' : 'MISSING'}`);
     console.log(` TRANSPORT:     STANDARD WSS (Helius LaserStream-powered)`);
-    console.log(` ENDPOINT:      mainnet.helius-rpc.com`);
+    console.log(` ENDPOINT:      ${this.activeEndpoint || 'wss://mainnet.helius-rpc.com'}`);
     console.log(` CONNECTION:    ESTABLISHED`);
     console.log(` SUBSCRIPTIONS: ${activeSubs}/${this.logicalSubscriptions.size} ACTIVE`);
-    console.log(` HEARTBEAT:     60s ACTIVE`);
+    console.log(` HEARTBEAT:     25s ACTIVE`);
     console.log(` STATUS:        HEALTHY`);
     console.log('══════════════════════════════════════════════════════════\n');
   }

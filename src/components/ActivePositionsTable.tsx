@@ -65,14 +65,22 @@ export function ActivePositionsTable() {
                 </div>
                 <div className="text-right">
                   <div className="text-[10px] text-[#64748b]">Current</div>
-                  <div className="text-xs font-mono text-white">{(pos.currentPriceSol || 0).toFixed(6)}</div>
+                  <div className="text-xs font-mono text-white">
+                    {pos.valStatus === 'UNAVAILABLE' || pos.currentPriceSol == null
+                      ? '--'
+                      : (pos.currentPriceSol || 0).toFixed(6)}
+                  </div>
                 </div>
                 <div className="text-right min-w-[60px]">
                   <div className="text-[10px] text-[#64748b]">PnL</div>
-                  <div className={`text-xs font-bold flex items-center justify-end gap-1 ${(pos.unrealizedPnlPct || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                    {(pos.unrealizedPnlPct || 0) >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-                    {(pos.unrealizedPnlPct || 0).toFixed(2)}%
-                  </div>
+                  {pos.valStatus === 'UNAVAILABLE' || pos.unrealizedPnlPct == null ? (
+                    <div className="text-xs font-bold text-slate-400">UNAVAILABLE</div>
+                  ) : (
+                    <div className={`text-xs font-bold flex items-center justify-end gap-1 ${pos.unrealizedPnlPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                      {pos.unrealizedPnlPct >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+                      {pos.unrealizedPnlPct.toFixed(2)}%
+                    </div>
+                  )}
                 </div>
                 <button
                   onClick={() => executeSell({ network: pos.network, mint: pos.mint })}

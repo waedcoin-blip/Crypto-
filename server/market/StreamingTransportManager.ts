@@ -84,22 +84,34 @@ export class StreamingTransportManager {
   }
 
   public getState(): TransportState {
-    return this.state;
+    const wssTelemetry = heliusLaserStreamWssManager.getTelemetry();
+    const st = (wssTelemetry.status || 'disconnected').toUpperCase();
+    if (st === 'CONNECTED') return 'CONNECTED';
+    if (st === 'CONNECTING') return 'CONNECTING';
+    if (st === 'RECONNECTING') return 'RECONNECTING';
+    if (st === 'DEGRADED') return 'DEGRADED';
+    if (st === 'FAILED') return 'FAILED';
+    return 'DISCONNECTED';
   }
 
   public getTelemetry(): StreamingTransportTelemetry {
     const wssTelemetry = heliusLaserStreamWssManager.getTelemetry();
+    const state = this.getState();
     return {
       transport: 'wss',
-      state: this.state,
+      state,
       connectedAt: wssTelemetry.connectedAt,
       lastMessageAt: wssTelemetry.lastMessageAt,
+      lastPongAt: (wssTelemetry as any).lastPongAt || null,
       messagesReceived: wssTelemetry.messagesReceived,
       messagesPerSecond: wssTelemetry.messagesPerSecond,
       lastSlot: wssTelemetry.lastSlot,
       activeEndpoint: wssTelemetry.endpoint,
       reconnectAttempts: wssTelemetry.reconnectCount,
-    };
+      activeSubscriptions: wssTelemetry.activeSubscriptions || 0,
+      lastError: wssTelemetry.lastError || null,
+      reason: wssTelemetry.lastError || state,
+    } as any;
   }
 
   public recordMessage(): void {

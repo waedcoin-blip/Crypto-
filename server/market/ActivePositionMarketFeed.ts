@@ -4,6 +4,7 @@ import { positionValuationEngine } from '../trading/PositionValuationEngine.js';
 import { unifiedExitEngine } from '../trading/UnifiedExitEngine.js';
 import { tradingSupervisor } from '../trading/TradingSupervisor.js';
 import { marketEventBus } from './MarketEventBus.js';
+import { heliusLaserStreamWssManager } from './HeliusLaserStreamWssManager.js';
 import { UnifiedMarketEvent } from '../types/index.js';
 
 /**
@@ -65,21 +66,57 @@ export class ActivePositionMarketFeed {
   private handleMarketEvent(event: UnifiedMarketEvent): void {
     if (!this.isRunning || !event.mint) return;
 
-    const supervisorStatus = tradingSupervisor.getStatus();
-    if (supervisorStatus.state !== 'TRADING') return;
-
     // Find all open positions for this mint
     const openPositions = positionManager.getOpenPositions();
     const relevantPositions = openPositions.filter(p => p.mint === event.mint);
 
     if (relevantPositions.length === 0) return;
 
+    // Ensure active position mint is subscribed to Helius WSS
+    heliusLaserStreamWssManager.subscribeActivePositionMint(event.mint);
+
     // Use event price if available
     const marketPrice = event.priceSol;
     if (marketPrice && marketPrice > 0) {
       for (const position of relevantPositions) {
+        positionValuationEngine.recordMarketPrice(
+          position.network,
+          position.wallet,
+          position.mint,
+          marketPrice,
+          'WSS'
+        );
         this.updatePositionAndEvaluate(position, marketPrice);
       }
+    } else {
+      // Event missing price: trigger market price resolution for active position mint
+      this.fetchAndRecordPriceForPositionMint(event.mint, relevantPositions);
+    }
+  }
+
+  /**
+   * Helper to fetch market price for an active position mint from approved market data sources.
+   */
+  private async fetchAndRecordPriceForPositionMint(mint: string, positions: Position[]): Promise<void> {
+    try {
+      const { candidateEnricher } = await import('../trading/CandidateEnricher.js');
+      const enriched = await candidateEnricher.enrichCandidate(mint, positions[0]?.network || 'mainnet');
+
+      const priceSol = enriched?.priceSol?.value;
+      if (priceSol && priceSol > 0 && Number.isFinite(priceSol)) {
+        for (const position of positions) {
+          positionValuationEngine.recordMarketPrice(
+            position.network,
+            position.wallet,
+            position.mint,
+            priceSol,
+            'DEXSCREENER'
+          );
+          this.updatePositionAndEvaluate(position, priceSol);
+        }
+      }
+    } catch {
+      // Fail gracefully
     }
   }
 
@@ -112,24 +149,29 @@ export class ActivePositionMarketFeed {
 
   /**
    * Periodic refresh: Fetch latest valuations for all open positions.
-   * This ensures positions get price updates even without live market events.
+   * Runs regardless of whether TradingSupervisor state is TRADING or PAUSED.
    */
-  private refreshAllValuations(): void {
+  private async refreshAllValuations(): Promise<void> {
     if (!this.isRunning) return;
-
-    const supervisorStatus = tradingSupervisor.getStatus();
-    if (supervisorStatus.state !== 'TRADING') return;
 
     const openPositions = positionManager.getOpenPositions();
     if (openPositions.length === 0) return;
 
+    const { heliusLaserStreamWssManager } = await import('./HeliusLaserStreamWssManager.js');
+
     for (const position of openPositions) {
       try {
+        // Register active position mint subscription
+        heliusLaserStreamWssManager.subscribeActivePositionMint(position.mint);
+
         const valuation = positionValuationEngine.getValuation(position.network, position.wallet, position.mint);
-        if (valuation && valuation.currentPriceSol > 0) {
+        if (valuation && valuation.currentPriceSol && valuation.currentPriceSol > 0 && valuation.status !== 'UNAVAILABLE') {
           this.updatePositionAndEvaluate(position, valuation.currentPriceSol);
+        } else {
+          // Valuation missing or unavailable: trigger fresh market data lookup
+          this.fetchAndRecordPriceForPositionMint(position.mint, [position]);
         }
-      } catch (err: any) {
+      } catch {
         // Silently skip individual position errors
       }
     }

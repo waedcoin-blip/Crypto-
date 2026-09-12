@@ -1,5 +1,5 @@
 // server/trading/PositionValuationEngine.ts
-import { Position } from './PositionManager.js';
+import { Position, positionManager } from './PositionManager.js';
 import { executionGateway } from '../execution/ExecutionGateway.js';
 import { rawToUiNumber, lamportsToSolNumber } from '../utils/rawAmount.js';
 import { logger } from '../utils/logger.js';
@@ -18,7 +18,7 @@ export interface PositionValuation {
   marketPnlPercent?: number;
   pnlSol?: number;
   pnlPercent?: number;
-  source: 'JUPITER' | 'LASERSTREAM' | 'WSS' | 'HELIUS_WSS' | 'UNAVAILABLE';
+  source: 'JUPITER' | 'LASERSTREAM' | 'WSS' | 'HELIUS_WSS' | 'DEXSCREENER' | 'UNAVAILABLE';
   lastMarketEventAt?: number;
   lastMarketPriceAt?: number;
   lastExecutableQuoteAt?: number;
@@ -77,9 +77,13 @@ export class PositionValuationEngine {
     if (!val) return null;
 
     const now = Date.now();
-    const age = now - val.valuationUpdatedAt;
-    if (age > this.STALE_THRESHOLD_MS) {
+    const marketAge = val.lastMarketPriceAt ? now - val.lastMarketPriceAt : Infinity;
+    if (marketAge <= 5000) {
+      val.status = 'LIVE';
+    } else if (marketAge <= 15000) {
       val.status = 'STALE';
+    } else {
+      val.status = 'UNAVAILABLE';
     }
     val.quoteAgeMs = val.lastExecutableQuoteAt ? now - val.lastExecutableQuoteAt : undefined;
     val.marketDataAgeMs = val.lastMarketPriceAt ? now - val.lastMarketPriceAt : undefined;
@@ -91,7 +95,7 @@ export class PositionValuationEngine {
   }
 
   // ==========================================
-  // MARKET PRICE RECORDING (From WSS / LaserStream)
+  // MARKET PRICE RECORDING (From WSS / LaserStream / Market Data)
   // ==========================================
 
   public recordMarketPrice(
@@ -99,20 +103,70 @@ export class PositionValuationEngine {
     wallet: string,
     mint: string,
     priceSol: number,
-    source: 'LASERSTREAM' | 'WSS' | 'HELIUS_WSS' = 'WSS'
+    source: 'JUPITER' | 'LASERSTREAM' | 'WSS' | 'HELIUS_WSS' | 'DEXSCREENER' = 'WSS'
   ): void {
+    if (typeof priceSol !== 'number' || isNaN(priceSol) || priceSol <= 0 || !Number.isFinite(priceSol)) {
+      return;
+    }
+
     const key = this.getKey(network, wallet, mint);
-    const existing = this.valuations.get(key);
+    let existing = this.valuations.get(key);
     const now = Date.now();
     const seq = (this.sequences.get(key) || 0) + 1;
     this.sequences.set(key, seq);
 
-    if (existing) {
+    if (!existing) {
+      // Lazy-instantiate valuation record from positionManager if position exists
+      const pos = positionManager.getPosition(network, wallet, mint) || 
+                  positionManager.getOpenPositions().find((p: any) => p.mint === mint);
+
+      if (pos) {
+        const rawAmount = pos.tokenAmountRaw
+          ? BigInt(pos.tokenAmountRaw)
+          : BigInt(Math.floor(pos.tokenAmount * (10 ** pos.decimals)));
+        const tokenQuantity = safeTokenQuantity(rawAmount, pos.decimals);
+        const entryCostSol = pos.totalSolSpent || 0;
+        const marketValueSol = tokenQuantity * priceSol;
+        const marketPnlSol = marketValueSol - entryCostSol;
+        const marketPnlPercent = entryCostSol > 0 ? (marketPnlSol / entryCostSol) * 100 : 0;
+
+        existing = {
+          mint,
+          tokenAmountRaw: rawAmount,
+          tokenDecimals: pos.decimals,
+          entryCostSol,
+          currentPriceSol: priceSol,
+          marketValueSol,
+          marketPnlSol,
+          marketPnlPercent,
+          pnlSol: marketPnlSol,
+          pnlPercent: marketPnlPercent,
+          source,
+          lastMarketEventAt: now,
+          lastMarketPriceAt: now,
+          valuationUpdatedAt: now,
+          status: 'LIVE',
+          positionId: pos.id,
+          network: pos.network || network,
+          wallet: pos.wallet || wallet,
+          tokenQuantity,
+          averageEntryPriceSol: pos.averageEntryPrice || (pos as any).buyPrice || 0,
+          sequenceNumber: seq,
+        };
+        const posKey = this.getKey(pos.network || network, pos.wallet || wallet, pos.mint);
+        this.valuations.set(posKey, existing);
+        if (posKey !== key) {
+          this.valuations.set(key, existing);
+        }
+        return;
+      }
+    } else {
       existing.currentPriceSol = priceSol;
       existing.lastMarketPriceAt = now;
       existing.lastMarketEventAt = now;
       existing.valuationUpdatedAt = now;
       existing.source = source;
+      existing.status = 'LIVE';
       existing.sequenceNumber = seq;
 
       if (existing.tokenQuantity && existing.tokenQuantity > 0) {
@@ -121,6 +175,8 @@ export class PositionValuationEngine {
         existing.marketPnlPercent = existing.entryCostSol > 0
           ? (existing.marketPnlSol / existing.entryCostSol) * 100
           : 0;
+        existing.pnlSol = existing.marketPnlSol;
+        existing.pnlPercent = existing.marketPnlPercent;
       }
     }
   }
