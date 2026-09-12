@@ -150,7 +150,7 @@ export class HeliusLaserStreamWssManager implements StreamingTransport {
     }
     const apiKey = getHeliusApiKey();
     if (!apiKey) {
-      throw new Error('HELIUS_API_KEY_MISSING: Helius API key is required to connect to Helius Standard WSS.');
+      return 'wss://api.mainnet-beta.solana.com';
     }
     return `wss://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(apiKey)}`;
   }

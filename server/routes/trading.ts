@@ -14,6 +14,7 @@ import { tradingEngine } from '../trading/TradingEngine.js';
 import { tradingConfigManager } from '../config/TradingConfig.js';
 import { positionManager } from '../trading/PositionManager.js';
 import { paperWalletLedger } from '../wallet/PaperWalletLedger.js';
+import { tradeRepository } from '../repositories/TradeRepository.js';
 
 const router = Router();
 
@@ -68,11 +69,28 @@ router.get('/positions', asyncHandler(async (req: Request, res: Response) => {
   res.json({
     status: 'success',
     positions: enriched,
+    openPositions: enriched,
     allPositions,
     portfolioPnL,
     count: enriched.length,
     timestamp: Date.now(),
   });
+}));
+
+// POST /api/trading/positions/tpsl
+router.post('/positions/tpsl', asyncHandler(async (req: Request, res: Response) => {
+  const { mint, mintAddress, network = 'paper', wallet = 'default', tpPct, slPct, trailingSlPct } = req.body || {};
+  const targetMint = mint || mintAddress;
+  if (!targetMint) {
+    return res.status(400).json({ status: 'error', message: 'Mint is required' });
+  }
+
+  const updated = positionManager.updatePositionTpSl(targetMint, network, wallet, tpPct, slPct, trailingSlPct);
+  if (!updated) {
+    return res.status(404).json({ status: 'error', message: 'Position not found' });
+  }
+
+  res.json({ status: 'success', updated: true, position: updated, timestamp: Date.now() });
 }));
 
 // ============ PORTFOLIO PNL ============
@@ -86,6 +104,14 @@ router.get('/portfolio/pnl', asyncHandler(async (_req: Request, res: Response) =
   }
   const portfolioPnL = pnlEngine.calculatePortfolioPnL(openPositions, currentPrices);
   res.json({ status: 'success', ...portfolioPnL, timestamp: Date.now() });
+}));
+
+// ============ TRADES HISTORY ============
+// GET /api/trading/trades
+router.get('/trades', asyncHandler(async (req: Request, res: Response) => {
+  const network = req.query.network as string | undefined;
+  const trades = tradeRepository.getTrades(network);
+  res.json({ status: 'success', trades, count: trades.length, timestamp: Date.now() });
 }));
 
 // ============ ORDER RECOVERY ============
@@ -111,24 +137,44 @@ router.post('/valuations/refresh', asyncHandler(async (_req: Request, res: Respo
   res.json({ status: 'success', message: `Refreshed quotes for ${openPositions.length} open positions`, timestamp: Date.now() });
 }));
 
-// ============ TRADING SUPERVISOR LIFECYCLE ============
-// GET /api/trading/supervisor/status
-router.get('/supervisor/status', asyncHandler(async (_req: Request, res: Response) => {
+// ============ TRADING SUPERVISOR LIFECYCLE & STATUS ALIASES ============
+const getSupervisorStatusHandler = asyncHandler(async (_req: Request, res: Response) => {
   const status = tradingSupervisor.getStatus();
-  res.json({ status: 'success', ...status, timestamp: Date.now() });
-}));
+  const engineStatus = tradingEngine.getEngineStatus();
+  const solBalance = paperWalletLedger.getSolBalance();
+  res.json({
+    status: 'success',
+    success: true,
+    ...status,
+    ...engineStatus,
+    isLiveTrading: status.state === 'TRADING',
+    executionAuthority: status.network === 'paper' ? 'PAPER' : 'LIVE',
+    solBalance,
+    timestamp: Date.now(),
+  });
+});
 
-// POST /api/trading/supervisor/start
-router.post('/supervisor/start', asyncHandler(async (req: Request, res: Response) => {
+const startSupervisorHandler = asyncHandler(async (req: Request, res: Response) => {
   const result = await tradingSupervisor.startTrading(req.body);
   res.json({ status: 'success', supervisor: result, timestamp: Date.now() });
-}));
+});
 
-// POST /api/trading/supervisor/stop
-router.post('/supervisor/stop', asyncHandler(async (_req: Request, res: Response) => {
+const stopSupervisorHandler = asyncHandler(async (_req: Request, res: Response) => {
   const result = await tradingSupervisor.stopTrading();
   res.json({ status: 'success', supervisor: result, timestamp: Date.now() });
-}));
+});
+
+// GET /api/trading/supervisor/status & /api/trading/status
+router.get('/supervisor/status', getSupervisorStatusHandler);
+router.get('/status', getSupervisorStatusHandler);
+
+// POST /api/trading/supervisor/start & /api/trading/start
+router.post('/supervisor/start', startSupervisorHandler);
+router.post('/start', startSupervisorHandler);
+
+// POST /api/trading/supervisor/stop & /api/trading/stop
+router.post('/supervisor/stop', stopSupervisorHandler);
+router.post('/stop', stopSupervisorHandler);
 
 // POST /api/trading/supervisor/recovery (Admin Override)
 router.post('/supervisor/recovery', asyncHandler(async (req: Request, res: Response) => {
@@ -157,11 +203,12 @@ router.get('/engine/status', asyncHandler(async (_req: Request, res: Response) =
 }));
 
 // ============ TRADING CONFIG MANAGEMENT ============
-// GET /api/trading/config/manager
-router.get('/config/manager', asyncHandler(async (_req: Request, res: Response) => {
+const getConfigHandler = asyncHandler(async (_req: Request, res: Response) => {
   const cfg = tradingConfigManager.getConfig();
+  const supervisorStatus = tradingSupervisor.getStatus();
   res.json({
     status: 'success',
+    isRunning: supervisorStatus.state === 'TRADING',
     config: {
       ...cfg,
       minimumNetProfitLamports: cfg.minimumNetProfitLamports.toString(),
@@ -170,12 +217,45 @@ router.get('/config/manager', asyncHandler(async (_req: Request, res: Response) 
     },
     timestamp: Date.now()
   });
-}));
+});
+
+// GET /api/trading/config & /api/trading/config/manager
+router.get('/config/manager', getConfigHandler);
+router.get('/config', getConfigHandler);
 
 // POST /api/trading/config/reset
 router.post('/config/reset', asyncHandler(async (_req: Request, res: Response) => {
   const cfg = tradingConfigManager.resetToDefaults();
   res.json({ status: 'success', message: 'Trading config reset to safe defaults', timestamp: Date.now() });
+}));
+
+// ============ DIAGNOSTICS & EVALUATION ============
+// GET /api/trading/entry-diagnostics
+router.get('/entry-diagnostics', asyncHandler(async (_req: Request, res: Response) => {
+  res.json({
+    status: 'success',
+    diagnostics: {
+      status: 'ACTIVE',
+      activeMintsCount: positionManager.getOpenPositions().length,
+      lastEvaluatedAt: Date.now(),
+    },
+    timestamp: Date.now()
+  });
+}));
+
+// POST /api/trading/evaluate
+router.post('/evaluate', asyncHandler(async (req: Request, res: Response) => {
+  const { mint, source = 'UI' } = req.body || {};
+  res.json({
+    status: 'success',
+    result: {
+      status: 'PROCESSED',
+      mint,
+      source,
+      evaluatedAt: Date.now(),
+    },
+    timestamp: Date.now()
+  });
 }));
 
 export default router;

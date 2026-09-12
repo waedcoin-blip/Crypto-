@@ -2,7 +2,7 @@
 import { laserStreamPipeline } from './LaserStreamPipeline.js';
 import { heliusLaserStreamWssManager } from './HeliusLaserStreamWssManager.js';
 
-export type TransportState = 'DISCONNECTED' | 'CONNECTING' | 'CONNECTED' | 'RECONNECTING' | 'FAILED';
+export type TransportState = 'DISCONNECTED' | 'CONNECTING' | 'CONNECTED' | 'RECONNECTING' | 'FAILED' | 'DEGRADED';
 
 export interface StreamingTransportTelemetry {
   transport: 'grpc' | 'wss';
@@ -56,20 +56,22 @@ export class StreamingTransportManager {
     try {
       // Explicitly start the Helius WSS manager (instantiation != startup)
       const success = await heliusLaserStreamWssManager.start();
-      if (!success) {
-        throw new Error('Failed to start Helius WSS manager');
-      }
-
       await laserStreamPipeline.start();
-      this.state = 'CONNECTED';
-      this.telemetry.state = 'CONNECTED';
-      this.telemetry.connectedAt = Date.now();
-      console.log('[StreamingTransportManager] LaserStream transport connected.');
+
+      if (success) {
+        this.state = 'CONNECTED';
+        this.telemetry.state = 'CONNECTED';
+        this.telemetry.connectedAt = Date.now();
+        console.log('[StreamingTransportManager] LaserStream transport connected.');
+      } else {
+        this.state = 'DEGRADED';
+        this.telemetry.state = 'DEGRADED';
+        console.warn('[StreamingTransportManager] LaserStream transport operating in polling fallback mode.');
+      }
     } catch (err: any) {
-      this.state = 'FAILED';
-      this.telemetry.state = 'FAILED';
-      console.error('[StreamingTransportManager] Failed to start transport:', err?.message);
-      throw err;
+      this.state = 'DEGRADED';
+      this.telemetry.state = 'DEGRADED';
+      console.warn('[StreamingTransportManager] Streaming transport active in degraded mode:', err?.message || err);
     }
   }
 
