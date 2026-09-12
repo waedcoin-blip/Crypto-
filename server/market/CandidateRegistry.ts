@@ -48,7 +48,7 @@ export class CandidateRegistry {
   }
 
   private getKey(network: string, mint: string): string {
-    return `${network}:${mint.trim().toLowerCase()}`;
+    return `${network}:${mint.trim()}`;
   }
 
   /**

@@ -162,7 +162,7 @@ export class MigrationDetector {
   // ==========================================
 
   public getMigratedPool(mint: string): MigratedPoolState | undefined {
-    return this.migratedPools.get(mint.trim().toLowerCase()) || this.migratedPools.get(mint);
+    return this.migratedPools.get(mint.trim());
   }
 
   public getPoolState(mint: string): MigratedPoolState | undefined {

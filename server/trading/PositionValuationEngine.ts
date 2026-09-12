@@ -64,7 +64,7 @@ export class PositionValuationEngine {
   }
 
   private getKey(network: string, wallet: string, mint: string): string {
-    return `${network}:${wallet}:${mint.trim().toLowerCase()}`;
+    return `${network}:${wallet}:${mint.trim()}`;
   }
 
   // ==========================================

@@ -6,7 +6,7 @@ import { logger } from '../utils/logger.js';
 export type { HardenedApproval, HardenedCriterionResult };
 
 function canonicalizeSolanaMint(mint: string): string {
-  return mint.trim().toLowerCase();
+  return mint.trim();
 }
 
 export class HardenedApprovalStore {

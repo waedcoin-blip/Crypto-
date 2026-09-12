@@ -1,0 +1,26 @@
+{
+  "patch": "ARINA_XRAY_PULSE_UNIFIED_BUY_FIX",
+  "version": 1,
+  "source_archive": "arina-x-ray-alpha (90) - 2026-09-04T224229.220.zip",
+  "objective": "Make Pulse Feed, LaserStream/WSS, Pump.fun and DexScreener converge on one authoritative BUY path; prevent simulation from authorizing live trades.",
+  "invariants": [
+    "Pulse Feed must reach /api/trading/pipeline/ingress or its server alias and then marketEventBus.publishUnified().",
+    "All live discovery sources must converge on EntryEngine/TradingEngine; no source-specific live BUY engine.",
+    "DexScreener is enrichment/discovery, not a mandatory gate for Pulse Feed/LaserStream/Pump.fun.",
+    "Simulation/mock/random market data must never authorize LIVE BUY.",
+    "Do not change SELL, PnL, TP, SL, trailing-stop decision logic in this patch."
+  ],
+  "new_files": [
+    "server/patches/unifiedBuyContract.ts",
+    "server/tests/unifiedMultiSourceBuyContract.test.ts"
+  ],
+  "verification_required": [
+    "Run TypeScript/lint/build with project dependencies installed.",
+    "Run the new unifiedMultiSourceBuyContract test.",
+    "Trace a real Pulse Feed event through ingress -> marketEventBus -> CandidateRegistry -> MomentumEngine -> EntryEngine.",
+    "Trace LaserStream, Pump.fun, Helius WSS and DexScreener through the same authority.",
+    "Verify duplicate discoveries of one mint produce one BUY decision.",
+    "Verify SIMULATION/PAPER cannot call live execution.",
+    "Verify no TP/SL/PnL/SELL behavior changed."
+  ]
+}

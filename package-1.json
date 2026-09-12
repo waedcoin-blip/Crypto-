@@ -11,10 +11,9 @@
     "preview": "vite preview",
     "capture:jupiter": "node scripts/capture-jupiter-fixture.mjs",
     "replay:captured": "node scripts/replay-captured-fixture.mjs",
-    "test:mint-resolver": "tsx scripts/token-mint-resolver-regression-test.ts",
     "test:e2e-paper": "tsx scripts/e2e-paper-lifecycle-test.mjs",
     "test:full": "npm run test && npm run test:e2e-paper",
-    "test": "node scripts/final-production-audit.mjs && node scripts/final-production-regression-test.mjs && node scripts/remaining-production-regression.mjs && tsx scripts/refactored-architecture-v90-23-test.mjs && tsx scripts/helius-wss-regression-test.ts && node scripts/raw-precision-regression-test.mjs",
+    "test": "npm run test:mint-resolver && node scripts/final-production-audit.mjs && node scripts/final-production-regression-test.mjs && node scripts/remaining-production-regression.mjs && tsx scripts/refactored-architecture-v90-23-test.mjs && tsx scripts/helius-wss-regression-test.ts && node scripts/raw-precision-regression-test.mjs",
     "test:jupiter-replay": "node scripts/jupiter-transaction-replay-test.mjs && node scripts/fixture-replay-test.mjs",
     "test:parity": "node scripts/execution-parity-test.mjs",
     "test:tpsl-pipeline": "node scripts/tpsl-evaluation-pipeline-test.mjs",
@@ -35,7 +34,8 @@
     "test:wallet-monitor": "tsx scripts/wallet-transaction-parser-regression-test.ts",
     "test:fami-decimals": "tsx scripts/fami-decimals-regression-test.ts",
     "test:fetch-global": "node scripts/fetch-global-regression-test.mjs",
-    "test:live-pnl": "node scripts/live-pnl-update-regression-test.mjs"
+    "test:live-pnl": "node scripts/live-pnl-update-regression-test.mjs",
+    "test:mint-resolver": "tsx scripts/token-mint-resolver-regression-test.ts"
   },
   "dependencies": {
     "@jup-ag/api": "^6.0.48",

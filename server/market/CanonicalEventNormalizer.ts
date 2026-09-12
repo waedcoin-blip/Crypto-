@@ -37,7 +37,7 @@ export class CanonicalEventNormalizer {
    * Used to correlate all events for the same token from the same source.
    */
   public generateCorrelationId(source: EventSource, mint: string): string {
-    const raw = `${source}:${mint.trim().toLowerCase()}`;
+    const raw = `${source}:${mint.trim()}`;
     return createHash('sha256').update(raw).digest('hex').slice(0, 16);
   }
 
@@ -54,7 +54,7 @@ export class CanonicalEventNormalizer {
   ): string {
     const parts = [
       source,
-      mint.trim().toLowerCase(),
+      mint.trim(),
       signature || 'no-sig',
       slot?.toString() || 'no-slot',
       eventType || 'TRADE',
@@ -74,7 +74,7 @@ export class CanonicalEventNormalizer {
    * Generates a timestamp-based event ID for manual/API events.
    */
   public generateManualEventId(mint: string): string {
-    const raw = `MANUAL:${mint.trim().toLowerCase()}:${Date.now()}`;
+    const raw = `MANUAL:${mint.trim()}:${Date.now()}`;
     return createHash('sha256').update(raw).digest('hex').slice(0, 24);
   }
 }

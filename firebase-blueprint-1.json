@@ -1,0 +1,325 @@
+{
+  "entities": {
+    "Wallet": {
+      "title": "Wallet",
+      "description": "A Solana wallet address to be monitored.",
+      "type": "object",
+      "properties": {
+        "address": {
+          "type": "string",
+          "description": "The public key of the Solana wallet."
+        },
+        "label": {
+          "type": "string",
+          "description": "A friendly name for the wallet."
+        },
+        "userId": {
+          "type": "string",
+          "description": "The UID of the user who added this wallet."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp of when the wallet was added."
+        }
+      },
+      "required": ["address", "userId", "createdAt"]
+    },
+    "Settings": {
+      "title": "Settings",
+      "description": "User connection, API configurations, and custom settings.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "The UID of the user who owns these settings."
+        },
+        "rpcUrl": {
+          "type": "string",
+          "description": "Primary Solana RPC URL."
+        },
+        "rpcUrl2": {
+          "type": "string",
+          "description": "Secondary Solana RPC URL."
+        },
+        "customWsUrl": {
+          "type": "string",
+          "description": "Custom WebSocket URL."
+        },
+        "apiKey": {
+          "type": "string",
+          "description": "Jupiter API URL or Key."
+        },
+        "privateKey": {
+          "type": "string",
+          "description": "Solana Base58 private key."
+        },
+        "buyAmountSol": {
+          "type": "number",
+          "description": "Configured buy amount in SOL."
+        },
+        "minTakeProfit": {
+          "type": "number",
+          "description": "Minimum Take Profit percentage."
+        },
+        "maxTakeProfit": {
+          "type": "number",
+          "description": "Maximum Take Profit percentage."
+        },
+        "moonbagStrategy": {
+          "type": "boolean",
+          "description": "Whether Moonbag Exit Strategy is enabled."
+        },
+        "stopLoss": {
+          "type": "number",
+          "description": "Stop Loss percentage."
+        },
+        "unknownStopLoss": {
+          "type": "number",
+          "description": "Stop Loss percentage for unknown/external tokens."
+        },
+        "maxPositions": {
+          "type": "number",
+          "description": "Maximum active positions limit."
+        },
+        "slippage": {
+          "type": "number",
+          "description": "Slippage tolerance percentage."
+        },
+        "telegramBotToken": {
+          "type": "string",
+          "description": "Telegram bot token."
+        },
+        "telegramChatId": {
+          "type": "string",
+          "description": "Telegram chat ID."
+        },
+        "hardenedMaxRiskScore": {
+          "type": "number",
+          "description": "Hardened max risk score."
+        },
+        "hardenedLiquidityRatio": {
+          "type": "number",
+          "description": "Hardened liquidity ratio percentage."
+        },
+        "hardenedMaxDevOwnership": {
+          "type": "number",
+          "description": "Hardened max dev ownership percentage."
+        },
+        "hardenedMcapMinPump": {
+          "type": "number",
+          "description": "Hardened minimum market cap for pump.fun tokens."
+        },
+        "hardenedMcapMinRaydium": {
+          "type": "number",
+          "description": "Hardened minimum market cap for raydium tokens."
+        },
+        "hardenedMcapMax": {
+          "type": "number",
+          "description": "Hardened maximum market cap."
+        },
+        "hardenedLiquidityMin": {
+          "type": "number",
+          "description": "Hardened minimum liquidity."
+        },
+        "hardenedMaxTop10": {
+          "type": "number",
+          "description": "Hardened max top 10 holders percentage."
+        },
+        "hardenedMinUniqueBuyers30s": {
+          "type": "number",
+          "description": "Hardened min unique buyers in last 30s."
+        },
+        "hardenedMinBuyCount30s": {
+          "type": "number",
+          "description": "Hardened min buy count in last 30s."
+        },
+        "hardenedMaxBuyCount30s": {
+          "type": "number",
+          "description": "Hardened max buy count in last 30s."
+        },
+        "hardenedMinBuySellRatio": {
+          "type": "number",
+          "description": "Hardened min buy/sell ratio."
+        },
+        "hardenedMaxBuySellRatio": {
+          "type": "number",
+          "description": "Hardened max buy/sell ratio."
+        },
+        "hardenedMaxPriceChange1m": {
+          "type": "number",
+          "description": "Hardened max price change in 1m."
+        },
+        "hardenedMinBondingProgress": {
+          "type": "number",
+          "description": "Hardened min bonding progress percentage."
+        },
+        "hardenedMaxBondingProgress": {
+          "type": "number",
+          "description": "Hardened max bonding progress percentage."
+        },
+        "hardenedMinAge": {
+          "type": "number",
+          "description": "Hardened min token age in seconds."
+        },
+        "hardenedMaxAge": {
+          "type": "number",
+          "description": "Hardened max token age in seconds."
+        },
+        "hardenedMinLatency": {
+          "type": "number",
+          "description": "Hardened min network latency."
+        },
+        "hardenedMaxLatency": {
+          "type": "number",
+          "description": "Hardened max network latency."
+        },
+        "hardenedMatchRequirement": {
+          "type": "number",
+          "description": "Hardened match requirement percentage."
+        },
+        "enableLatencyGuard": {
+          "type": "boolean",
+          "description": "Whether latency guard is active."
+        },
+        "hardenedMinProfit5m": {
+          "type": "number",
+          "description": "Hardened min profit in 5m."
+        },
+        "maxRebuyTimes": {
+          "type": "number",
+          "description": "Max rebuy attempts allowed."
+        },
+        "activePreset": {
+          "type": "string",
+          "description": "Active safety criteria preset."
+        },
+        "senderEnabled": {
+          "type": "boolean",
+          "description": "Whether Helius Sender is enabled."
+        },
+        "senderApiKey": {
+          "type": "string",
+          "description": "Helius Sender API key."
+        },
+        "senderEndpoint": {
+          "type": "string",
+          "description": "Helius Sender endpoint URL."
+        },
+        "senderSwqos": {
+          "type": "boolean",
+          "description": "Whether swqos_only is enabled."
+        },
+        "laserstreamEnabled": {
+          "type": "boolean",
+          "description": "Whether Laserstream Ingestion is enabled."
+        },
+        "laserstreamApiKey": {
+          "type": "string",
+          "description": "Laserstream API key."
+        },
+        "laserstreamEndpoint": {
+          "type": "string",
+          "description": "Laserstream regional endpoint URL."
+        },
+        "dexScreenerEnabled": {
+          "type": "boolean",
+          "description": "Whether DexScreener calls are enabled."
+        },
+        "forceUsdcRouting": {
+          "type": "boolean",
+          "description": "Whether USDC routing is forced."
+        },
+        "ftpHost": {
+          "type": "string",
+          "description": "FTP backup server host."
+        },
+        "ftpUser": {
+          "type": "string",
+          "description": "FTP backup server username."
+        },
+        "ftpPass": {
+          "type": "string",
+          "description": "FTP backup server password."
+        },
+        "ftpDir": {
+          "type": "string",
+          "description": "FTP remote directory path."
+        },
+        "ftpWebUrl": {
+          "type": "string",
+          "description": "FTP Web URL."
+        },
+        "ftpSecure": {
+          "type": "boolean",
+          "description": "Whether secure FTP (FTPS) is used."
+        },
+        "simulationBalance": {
+          "type": "number",
+          "description": "Simulated SOL balance."
+        },
+        "blacklistedMints": {
+          "type": "string",
+          "description": "JSON string representing blacklisted token mints."
+        },
+        "activePositions": {
+          "type": "string",
+          "description": "JSON string representing active tracked positions."
+        },
+        "stats": {
+          "type": "string",
+          "description": "JSON string representing performance stats."
+        },
+        "tradeHistory": {
+          "type": "string",
+          "description": "JSON string representing historic completed trades."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp of the last update."
+        }
+      },
+      "required": ["userId"]
+    },
+    "DevnetShadowMint": {
+      "title": "DevnetShadowMint",
+      "description": "Devnet SPL Token shadow mint mappings for mainnet scanner tokens.",
+      "type": "object",
+      "properties": {
+        "originalMint": {
+          "type": "string",
+          "description": "Mainnet SPL token mint address."
+        },
+        "devnetMint": {
+          "type": "string",
+          "description": "Devnet shadow SPL token mint address."
+        },
+        "decimals": {
+          "type": "number",
+          "description": "Token decimals."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp."
+        }
+      },
+      "required": ["originalMint", "devnetMint", "decimals"]
+    }
+  },
+  "firestore": {
+    "wallets/{walletId}": {
+      "schema": "Wallet",
+      "description": "Collection of monitored wallets per user."
+    },
+    "settings/{userId}": {
+      "schema": "Settings",
+      "description": "User connection settings, API keys, and configurations."
+    },
+    "devnetShadowMints/{mintId}": {
+      "schema": "DevnetShadowMint",
+      "description": "Devnet shadow mint mappings."
+    }
+  }
+}

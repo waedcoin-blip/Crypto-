@@ -24,7 +24,7 @@ const { pnlEngine } = await import('../server/trading/PnLEngine.js');
 // TEST CONFIGURATION
 // ==========================================
 
-const TEST_MINT = 'TestMint111111111111111111111111111111111111';
+const TEST_MINT = 'DezXAZ8z7Pnrn7jrr2R97tYFrb73k8jEgCgN7fok1TaF';
 const NETWORK = 'paper';
 const WALLET = 'default';
 const BUY_AMOUNT_SOL = 0.1;

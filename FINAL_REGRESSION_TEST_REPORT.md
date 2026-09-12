@@ -1,7 +1,7 @@
 
 # Final Regression Test Report
-Generated at: 2026-09-06T20:20:14.660Z
+Generated at: 2026-09-12T16:53:04.077Z
 Critical Tests: 10
-Passed: 10
-Failed: 0
-Status: ALL CRITICAL TESTS PASSED
+Passed: 8
+Failed: 2
+Status: SOME TESTS FAILED

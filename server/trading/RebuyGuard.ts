@@ -29,7 +29,7 @@ export class RebuyGuard {
   }
 
   private getGuardKey(network: string, wallet: string, mint: string): string {
-    return `${network}:${wallet}:${mint.trim().toLowerCase()}`;
+    return `${network}:${wallet}:${mint.trim()}`;
   }
 
   // ==========================================

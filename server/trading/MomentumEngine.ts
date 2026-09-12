@@ -63,7 +63,7 @@ export class MomentumEngine {
     buyer: string;
     timestamp?: number;
   }): void {
-    const key = mint.trim().toLowerCase();
+    const key = mint.trim();
     let events = this.tradeHistory.get(key);
     if (!events) {
       events = [];
@@ -86,7 +86,7 @@ export class MomentumEngine {
   // ==========================================
 
   public calculateMomentum(candidate: EnrichedCandidate): MomentumMetrics {
-    const key = candidate.mint.trim().toLowerCase();
+    const key = candidate.mint.trim();
     const events = this.tradeHistory.get(key) || [];
     const now = Date.now();
     const windowStart = now - this.WINDOW_MS;
@@ -196,7 +196,7 @@ export class MomentumEngine {
   }
 
   public getMetrics(mint: string): MomentumMetrics | undefined {
-    return this.lastMetrics.get(mint.trim().toLowerCase());
+    return this.lastMetrics.get(mint.trim());
   }
 
   public getMomentum(mint: string): MomentumMetrics | undefined {
