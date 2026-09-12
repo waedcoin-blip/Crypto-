@@ -14,6 +14,7 @@ import { laserStreamPipeline } from '../market/LaserStreamPipeline.js';
 import { bondingCurveFastLane } from './BondingCurveFastLane.js';
 import { migrationDetector } from './MigrationDetector.js';
 import { candidateRegistry } from '../market/CandidateRegistry.js';
+import { laserstreamSignalEngine, marketDataAggregator } from './LaserstreamSignalEngine.js';
 
 export type PipelineStage =
   | 'DISCOVERED'
@@ -279,6 +280,28 @@ export class EntryEngine {
       };
     }
 
+    // NEW: Check Technical Analysis Signal
+    console.log(`[PIPELINE STAGE] LaserstreamSignalEngine EVALUATING mint=${mint}`);
+    const ohlcvData = await marketDataAggregator.getRecentOHLCV(mint, 50, candidate.priceUsd?.value || 1.0);
+    const taSignal = laserstreamSignalEngine.evaluate(ohlcvData.closes, ohlcvData.volumes, ohlcvData.highs, ohlcvData.lows, network === 'paper');
+
+    if (taSignal.action !== 'BUY') {
+      console.log(`[PIPELINE STAGE] LaserstreamSignalEngine REJECTED mint=${mint} reason=${taSignal.reason}`);
+      return {
+        mintAddress: mint,
+        symbol: candidate.symbol,
+        stage: 'REJECTED',
+        status: 'SKIPPED',
+        error: `TA_SIGNAL_REJECTED: ${taSignal.reason}`,
+      };
+    }
+
+    console.log(`[PIPELINE STAGE] LaserstreamSignalEngine PASSED mint=${mint} action=${taSignal.action} confidence=${taSignal.confidence}`);
+
+    // If TA passes, inject the dynamic TP/SL into the buy parameters
+    const dynamicTpPct = taSignal.takeProfitPct || activeCriteria.minTakeProfit || 25;
+    const dynamicSlPct = Math.abs(taSignal.stopLossPct || activeCriteria.stopLoss || 15);
+
     // 8. Execute buy via TradingEngine
     console.log(`[PIPELINE STAGE] TradingEngine.buy() ATTEMPT mint=${mint} amountSol=${decision.buyAmountSol} approvalId=${evalResult.approval?.approvalId}`);
 
@@ -303,8 +326,8 @@ export class EntryEngine {
         maxRebuyTimes: activeCriteria.maxRebuyTimes ?? 1,
         tradeOnlyOnce: activeCriteria.tradeOnlyOnce ?? true,
         label: `entry_engine_${triggerSource.toLowerCase()}`,
-        tpPct: activeCriteria.minTakeProfit ?? 25,
-        slPct: activeCriteria.stopLoss ?? 15,
+        tpPct: dynamicTpPct,
+        slPct: dynamicSlPct,
         approval: evalResult.approval,
       });
     } catch (err: any) {
