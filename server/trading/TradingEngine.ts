@@ -146,6 +146,13 @@ export class TradingEngine {
           };
         }
       } else {
+        console.log('[TradingEngine] BUY Stage MINT_VALIDATION check:', {
+          suppliedMint: params.mint,
+          suppliedMintLength: params.mint?.length,
+          canonicalMint: mint,
+          canonicalMintLength: mint?.length,
+          isValidPublicKey: tokenMintResolver.isValidPublicKey(mint)
+        });
         if (!tokenMintResolver.isValidPublicKey(mint)) {
           return {
             success: false,
@@ -477,6 +484,11 @@ export class TradingEngine {
         result: exitRes.result,
       };
     }
+  }
+
+  public async rebuy(params: BuyParams): Promise<TradeEngineResponse> {
+    // Rebuy is semantically a buy that accumulates cost basis
+    return this.buy({ ...params, decimals: params.decimals ?? 6 });
   }
 
   // ==========================================

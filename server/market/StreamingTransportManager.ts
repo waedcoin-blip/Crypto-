@@ -1,5 +1,6 @@
 // server/market/StreamingTransportManager.ts
 import { laserStreamPipeline } from './LaserStreamPipeline.js';
+import { heliusLaserStreamWssManager } from './HeliusLaserStreamWssManager.js';
 
 export type TransportState = 'DISCONNECTED' | 'CONNECTING' | 'CONNECTED' | 'RECONNECTING' | 'FAILED';
 
@@ -22,7 +23,7 @@ export class StreamingTransportManager {
   private static instance: StreamingTransportManager;
   private state: TransportState = 'DISCONNECTED';
   private telemetry: StreamingTransportTelemetry = {
-    transport: 'grpc',
+    transport: 'wss',
     state: 'DISCONNECTED',
     connectedAt: null,
     lastMessageAt: null,
@@ -42,6 +43,10 @@ export class StreamingTransportManager {
     return StreamingTransportManager.instance;
   }
 
+  public getActiveTransport(): any {
+    return heliusLaserStreamWssManager;
+  }
+
   public async start(): Promise<void> {
     if (this.state === 'CONNECTED' || this.state === 'CONNECTING') return;
 
@@ -49,6 +54,12 @@ export class StreamingTransportManager {
     this.telemetry.state = 'CONNECTING';
 
     try {
+      // Explicitly start the Helius WSS manager (instantiation != startup)
+      const success = await heliusLaserStreamWssManager.start();
+      if (!success) {
+        throw new Error('Failed to start Helius WSS manager');
+      }
+
       await laserStreamPipeline.start();
       this.state = 'CONNECTED';
       this.telemetry.state = 'CONNECTED';
@@ -62,7 +73,8 @@ export class StreamingTransportManager {
     }
   }
 
-  public stop(): void {
+  public async stop(): Promise<void> {
+    await heliusLaserStreamWssManager.stop();
     laserStreamPipeline.stop();
     this.state = 'DISCONNECTED';
     this.telemetry.state = 'DISCONNECTED';
@@ -74,7 +86,18 @@ export class StreamingTransportManager {
   }
 
   public getTelemetry(): StreamingTransportTelemetry {
-    return { ...this.telemetry };
+    const wssTelemetry = heliusLaserStreamWssManager.getTelemetry();
+    return {
+      transport: 'wss',
+      state: this.state,
+      connectedAt: wssTelemetry.connectedAt,
+      lastMessageAt: wssTelemetry.lastMessageAt,
+      messagesReceived: wssTelemetry.messagesReceived,
+      messagesPerSecond: wssTelemetry.messagesPerSecond,
+      lastSlot: wssTelemetry.lastSlot,
+      activeEndpoint: wssTelemetry.endpoint,
+      reconnectAttempts: wssTelemetry.reconnectCount,
+    };
   }
 
   public recordMessage(): void {

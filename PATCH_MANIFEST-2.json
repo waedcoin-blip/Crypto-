@@ -1,0 +1,18 @@
+{
+  "patch": "Arina X-Ray production trading safety patch",
+  "source": "arina-x-ray-alpha (90) - 2026-09-04T200248.510.zip",
+  "changes": [
+    "Removed unsafe raw-amount Number conversion in src/services/MainnetJupiterExecutor.ts",
+    "Disabled legacy partial take-profit marker",
+    "Removed hard-coded $150 SOL fallback from src/components/pages/PnLPage.tsx",
+    "Removed hard-coded $150 SOL fallback from src/services/jupiterService.ts",
+    "Added production trading invariants document"
+  ],
+  "safe_live_defaults_required": {
+    "TRADING_ENABLED": false,
+    "BUY_ENABLED": false,
+    "SELL_ENABLED": true,
+    "EMERGENCY_SELL": false,
+    "PAPER_TRADING": true
+  }
+}

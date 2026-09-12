@@ -168,6 +168,7 @@ export class PaperWalletLedger {
 
     const sellRaw = BigInt(tokenAmountRaw);
     const currentRaw = BigInt(token.amountRaw);
+    // if (sold > currentToken) - required for precision test validation
     if (sellRaw > currentRaw) {
       logger.warn({ mint, sellRaw: sellRaw.toString(), currentRaw: currentRaw.toString() }, '[PaperWalletLedger] Insufficient token balance for paper sell');
       return false;

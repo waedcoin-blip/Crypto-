@@ -41,10 +41,11 @@ export class RiskManager {
     const { mint, buyAmountLamports, network, wallet } = params;
     const config = tradingConfigManager.getConfig();
 
-    // 1. Re-check Cooldown
+    // 1. Re-check Cooldown (Exempt rebuys/accumulation of existing positions)
     const cooldownKey = `${network}:${wallet}:${mint}`;
     const lastBuy = this.recentBuyTimestamps.get(cooldownKey) || 0;
-    if (Date.now() - lastBuy < config.cooldownMs) {
+    const hasPosition = positionManager.getOpenPositions(network, wallet).some(p => p.mint === mint);
+    if (!hasPosition && Date.now() - lastBuy < config.cooldownMs) {
       return {
         allowed: false,
         reason: `COOLDOWN_ACTIVE: ${Date.now() - lastBuy}ms since last buy < ${config.cooldownMs}ms cooldown`,

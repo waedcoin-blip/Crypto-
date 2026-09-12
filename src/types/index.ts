@@ -439,9 +439,9 @@ export interface RpcProbeResult {
 export type LaserStreamHealthStatus = 'HEALTHY' | 'DEGRADED' | 'DOWN' | string;
 
 export interface LaserStreamTelemetry {
-  eventsPerSec: number;
-  totalEvents: number;
-  errorRate: number;
+  eventsPerSec?: number;
+  totalEvents?: number;
+  errorRate?: number;
   status?: any;
   transportConnected?: boolean;
   slotLag?: number;
@@ -456,6 +456,18 @@ export interface LaserStreamTelemetry {
   isReplaying?: boolean;
   replayFromSlot?: number;
   eventsReceived?: number;
+  eventsProcessed?: number;
+  rawUpdatesReceived?: number;
+  invalidUpdates?: number;
+  rejectedUpdates?: number;
+  duplicateUpdates?: number;
+  queuedUpdates?: number;
+  processingFailures?: number;
+  reconnectCount?: number;
+  network?: string;
+  endpoint?: string | null;
+  mode?: string;
+  errorMessage?: string | null;
 }
 
 export type LaserStreamMode = 'STANDALONE' | 'INTEGRATED' | 'SIMULATION' | 'grpc' | string;

@@ -5,9 +5,14 @@ import { hardenedApprovalStore } from '../server/trading/HardenedApprovalStore.j
 import { positionValuationEngine } from '../server/trading/PositionValuationEngine.js';
 import { momentumEngine } from '../server/trading/MomentumEngine.js';
 import { rebuyGuard } from '../server/trading/RebuyGuard.js';
+import { tradeRepository } from '../server/repositories/TradeRepository.js';
 
 async function runRegressionTests() {
   console.log('=== STARTING TOKEN MINT RESOLVER REGRESSION TESTS ===');
+
+  // Clear previous paper trade state to avoid MAX_REBUYS_REACHED from previous test runs
+  tradeRepository.clear('paper');
+  rebuyGuard.clear();
 
   // A. Valid Pump.fun-style mint
   const pumpMint = 'HJE2DEZXvErwUabTU16xzrS629qXVeVyTGvJYJVfpump';

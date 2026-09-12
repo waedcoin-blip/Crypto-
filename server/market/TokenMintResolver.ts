@@ -229,7 +229,10 @@ export class TokenMintResolver {
     try {
       new PublicKey(trimmed);
       return true;
-    } catch {
+    } catch (err: any) {
+      if (trimmed.includes('HJE2') || trimmed.includes('pump')) {
+        console.error('[TokenMintResolver] PublicKey constructor failed for:', trimmed, 'Error:', err?.message || err);
+      }
       return false;
     }
   }

@@ -51,8 +51,8 @@ export class RebuyGuard {
       return { reason: 'ALREADY_RESERVED: A buy for this token is already in progress' };
     }
 
-    // Check rebuy limit
-    const maxRebuys = params.tradeOnlyOnce ? 1 : (params.maxRebuyTimes ?? 1);
+    // Check rebuy limit (maxRebuys is total allowed completed buys: first buy + rebuys)
+    const maxRebuys = params.tradeOnlyOnce ? 1 : (params.maxRebuyTimes !== undefined ? params.maxRebuyTimes + 1 : 2);
     const completedCount = this.getCompletedBuyCount(params.network, params.wallet, params.mint);
     if (completedCount >= maxRebuys) {
       return { reason: `MAX_REBUYS_REACHED: ${completedCount}/${maxRebuys} buys completed` };
@@ -100,6 +100,10 @@ export class RebuyGuard {
     this.reservedKeys.delete(key);
   }
 
+  public releaseBuy(reservationId: string): void {
+    this.releaseReservation(reservationId);
+  }
+
   // ==========================================
   // QUERIES
   // ==========================================
@@ -111,7 +115,7 @@ export class RebuyGuard {
       return { allowed: false, reason: 'ALREADY_RESERVED' };
     }
 
-    const maxRebuys = params.tradeOnlyOnce ? 1 : (params.maxRebuyTimes ?? 1);
+    const maxRebuys = params.tradeOnlyOnce ? 1 : (params.maxRebuyTimes !== undefined ? params.maxRebuyTimes + 1 : 2);
     const completedCount = this.getCompletedBuyCount(params.network, params.wallet, params.mint);
     if (completedCount >= maxRebuys) {
       return { allowed: false, reason: `MAX_REBUYS_REACHED: ${completedCount}/${maxRebuys}` };

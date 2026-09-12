@@ -1,7 +1,7 @@
 # Final Production Audit Report
-Generated at: 2026-09-12T16:53:04.004Z
-Total Findings: 138
-Bugs: 5
+Generated at: 2026-09-12T17:25:32.396Z
+Total Findings: 139
+Bugs: 6
 Warnings: 133
 
 ## Findings Details
@@ -15,6 +15,7 @@ Warnings: 133
 - **[BUG]** `server/trading/BondingCurveFastLane.ts:114`: Floating Point Division by 1e6 (`// Price in SOL = (Lamports / 1e9) / (RawTokens / 1e6) = (Lamports * 1e6) / (RawTokens * 1e9)`)
 - **[WARNING]** `server/trading/BondingCurveFastLane.ts:114`: Floating Point Multiplication by 1e6 (`// Price in SOL = (Lamports / 1e9) / (RawTokens / 1e6) = (Lamports * 1e6) / (RawTokens * 1e9)`)
 - **[BUG]** `server/trading/CandidateEnricher.ts:196`: Unsafe Decimal Fallback (?? 6 or || 6) (`decimals: createMetric(meta.decimals ?? existingToken.decimals ?? 6, 'PAPER'),`)
+- **[BUG]** `server/trading/TradingEngine.ts:491`: Unsafe Decimal Fallback (?? 6 or || 6) (`return this.buy({ ...params, decimals: params.decimals ?? 6 });`)
 - **[WARNING]** `server/trading/UnifiedExitEngine.ts:388`: Artificial History Truncation (slice(-500)) (`this.auditTrail = this.auditTrail.slice(-5000);`)
 - **[WARNING]** `server/wallet/WalletManager.ts:54`: Hardcoded Secret / Private Key (`const privateKeyEnv = process.env.PRIVATE_KEY || process.env.SOLANA_PRIVATE_KEY;`)
 - **[WARNING]** `server/wallet/WalletManager.ts:58`: Hardcoded Secret / Private Key (`if (privateKeyEnv.startsWith('[')) {`)

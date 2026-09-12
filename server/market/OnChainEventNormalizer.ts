@@ -29,8 +29,12 @@ export interface NormalizedTokenEvent {
 
 export interface NormalizedOnChainEvent extends MarketEvent {
   eventId: string;
+  correlationId: string;
+  chain: 'solana';
   source: 'HELIUS_WSS' | 'YELLOWSTONE_GRPC' | 'SOLANA_RPC';
   transport: 'wss' | 'grpc';
+  mint: string;
+  eventType: string;
   receivedAt: number;
   processedAt?: number;
   ingestionLatencyMs?: number;
@@ -82,8 +86,11 @@ export class OnChainEventNormalizer {
     if (method === 'slotNotification' && result) {
       const slot = Number(result.slot || 0);
       const eventId = this.generateEventId('HELIUS_WSS', 'SLOT_UPDATE', slot);
+      const correlationId = `corr_wss_slot_${slot}_${now}`;
       return {
         eventId,
+        correlationId,
+        chain: 'solana',
         source: 'HELIUS_WSS',
         transport: 'wss',
         network,
@@ -92,6 +99,8 @@ export class OnChainEventNormalizer {
         timestamp: now,
         receivedAt: now,
         type: 'SLOT_UPDATE',
+        eventType: 'SLOT_UPDATE',
+        mint: '',
         raw: msg,
       };
     }
@@ -133,6 +142,7 @@ export class OnChainEventNormalizer {
       }
 
       const eventId = this.generateEventId('HELIUS_WSS', 'ON_CHAIN_TX', slot, signature);
+      const correlationId = `corr_wss_logs_${signature}_${now}`;
 
       const resolvedMint = (extractedMint && tokenMintResolver.isValidMint(extractedMint)) ? extractedMint : '';
 
@@ -150,6 +160,8 @@ eventType=ON_CHAIN_TX`);
 
       return {
         eventId,
+        correlationId,
+        chain: 'solana',
         source: 'HELIUS_WSS',
         transport: 'wss',
         network,
@@ -158,6 +170,8 @@ eventType=ON_CHAIN_TX`);
         timestamp: now,
         receivedAt: now,
         type: 'ON_CHAIN_TX',
+        eventType: 'ON_CHAIN_TX',
+        mint: resolvedMint,
         accountKeys,
         candidateMint: resolvedMint || undefined,
         logMessages: logs,
@@ -174,11 +188,12 @@ eventType=ON_CHAIN_TX`);
       const account = value.account || result.account || {};
       const owner = typeof account.owner === 'string' ? account.owner : '';
 
-      const isMintOwner = owner === 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' || owner === 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
+      const isMintOwner = owner === 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' || owner === 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb' || owner === '11111111111111111111111111111111';
       const isMint = isMintOwner && tokenMintResolver.isValidMint(pubkey);
       const resolvedMint = isMint ? pubkey : '';
 
       const eventId = this.generateEventId('HELIUS_WSS', 'ACCOUNT_UPDATE', slot, undefined, pubkey);
+      const correlationId = `corr_wss_acc_${pubkey.slice(0, 8)}_${slot}_${now}`;
 
       console.log(`[WSS]
 event received
@@ -194,6 +209,8 @@ eventType=ACCOUNT_UPDATE`);
 
       return {
         eventId,
+        correlationId,
+        chain: 'solana',
         source: 'HELIUS_WSS',
         transport: 'wss',
         network,
@@ -202,7 +219,8 @@ eventType=ACCOUNT_UPDATE`);
         timestamp: now,
         receivedAt: now,
         type: 'ACCOUNT_UPDATE',
-        mint: resolvedMint || undefined,
+        eventType: 'ACCOUNT_UPDATE',
+        mint: resolvedMint,
         owner,
         accountKeys: resolvedMint ? [resolvedMint] : [],
         candidateMint: resolvedMint || undefined,
@@ -218,9 +236,12 @@ eventType=ACCOUNT_UPDATE`);
       const signature = msg.signature || `sig_conf_${slot}`;
 
       const eventId = this.generateEventId('HELIUS_WSS', 'SIGNATURE_CONFIRMED', slot, signature);
+      const correlationId = `corr_wss_sig_${signature}_${now}`;
 
       return {
         eventId,
+        correlationId,
+        chain: 'solana',
         source: 'HELIUS_WSS',
         transport: 'wss',
         network,
@@ -229,6 +250,8 @@ eventType=ACCOUNT_UPDATE`);
         timestamp: now,
         receivedAt: now,
         type: 'ON_CHAIN_TX',
+        eventType: 'ON_CHAIN_TX',
+        mint: '',
         err,
         raw: msg,
       };

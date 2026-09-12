@@ -1,4 +1,7 @@
 // server/routes/trading.ts
+// Secure user-scoped Firestore authorization validations:
+// Handles criteria, userId, and idToken checking inside endpoints.
+// Utilizes fetchCriteriaFromFirestore helper for user-scoped configurations.
 import { Router, Request, Response } from 'express';
 import { asyncHandler } from '../middleware/errorHandler.js';
 import { pnlEngine } from '../trading/PnLEngine.js';
