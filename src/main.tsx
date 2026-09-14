@@ -2,7 +2,6 @@ import {StrictMode, useMemo, useEffect} from 'react';
 import { BrowserRouter } from 'react-router-dom';
 import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
-import EnhancedApp from './EnhancedApp.tsx';
 import './index.css';
 
 import { Buffer } from 'buffer';
@@ -17,10 +16,6 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { startAlertManager } from './engines';
 import { TradeManager, TradeMode } from './services/TradeManager';
 import { TradeModeProvider } from './context/TradeModeContext';
-
-// Enhanced Paper Trading Imports
-import { realisticPaperTradingEngine } from './services/RealisticPaperTradingEngine';
-import { EnhancedPaperTradeExecutor } from './services/EnhancedPaperTradeExecutor';
 
 if (typeof window !== 'undefined') {
   try {
@@ -261,34 +256,9 @@ function Root() {
     realConfig: {},
   }), []);
 
-  // Initialize enhanced paper trading components
   useEffect(() => {
     startAlertManager();
-
-    // Initialize realistic paper trading engine with starting portfolio
-    realisticPaperTradingEngine.getPortfolio('default', 10000);
-
-    // Add sample market data for demonstration
-    const sampleTokens = [
-      { mint: 'So11111111111111111111111111111111111111112', price: 150 }, // SOL
-      { mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', price: 1 }, // USDC
-      { mint: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', price: 1 }, // USDT
-      { mint: '4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R', price: 85 }, // RAY
-      { mint: 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263', price: 0.18 }, // BONK
-    ];
-
-    sampleTokens.forEach(({ mint, price }) => {
-      realisticPaperTradingEngine.updateMarketData(mint, price + Math.random() * price * 0.1);
-    });
-
-    // Initialize enhanced paper trade executor
-    const paperExecutor = new EnhancedPaperTradeExecutor();
-
-    console.log('Enhanced Paper Trading initialized with realistic market simulation');
   }, []);
-
-  // Check if user wants enhanced paper trading (default to enhanced)
-  const useEnhancedTrading = lsGet('use_enhanced_trading') !== 'false';
 
   return (
     <ConnectionProvider endpoint={endpoint}>
@@ -296,7 +266,7 @@ function Root() {
         <WalletModalProvider>
           <TradeModeProvider manager={tradeManager}>
             <BrowserRouter>
-              {useEnhancedTrading ? <EnhancedApp /> : <App />}
+              <App />
             </BrowserRouter>
           </TradeModeProvider>
         </WalletModalProvider>

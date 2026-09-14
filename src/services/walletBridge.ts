@@ -20,12 +20,12 @@ let sessionKeypair: Keypair | null = null;
 interface WalletState {
   status: 'DISCONNECTED' | 'CONNECTING' | 'CONNECTED' | 'ERROR';
   address: string;
-  network: 'paper' | 'devnet' | 'mainnet';
+  network: 'paper' | 'mainnet';
   solBalance: number | null;
   isLocked: boolean;
   lastError: string | null;
 
-  connectFromKey: (base58Key: string, network: 'paper' | 'devnet' | 'mainnet') => Promise<boolean>;
+  connectFromKey: (base58Key: string, network: 'paper' | 'mainnet') => Promise<boolean>;
   disconnect: () => void;
   refreshBalance: () => Promise<void>;
   getKeypair: () => Keypair | null;
@@ -97,10 +97,8 @@ export const useWalletBridge = create<WalletState>((set, get) => ({
         return;
       }
 
-      // Devnet/Mainnet: query RPC
-      const rpcUrl = network === 'devnet'
-        ? 'https://api.devnet.solana.com'
-        : 'https://api.mainnet-beta.solana.com';
+      // Mainnet: query RPC
+      const rpcUrl = 'https://api.mainnet-beta.solana.com';
       const connection = new Connection(rpcUrl, 'confirmed');
       const balance = await connection.getBalance(new PublicKey(address), 'confirmed');
       set({ solBalance: balance / 1e9 });

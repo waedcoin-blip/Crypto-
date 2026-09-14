@@ -1,0 +1,1321 @@
+{
+  "description": "Flattened source/code archive. All files are at ZIP root.",
+  "file_count": 263,
+  "files": [
+    {
+      "zip_name": "3XYZp8StmcvQxM4hS6eB3zYvG1K9dTxJ4LqZ7rT8uW99.json",
+      "original_path": "fixtures/jupiter/3XYZp8StmcvQxM4hS6eB3zYvG1K9dTxJ4LqZ7rT8uW99.json",
+      "size": 1377
+    },
+    {
+      "zip_name": "5VERp8StmcvQxM4hS6eB3zYvG1K9dTxJ4LqZ7rT8uW2m.json",
+      "original_path": "fixtures/jupiter/5VERp8StmcvQxM4hS6eB3zYvG1K9dTxJ4LqZ7rT8uW2m.json",
+      "size": 1629
+    },
+    {
+      "zip_name": "REGRESSION_TESTS.md",
+      "original_path": "docs/REGRESSION_TESTS.md",
+      "size": 1306
+    },
+    {
+      "zip_name": "PRODUCTION_FIXES.md",
+      "original_path": "docs/PRODUCTION_FIXES.md",
+      "size": 1468
+    },
+    {
+      "zip_name": "DEPLOYMENT.md",
+      "original_path": "docs/DEPLOYMENT.md",
+      "size": 1021
+    },
+    {
+      "zip_name": "ARCHITECTURE.md",
+      "original_path": "docs/ARCHITECTURE.md",
+      "size": 2530
+    },
+    {
+      "zip_name": "TESTING.md",
+      "original_path": "docs/TESTING.md",
+      "size": 1336
+    },
+    {
+      "zip_name": "MARKET_DATA.md",
+      "original_path": "docs/MARKET_DATA.md",
+      "size": 1571
+    },
+    {
+      "zip_name": "TRADING_ENGINE.md",
+      "original_path": "docs/TRADING_ENGINE.md",
+      "size": 1859
+    },
+    {
+      "zip_name": "vite.config.ts",
+      "original_path": "vite.config.ts",
+      "size": 988
+    },
+    {
+      "zip_name": "firebase-blueprint.json",
+      "original_path": "firebase-blueprint.json",
+      "size": 9247
+    },
+    {
+      "zip_name": "package.json",
+      "original_path": "package.json",
+      "size": 4498
+    },
+    {
+      "zip_name": "tsconfig.json",
+      "original_path": "tsconfig.json",
+      "size": 724
+    },
+    {
+      "zip_name": "CHANGES.md",
+      "original_path": "CHANGES.md",
+      "size": 2751
+    },
+    {
+      "zip_name": "server.ts",
+      "original_path": "server.ts",
+      "size": 4937
+    },
+    {
+      "zip_name": ".gitignore",
+      "original_path": ".gitignore",
+      "size": 109
+    },
+    {
+      "zip_name": "FINAL_PRODUCTION_AUDIT_REPORT.md",
+      "original_path": "FINAL_PRODUCTION_AUDIT_REPORT.md",
+      "size": 0
+    },
+    {
+      "zip_name": "metadata.json",
+      "original_path": "metadata.json",
+      "size": 310
+    },
+    {
+      "zip_name": "vercel.json",
+      "original_path": "vercel.json",
+      "size": 172
+    },
+    {
+      "zip_name": "jupiter-only-architecture-test.mjs",
+      "original_path": "scripts/jupiter-only-architecture-test.mjs",
+      "size": 11385
+    },
+    {
+      "zip_name": "token-mint-resolver-regression-test.ts",
+      "original_path": "scripts/token-mint-resolver-regression-test.ts",
+      "size": 7467
+    },
+    {
+      "zip_name": "remaining-production-regression.mjs",
+      "original_path": "scripts/remaining-production-regression.mjs",
+      "size": 1481
+    },
+    {
+      "zip_name": "rpc-ws-routing-regression-test.mjs",
+      "original_path": "scripts/rpc-ws-routing-regression-test.mjs",
+      "size": 4116
+    },
+    {
+      "zip_name": "bug001-persistence-splitbrain-regression.mjs",
+      "original_path": "scripts/bug001-persistence-splitbrain-regression.mjs",
+      "size": 7012
+    },
+    {
+      "zip_name": "integration-audit-v97.mjs",
+      "original_path": "scripts/integration-audit-v97.mjs",
+      "size": 1499
+    },
+    {
+      "zip_name": "entry-pipeline-smoke-test.ts",
+      "original_path": "scripts/entry-pipeline-smoke-test.ts",
+      "size": 7854
+    },
+    {
+      "zip_name": "fetch-global-regression-test.mjs",
+      "original_path": "scripts/fetch-global-regression-test.mjs",
+      "size": 815
+    },
+    {
+      "zip_name": "laserstream-regression-test.ts",
+      "original_path": "scripts/laserstream-regression-test.ts",
+      "size": 4017
+    },
+    {
+      "zip_name": "e2e-paper-lifecycle-test.ts",
+      "original_path": "scripts/e2e-paper-lifecycle-test.ts",
+      "size": 6473
+    },
+    {
+      "zip_name": "live-pnl-update-regression-test.mjs",
+      "original_path": "scripts/live-pnl-update-regression-test.mjs",
+      "size": 4920
+    },
+    {
+      "zip_name": "e2e-paper-lifecycle-test.mjs",
+      "original_path": "scripts/e2e-paper-lifecycle-test.mjs",
+      "size": 12960
+    },
+    {
+      "zip_name": "phase-3-2-auth-and-raw-quantity-test.ts",
+      "original_path": "scripts/phase-3-2-auth-and-raw-quantity-test.ts",
+      "size": 5056
+    },
+    {
+      "zip_name": "migrate-frontend.mjs",
+      "original_path": "scripts/migrate-frontend.mjs",
+      "size": 3476
+    },
+    {
+      "zip_name": "tpsl-evaluation-pipeline-test.mjs",
+      "original_path": "scripts/tpsl-evaluation-pipeline-test.mjs",
+      "size": 8256
+    },
+    {
+      "zip_name": "fami-decimals-regression-test.ts",
+      "original_path": "scripts/fami-decimals-regression-test.ts",
+      "size": 2532
+    },
+    {
+      "zip_name": "phase-3-1-execution-authority-test.ts",
+      "original_path": "scripts/phase-3-1-execution-authority-test.ts",
+      "size": 7277
+    },
+    {
+      "zip_name": "quote-safety-regression-test.ts",
+      "original_path": "scripts/quote-safety-regression-test.ts",
+      "size": 10957
+    },
+    {
+      "zip_name": "capture-jupiter-fixture.mjs",
+      "original_path": "scripts/capture-jupiter-fixture.mjs",
+      "size": 5036
+    },
+    {
+      "zip_name": "single-exit-authority-regression-test.mjs",
+      "original_path": "scripts/single-exit-authority-regression-test.mjs",
+      "size": 9129
+    },
+    {
+      "zip_name": "raw-precision-regression-test.mjs",
+      "original_path": "scripts/raw-precision-regression-test.mjs",
+      "size": 1054
+    },
+    {
+      "zip_name": "token-decimals-rpc-failover-regression.mjs",
+      "original_path": "scripts/token-decimals-rpc-failover-regression.mjs",
+      "size": 983
+    },
+    {
+      "zip_name": "execution-parity-test.mjs",
+      "original_path": "scripts/execution-parity-test.mjs",
+      "size": 5290
+    },
+    {
+      "zip_name": "final-production-regression-test.mjs",
+      "original_path": "scripts/final-production-regression-test.mjs",
+      "size": 2217
+    },
+    {
+      "zip_name": "phase-3.2-mint-identity-test.ts",
+      "original_path": "scripts/phase-3.2-mint-identity-test.ts",
+      "size": 4064
+    },
+    {
+      "zip_name": "replay-captured-fixture.mjs",
+      "original_path": "scripts/replay-captured-fixture.mjs",
+      "size": 3737
+    },
+    {
+      "zip_name": "entry-pipeline-test-suite.ts",
+      "original_path": "scripts/entry-pipeline-test-suite.ts",
+      "size": 12062
+    },
+    {
+      "zip_name": "wallet-transaction-parser-regression-test.ts",
+      "original_path": "scripts/wallet-transaction-parser-regression-test.ts",
+      "size": 1286
+    },
+    {
+      "zip_name": "jupiter-transaction-replay-test.mjs",
+      "original_path": "scripts/jupiter-transaction-replay-test.mjs",
+      "size": 14017
+    },
+    {
+      "zip_name": "phase-3-3-state-auth-test.ts",
+      "original_path": "scripts/phase-3-3-state-auth-test.ts",
+      "size": 2915
+    },
+    {
+      "zip_name": "purge-frontend-executors.mjs",
+      "original_path": "scripts/purge-frontend-executors.mjs",
+      "size": 1790
+    },
+    {
+      "zip_name": "bug002-transaction-timeout-double-spend-regression.mjs",
+      "original_path": "scripts/bug002-transaction-timeout-double-spend-regression.mjs",
+      "size": 6170
+    },
+    {
+      "zip_name": "full-production-regression-suite.ts",
+      "original_path": "scripts/full-production-regression-suite.ts",
+      "size": 16785
+    },
+    {
+      "zip_name": "patch-bigint-buffer.cjs",
+      "original_path": "scripts/patch-bigint-buffer.cjs",
+      "size": 185
+    },
+    {
+      "zip_name": "token-age-gate-test.mjs",
+      "original_path": "scripts/token-age-gate-test.mjs",
+      "size": 3431
+    },
+    {
+      "zip_name": "critical-regression-static.mjs",
+      "original_path": "scripts/critical-regression-static.mjs",
+      "size": 1693
+    },
+    {
+      "zip_name": "helius-wss-regression-test.ts",
+      "original_path": "scripts/helius-wss-regression-test.ts",
+      "size": 10619
+    },
+    {
+      "zip_name": "final-production-audit.mjs",
+      "original_path": "scripts/final-production-audit.mjs",
+      "size": 2969
+    },
+    {
+      "zip_name": "tpsl-v103-regression-test.mjs",
+      "original_path": "scripts/tpsl-v103-regression-test.mjs",
+      "size": 703
+    },
+    {
+      "zip_name": "integration-audit-v98.mjs",
+      "original_path": "scripts/integration-audit-v98.mjs",
+      "size": 1020
+    },
+    {
+      "zip_name": "tp-sl-raw-balance-regression-test.mjs",
+      "original_path": "scripts/tp-sl-raw-balance-regression-test.mjs",
+      "size": 4824
+    },
+    {
+      "zip_name": "fixture-replay-test.mjs",
+      "original_path": "scripts/fixture-replay-test.mjs",
+      "size": 4364
+    },
+    {
+      "zip_name": "patch-regression-test.mjs",
+      "original_path": "scripts/patch-regression-test.mjs",
+      "size": 3409
+    },
+    {
+      "zip_name": ".npmrc",
+      "original_path": ".npmrc",
+      "size": 22
+    },
+    {
+      "zip_name": "firebase.ts",
+      "original_path": "src/lib/firebase.ts",
+      "size": 2577
+    },
+    {
+      "zip_name": "crossFetchBrowser.js",
+      "original_path": "src/lib/crossFetchBrowser.js",
+      "size": 752
+    },
+    {
+      "zip_name": "crypto.ts",
+      "original_path": "src/lib/crypto.ts",
+      "size": 6527
+    },
+    {
+      "zip_name": "utils.ts",
+      "original_path": "src/lib/utils.ts",
+      "size": 3095
+    },
+    {
+      "zip_name": "rpcHealthManager.ts",
+      "original_path": "src/services/rpcHealthManager.ts",
+      "size": 4366
+    },
+    {
+      "zip_name": "TransactionBroadcaster.ts",
+      "original_path": "src/services/TransactionBroadcaster.ts",
+      "size": 1991
+    },
+    {
+      "zip_name": "PositionPnLEngine.ts",
+      "original_path": "src/services/PositionPnLEngine.ts",
+      "size": 3826
+    },
+    {
+      "zip_name": "rpcService.ts",
+      "original_path": "src/services/rpcService.ts",
+      "size": 4953
+    },
+    {
+      "zip_name": "JupiterQuoteService.ts",
+      "original_path": "src/services/JupiterQuoteService.ts",
+      "size": 4831
+    },
+    {
+      "zip_name": "OpportunityScoreEngine.ts",
+      "original_path": "src/services/OpportunityScoreEngine.ts",
+      "size": 15295
+    },
+    {
+      "zip_name": "OrderManager.ts",
+      "original_path": "src/services/OrderManager.ts",
+      "size": 13771
+    },
+    {
+      "zip_name": "PaperTradeExecutor.ts",
+      "original_path": "src/services/PaperTradeExecutor.ts",
+      "size": 287
+    },
+    {
+      "zip_name": "ApiClient.ts",
+      "original_path": "src/services/ApiClient.ts",
+      "size": 6822
+    },
+    {
+      "zip_name": "transactionService.ts",
+      "original_path": "src/services/transactionService.ts",
+      "size": 1800
+    },
+    {
+      "zip_name": "MasterMonitorHealthManager.ts",
+      "original_path": "src/services/MasterMonitorHealthManager.ts",
+      "size": 6784
+    },
+    {
+      "zip_name": "ExitTransactionBuilder.ts",
+      "original_path": "src/services/ExitTransactionBuilder.ts",
+      "size": 3879
+    },
+    {
+      "zip_name": "rpcRouting.ts",
+      "original_path": "src/services/rpcRouting.ts",
+      "size": 6610
+    },
+    {
+      "zip_name": "JupiterTransactionFixture.ts",
+      "original_path": "src/services/JupiterTransactionFixture.ts",
+      "size": 8737
+    },
+    {
+      "zip_name": "telemetryService.ts",
+      "original_path": "src/services/telemetryService.ts",
+      "size": 15138
+    },
+    {
+      "zip_name": "PositionRegistry.ts",
+      "original_path": "src/services/PositionRegistry.ts",
+      "size": 11912
+    },
+    {
+      "zip_name": "systemLogger.ts",
+      "original_path": "src/services/systemLogger.ts",
+      "size": 2942
+    },
+    {
+      "zip_name": "TokenLifecycleManager.ts",
+      "original_path": "src/services/TokenLifecycleManager.ts",
+      "size": 11840
+    },
+    {
+      "zip_name": "RiskManager.ts",
+      "original_path": "src/services/RiskManager.ts",
+      "size": 5015
+    },
+    {
+      "zip_name": "TokenDecimalsResolver.ts",
+      "original_path": "src/services/TokenDecimalsResolver.ts",
+      "size": 9148
+    },
+    {
+      "zip_name": "jupiterService.ts",
+      "original_path": "src/services/jupiterService.ts",
+      "size": 29963
+    },
+    {
+      "zip_name": "httpClient.ts",
+      "original_path": "src/services/httpClient.ts",
+      "size": 276
+    },
+    {
+      "zip_name": "TradeManager.ts",
+      "original_path": "src/services/TradeManager.ts",
+      "size": 2558
+    },
+    {
+      "zip_name": "EntryGate.ts",
+      "original_path": "src/services/EntryGate.ts",
+      "size": 6393
+    },
+    {
+      "zip_name": "TokenRegistry.ts",
+      "original_path": "src/services/TokenRegistry.ts",
+      "size": 6385
+    },
+    {
+      "zip_name": "NetworkGuard.ts",
+      "original_path": "src/services/NetworkGuard.ts",
+      "size": 2338
+    },
+    {
+      "zip_name": "walletBridge.ts",
+      "original_path": "src/services/walletBridge.ts",
+      "size": 5800
+    },
+    {
+      "zip_name": "priceTracker.ts",
+      "original_path": "src/services/priceTracker.ts",
+      "size": 4378
+    },
+    {
+      "zip_name": "SyncService.ts",
+      "original_path": "src/services/SyncService.ts",
+      "size": 10030
+    },
+    {
+      "zip_name": "JupiterPreSellValidator.ts",
+      "original_path": "src/services/JupiterPreSellValidator.ts",
+      "size": 10874
+    },
+    {
+      "zip_name": "TradeHistoryRegistry.ts",
+      "original_path": "src/services/TradeHistoryRegistry.ts",
+      "size": 6535
+    },
+    {
+      "zip_name": "WalletTransactionParser.ts",
+      "original_path": "src/services/WalletTransactionParser.ts",
+      "size": 4555
+    },
+    {
+      "zip_name": "marketDataManager.ts",
+      "original_path": "src/services/marketDataManager.ts",
+      "size": 17586
+    },
+    {
+      "zip_name": "tokenService.ts",
+      "original_path": "src/services/tokenService.ts",
+      "size": 4520
+    },
+    {
+      "zip_name": "eventBus.ts",
+      "original_path": "src/engines/eventBus.ts",
+      "size": 1312
+    },
+    {
+      "zip_name": "riskAnalyzerEngine.ts",
+      "original_path": "src/engines/riskAnalyzerEngine.ts",
+      "size": 2401
+    },
+    {
+      "zip_name": "telemetryMapper.ts",
+      "original_path": "src/engines/telemetryMapper.ts",
+      "size": 3288
+    },
+    {
+      "zip_name": "scannerEngine.ts",
+      "original_path": "src/engines/scannerEngine.ts",
+      "size": 2288
+    },
+    {
+      "zip_name": "highFrequencyBuyDetector.ts",
+      "original_path": "src/engines/highFrequencyBuyDetector.ts",
+      "size": 4121
+    },
+    {
+      "zip_name": "alertManager.ts",
+      "original_path": "src/engines/alertManager.ts",
+      "size": 1725
+    },
+    {
+      "zip_name": "MultiLayerValidationEngine.ts",
+      "original_path": "src/engines/MultiLayerValidationEngine.ts",
+      "size": 6826
+    },
+    {
+      "zip_name": "unifiedTradePipeline.ts",
+      "original_path": "src/engines/unifiedTradePipeline.ts",
+      "size": 5951
+    },
+    {
+      "zip_name": "index.ts",
+      "original_path": "src/engines/index.ts",
+      "size": 556
+    },
+    {
+      "zip_name": "walletIntelligence.ts",
+      "original_path": "src/engines/walletIntelligence.ts",
+      "size": 1672
+    },
+    {
+      "zip_name": "index.css",
+      "original_path": "src/index.css",
+      "size": 615
+    },
+    {
+      "zip_name": "tokenStage.ts",
+      "original_path": "src/utils/tokenStage.ts",
+      "size": 818
+    },
+    {
+      "zip_name": "amounts.ts",
+      "original_path": "src/utils/amounts.ts",
+      "size": 3250
+    },
+    {
+      "zip_name": "quoteSafety.ts",
+      "original_path": "src/utils/quoteSafety.ts",
+      "size": 10616
+    },
+    {
+      "zip_name": "pnlUtils.ts",
+      "original_path": "src/utils/pnlUtils.ts",
+      "size": 3030
+    },
+    {
+      "zip_name": "solanaValidators.ts",
+      "original_path": "src/utils/solanaValidators.ts",
+      "size": 1536
+    },
+    {
+      "zip_name": "keypairUtils.ts",
+      "original_path": "src/utils/keypairUtils.ts",
+      "size": 4789
+    },
+    {
+      "zip_name": "TradingSettings.tsx",
+      "original_path": "src/components/TradingSettings.tsx",
+      "size": 10723
+    },
+    {
+      "zip_name": "WalletStatusWidget.tsx",
+      "original_path": "src/components/WalletStatusWidget.tsx",
+      "size": 23082
+    },
+    {
+      "zip_name": "TelemetryPanel.tsx",
+      "original_path": "src/components/TelemetryPanel.tsx",
+      "size": 3395
+    },
+    {
+      "zip_name": "SyncStatusBadge.tsx",
+      "original_path": "src/components/SyncStatusBadge.tsx",
+      "size": 1615
+    },
+    {
+      "zip_name": "ActivePositionsTable.tsx",
+      "original_path": "src/components/ActivePositionsTable.tsx",
+      "size": 5266
+    },
+    {
+      "zip_name": "Dashboard.tsx",
+      "original_path": "src/components/Dashboard.tsx",
+      "size": 4746
+    },
+    {
+      "zip_name": "LogPanel.tsx",
+      "original_path": "src/components/LogPanel.tsx",
+      "size": 1825
+    },
+    {
+      "zip_name": "MasterMonitorPanel.tsx",
+      "original_path": "src/components/MasterMonitorPanel.tsx",
+      "size": 9004
+    },
+    {
+      "zip_name": "TradeExecutionPanel.tsx",
+      "original_path": "src/components/TradeExecutionPanel.tsx",
+      "size": 3378
+    },
+    {
+      "zip_name": "PredictionPage.tsx",
+      "original_path": "src/components/pages/PredictionPage.tsx",
+      "size": 9274
+    },
+    {
+      "zip_name": "SystemCheckPage.tsx",
+      "original_path": "src/components/pages/SystemCheckPage.tsx",
+      "size": 57741
+    },
+    {
+      "zip_name": "SafetyPage.tsx",
+      "original_path": "src/components/pages/SafetyPage.tsx",
+      "size": 4415
+    },
+    {
+      "zip_name": "PnLPage.tsx",
+      "original_path": "src/components/pages/PnLPage.tsx",
+      "size": 418976
+    },
+    {
+      "zip_name": "WalletPanel.tsx",
+      "original_path": "src/components/WalletPanel.tsx",
+      "size": 5926
+    },
+    {
+      "zip_name": "CriteriaPanel.tsx",
+      "original_path": "src/components/CriteriaPanel.tsx",
+      "size": 3722
+    },
+    {
+      "zip_name": "ErrorBoundary.tsx",
+      "original_path": "src/components/ErrorBoundary.tsx",
+      "size": 5169
+    },
+    {
+      "zip_name": "SecureInput.tsx",
+      "original_path": "src/components/SecureInput.tsx",
+      "size": 3618
+    },
+    {
+      "zip_name": "App.tsx",
+      "original_path": "src/App.tsx",
+      "size": 336474
+    },
+    {
+      "zip_name": "usePositions.ts",
+      "original_path": "src/hooks/usePositions.ts",
+      "size": 3534
+    },
+    {
+      "zip_name": "useSupervisor.ts",
+      "original_path": "src/hooks/useSupervisor.ts",
+      "size": 3069
+    },
+    {
+      "zip_name": "useCriteria.ts",
+      "original_path": "src/hooks/useCriteria.ts",
+      "size": 2765
+    },
+    {
+      "zip_name": "useTradingActions.ts",
+      "original_path": "src/hooks/useTradingActions.ts",
+      "size": 3486
+    },
+    {
+      "zip_name": "src__types__index.ts",
+      "original_path": "src/types/index.ts",
+      "size": 11804
+    },
+    {
+      "zip_name": "rebuyGuard.ts",
+      "original_path": "src/config/rebuyGuard.ts",
+      "size": 5489
+    },
+    {
+      "zip_name": "tokenCriteria.ts",
+      "original_path": "src/config/tokenCriteria.ts",
+      "size": 1590
+    },
+    {
+      "zip_name": "network.ts",
+      "original_path": "src/config/network.ts",
+      "size": 1484
+    },
+    {
+      "zip_name": "solana.ts",
+      "original_path": "src/constants/solana.ts",
+      "size": 1072
+    },
+    {
+      "zip_name": "main.tsx",
+      "original_path": "src/main.tsx",
+      "size": 9686
+    },
+    {
+      "zip_name": "appStore.ts",
+      "original_path": "src/store/appStore.ts",
+      "size": 11036
+    },
+    {
+      "zip_name": "tradingEnvironmentStore.ts",
+      "original_path": "src/store/tradingEnvironmentStore.ts",
+      "size": 2862
+    },
+    {
+      "zip_name": "balanceStore.ts",
+      "original_path": "src/store/balanceStore.ts",
+      "size": 7419
+    },
+    {
+      "zip_name": "paperWalletStore.ts",
+      "original_path": "src/store/paperWalletStore.ts",
+      "size": 10450
+    },
+    {
+      "zip_name": "activeWalletStore.ts",
+      "original_path": "src/store/activeWalletStore.ts",
+      "size": 3818
+    },
+    {
+      "zip_name": "TradeModeContext.tsx",
+      "original_path": "src/context/TradeModeContext.tsx",
+      "size": 2580
+    },
+    {
+      "zip_name": "api__index.ts",
+      "original_path": "api/index.ts",
+      "size": 57
+    },
+    {
+      "zip_name": "firebase-applet-config.json",
+      "original_path": "firebase-applet-config.json",
+      "size": 426
+    },
+    {
+      "zip_name": "package-lock.json",
+      "original_path": "package-lock.json",
+      "size": 385108
+    },
+    {
+      "zip_name": "README.md",
+      "original_path": "README.md",
+      "size": 1554
+    },
+    {
+      "zip_name": "trading.ts",
+      "original_path": "server/routes/trading.ts",
+      "size": 11383
+    },
+    {
+      "zip_name": "telegram.ts",
+      "original_path": "server/routes/telegram.ts",
+      "size": 2074
+    },
+    {
+      "zip_name": "pipeline.ts",
+      "original_path": "server/routes/pipeline.ts",
+      "size": 11972
+    },
+    {
+      "zip_name": "ftp.ts",
+      "original_path": "server/routes/ftp.ts",
+      "size": 3574
+    },
+    {
+      "zip_name": "health.ts",
+      "original_path": "server/routes/health.ts",
+      "size": 2356
+    },
+    {
+      "zip_name": "criteria.ts",
+      "original_path": "server/routes/criteria.ts",
+      "size": 2756
+    },
+    {
+      "zip_name": "laserstream.ts",
+      "original_path": "server/routes/laserstream.ts",
+      "size": 2653
+    },
+    {
+      "zip_name": "jupiter.ts",
+      "original_path": "server/routes/jupiter.ts",
+      "size": 2653
+    },
+    {
+      "zip_name": "dexscreener.ts",
+      "original_path": "server/routes/dexscreener.ts",
+      "size": 2789
+    },
+    {
+      "zip_name": "rpc.ts",
+      "original_path": "server/routes/rpc.ts",
+      "size": 3023
+    },
+    {
+      "zip_name": "ftpService.ts",
+      "original_path": "server/services/ftpService.ts",
+      "size": 9018
+    },
+    {
+      "zip_name": "LaserStreamWatchdog.ts",
+      "original_path": "server/services/LaserStreamWatchdog.ts",
+      "size": 15581
+    },
+    {
+      "zip_name": "JupiterTradingService.ts",
+      "original_path": "server/services/JupiterTradingService.ts",
+      "size": 2833
+    },
+    {
+      "zip_name": "simulation.ts",
+      "original_path": "server/services/simulation.ts",
+      "size": 7097
+    },
+    {
+      "zip_name": "WorkerHeartbeat.ts",
+      "original_path": "server/services/WorkerHeartbeat.ts",
+      "size": 834
+    },
+    {
+      "zip_name": "criteriaService.ts",
+      "original_path": "server/services/criteriaService.ts",
+      "size": 7651
+    },
+    {
+      "zip_name": "server__services__JupiterPreSellValidator.ts",
+      "original_path": "server/services/JupiterPreSellValidator.ts",
+      "size": 5998
+    },
+    {
+      "zip_name": "LaserstreamIngestion.ts",
+      "original_path": "server/engines/LaserstreamIngestion.ts",
+      "size": 23257
+    },
+    {
+      "zip_name": "CanonicalEventNormalizer.ts",
+      "original_path": "server/market/CanonicalEventNormalizer.ts",
+      "size": 2498
+    },
+    {
+      "zip_name": "ActivePositionMarketFeed.ts",
+      "original_path": "server/market/ActivePositionMarketFeed.ts",
+      "size": 6931
+    },
+    {
+      "zip_name": "TokenMetadataResolver.ts",
+      "original_path": "server/market/TokenMetadataResolver.ts",
+      "size": 4332
+    },
+    {
+      "zip_name": "OnChainEventNormalizer.ts",
+      "original_path": "server/market/OnChainEventNormalizer.ts",
+      "size": 8299
+    },
+    {
+      "zip_name": "HeliusErrors.ts",
+      "original_path": "server/market/HeliusErrors.ts",
+      "size": 3260
+    },
+    {
+      "zip_name": "StreamingTransportManager.ts",
+      "original_path": "server/market/StreamingTransportManager.ts",
+      "size": 4293
+    },
+    {
+      "zip_name": "MarketEventBus.ts",
+      "original_path": "server/market/MarketEventBus.ts",
+      "size": 2869
+    },
+    {
+      "zip_name": "EventNormalizer.ts",
+      "original_path": "server/market/EventNormalizer.ts",
+      "size": 5605
+    },
+    {
+      "zip_name": "TokenDiscovery.ts",
+      "original_path": "server/market/TokenDiscovery.ts",
+      "size": 2205
+    },
+    {
+      "zip_name": "LaserStreamPipeline.ts",
+      "original_path": "server/market/LaserStreamPipeline.ts",
+      "size": 6199
+    },
+    {
+      "zip_name": "CandidateRegistry.ts",
+      "original_path": "server/market/CandidateRegistry.ts",
+      "size": 5269
+    },
+    {
+      "zip_name": "HeliusLaserStreamWssManager.ts",
+      "original_path": "server/market/HeliusLaserStreamWssManager.ts",
+      "size": 30278
+    },
+    {
+      "zip_name": "StreamingTransport.ts",
+      "original_path": "server/market/StreamingTransport.ts",
+      "size": 2343
+    },
+    {
+      "zip_name": "TokenMintResolver.ts",
+      "original_path": "server/market/TokenMintResolver.ts",
+      "size": 9549
+    },
+    {
+      "zip_name": "SourceHealthMonitor.ts",
+      "original_path": "server/market/SourceHealthMonitor.ts",
+      "size": 2826
+    },
+    {
+      "zip_name": "YellowstoneConnectionManager.ts",
+      "original_path": "server/market/YellowstoneConnectionManager.ts",
+      "size": 6729
+    },
+    {
+      "zip_name": "errors.ts",
+      "original_path": "server/utils/errors.ts",
+      "size": 2789
+    },
+    {
+      "zip_name": "validation.ts",
+      "original_path": "server/utils/validation.ts",
+      "size": 2354
+    },
+    {
+      "zip_name": "fetch.ts",
+      "original_path": "server/utils/fetch.ts",
+      "size": 3481
+    },
+    {
+      "zip_name": "logger.ts",
+      "original_path": "server/utils/logger.ts",
+      "size": 725
+    },
+    {
+      "zip_name": "firebaseAdmin.ts",
+      "original_path": "server/utils/firebaseAdmin.ts",
+      "size": 1862
+    },
+    {
+      "zip_name": "firestoreConverter.ts",
+      "original_path": "server/utils/firestoreConverter.ts",
+      "size": 1926
+    },
+    {
+      "zip_name": "server__utils__quoteSafety.ts",
+      "original_path": "server/utils/quoteSafety.ts",
+      "size": 9024
+    },
+    {
+      "zip_name": "cacheRegistry.ts",
+      "original_path": "server/utils/cacheRegistry.ts",
+      "size": 669
+    },
+    {
+      "zip_name": "polyfill.ts",
+      "original_path": "server/utils/polyfill.ts",
+      "size": 499
+    },
+    {
+      "zip_name": "rawAmount.ts",
+      "original_path": "server/utils/rawAmount.ts",
+      "size": 1829
+    },
+    {
+      "zip_name": "TradingMonitorWorker.ts",
+      "original_path": "server/workers/TradingMonitorWorker.ts",
+      "size": 4236
+    },
+    {
+      "zip_name": "tradingWorker.ts",
+      "original_path": "server/workers/tradingWorker.ts",
+      "size": 2269
+    },
+    {
+      "zip_name": "StartupReconciliationWorker.ts",
+      "original_path": "server/workers/StartupReconciliationWorker.ts",
+      "size": 3405
+    },
+    {
+      "zip_name": "PositionRepository.ts",
+      "original_path": "server/repositories/PositionRepository.ts",
+      "size": 2567
+    },
+    {
+      "zip_name": "CriteriaRepository.ts",
+      "original_path": "server/repositories/CriteriaRepository.ts",
+      "size": 2741
+    },
+    {
+      "zip_name": "JsonStore.ts",
+      "original_path": "server/repositories/JsonStore.ts",
+      "size": 2366
+    },
+    {
+      "zip_name": "OrderRepository.ts",
+      "original_path": "server/repositories/OrderRepository.ts",
+      "size": 2787
+    },
+    {
+      "zip_name": "TradeRepository.ts",
+      "original_path": "server/repositories/TradeRepository.ts",
+      "size": 4669
+    },
+    {
+      "zip_name": "WorkerStateRepository.ts",
+      "original_path": "server/repositories/WorkerStateRepository.ts",
+      "size": 2345
+    },
+    {
+      "zip_name": "TokenRepository.ts",
+      "original_path": "server/repositories/TokenRepository.ts",
+      "size": 4416
+    },
+    {
+      "zip_name": "server__types__index.ts",
+      "original_path": "server/types/index.ts",
+      "size": 2796
+    },
+    {
+      "zip_name": "WalletManager.ts",
+      "original_path": "server/wallet/WalletManager.ts",
+      "size": 9093
+    },
+    {
+      "zip_name": "PaperWalletLedger.ts",
+      "original_path": "server/wallet/PaperWalletLedger.ts",
+      "size": 8852
+    },
+    {
+      "zip_name": "TokenProgramResolver.ts",
+      "original_path": "server/wallet/TokenProgramResolver.ts",
+      "size": 6955
+    },
+    {
+      "zip_name": "TradingConfig.ts",
+      "original_path": "server/config/TradingConfig.ts",
+      "size": 3053
+    },
+    {
+      "zip_name": "server__config__rpcRouting.ts",
+      "original_path": "server/config/rpcRouting.ts",
+      "size": 310
+    },
+    {
+      "zip_name": "server__config__index.ts",
+      "original_path": "server/config/index.ts",
+      "size": 4059
+    },
+    {
+      "zip_name": "jsonStore.ts",
+      "original_path": "server/db/jsonStore.ts",
+      "size": 4306
+    },
+    {
+      "zip_name": "unifiedBuyContract.ts",
+      "original_path": "server/patches/unifiedBuyContract.ts",
+      "size": 1392
+    },
+    {
+      "zip_name": "SwrCache.ts",
+      "original_path": "server/cache/SwrCache.ts",
+      "size": 4934
+    },
+    {
+      "zip_name": "security.ts",
+      "original_path": "server/middleware/security.ts",
+      "size": 5162
+    },
+    {
+      "zip_name": "auth.ts",
+      "original_path": "server/middleware/auth.ts",
+      "size": 3253
+    },
+    {
+      "zip_name": "errorHandler.ts",
+      "original_path": "server/middleware/errorHandler.ts",
+      "size": 952
+    },
+    {
+      "zip_name": "server__execution__PaperTradeExecutor.ts",
+      "original_path": "server/execution/PaperTradeExecutor.ts",
+      "size": 10099
+    },
+    {
+      "zip_name": "FastExitExecutor.ts",
+      "original_path": "server/execution/FastExitExecutor.ts",
+      "size": 6333
+    },
+    {
+      "zip_name": "MainnetTradeExecutor.ts",
+      "original_path": "server/execution/MainnetTradeExecutor.ts",
+      "size": 10346
+    },
+    {
+      "zip_name": "ExecutionGateway.ts",
+      "original_path": "server/execution/ExecutionGateway.ts",
+      "size": 3815
+    },
+    {
+      "zip_name": "TradeExecutor.ts",
+      "original_path": "server/execution/TradeExecutor.ts",
+      "size": 3230
+    },
+    {
+      "zip_name": "ExecutionAuthority.ts",
+      "original_path": "server/execution/ExecutionAuthority.ts",
+      "size": 2836
+    },
+    {
+      "zip_name": "MomentumEngine.ts",
+      "original_path": "server/trading/MomentumEngine.ts",
+      "size": 8092
+    },
+    {
+      "zip_name": "ProfitabilityEngine.ts",
+      "original_path": "server/trading/ProfitabilityEngine.ts",
+      "size": 8849
+    },
+    {
+      "zip_name": "EntryDecisionLedger.ts",
+      "original_path": "server/trading/EntryDecisionLedger.ts",
+      "size": 5531
+    },
+    {
+      "zip_name": "HardenedCriteriaEngine.ts",
+      "original_path": "server/trading/HardenedCriteriaEngine.ts",
+      "size": 18304
+    },
+    {
+      "zip_name": "RebuyGuard.ts",
+      "original_path": "server/trading/RebuyGuard.ts",
+      "size": 6190
+    },
+    {
+      "zip_name": "BondingCurveFastLane.ts",
+      "original_path": "server/trading/BondingCurveFastLane.ts",
+      "size": 6819
+    },
+    {
+      "zip_name": "server__trading__OrderManager.ts",
+      "original_path": "server/trading/OrderManager.ts",
+      "size": 9306
+    },
+    {
+      "zip_name": "LaserstreamSignalEngine.ts",
+      "original_path": "server/trading/LaserstreamSignalEngine.ts",
+      "size": 6252
+    },
+    {
+      "zip_name": "PnLEngine.ts",
+      "original_path": "server/trading/PnLEngine.ts",
+      "size": 3737
+    },
+    {
+      "zip_name": "MigrationDetector.ts",
+      "original_path": "server/trading/MigrationDetector.ts",
+      "size": 6737
+    },
+    {
+      "zip_name": "UnifiedExitEngine.ts",
+      "original_path": "server/trading/UnifiedExitEngine.ts",
+      "size": 15818
+    },
+    {
+      "zip_name": "TradingEngine.ts",
+      "original_path": "server/trading/TradingEngine.ts",
+      "size": 18228
+    },
+    {
+      "zip_name": "HardenedApprovalStore.ts",
+      "original_path": "server/trading/HardenedApprovalStore.ts",
+      "size": 7347
+    },
+    {
+      "zip_name": "CandidateEnricher.ts",
+      "original_path": "server/trading/CandidateEnricher.ts",
+      "size": 16014
+    },
+    {
+      "zip_name": "PositionManager.ts",
+      "original_path": "server/trading/PositionManager.ts",
+      "size": 18829
+    },
+    {
+      "zip_name": "TradingSupervisor.ts",
+      "original_path": "server/trading/TradingSupervisor.ts",
+      "size": 8678
+    },
+    {
+      "zip_name": "OpportunityScorer.ts",
+      "original_path": "server/trading/OpportunityScorer.ts",
+      "size": 7139
+    },
+    {
+      "zip_name": "server__trading__RiskManager.ts",
+      "original_path": "server/trading/RiskManager.ts",
+      "size": 4869
+    },
+    {
+      "zip_name": "ServerEntryGate.ts",
+      "original_path": "server/trading/ServerEntryGate.ts",
+      "size": 3376
+    },
+    {
+      "zip_name": "EntryEngine.ts",
+      "original_path": "server/trading/EntryEngine.ts",
+      "size": 14294
+    },
+    {
+      "zip_name": "PositionValuationEngine.ts",
+      "original_path": "server/trading/PositionValuationEngine.ts",
+      "size": 15017
+    },
+    {
+      "zip_name": "PriorityScheduler.ts",
+      "original_path": "server/trading/PriorityScheduler.ts",
+      "size": 4224
+    },
+    {
+      "zip_name": "server__polyfill.ts",
+      "original_path": "server/polyfill.ts",
+      "size": 93
+    },
+    {
+      "zip_name": "unifiedMultiSourceBuyContract.test.ts",
+      "original_path": "server/tests/unifiedMultiSourceBuyContract.test.ts",
+      "size": 1287
+    },
+    {
+      "zip_name": "unifiedMultiSourceE2E.test.ts",
+      "original_path": "server/tests/unifiedMultiSourceE2E.test.ts",
+      "size": 8549
+    },
+    {
+      "zip_name": "exitEngine.test.ts",
+      "original_path": "server/tests/exitEngine.test.ts",
+      "size": 8343
+    },
+    {
+      "zip_name": "arinaXrayExecution.test.ts",
+      "original_path": "server/tests/arinaXrayExecution.test.ts",
+      "size": 13874
+    },
+    {
+      "zip_name": "positionValuationEngine.test.ts",
+      "original_path": "server/tests/positionValuationEngine.test.ts",
+      "size": 7164
+    },
+    {
+      "zip_name": "arinaXrayArchitecture.test.ts",
+      "original_path": "server/tests/arinaXrayArchitecture.test.ts",
+      "size": 6490
+    },
+    {
+      "zip_name": ".env.example",
+      "original_path": ".env.example",
+      "size": 1696
+    },
+    {
+      "zip_name": "FINAL_REGRESSION_TEST_REPORT.md",
+      "original_path": "FINAL_REGRESSION_TEST_REPORT.md",
+      "size": 0
+    },
+    {
+      "zip_name": "index.html",
+      "original_path": "index.html",
+      "size": 1014
+    },
+    {
+      "zip_name": "production-trading-invariants.md",
+      "original_path": "tests/production-trading-invariants.md",
+      "size": 609
+    },
+    {
+      "zip_name": "shared__index.ts",
+      "original_path": "shared/index.ts",
+      "size": 1685
+    }
+  ]
+}

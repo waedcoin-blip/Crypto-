@@ -7,7 +7,7 @@ import { useAppStore } from '../store/appStore';
 export function WalletPanel() {
   const { status, address, network, solBalance, connectFromKey, disconnect, refreshBalance } = useWalletBridge();
   const [keyInput, setKeyInput] = useState('');
-  const [selectedNetwork, setSelectedNetwork] = useState<'paper' | 'devnet' | 'mainnet'>('paper');
+  const [selectedNetwork, setSelectedNetwork] = useState<'paper' | 'mainnet'>('paper');
   const tradeMode = useAppStore((s) => s.tradeMode);
   const addLog = useAppStore((s) => s.addLog);
 
@@ -103,7 +103,6 @@ export function WalletPanel() {
             className="w-full bg-[#050509] border border-[#2d2e3d] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-[#c7f284]"
           >
             <option value="paper">Paper Trading (Simulated)</option>
-            <option value="devnet">Devnet (Test)</option>
             <option value="mainnet">Mainnet (Real Funds)</option>
           </select>
 
