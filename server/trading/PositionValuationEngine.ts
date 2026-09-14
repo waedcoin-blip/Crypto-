@@ -4,6 +4,8 @@ import { executionGateway } from '../execution/ExecutionGateway.js';
 import { rawToUiNumber, lamportsToSolNumber } from '../utils/rawAmount.js';
 import { logger } from '../utils/logger.js';
 
+const WSOL_MINT = 'So11111111111111111111111111111111111111112';
+
 export interface PositionValuation {
   mint: string;
   tokenAmountRaw: bigint | string;
@@ -51,8 +53,8 @@ export class PositionValuationEngine {
   private pendingQuotes: Map<string, Promise<PositionValuation | null>> = new Map();
 
   // Quote freshness thresholds
-  private readonly QUOTE_FRESHNESS_MS = 2500;
-  private readonly STALE_THRESHOLD_MS = 10000;
+  private readonly QUOTE_FRESHNESS_MS = 5000;
+  private readonly STALE_THRESHOLD_MS = 25000;
 
   private constructor() {}
 
@@ -73,17 +75,64 @@ export class PositionValuationEngine {
 
   public getValuation(network: string, wallet: string, mint: string): PositionValuation | null {
     const key = this.getKey(network, wallet, mint);
-    const val = this.valuations.get(key);
+    let val = this.valuations.get(key);
+
+    // If not found in cache, attempt to build an initial valuation from open position
+    if (!val) {
+      const pos = positionManager.getPosition(network, wallet, mint) ||
+                  positionManager.getOpenPositions().find((p: any) => p.mint === mint);
+
+      if (pos && pos.status !== 'CLOSED') {
+        const rawAmount = pos.tokenAmountRaw
+          ? BigInt(pos.tokenAmountRaw)
+          : BigInt(Math.floor(pos.tokenAmount * (10 ** (pos.decimals || 6))));
+        const tokenQuantity = safeTokenQuantity(rawAmount, pos.decimals || 6);
+        const priceSol = pos.currentPriceSol && pos.currentPriceSol > 0 ? pos.currentPriceSol : pos.averageEntryPrice;
+        const entryCostSol = pos.totalSolSpent || 0;
+        const marketValueSol = tokenQuantity * priceSol;
+        const pnlSol = marketValueSol - entryCostSol;
+        const pnlPercent = entryCostSol > 0 ? (pnlSol / entryCostSol) * 100 : 0;
+        const now = Date.now();
+
+        val = {
+          mint,
+          tokenAmountRaw: rawAmount,
+          tokenDecimals: pos.decimals || 6,
+          entryCostSol,
+          currentPriceSol: priceSol,
+          executableValueSol: marketValueSol,
+          executablePnlSol: pnlSol,
+          executablePnlPercent: pnlPercent,
+          marketValueSol,
+          marketPnlSol: pnlSol,
+          marketPnlPercent: pnlPercent,
+          pnlSol,
+          pnlPercent,
+          source: 'WSS',
+          lastMarketEventAt: pos.lastMarketPriceAt || now,
+          lastMarketPriceAt: pos.lastMarketPriceAt || now,
+          valuationUpdatedAt: now,
+          status: 'LIVE',
+          positionId: pos.id,
+          network: pos.network || network,
+          wallet: pos.wallet || wallet,
+          tokenQuantity,
+          averageEntryPriceSol: pos.averageEntryPrice,
+        };
+        this.valuations.set(key, val);
+      }
+    }
+
     if (!val) return null;
 
     const now = Date.now();
     const marketAge = val.lastMarketPriceAt ? now - val.lastMarketPriceAt : Infinity;
-    if (marketAge <= 5000) {
+    if (marketAge <= 15000) {
       val.status = 'LIVE';
-    } else if (marketAge <= 15000) {
+    } else if (marketAge <= 45000) {
       val.status = 'STALE';
     } else {
-      val.status = 'UNAVAILABLE';
+      val.status = 'STALE';
     }
     val.quoteAgeMs = val.lastExecutableQuoteAt ? now - val.lastExecutableQuoteAt : undefined;
     val.marketDataAgeMs = val.lastMarketPriceAt ? now - val.lastMarketPriceAt : undefined;
@@ -136,6 +185,9 @@ export class PositionValuationEngine {
           tokenDecimals: pos.decimals,
           entryCostSol,
           currentPriceSol: priceSol,
+          executableValueSol: marketValueSol,
+          executablePnlSol: marketPnlSol,
+          executablePnlPercent: marketPnlPercent,
           marketValueSol,
           marketPnlSol,
           marketPnlPercent,
@@ -211,38 +263,89 @@ export class PositionValuationEngine {
     if (rawAmount <= 0n) return null;
 
     try {
-      const executor = executionGateway.getExecutor(position.network) as any;
-      const quote = await executor.getExecutableSellQuote(position.mint, rawAmount, 250);
+      let quoteOutLamports = 0;
+      let source: 'JUPITER' | 'DEXSCREENER' | 'LASERSTREAM' | 'WSS' = 'JUPITER';
+
+      // 1. Fetch quote through executionGateway
+      try {
+        const quoteRes = await executionGateway.getQuote({
+          inputMint: position.mint,
+          outputMint: WSOL_MINT,
+          amount: String(rawAmount),
+          slippageBps: 250,
+          network: position.network,
+          walletAddress: position.wallet,
+        });
+
+        if (quoteRes.success && quoteRes.outAmountLamports && quoteRes.outAmountLamports > 0) {
+          quoteOutLamports = quoteRes.outAmountLamports;
+          source = 'JUPITER';
+        }
+      } catch (qErr) {
+        logger.warn({ mint: position.mint, err: String(qErr) }, '[PositionValuationEngine] ExecutionGateway quote failed, attempting market discovery');
+      }
+
+      // 2. Secondary fallback: CandidateEnricher / DexScreener
+      if (quoteOutLamports <= 0) {
+        try {
+          const { candidateEnricher } = await import('../trading/CandidateEnricher.js');
+          const candidate = await candidateEnricher.enrichCandidate(position.mint, position.network);
+          if (candidate.priceSol?.value && candidate.priceSol.value > 0) {
+            const tokenQty = safeTokenQuantity(rawAmount, position.decimals);
+            quoteOutLamports = Math.floor(tokenQty * candidate.priceSol.value * 1e9);
+            source = 'DEXSCREENER';
+          }
+        } catch (enrichErr) {
+          logger.warn({ enrichErr }, '[PositionValuationEngine] Candidate enricher fallback failed');
+        }
+      }
+
+      if (quoteOutLamports <= 0) {
+        // Retain previous or entry price if available
+        const prevPrice = position.currentPriceSol > 0 ? position.currentPriceSol : position.averageEntryPrice;
+        if (prevPrice > 0) {
+          const tokenQty = safeTokenQuantity(rawAmount, position.decimals);
+          quoteOutLamports = Math.floor(tokenQty * prevPrice * 1e9);
+          source = 'DEXSCREENER';
+        } else {
+          return null;
+        }
+      }
 
       const seq = (this.sequences.get(key) || 0) + 1;
       this.sequences.set(key, seq);
 
       const tokenQty = safeTokenQuantity(rawAmount, position.decimals);
-      const executableValueSol = lamportsToSolNumber(quote.expectedOutLamports);
+      const executableValueSol = quoteOutLamports / 1e9;
+      const currentPriceSol = tokenQty > 0 ? executableValueSol / tokenQty : position.currentPriceSol;
       const executablePnlSol = executableValueSol - position.totalSolSpent;
       const executablePnlPercent = position.totalSolSpent > 0
         ? (executablePnlSol / position.totalSolSpent) * 100
         : 0;
+
+      // Update positionManager with current price so all subsystems stay synchronized
+      positionManager.updatePositionPrice(position.network, position.wallet, position.mint, currentPriceSol, {
+        isFreshQuote: source === 'JUPITER',
+        timestamp: now,
+      });
 
       const valuation: PositionValuation = {
         mint: position.mint,
         tokenAmountRaw: rawAmount,
         tokenDecimals: position.decimals,
         entryCostSol: position.totalSolSpent,
-        currentPriceSol: position.currentPriceSol,
+        currentPriceSol,
         executableValueSol,
         executablePnlSol,
         executablePnlPercent,
-        marketValueSol: tokenQty * position.currentPriceSol,
-        marketPnlSol: (tokenQty * position.currentPriceSol) - position.totalSolSpent,
-        marketPnlPercent: position.totalSolSpent > 0
-          ? (((tokenQty * position.currentPriceSol) - position.totalSolSpent) / position.totalSolSpent) * 100
-          : 0,
+        marketValueSol: tokenQty * currentPriceSol,
+        marketPnlSol: executablePnlSol,
+        marketPnlPercent: executablePnlPercent,
         pnlSol: executablePnlSol,
         pnlPercent: executablePnlPercent,
-        source: 'JUPITER',
-        lastExecutableQuoteAt: now,
-        lastMarketPriceAt: position.lastMarketPriceAt || now,
+        source,
+        lastExecutableQuoteAt: source === 'JUPITER' ? now : undefined,
+        lastMarketPriceAt: now,
         valuationUpdatedAt: now,
         status: 'LIVE',
         positionId: position.id,
@@ -294,3 +397,4 @@ export class PositionValuationEngine {
 }
 
 export const positionValuationEngine = PositionValuationEngine.getInstance();
+

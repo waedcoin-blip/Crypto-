@@ -66,13 +66,10 @@ export class TradingMonitorWorker {
     if (!this.isRunning) return;
 
     try {
-      const supervisorStatus = tradingSupervisor.getStatus();
-      if (supervisorStatus.state !== 'TRADING') return;
-
       const openPositions = positionManager.getOpenPositions();
       if (openPositions.length === 0) return;
 
-      // Refresh valuations for all open positions
+      // Refresh valuations for all open positions from authoritative market sources
       await positionValuationEngine.forceRefreshAllQuotes(openPositions);
 
       // Evaluate exit conditions for each position
@@ -83,7 +80,7 @@ export class TradingMonitorWorker {
             position.wallet,
             position.mint
           );
-          if (!valuation || valuation.currentPriceSol <= 0) continue;
+          if (!valuation || !valuation.currentPriceSol || valuation.currentPriceSol <= 0) continue;
 
           const exitDecision = unifiedExitEngine.evaluatePositionExit(
             position,

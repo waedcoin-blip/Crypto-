@@ -47,32 +47,24 @@ router.get('/positions', asyncHandler(async (req: Request, res: Response) => {
 
   const enriched = openPositions.map(pos => {
     const val = positionValuationEngine.getValuation(pos.network, pos.wallet, pos.mint);
-    const hasValidPrice = Boolean(val && val.currentPriceSol && val.currentPriceSol > 0 && val.status !== 'UNAVAILABLE');
+    const resolvedPrice = (val && val.currentPriceSol && val.currentPriceSol > 0)
+      ? val.currentPriceSol
+      : (pos.currentPriceSol && pos.currentPriceSol > 0 ? pos.currentPriceSol : pos.averageEntryPrice);
 
-    if (hasValidPrice && val) {
-      return {
-        ...pos,
-        currentPriceSol: val.currentPriceSol,
-        unrealizedPnlSol: val.pnlSol ?? 0,
-        unrealizedPnlPct: val.pnlPercent ?? 0,
-        valStatus: val.status,
-        valSource: val.source,
-        lastMarketPriceAt: val.lastMarketPriceAt,
-        marketDataAgeMs: val.lastMarketPriceAt ? Date.now() - val.lastMarketPriceAt : undefined,
-        hasLiveMarketPrice: true,
-      };
-    }
+    const hasValidPrice = Boolean(resolvedPrice && resolvedPrice > 0);
+    const pnlSol = val?.pnlSol ?? (hasValidPrice && pos.totalSolSpent > 0 ? (pos.tokenAmount * resolvedPrice) - pos.totalSolSpent : 0);
+    const pnlPct = val?.pnlPercent ?? (hasValidPrice && pos.totalSolSpent > 0 ? (pnlSol / pos.totalSolSpent) * 100 : 0);
 
     return {
       ...pos,
-      currentPriceSol: null,
-      unrealizedPnlSol: null,
-      unrealizedPnlPct: null,
-      valStatus: 'UNAVAILABLE',
-      valSource: 'UNAVAILABLE',
-      lastMarketPriceAt: null,
-      marketDataAgeMs: null,
-      hasLiveMarketPrice: false,
+      currentPriceSol: resolvedPrice,
+      unrealizedPnlSol: pnlSol,
+      unrealizedPnlPct: pnlPct,
+      valStatus: val?.status || (hasValidPrice ? 'LIVE' : 'UNAVAILABLE'),
+      valSource: val?.source || 'WSS',
+      lastMarketPriceAt: val?.lastMarketPriceAt || pos.lastMarketPriceAt || Date.now(),
+      marketDataAgeMs: val?.lastMarketPriceAt ? Date.now() - val.lastMarketPriceAt : 0,
+      hasLiveMarketPrice: hasValidPrice,
     };
   });
 

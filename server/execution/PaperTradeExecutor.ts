@@ -7,6 +7,8 @@ import {
   ExecutionResult,
 } from './TradeExecutor.js';
 import { paperWalletLedger } from '../wallet/PaperWalletLedger.js';
+import { config, getJupiterApiKey } from '../config/index.js';
+import { fetchWithRetry } from '../utils/fetch.js';
 import { logger } from '../utils/logger.js';
 
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
@@ -15,34 +17,97 @@ export class PaperTradeExecutor implements TradeExecutor {
   public readonly network: string = 'paper';
 
   // ==========================================
-  // QUOTE (Simulated)
+  // QUOTE (Authoritative Jupiter Quote Discovery)
   // ==========================================
 
   async getQuote(params: QuoteParams): Promise<QuoteResult> {
-    // Paper mode: simulate a quote with realistic slippage
-    const amountNum = Number(params.amount);
-    const simulatedSlippage = 1 + (params.slippageBps / 10000) * 0.5; // Half the requested slippage
-    const outAmount = Math.floor(amountNum * simulatedSlippage);
-
-    return {
-      success: true,
-      quote: {
+    try {
+      const jupBaseUrl = 'https://api.jup.ag/swap/v1';
+      const apiKey = getJupiterApiKey();
+      const queryParams = new URLSearchParams({
         inputMint: params.inputMint,
         outputMint: params.outputMint,
-        inAmount: String(params.amount),
-        outAmount: String(outAmount),
-        routePlan: [{ swapInfo: { label: 'PaperSimulated' } }],
-        priceImpactPct: 0.1,
-      },
-      outAmountLamports: outAmount,
-      outAmountRaw: String(outAmount),
-      priceImpactPct: 0.1,
-      routePlanLength: 1,
-    };
+        amount: String(params.amount),
+        slippageBps: String(params.slippageBps || 250),
+        swapMode: 'ExactIn',
+      });
+
+      const url = `${jupBaseUrl}/quote?${queryParams.toString()}`;
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (apiKey) headers['x-api-key'] = apiKey;
+
+      const { response, text } = await fetchWithRetry(url, { method: 'GET', headers, timeoutMs: 8000 }, 2, 500);
+
+      if (response.ok) {
+        const quote = JSON.parse(text);
+        if (quote && quote.routePlan && quote.routePlan.length > 0 && quote.outAmount) {
+          return {
+            success: true,
+            quote,
+            outAmountLamports: Number(quote.outAmount) || 0,
+            outAmountRaw: String(quote.outAmount),
+            priceImpactPct: Number(quote.priceImpactPct) || 0,
+            routePlanLength: quote.routePlan.length,
+          };
+        }
+      }
+
+      // Fallback to secondary market pricing if Jupiter unrouted/rate-limited
+      try {
+        const { candidateEnricher } = await import('../trading/CandidateEnricher.js');
+        const targetMint = params.inputMint === WSOL_MINT ? params.outputMint : params.inputMint;
+        const candidate = await candidateEnricher.enrichCandidate(targetMint, 'paper');
+        
+        if (candidate.priceSol?.value && candidate.priceSol.value > 0) {
+          const decimals = candidate.decimals?.value ?? 6;
+          const priceSol = candidate.priceSol.value;
+          let calculatedOutRaw = '0';
+          let calculatedOutNum = 0;
+
+          if (params.inputMint === WSOL_MINT) {
+            // SOL -> Token
+            const inSol = Number(params.amount) / 1e9;
+            const tokenUnits = inSol / priceSol;
+            calculatedOutNum = Math.floor(tokenUnits * (10 ** decimals));
+            calculatedOutRaw = String(calculatedOutNum);
+          } else {
+            // Token -> SOL
+            const tokenUnits = Number(params.amount) / (10 ** decimals);
+            const solUnits = tokenUnits * priceSol;
+            calculatedOutNum = Math.floor(solUnits * 1e9);
+            calculatedOutRaw = String(calculatedOutNum);
+          }
+
+          if (calculatedOutNum > 0) {
+            return {
+              success: true,
+              quote: {
+                inputMint: params.inputMint,
+                outputMint: params.outputMint,
+                inAmount: String(params.amount),
+                outAmount: calculatedOutRaw,
+                routePlan: [{ swapInfo: { label: candidate.dataSource || 'MarketDiscovery' } }],
+                priceImpactPct: 0.1,
+              },
+              outAmountLamports: calculatedOutNum,
+              outAmountRaw: calculatedOutRaw,
+              priceImpactPct: 0.1,
+              routePlanLength: 1,
+            };
+          }
+        }
+      } catch (fallbackErr) {
+        logger.warn({ fallbackErr }, '[PaperTradeExecutor] Fallback market quote discovery failed');
+      }
+
+      return { success: false, error: 'NO_ROUTE_FOUND' };
+    } catch (err: any) {
+      return { success: false, error: `QUOTE_EXCEPTION: ${err?.message || String(err)}` };
+    }
   }
 
   // ==========================================
-  // BUY (Simulated)
+  // BUY (Paper Execution with Real Market Data)
   // ==========================================
 
   async buy(params: ExecuteParams): Promise<ExecutionResult> {
@@ -50,38 +115,75 @@ export class PaperTradeExecutor implements TradeExecutor {
 
     try {
       const amountLamports = Number(params.amount);
+      const solSpent = amountLamports / 1e9;
 
       // Check paper balance
-      const balance = paperWalletLedger.getSolBalance();
-      if (balance < amountLamports / 1e9) {
+      const balance = paperWalletLedger.getSolBalance(params.walletAddress || 'default');
+      if (balance < solSpent) {
         return {
           success: false,
-          error: `INSUFFICIENT_BALANCE: Paper balance ${balance.toFixed(4)} SOL < required ${(amountLamports / 1e9).toFixed(4)} SOL`,
+          error: `INSUFFICIENT_BALANCE: Paper balance ${balance.toFixed(4)} SOL < required ${solSpent.toFixed(4)} SOL`,
           durationMs: Date.now() - startTime,
         };
       }
 
-      // Simulate execution delay (50-200ms)
-      const simulatedDelay = 50 + Math.random() * 150;
+      // Obtain authoritative quote
+      let outAmountRaw: string;
+      let outAmountLamports: number = 0;
+
+      if (params.preValidatedQuote && params.preValidatedQuote.outAmount && BigInt(params.preValidatedQuote.outAmount) > 0n) {
+        outAmountRaw = String(params.preValidatedQuote.outAmount);
+        outAmountLamports = Number(params.preValidatedQuote.outAmount) || 0;
+      } else {
+        const quoteResult = await this.getQuote({
+          inputMint: params.inputMint || WSOL_MINT,
+          outputMint: params.outputMint,
+          amount: String(params.amount),
+          slippageBps: params.slippageBps || 250,
+          network: 'paper',
+          walletAddress: params.walletAddress,
+        });
+
+        if (!quoteResult.success || !quoteResult.outAmountRaw || BigInt(quoteResult.outAmountRaw) <= 0n) {
+          return {
+            success: false,
+            error: `PAPER_BUY_QUOTE_FAILED: ${quoteResult.error || 'Failed to retrieve authoritative quote for token'}`,
+            durationMs: Date.now() - startTime,
+          };
+        }
+
+        outAmountRaw = quoteResult.outAmountRaw;
+        outAmountLamports = quoteResult.outAmountLamports || 0;
+      }
+
+      // Simulate realistic execution delay (50-150ms)
+      const simulatedDelay = 50 + Math.random() * 100;
       await new Promise(resolve => setTimeout(resolve, simulatedDelay));
 
       // Generate simulated signature
       const signature = `paper_buy_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 
-      // Commit buy to paper wallet
-      const tokenAmount = amountLamports; // Simplified: 1:1 for paper
-      paperWalletLedger.commitBuy(params.outputMint, amountLamports / 1e9, String(tokenAmount), params.decimals || 9, signature, params.walletAddress || 'default');
+      // Commit buy to paper wallet with authoritative raw token output
+      paperWalletLedger.commitBuy(
+        params.outputMint,
+        solSpent,
+        outAmountRaw,
+        params.decimals,
+        signature,
+        params.walletAddress || 'default'
+      );
 
       if (params.onBroadcast) {
         await params.onBroadcast(signature);
       }
 
-      logger.info({ mint: params.outputMint, amountSol: amountLamports / 1e9, signature }, '[PaperTradeExecutor] BUY executed');
+      logger.info({ mint: params.outputMint, amountSol: solSpent, tokenAmountRaw: outAmountRaw, signature }, '[PaperTradeExecutor] BUY executed with authoritative quote');
 
       return {
         success: true,
         signature,
-        outAmountRaw: String(tokenAmount),
+        outAmountRaw,
+        outAmountLamports,
         durationMs: Date.now() - startTime,
       };
     } catch (err: any) {
@@ -94,7 +196,7 @@ export class PaperTradeExecutor implements TradeExecutor {
   }
 
   // ==========================================
-  // SELL (Simulated)
+  // SELL (Paper Execution with Real Market Data)
   // ==========================================
 
   async sell(params: ExecuteParams): Promise<ExecutionResult> {
@@ -102,6 +204,13 @@ export class PaperTradeExecutor implements TradeExecutor {
 
     try {
       const tokenAmountRaw = BigInt(String(params.amount));
+      if (tokenAmountRaw <= 0n) {
+        return {
+          success: false,
+          error: 'INVALID_SELL_AMOUNT: Amount must be greater than zero',
+          durationMs: Date.now() - startTime,
+        };
+      }
 
       // Check paper token balance using raw balance
       let rawBalanceStr = paperWalletLedger.getTokenBalanceRaw(params.inputMint, params.walletAddress || 'default');
@@ -118,8 +227,7 @@ export class PaperTradeExecutor implements TradeExecutor {
               ? BigInt(pos.tokenAmountRaw)
               : BigInt(Math.floor(pos.tokenAmount * (10 ** (pos.decimals || 9))));
 
-            if (posRaw > 0n) {
-              // Automatically sync/credit paperWalletLedger to match open paper position
+            if (posRaw >= tokenAmountRaw) {
               paperWalletLedger.commitBuy(
                 params.inputMint,
                 pos.totalSolSpent || 0.1,
@@ -146,37 +254,65 @@ export class PaperTradeExecutor implements TradeExecutor {
         };
       }
 
+      // Fetch fresh executable quote for the sell
+      let outSol = 0;
+      let outAmountLamports = 0;
+
+      if (params.preValidatedQuote && params.preValidatedQuote.outAmount && Number(params.preValidatedQuote.outAmount) > 0) {
+        outAmountLamports = Number(params.preValidatedQuote.outAmount);
+        outSol = outAmountLamports / 1e9;
+      } else {
+        const quoteResult = await this.getQuote({
+          inputMint: params.inputMint,
+          outputMint: params.outputMint || WSOL_MINT,
+          amount: String(tokenAmountRaw),
+          slippageBps: params.slippageBps || 250,
+          network: 'paper',
+          walletAddress: params.walletAddress,
+        });
+
+        if (quoteResult.success && quoteResult.outAmountLamports && quoteResult.outAmountLamports > 0) {
+          outAmountLamports = quoteResult.outAmountLamports;
+          outSol = outAmountLamports / 1e9;
+        } else {
+          // Fallback: estimate from position current price or entry cost
+          try {
+            const { positionManager } = await import('../trading/PositionManager.js');
+            const pos = positionManager.getPosition('paper', params.walletAddress || 'default', params.inputMint);
+            if (pos && pos.averageEntryPrice > 0 && pos.currentPriceSol > 0) {
+              const ratio = pos.currentPriceSol / pos.averageEntryPrice;
+              outSol = (pos.totalSolSpent * ratio) * (Number(tokenAmountRaw) / pos.tokenAmount);
+              outAmountLamports = Math.floor(outSol * 1e9);
+            } else if (pos) {
+              outSol = pos.totalSolSpent * (Number(tokenAmountRaw) / pos.tokenAmount);
+              outAmountLamports = Math.floor(outSol * 1e9);
+            }
+          } catch (err) {
+            logger.error({ err }, '[PaperTradeExecutor] Error resolving fallback sell proceeds');
+          }
+        }
+      }
+
       // Simulate execution delay
-      const simulatedDelay = 50 + Math.random() * 150;
+      const simulatedDelay = 50 + Math.random() * 100;
       await new Promise(resolve => setTimeout(resolve, simulatedDelay));
 
       // Generate simulated signature
       const signature = `paper_sell_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 
-      // Add SOL to paper wallet (simulated output)
-      let outSol = Number(tokenAmountRaw) / Math.pow(10, params.decimals || 9);
-      try {
-        const { positionManager } = await import('../trading/PositionManager.js');
-        const pos = positionManager.getPosition('paper', params.walletAddress || 'default', params.inputMint);
-        if (pos && pos.averageEntryPrice > 0 && pos.currentPriceSol > 0) {
-          const ratio = pos.currentPriceSol / pos.averageEntryPrice;
-          outSol = (pos.totalSolSpent * ratio) * (Number(tokenAmountRaw) / pos.tokenAmount);
-        }
-      } catch (err) {
-        logger.error({ err }, '[PaperTradeExecutor] Error resolving position price for sell proceeds');
-      }
       paperWalletLedger.commitSell(params.inputMint, String(tokenAmountRaw), outSol, signature, params.walletAddress || 'default');
 
       if (params.onBroadcast) {
         await params.onBroadcast(signature);
       }
 
-      logger.info({ mint: params.inputMint, amountRaw: String(tokenAmountRaw), signature }, '[PaperTradeExecutor] SELL executed');
+      logger.info({ mint: params.inputMint, amountRaw: String(tokenAmountRaw), outSol, signature }, '[PaperTradeExecutor] SELL executed');
 
       return {
         success: true,
         signature,
-        outAmountLamports: Math.floor(outSol * 1e9),
+        outAmountLamports,
+        outAmountRaw: String(outAmountLamports),
         durationMs: Date.now() - startTime,
       };
     } catch (err: any) {
@@ -193,11 +329,11 @@ export class PaperTradeExecutor implements TradeExecutor {
   // ==========================================
 
   async getSolBalance(_walletAddress?: string): Promise<number> {
-    return paperWalletLedger.getSolBalance();
+    return paperWalletLedger.getSolBalance(_walletAddress || 'default');
   }
 
   async getTokenBalance(mint: string, _walletAddress?: string): Promise<number> {
-    return paperWalletLedger.getTokenBalance(mint);
+    return paperWalletLedger.getTokenBalance(mint, _walletAddress || 'default');
   }
 
   async verifyReadiness(): Promise<{ ready: boolean; reason?: string }> {
