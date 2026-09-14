@@ -40,7 +40,7 @@ export class PaperTradeExecutor implements TradeExecutor {
 
       if (response.ok) {
         const quote = JSON.parse(text);
-        if (quote && quote.routePlan && quote.routePlan.length > 0 && quote.outAmount) {
+        if (quote && quote.routePlan && quote.routePlan.length > 0 && quote.outAmount && BigInt(quote.outAmount) > 0n) {
           return {
             success: true,
             quote,
@@ -52,54 +52,8 @@ export class PaperTradeExecutor implements TradeExecutor {
         }
       }
 
-      // Fallback to secondary market pricing if Jupiter unrouted/rate-limited
-      try {
-        const { candidateEnricher } = await import('../trading/CandidateEnricher.js');
-        const targetMint = params.inputMint === WSOL_MINT ? params.outputMint : params.inputMint;
-        const candidate = await candidateEnricher.enrichCandidate(targetMint, 'paper');
-        
-        if (candidate.priceSol?.value && candidate.priceSol.value > 0) {
-          const decimals = candidate.decimals?.value ?? 6;
-          const priceSol = candidate.priceSol.value;
-          let calculatedOutRaw = '0';
-          let calculatedOutNum = 0;
-
-          if (params.inputMint === WSOL_MINT) {
-            // SOL -> Token
-            const inSol = Number(params.amount) / 1e9;
-            const tokenUnits = inSol / priceSol;
-            calculatedOutNum = Math.floor(tokenUnits * (10 ** decimals));
-            calculatedOutRaw = String(calculatedOutNum);
-          } else {
-            // Token -> SOL
-            const tokenUnits = Number(params.amount) / (10 ** decimals);
-            const solUnits = tokenUnits * priceSol;
-            calculatedOutNum = Math.floor(solUnits * 1e9);
-            calculatedOutRaw = String(calculatedOutNum);
-          }
-
-          if (calculatedOutNum > 0) {
-            return {
-              success: true,
-              quote: {
-                inputMint: params.inputMint,
-                outputMint: params.outputMint,
-                inAmount: String(params.amount),
-                outAmount: calculatedOutRaw,
-                routePlan: [{ swapInfo: { label: candidate.dataSource || 'MarketDiscovery' } }],
-                priceImpactPct: 0.1,
-              },
-              outAmountLamports: calculatedOutNum,
-              outAmountRaw: calculatedOutRaw,
-              priceImpactPct: 0.1,
-              routePlanLength: 1,
-            };
-          }
-        }
-      } catch (fallbackErr) {
-        logger.warn({ fallbackErr }, '[PaperTradeExecutor] Fallback market quote discovery failed');
-      }
-
+      // No synthetic fallbacks: If Jupiter has no route or returns an error, fail closed
+      logger.warn({ mint: params.outputMint || params.inputMint }, '[PaperTradeExecutor] Jupiter returned no valid route for quote request');
       return { success: false, error: 'NO_ROUTE_FOUND' };
     } catch (err: any) {
       return { success: false, error: `QUOTE_EXCEPTION: ${err?.message || String(err)}` };
@@ -275,21 +229,11 @@ export class PaperTradeExecutor implements TradeExecutor {
           outAmountLamports = quoteResult.outAmountLamports;
           outSol = outAmountLamports / 1e9;
         } else {
-          // Fallback: estimate from position current price or entry cost
-          try {
-            const { positionManager } = await import('../trading/PositionManager.js');
-            const pos = positionManager.getPosition('paper', params.walletAddress || 'default', params.inputMint);
-            if (pos && pos.averageEntryPrice > 0 && pos.currentPriceSol > 0) {
-              const ratio = pos.currentPriceSol / pos.averageEntryPrice;
-              outSol = (pos.totalSolSpent * ratio) * (Number(tokenAmountRaw) / pos.tokenAmount);
-              outAmountLamports = Math.floor(outSol * 1e9);
-            } else if (pos) {
-              outSol = pos.totalSolSpent * (Number(tokenAmountRaw) / pos.tokenAmount);
-              outAmountLamports = Math.floor(outSol * 1e9);
-            }
-          } catch (err) {
-            logger.error({ err }, '[PaperTradeExecutor] Error resolving fallback sell proceeds');
-          }
+          return {
+            success: false,
+            error: `PAPER_SELL_QUOTE_FAILED: ${quoteResult.error || 'No executable Jupiter quote available for sell'}`,
+            durationMs: Date.now() - startTime,
+          };
         }
       }
 

@@ -4449,7 +4449,7 @@ function App() {
                             <span className={cn("font-mono text-xs lg:text-sm font-bold", trade.type === 'buy' ? "text-emerald-400" : "text-rose-400")}>
                               {trade.type === 'buy' ? '+' : '-'}{trade.amount.toLocaleString()} {trade.token}
                             </span>
-                            <span className="text-[9px] text-slate-500 font-mono">(${(trade.amount * 145).toLocaleString()})</span>
+                            <span className="text-[9px] text-slate-500 font-mono">(${(trade.amount * (getSolPriceUsd() || 1)).toLocaleString()})</span>
                           </div>
                           
                           <div className="flex items-center gap-2 mt-1">
@@ -5562,7 +5562,7 @@ function App() {
                     <span className={cn(
                       "text-xl font-black transition-all",
                       last30sVol > 0 ? "text-emerald-400" : "text-white"
-                    )}>${(last30sVol * 145).toLocaleString()}</span>
+                    )}>${(last30sVol * (getSolPriceUsd() || 1)).toLocaleString()}</span>
                   </div>
                   <div className="flex justify-between items-end border-b border-white/5 pb-2">
                     <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Buy Velocity</span>
@@ -5588,7 +5588,7 @@ function App() {
                   </div>
                   <div className="flex justify-between items-end border-b border-white/5 pb-2">
                     <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Total Entry Vol</span>
-                    <span className="text-sm font-black text-white">${(metric.buyVolume * 145).toLocaleString()}</span>
+                    <span className="text-sm font-black text-white">${(metric.buyVolume * (getSolPriceUsd() || 1)).toLocaleString()}</span>
                   </div>
                   <div className="flex justify-between items-end border-b border-white/5 pb-2">
                     <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Token Age</span>

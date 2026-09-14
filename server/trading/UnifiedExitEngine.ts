@@ -239,7 +239,8 @@ export class UnifiedExitEngine {
   // ==========================================
 
   public async executeManualExitDetail(
-    positionId: string
+    positionId: string,
+    amountRaw?: string
   ): Promise<{ success: boolean; signature?: string; error?: string; result?: any }> {
     const position = positionManager.getPositionById(positionId);
     if (!position) {
@@ -257,7 +258,7 @@ export class UnifiedExitEngine {
     }
 
     try {
-      return await this.executeExitWithRetry(position, 'MANUAL', 'Manual exit triggered');
+      return await this.executeExitWithRetry(position, 'MANUAL', 'Manual exit triggered', 3, undefined, amountRaw);
     } finally {
       this.releaseExitLock(position.network, position.wallet, position.mint);
     }
@@ -272,9 +273,10 @@ export class UnifiedExitEngine {
     reason: string,
     message: string,
     maxRetries: number = 3,
-    preValidatedQuote?: any
+    preValidatedQuote?: any,
+    amountRaw?: string
   ): Promise<{ success: boolean; signature?: string; error?: string; result?: any }> {
-    return this.executeExitWithRetry(position, reason as any, message, maxRetries, preValidatedQuote);
+    return this.executeExitWithRetry(position, reason as any, message, maxRetries, preValidatedQuote, amountRaw);
   }
 
   private async executeExitWithRetry(
@@ -282,7 +284,8 @@ export class UnifiedExitEngine {
     reason: ExitDecision['reason'] | string,
     message: string,
     maxRetries: number = 3,
-    preValidatedQuote?: any
+    preValidatedQuote?: any,
+    amountRaw?: string
   ): Promise<{ success: boolean; signature?: string; error?: string; result?: any }> {
     const startTime = Date.now();
     console.log(`[UnifiedExitEngine][EXIT_AUTHORIZED] position=${position.id} mint=${position.mint} reason=${reason}: ${message}`);
@@ -298,6 +301,7 @@ export class UnifiedExitEngine {
     positionManager.updatePositionStatus(position.network, position.wallet, position.mint, 'EXIT_PENDING');
     this.recordAudit(position.id, position.mint, 'INFO', `EXIT_REQUESTED: ${reason}`);
 
+    const targetAmountRaw = amountRaw || position.tokenAmountRaw;
     let lastError = '';
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
@@ -314,7 +318,7 @@ export class UnifiedExitEngine {
           network: position.network,
           wallet: position.wallet,
           mint: position.mint,
-          amountRaw: position.tokenAmountRaw,
+          amountRaw: targetAmountRaw,
           slippageBps: position.slippageBpsSl || 500,
           reason: String(reason),
           clientRequestId: `exit_${position.id}_${attempt}_${Date.now()}`,
@@ -322,24 +326,34 @@ export class UnifiedExitEngine {
         });
 
         if (sellResult.success) {
-          // Update position with exit details
           const netProceedsSol = sellResult.netProceedsSol || 0;
-          positionManager.updatePositionStatus(
-            position.network,
-            position.wallet,
-            position.mint,
-            'CLOSED',
-            {
-              exitSignature: sellResult.signature,
-              netProceedsSol,
-            }
-          );
+          const currentPosRaw = position.tokenAmountRaw ? BigInt(position.tokenAmountRaw) : BigInt(position.tokenAmount || 0);
+          const sellAmtBigInt = targetAmountRaw ? BigInt(targetAmountRaw) : currentPosRaw;
 
-          // FIX: Purge valuation record to prevent stale state (Fix #2 from audit)
-          positionValuationEngine.removeValuation(position.network, position.wallet, position.mint);
+          if (sellAmtBigInt < currentPosRaw) {
+            // Partial sell reduction
+            positionManager.reducePositionAmount(position.id, targetAmountRaw!, netProceedsSol);
+            this.recordAudit(position.id, position.mint, 'INFO',
+              `PARTIAL_EXIT_CONFIRMED: reason=${reason} signature=${sellResult.signature} sold=${targetAmountRaw} proceeds=${netProceedsSol} SOL`);
+          } else {
+            // Full close
+            positionManager.updatePositionStatus(
+              position.network,
+              position.wallet,
+              position.mint,
+              'CLOSED',
+              {
+                exitSignature: sellResult.signature,
+                netProceedsSol,
+              }
+            );
 
-          this.recordAudit(position.id, position.mint, 'INFO',
-            `EXIT_CONFIRMED: reason=${reason} signature=${sellResult.signature} proceeds=${netProceedsSol} SOL duration=${Date.now() - startTime}ms`);
+            // FIX: Purge valuation record to prevent stale state (Fix #2 from audit)
+            positionValuationEngine.removeValuation(position.network, position.wallet, position.mint);
+
+            this.recordAudit(position.id, position.mint, 'INFO',
+              `EXIT_CONFIRMED: reason=${reason} signature=${sellResult.signature} proceeds=${netProceedsSol} SOL duration=${Date.now() - startTime}ms`);
+          }
 
           console.log(`[UnifiedExitEngine] EXIT CONFIRMED for ${position.mint}: signature=${sellResult.signature}`);
           return { success: true, signature: sellResult.signature, result: sellResult };

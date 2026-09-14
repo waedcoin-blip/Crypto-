@@ -85,7 +85,7 @@ export const corsMiddleware = (req: Request, res: Response, next: NextFunction) 
     origin: allowed ? (origin || true) : false,
     credentials: false,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key', 'x-pipeline-secret'],
   })(req, res, next);
 };
 

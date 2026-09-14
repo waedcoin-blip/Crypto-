@@ -466,7 +466,7 @@ export class TradingEngine {
     }
 
     // Delegate to UnifiedExitEngine (single exit authority)
-    const exitRes = await unifiedExitEngine.executeManualExitDetail(position.id);
+    const exitRes = await unifiedExitEngine.executeManualExitDetail(position.id, rawAmountStr);
     if (exitRes.success) {
       const updatedPos = positionManager.getPositionById(position.id);
       return {

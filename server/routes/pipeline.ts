@@ -22,6 +22,7 @@ import { momentumEngine } from '../trading/MomentumEngine.js';
 import { migrationDetector } from '../trading/MigrationDetector.js';
 import { hardenedApprovalStore } from '../trading/HardenedApprovalStore.js';
 import { hardenedCriteriaEngine } from '../trading/HardenedCriteriaEngine.js';
+import { requireAuth } from '../middleware/auth.js';
 
 const router = Router();
 
@@ -100,8 +101,8 @@ const handleIngress = asyncHandler(async (req: Request, res: Response) => {
 // ==========================================
 
 // 1. Ingress endpoints (supports both explicit /ingress and root / for flexibility)
-router.post('/ingress', handleIngress);
-router.post('/', handleIngress);
+router.post('/ingress', requireAuth, handleIngress);
+router.post('/', requireAuth, handleIngress);
 
 // 2. Health check endpoint
 router.get('/health', asyncHandler(async (req: Request, res: Response) => {
@@ -116,7 +117,7 @@ router.get('/candidates', asyncHandler(async (req: Request, res: Response) => {
 }));
 
 // 4. Validate token against MultiLayerValidationEngine
-router.post('/validate', asyncHandler(async (req: Request, res: Response) => {
+router.post('/validate', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const telemetry: TokenTelemetry = req.body;
   if (!telemetry || !telemetry.mintAddress || !telemetry.dexId) {
     return res.status(400).json({ status: 'error', error: 'Valid TokenTelemetry payload (mintAddress, dexId) is required' });
@@ -153,7 +154,7 @@ router.get('/engines/status', asyncHandler(async (req: Request, res: Response) =
 }));
 
 // 7. Manually trigger risk analysis for a specific token
-router.post('/analyze-risk', asyncHandler(async (req: Request, res: Response) => {
+router.post('/analyze-risk', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const { address, riskScore, liquidity, marketCap, devOwnership } = req.body;
   if (!address) {
     return res.status(400).json({ status: 'error', error: 'Token address is required' });
@@ -213,7 +214,7 @@ router.get('/bonding-curves', asyncHandler(async (req: Request, res: Response) =
 }));
 
 // 11. Manually trigger or force-refresh an enrichment for a specific mint
-router.post('/enrich', asyncHandler(async (req: Request, res: Response) => {
+router.post('/enrich', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const { mint, network = 'mainnet' } = req.body;
   if (!mint || typeof mint !== 'string') {
     return res.status(400).json({ status: 'error', error: 'Valid string mint is required' });
@@ -229,7 +230,7 @@ router.post('/enrich', asyncHandler(async (req: Request, res: Response) => {
 }));
 
 // 12. Trigger the full Entry Engine pipeline manually for a specific mint
-router.post('/trigger-entry', asyncHandler(async (req: Request, res: Response) => {
+router.post('/trigger-entry', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const { mint, source = 'MANUAL' } = req.body;
   if (!mint || typeof mint !== 'string') {
     return res.status(400).json({ status: 'error', error: 'Valid string mint is required' });
@@ -281,8 +282,7 @@ router.get('/approvals/stats', asyncHandler(async (req: Request, res: Response) 
 }));
 
 // 16. Manually bump criteria version (Admin action to clear rejection caches)
-router.post('/criteria/bump-version', asyncHandler(async (req: Request, res: Response) => {
-  // Add auth middleware here in production!
+router.post('/criteria/bump-version', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   hardenedCriteriaEngine.bumpCriteriaVersion();
   res.json({
     status: 'success',

@@ -358,6 +358,7 @@ export class PositionManager {
     const soldCostBasis = pos.totalSolSpent * soldFraction;
 
     pos.totalSolSpentOnSold = (pos.totalSolSpentOnSold || 0) + soldCostBasis;
+    pos.totalSolSpent = Math.max(0, pos.totalSolSpent - soldCostBasis);
     pos.tokenAmountRaw = remainingRaw.toString();
     pos.tokenAmount = safeRawNumber(remainingRaw);
     pos.realizedPnl += solReceived - soldCostBasis;
@@ -368,6 +369,12 @@ export class PositionManager {
       pos.closedAt = Date.now();
       const key = this.getPositionKey(pos.network, pos.wallet, pos.mint);
       this.positionKeys.delete(key);
+      positionValuationEngine.removeValuation(pos.network, pos.wallet, pos.mint);
+      try {
+        heliusLaserStreamWssManager.unsubscribeActivePositionMint(pos.mint);
+      } catch {}
+    } else {
+      pos.status = 'OPEN';
     }
     this.syncRepository(pos);
     return pos;

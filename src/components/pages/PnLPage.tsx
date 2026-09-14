@@ -4975,7 +4975,7 @@ const checkTokenCriteria = (mint: string): {
               priceChange1m: change5m * 0.2,
               marketCap,
               priceUsd,
-              priceNative: priceUsd / 145,
+              priceNative: priceUsd / (getSolPriceUsd() || 1),
               liquidity: liquidityUsd,
               volume24h: marketCap * 0.78,
               discoveredAt: isRaydium 
@@ -5001,7 +5001,7 @@ const checkTokenCriteria = (mint: string): {
         });
 
         // Generate trade events corresponding to current activity
-        const usdVal = (0.2 + Math.random() * 1.5) * 145;
+        const usdVal = (0.2 + Math.random() * 1.5) * (getSolPriceUsd() || 1);
         const tokenAmount = Math.max(1, Math.round(usdVal / Math.max(priceUsd, 0.00000001)));
 
         const newSysTrade: Trade = {
