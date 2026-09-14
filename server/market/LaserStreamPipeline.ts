@@ -4,7 +4,6 @@ import { candidateRegistry } from './CandidateRegistry.js';
 import { CanonicalEventNormalizer } from './CanonicalEventNormalizer.js';
 import { sourceHealthMonitor } from './SourceHealthMonitor.js';
 import { tokenMintResolver } from './TokenMintResolver.js';
-import { streamingTransportManager } from './StreamingTransportManager.js';
 import { UnifiedMarketEvent, EventSource } from '../types/index.js';
 
 /**

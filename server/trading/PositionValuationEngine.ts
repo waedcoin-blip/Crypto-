@@ -56,7 +56,11 @@ export class PositionValuationEngine {
   private readonly QUOTE_FRESHNESS_MS = 5000;
   private readonly STALE_THRESHOLD_MS = 25000;
 
-  private constructor() {}
+  private constructor() {
+    positionManager.onPositionClosed((network, wallet, mint) => {
+      this.removeValuation(network, wallet, mint);
+    });
+  }
 
   public static getInstance(): PositionValuationEngine {
     if (!PositionValuationEngine.instance) {

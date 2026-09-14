@@ -4,7 +4,6 @@ import { pnlEngine } from './PnLEngine.js';
 import { criteriaRepository } from '../repositories/CriteriaRepository.js';
 import { fastExitExecutor } from '../execution/FastExitExecutor.js';
 import { positionRepository } from '../repositories/PositionRepository.js';
-import { activePositionMarketFeed } from '../market/ActivePositionMarketFeed.js';
 import { executionGateway } from '../execution/ExecutionGateway.js';
 import { positionValuationEngine } from './PositionValuationEngine.js';
 import { orderManager } from './OrderManager.js';
@@ -52,16 +51,12 @@ export class UnifiedExitEngine {
     if (this.isRunning) return;
     this.isRunning = true;
 
-    // Start the ActivePositionMarketFeed which drives price updates and exit evaluations
-    activePositionMarketFeed.start();
-
-    console.log('[UnifiedExitEngine] Sole authoritative server-side Exit Engine active; ActivePositionMarketFeed owns market-event ingestion.');
+    console.log('[UnifiedExitEngine] Sole authoritative server-side Exit Engine active.');
     this.recordGlobalLog('SYSTEM', 'Exit Engine started successfully.');
   }
 
   public stop(): void {
     this.isRunning = false;
-    activePositionMarketFeed.stop();
     console.log('[UnifiedExitEngine] Exit Engine stopped.');
     this.recordGlobalLog('SYSTEM', 'Exit Engine stopped.');
   }

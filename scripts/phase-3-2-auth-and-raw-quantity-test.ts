@@ -1,10 +1,9 @@
 // scripts/phase-3-2-auth-and-raw-quantity-test.ts
 import assert from 'assert';
-import { apiClient } from '../src/services/apiClient';
+import { apiClient } from '../src/services/ApiClient';
 import { TradingEngine } from '../server/trading/TradingEngine';
 import { PositionManager } from '../server/trading/PositionManager';
 import { MainnetTradeExecutor } from '../server/execution/MainnetTradeExecutor';
-import { MainnetJupiterExecutor } from '../src/services/MainnetJupiterExecutor';
 
 console.log('🚀 Running Phase 3.2 Authenticated Trading & Raw Quantity Purge Test Suite...\n');
 

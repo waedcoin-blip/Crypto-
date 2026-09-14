@@ -29,6 +29,16 @@ function toWsUrl(rpcUrl: string): string {
   return rpcUrl;
 }
 
+export function getStoredTradingNetwork(): TradingNetwork {
+  if (typeof localStorage !== 'undefined') {
+    const saved = localStorage.getItem('app_trading_network') as TradingNetwork;
+    if (saved === 'paper' || saved === 'mainnet') {
+      return saved;
+    }
+  }
+  return 'paper';
+}
+
 export function getNetworkConfig(
   network: TradingNetwork
 ): NetworkConfig {

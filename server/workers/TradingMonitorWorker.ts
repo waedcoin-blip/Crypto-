@@ -3,7 +3,6 @@ import { positionManager } from '../trading/PositionManager.js';
 import { positionValuationEngine } from '../trading/PositionValuationEngine.js';
 import { unifiedExitEngine } from '../trading/UnifiedExitEngine.js';
 import { workerStateRepository } from '../repositories/WorkerStateRepository.js';
-import { tradingSupervisor } from '../trading/TradingSupervisor.js';
 
 /**
  * TradingMonitorWorker: Background worker that periodically:

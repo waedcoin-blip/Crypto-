@@ -1,6 +1,5 @@
 // server/trading/PositionManager.ts
 import { positionRepository, PositionRecord } from '../repositories/PositionRepository.js';
-import { positionValuationEngine } from './PositionValuationEngine.js';
 import { heliusLaserStreamWssManager } from '../market/HeliusLaserStreamWssManager.js';
 import { rawToUiNumber, parsePositiveRawAmount, safeRawNumber } from '../utils/rawAmount.js';
 import { logger } from '../utils/logger.js';
@@ -48,9 +47,27 @@ export class PositionManager {
   private static instance: PositionManager;
   private positions: Map<string, Position> = new Map();
   private positionKeys: Map<string, string> = new Map();
+  private closeListeners: Array<(network: string, wallet: string, mint: string) => void> = [];
 
   private constructor() {
     this.refreshFromRepository(); // Only load on startup
+  }
+
+  public onPositionClosed(listener: (network: string, wallet: string, mint: string) => void): () => void {
+    this.closeListeners.push(listener);
+    return () => {
+      this.closeListeners = this.closeListeners.filter(l => l !== listener);
+    };
+  }
+
+  private notifyPositionClosed(network: string, wallet: string, mint: string): void {
+    for (const listener of this.closeListeners) {
+      try {
+        listener(network, wallet, mint);
+      } catch (err) {
+        logger.error({ err }, '[PositionManager] Error in position closed listener');
+      }
+    }
   }
 
   public static getInstance(): PositionManager {
@@ -369,7 +386,7 @@ export class PositionManager {
       pos.closedAt = Date.now();
       const key = this.getPositionKey(pos.network, pos.wallet, pos.mint);
       this.positionKeys.delete(key);
-      positionValuationEngine.removeValuation(pos.network, pos.wallet, pos.mint);
+      this.notifyPositionClosed(pos.network, pos.wallet, pos.mint);
       try {
         heliusLaserStreamWssManager.unsubscribeActivePositionMint(pos.mint);
       } catch {}
@@ -404,7 +421,7 @@ export class PositionManager {
       }
       const key = this.getPositionKey(network, wallet, mint);
       this.positionKeys.delete(key);
-      positionValuationEngine.removeValuation(network, wallet, mint);
+      this.notifyPositionClosed(network, wallet, mint);
       try {
         heliusLaserStreamWssManager.unsubscribeActivePositionMint(mint);
       } catch {}

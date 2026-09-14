@@ -11,9 +11,14 @@ async function runTestSuite() {
   const { pnlEngine } = await import('../server/trading/PnLEngine.js');
   const { yellowstoneConnectionManager } = await import('../server/market/YellowstoneConnectionManager.js');
   const { walletManager } = await import('../server/wallet/WalletManager.js');
+  const { tradeRepository } = await import('../server/repositories/TradeRepository.js');
   const { Keypair } = await import('@solana/web3.js');
 
   console.log('🚀 Running Refactored Architecture V90.23 Integration Suite...\n');
+
+  // Reset test state for clean idempotency
+  rebuyGuard.clear();
+  tradeRepository.clear('paper');
 
   // TEST 1: Wallet Isolation (Devnet Wallet A vs Devnet Wallet B vs Paper)
   console.log('▶ [TEST 1] Multi-Wallet & Multi-Network Isolation');
@@ -29,7 +34,7 @@ async function runTestSuite() {
 
   // TEST 2: RebuyGuard Atomic Reservation & Failure Release
   console.log('▶ [TEST 2] RebuyGuard Atomic Reservation & Release');
-  const testMint = Keypair.generate().publicKey.toBase58();
+  const testMint = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'; // USDC (guaranteed Jupiter liquidity route)
   const res = rebuyGuard.reserveBuy({
     network: 'paper',
     wallet: 'default',

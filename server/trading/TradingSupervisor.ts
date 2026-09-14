@@ -11,6 +11,7 @@ import { positionRepository } from '../repositories/PositionRepository.js';
 import { positionManager } from '../trading/PositionManager.js';
 import { positionValuationEngine } from '../trading/PositionValuationEngine.js';
 import { unifiedExitEngine } from '../trading/UnifiedExitEngine.js';
+import { activePositionMarketFeed } from '../market/ActivePositionMarketFeed.js';
 import { entryEngine } from '../trading/EntryEngine.js';
 import { paperWalletLedger } from '../wallet/PaperWalletLedger.js';
 import { workerStateRepository } from '../repositories/WorkerStateRepository.js';
@@ -168,6 +169,7 @@ export class TradingSupervisor {
       });
       entryEngine.start();
       unifiedExitEngine.start();
+      activePositionMarketFeed.start();
       await tradingMonitorWorker.start();
       this.healthMap.entryPipeline = 'READY';
 

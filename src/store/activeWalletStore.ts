@@ -5,8 +5,7 @@ import { useBalanceStore } from './balanceStore';
 import { DEFAULT_PAPER_TRADING_ADDRESS } from '../constants/solana';
 import { usePaperWalletStore } from './paperWalletStore';
 import { useWalletBridge } from '../services/walletBridge';
-
-import { useTradingEnvironmentStore } from './tradingEnvironmentStore';
+import { getStoredTradingNetwork } from '../config/network';
 
 export interface ActiveWallet {
     address: string;
@@ -73,7 +72,7 @@ export const useActiveWalletStore = create<ActiveWalletState>((set, get) => ({
 
     switchActiveWallet: (params) => {
         const { keypair, source, clearStorage } = params;
-        const envNetwork = useTradingEnvironmentStore.getState().network || 'paper';
+        const envNetwork = getStoredTradingNetwork();
         const network = params.network || envNetwork;
         const address = params.address || (keypair ? keypair.publicKey.toBase58() : '');
         

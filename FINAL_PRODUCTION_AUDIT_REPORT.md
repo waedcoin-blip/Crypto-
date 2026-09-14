@@ -1,13 +1,21 @@
 # Final Production Audit Report
-Generated at: 2026-09-12T19:03:18.957Z
-Total Findings: 139
-Bugs: 6
-Warnings: 133
+Generated at: 2026-09-14T13:41:24.600Z
+Total Findings: 149
+Bugs: 8
+Warnings: 141
 
 ## Findings Details
 - **[WARNING]** `server/config/index.ts:20`: Hardcoded Secret / Private Key (`PIPELINE_API_SECRET: z.string().optional(),`)
 - **[BUG]** `server/execution/DevnetTradeExecutor.ts:60`: Unsafe Number Conversion on Raw Amounts (`outAmountLamports: Number(tokenReceivedRaw) || 0,`)
 - **[WARNING]** `server/market/HeliusErrors.ts:29`: Artificial History Truncation (slice(-500)) (`if (sanitized.length <= 8) return '***' + sanitized.slice(-3);`)
+- **[WARNING]** `server/middleware/auth.ts:10`: Hardcoded Secret / Private Key (`* 2. Server-to-server Pipeline / Internal API Secret via x-pipeline-secret or x-api-key headers`)
+- **[WARNING]** `server/middleware/auth.ts:13`: Hardcoded Secret / Private Key (`* If auth service is uninitialized and no internal secret matches: HTTP 503.`)
+- **[WARNING]** `server/middleware/auth.ts:17`: Hardcoded Secret / Private Key (`// 1. Check for server-to-server internal API / pipeline secret`)
+- **[WARNING]** `server/middleware/auth.ts:18`: Hardcoded Secret / Private Key (`const pipelineSecretHeader = req.headers['x-pipeline-secret'] || req.headers['x-internal-secret'] || req.headers['x-api-key'];`)
+- **[WARNING]** `server/middleware/auth.ts:19`: Hardcoded Secret / Private Key (`const configuredSecret = config.PIPELINE_API_SECRET || process.env.PIPELINE_SECRET || process.env.SERVER_INTERNAL_SECRET;`)
+- **[WARNING]** `server/middleware/auth.ts:21`: Hardcoded Secret / Private Key (`if (pipelineSecretHeader && configuredSecret && String(pipelineSecretHeader) === configuredSecret) {`)
+- **[WARNING]** `server/middleware/auth.ts:46`: Hardcoded Secret / Private Key (`// If the Bearer token matches the internal pipeline secret`)
+- **[WARNING]** `server/middleware/security.ts:88`: Hardcoded Secret / Private Key (`allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key', 'x-pipeline-secret'],`)
 - **[BUG]** `server/repositories/TokenRepository.ts:82`: Unsafe Decimal Fallback (?? 6 or || 6) (`decimals: params.decimals ?? params.metadata?.decimals ?? existing?.decimals ?? 6,`)
 - **[WARNING]** `server/services/JupiterTradingService.ts:10`: Hardcoded Secret / Private Key (`privateKey?: string;`)
 - **[WARNING]** `server/services/JupiterTradingService.ts:54`: Hardcoded Secret / Private Key (`walletPrivateKey?: string;`)
@@ -15,8 +23,10 @@ Warnings: 133
 - **[BUG]** `server/trading/BondingCurveFastLane.ts:114`: Floating Point Division by 1e6 (`// Price in SOL = (Lamports / 1e9) / (RawTokens / 1e6) = (Lamports * 1e6) / (RawTokens * 1e9)`)
 - **[WARNING]** `server/trading/BondingCurveFastLane.ts:114`: Floating Point Multiplication by 1e6 (`// Price in SOL = (Lamports / 1e9) / (RawTokens / 1e6) = (Lamports * 1e6) / (RawTokens * 1e9)`)
 - **[BUG]** `server/trading/CandidateEnricher.ts:196`: Unsafe Decimal Fallback (?? 6 or || 6) (`decimals: createMetric(meta.decimals ?? existingToken.decimals ?? 6, 'PAPER'),`)
+- **[BUG]** `server/trading/PositionValuationEngine.ts:92`: Unsafe Decimal Fallback (?? 6 or || 6) (`: BigInt(Math.floor(pos.tokenAmount * (10 ** (pos.decimals || 6))));`)
+- **[BUG]** `server/trading/PositionValuationEngine.ts:104`: Unsafe Decimal Fallback (?? 6 or || 6) (`tokenDecimals: pos.decimals || 6,`)
 - **[BUG]** `server/trading/TradingEngine.ts:491`: Unsafe Decimal Fallback (?? 6 or || 6) (`return this.buy({ ...params, decimals: params.decimals ?? 6 });`)
-- **[WARNING]** `server/trading/UnifiedExitEngine.ts:388`: Artificial History Truncation (slice(-500)) (`this.auditTrail = this.auditTrail.slice(-5000);`)
+- **[WARNING]** `server/trading/UnifiedExitEngine.ts:397`: Artificial History Truncation (slice(-500)) (`this.auditTrail = this.auditTrail.slice(-5000);`)
 - **[WARNING]** `server/wallet/WalletManager.ts:54`: Hardcoded Secret / Private Key (`const privateKeyEnv = process.env.PRIVATE_KEY || process.env.SOLANA_PRIVATE_KEY;`)
 - **[WARNING]** `server/wallet/WalletManager.ts:58`: Hardcoded Secret / Private Key (`if (privateKeyEnv.startsWith('[')) {`)
 - **[WARNING]** `server/wallet/WalletManager.ts:59`: Hardcoded Secret / Private Key (`const bytes = JSON.parse(privateKeyEnv);`)

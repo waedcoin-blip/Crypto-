@@ -2,7 +2,6 @@
 import { positionManager, Position } from '../trading/PositionManager.js';
 import { positionValuationEngine } from '../trading/PositionValuationEngine.js';
 import { unifiedExitEngine } from '../trading/UnifiedExitEngine.js';
-import { tradingSupervisor } from '../trading/TradingSupervisor.js';
 import { marketEventBus } from './MarketEventBus.js';
 import { heliusLaserStreamWssManager } from './HeliusLaserStreamWssManager.js';
 import { UnifiedMarketEvent } from '../types/index.js';
